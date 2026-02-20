@@ -1,1 +1,10 @@
-.agenfk/api.log
+node_modules/
+dist/
+build/
+.agenfk/
+*.log
+start-services.sh
+.DS_Store
+.env
+coverage/
+.opencode/
