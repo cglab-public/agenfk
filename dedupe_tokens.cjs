@@ -1,5 +1,5 @@
 const fs = require('fs');
-const dbPath = '/home/danielp/agefk/agentic-framework/.agentic/db.json';
+const dbPath = '/home/danielp/agefk/agenfk-framework/.agenfk/db.json';
 
 function deduplicate() {
     const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));

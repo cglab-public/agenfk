@@ -4,7 +4,8 @@ export enum Status {
   IN_PROGRESS = "IN_PROGRESS",
   REVIEW = "REVIEW",
   DONE = "DONE",
-  BLOCKED = "BLOCKED"
+  BLOCKED = "BLOCKED",
+  ARCHIVED = "ARCHIVED"
 }
 
 export enum ItemType {
@@ -28,8 +29,25 @@ export interface ContextItem {
   content?: string;
 }
 
-export interface AgenticItem {
+export interface Project {
   id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReviewRecord {
+  id: string;
+  command: string;
+  output: string;
+  status: "PASSED" | "FAILED";
+  executedAt: string;
+}
+
+export interface AgenFKItem {
+  id: string;
+  projectId: string;
   type: ItemType;
   title: string;
   description: string;
@@ -37,9 +55,11 @@ export interface AgenticItem {
   assignee?: string;
   tokenUsage?: TokenUsage[];
   context?: ContextItem[];
+  reviews?: ReviewRecord[];
   createdAt: string; // Date comes as string from JSON
   updatedAt: string;
   parentId?: string;
   severity?: string;
+  previousStatus?: Status;
   implementationPlan?: string;
 }

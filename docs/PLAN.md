@@ -1,4 +1,4 @@
-# Agentic Engineering Framework (AEF) - Project Plan
+# AgenFK Engineering Framework (AEF) - Project Plan
 
 ## Objective
 Create a framework for AI-assisted software engineering that enforces an Agile, measurable, visual, repeatable, reliable, and flexible workflow.
@@ -54,10 +54,10 @@ Create a framework for AI-assisted software engineering that enforces an Agile, 
     *   Upgraded `packages/server` to include Express.
     *   Exposed REST API endpoints (`GET/POST/PUT/DELETE /items`).
 
-## Next Steps
-*   Run the server: `node packages/server/dist/server.js`
-*   Run the UI: `cd packages/ui && npm run dev`
-*   Open `http://localhost:5173` to see the board.
+3.  **Documentation & Branding:** (Done)
+    *   Global rename to **AgenFK**.
+    *   Custom SVG Logo implementation.
+    *   Comprehensive `README.md` with architecture and installation guides.
 
 **Project Status:**
 All planned phases (Foundation, Measurability, Visualization) are complete for the MVP. The framework is now functional with:
@@ -65,6 +65,8 @@ All planned phases (Foundation, Measurability, Visualization) are complete for t
 *   MCP for AI agents.
 *   Web UI for human oversight.
 *   JSON storage for portability.
+*   Enforced verification workflows.
+
 
 **Goal:** Visual interface for oversight.
 

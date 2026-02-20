@@ -1,7 +1,7 @@
 {
-  "name": "@agentic/core",
+  "name": "@agenfk/core",
   "version": "0.1.0",
-  "description": "Core logic and interfaces for the Agentic Engineering Framework",
+  "description": "Core logic and interfaces for the AgenFK Engineering Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

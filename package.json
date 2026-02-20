@@ -1,7 +1,7 @@
 {
-  "name": "agentic-framework",
+  "name": "agenfk-framework",
   "version": "1.0.0",
-  "description": "Agentic Engineering Framework",
+  "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
     "packages/*"

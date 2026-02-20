@@ -39,8 +39,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const body_parser_1 = __importDefault(require("body-parser"));
-const storage_json_1 = require("@agentic/storage-json");
-const core_1 = require("@agentic/core");
+const storage_json_1 = require("@agenfk/storage-json");
+const core_1 = require("@agenfk/core");
 const uuid_1 = require("uuid");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
@@ -63,10 +63,71 @@ app.use((0, cors_1.default)({
 app.use(body_parser_1.default.json());
 const storage = new storage_json_1.JSONStorageProvider();
 let dbPath = "";
+const archiveRecursively = async (id) => {
+    const item = await storage.getItem(id);
+    if (!item || item.status === core_1.Status.ARCHIVED)
+        return;
+    console.log(`[AUTO_ARCHIVE] Archiving ${item.id} (${item.title})`);
+    await storage.updateItem(id, {
+        previousStatus: item.status,
+        status: core_1.Status.ARCHIVED
+    });
+    const children = await storage.listItems({ parentId: id });
+    for (const child of children) {
+        await archiveRecursively(child.id);
+    }
+};
+const unarchiveRecursively = async (id) => {
+    const item = await storage.getItem(id);
+    if (!item || item.status !== core_1.Status.ARCHIVED)
+        return;
+    const targetStatus = item.previousStatus || core_1.Status.TODO;
+    console.log(`[AUTO_UNARCHIVE] Restoring ${item.id} (${item.title}) to ${targetStatus}`);
+    await storage.updateItem(id, {
+        status: targetStatus,
+        previousStatus: undefined
+    });
+    const children = await storage.listItems({ parentId: id });
+    for (const child of children) {
+        // Only unarchive children that were archived
+        if (child.status === core_1.Status.ARCHIVED) {
+            await unarchiveRecursively(child.id);
+        }
+    }
+};
+const syncParentStatus = async (parentId) => {
+    const parent = await storage.getItem(parentId);
+    if (!parent)
+        return;
+    const children = await storage.listItems({ parentId });
+    if (children.length === 0)
+        return;
+    const allDone = children.every(c => c.status === core_1.Status.DONE);
+    const anyInProgress = children.some(c => c.status === core_1.Status.IN_PROGRESS || c.status === core_1.Status.REVIEW);
+    const anyDone = children.some(c => c.status === core_1.Status.DONE);
+    let newStatus = null;
+    if (allDone) {
+        if (parent.status !== core_1.Status.DONE)
+            newStatus = core_1.Status.DONE;
+    }
+    else if (anyInProgress || anyDone) {
+        if (parent.status !== core_1.Status.IN_PROGRESS)
+            newStatus = core_1.Status.IN_PROGRESS;
+    }
+    if (newStatus) {
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] [AUTO_SYNC] Updating parent ${parent.id} (${parent.title}) to ${newStatus}`);
+        await storage.updateItem(parent.id, { status: newStatus });
+        io.emit('items_updated');
+        if (parent.parentId) {
+            await syncParentStatus(parent.parentId);
+        }
+    }
+};
 const findProjectRoot = (startDir) => {
     let currentDir = startDir;
     while (currentDir !== path.parse(currentDir).root) {
-        if (fs.existsSync(path.join(currentDir, ".agentic"))) {
+        if (fs.existsSync(path.join(currentDir, ".agenfk"))) {
             return currentDir;
         }
         currentDir = path.dirname(currentDir);
@@ -74,20 +135,21 @@ const findProjectRoot = (startDir) => {
     return startDir;
 };
 const initStorage = async () => {
-    const envPath = process.env.AGENTIC_DB_PATH;
+    const envPath = process.env.AGENFK_DB_PATH;
     if (envPath) {
         dbPath = envPath;
     }
     else {
         const root = findProjectRoot(process.cwd());
-        dbPath = path.join(root, ".agentic", "db.json");
+        dbPath = path.join(root, ".agenfk", "db.json");
     }
     console.log(`[SERVER_START] Using Database: ${dbPath}`);
     await storage.init({ path: dbPath });
     // Watch for changes to db.json to notify clients (e.g. from MCP or CLI)
     fs.watch(dbPath, (event) => {
         if (event === 'change') {
-            console.log(`[DISK_CHANGE] Database file ${dbPath} modified. Broadcasting refresh to UI...`);
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] [DISK_CHANGE] Database file ${dbPath} modified. Broadcasting refresh to UI...`);
             io.emit('items_updated');
         }
     });
@@ -96,15 +158,53 @@ const initStorage = async () => {
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 app.get("/", (req, res) => {
     res.json({
-        message: "Agentic Framework API is running",
+        message: "AgenFK Framework API is running",
         endpoints: {
+            projects: "/projects",
             items: "/items",
             ui: "http://localhost:5173"
         }
     });
 });
+// Projects API
+app.get("/projects", asyncHandler(async (req, res) => {
+    const projects = await storage.listProjects();
+    res.json(projects);
+}));
+app.post("/projects", asyncHandler(async (req, res) => {
+    const { name, description } = req.body;
+    if (!name)
+        return res.status(400).json({ error: "Name is required" });
+    const project = {
+        id: (0, uuid_1.v4)(),
+        name,
+        description: description || "",
+        createdAt: new Date(),
+        updatedAt: new Date()
+    };
+    const created = await storage.createProject(project);
+    io.emit('items_updated');
+    res.status(201).json(created);
+}));
+app.get("/projects/:id", asyncHandler(async (req, res) => {
+    const project = await storage.getProject(req.params.id);
+    if (!project)
+        return res.status(404).json({ error: "Project not found" });
+    res.json(project);
+}));
+app.put("/projects/:id", asyncHandler(async (req, res) => {
+    const updated = await storage.updateProject(req.params.id, req.body);
+    io.emit('items_updated');
+    res.json(updated);
+}));
+app.delete("/projects/:id", asyncHandler(async (req, res) => {
+    await storage.deleteProject(req.params.id);
+    io.emit('items_updated');
+    res.status(204).send();
+}));
+// Items API
 app.get("/items", asyncHandler(async (req, res) => {
-    const { type, status, parentId } = req.query;
+    const { type, status, parentId, includeArchived, projectId } = req.query;
     const query = {};
     if (type)
         query.type = type;
@@ -112,7 +212,13 @@ app.get("/items", asyncHandler(async (req, res) => {
         query.status = status;
     if (parentId)
         query.parentId = parentId;
-    const items = await storage.listItems(query);
+    if (projectId)
+        query.projectId = projectId;
+    let items = await storage.listItems(query);
+    // Filter out archived items by default unless explicitly requested or filtering by status
+    if (includeArchived !== 'true' && !status) {
+        items = items.filter(i => i.status !== core_1.Status.ARCHIVED);
+    }
     res.json(items);
 }));
 app.get("/items/:id", asyncHandler(async (req, res) => {
@@ -123,12 +229,17 @@ app.get("/items/:id", asyncHandler(async (req, res) => {
     res.json(item);
 }));
 app.post("/items", asyncHandler(async (req, res) => {
-    const { type, title, description, parentId, status, implementationPlan } = req.body;
+    console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
+    const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
     if (!type || !title) {
         return res.status(400).json({ error: "Type and Title are required" });
     }
+    if (!projectId) {
+        return res.status(400).json({ error: "ProjectId is required" });
+    }
     const newItem = {
         id: (0, uuid_1.v4)(),
+        projectId,
         type: type,
         title,
         description: description || "",
@@ -142,12 +253,38 @@ app.post("/items", asyncHandler(async (req, res) => {
         newItem.severity = "LOW";
     }
     const created = await storage.createItem(newItem);
-    console.log(`[API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
     io.emit('items_updated');
+    io.emit('project_switched', { projectId: created.projectId });
+    if (created.parentId) {
+        await syncParentStatus(created.parentId);
+    }
     res.status(201).json(created);
 }));
 app.put("/items/:id", asyncHandler(async (req, res) => {
-    const { title, description, status, parentId, tokenUsage, context, implementationPlan } = req.body;
+    console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
+    const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews } = req.body;
+    const currentItem = await storage.getItem(req.params.id);
+    if (!currentItem) {
+        return res.status(404).json({ error: "Item not found" });
+    }
+    // Handle Archival
+    if (status === core_1.Status.ARCHIVED && currentItem.status !== core_1.Status.ARCHIVED) {
+        await archiveRecursively(req.params.id);
+        io.emit('items_updated');
+        return res.json(await storage.getItem(req.params.id));
+    }
+    // Handle Unarchival
+    if (status !== undefined && status !== core_1.Status.ARCHIVED && currentItem.status === core_1.Status.ARCHIVED) {
+        await unarchiveRecursively(req.params.id);
+        // If they provided a status other than ARCHIVED, use it instead of previousStatus?
+        // User said "Unarchival will restore item previous statuses", so we usually favor previousStatus.
+        // But if they specifically requested a new status, let's honor it for the target item.
+        await storage.updateItem(req.params.id, { status: status });
+        io.emit('items_updated');
+        return res.json(await storage.getItem(req.params.id));
+    }
     const updates = {};
     if (title !== undefined)
         updates.title = title;
@@ -163,10 +300,17 @@ app.put("/items/:id", asyncHandler(async (req, res) => {
         updates.context = context;
     if (implementationPlan !== undefined)
         updates.implementationPlan = implementationPlan;
+    if (reviews !== undefined)
+        updates.reviews = reviews;
     try {
         const updated = await storage.updateItem(req.params.id, updates);
-        console.log(`[API_UPDATE] Item updated: ${updated.id} (${updated.title}). Broadcasting refresh...`);
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] [API_UPDATE] Item ${updated.id} status: ${updated.status}. Broadcasting refresh...`);
         io.emit('items_updated');
+        io.emit('project_switched', { projectId: updated.projectId });
+        if (updated.parentId && updated.status !== core_1.Status.ARCHIVED) {
+            await syncParentStatus(updated.parentId);
+        }
         res.json(updated);
     }
     catch (error) {
@@ -174,10 +318,15 @@ app.put("/items/:id", asyncHandler(async (req, res) => {
     }
 }));
 app.delete("/items/:id", asyncHandler(async (req, res) => {
+    const itemToDelete = await storage.getItem(req.params.id);
     const success = await storage.deleteItem(req.params.id);
     if (success) {
-        console.log(`[API_DELETE] Item deleted: ${req.params.id}. Broadcasting refresh...`);
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] [API_DELETE] Item deleted: ${req.params.id}. Broadcasting refresh...`);
         io.emit('items_updated');
+        if (itemToDelete?.parentId) {
+            await syncParentStatus(itemToDelete.parentId);
+        }
         res.status(204).send();
     }
     else {
@@ -194,6 +343,6 @@ io.on('connection', (socket) => {
 // Init and Listen
 initStorage().then(() => {
     httpServer.listen(PORT, () => {
-        console.log(`Agentic API Server running on port ${PORT} (with WebSockets)`);
+        console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
     });
 });

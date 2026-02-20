@@ -1,7 +1,7 @@
 {
-  "name": "@agentic/server",
+  "name": "@agenfk/server",
   "version": "0.1.0",
-  "description": "MCP Server for Agentic Framework",
+  "description": "MCP Server for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -12,8 +12,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@agentic/core": "*",
-    "@agentic/storage-json": "*",
+    "@agenfk/core": "*",
+    "@agenfk/storage-json": "*",
     "@modelcontextprotocol/sdk": "0.6.0",
     "axios": "^1.13.5",
     "body-parser": "^2.2.2",
@@ -30,7 +30,7 @@
     "typescript": "^5.3.3"
   },
   "keywords": [
-    "agentic",
+    "agenfk",
     "mcp",
     "server"
   ],

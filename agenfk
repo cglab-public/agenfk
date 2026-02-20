@@ -1,5 +1,5 @@
 #!/bin/bash
-# agenfk - Agentic Engineering Framework CLI Wrapper
+# agenfk - AgenFK Engineering Framework CLI Wrapper
 
 # Get the directory where this script is located
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

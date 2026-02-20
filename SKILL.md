@@ -7,19 +7,27 @@ metadata:
   workflow: agile
 ---
 
-# Agentic Engineering Framework (agenfk)
+# AgenFK Engineering Framework (agenfk)
 
-This skill enforces the core Agentic Engineering workflow to ensure all software tasks are Agile, Measurable, Visual, Repeatable, Reliable, and Flexible.
+This skill enforces the core AgenFK Engineering workflow to ensure all software tasks are Agile, Measurable, Visual, Repeatable, Reliable, and Flexible.
 
 ## What I do
 
 1.  **Initialization**
-    *   **Action**: Scan the codebase and generate `AFK_PROJECT_SCOPE.md` (project objective) and `AFK_ARCHITECTURE.md` (structure, components, dependencies) if they don't exist.
-    *   **Objective**: Maintain a living map of the project.
+    *   **Action**: 
+        1. Check for `.agenfk/project.json` in the project root.
+        2. If missing, call `list_projects()` via MCP to see existing projects.
+        3. Ask the user if they want to use an existing project or create a new one (recommended).
+        4. Create/link the project by creating `.agenfk/project.json` with the `{ "projectId": "..." }`.
+        5. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
+    *   **Objective**: Maintain project identity and a living map.
 
-2.  **Request Analysis**
+2.  **Request Analysis & Clarification**
     *   **Action**: Call `analyze_request(request: string)` for every new user requirement.
-    *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**. Ask for clarification if ambiguous.
+    *   **Reasoning Step**: Before creating ANY item (Epic, Story, Task, or Bug) or initializing a project, you MUST reason about the implementation details. 
+    *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
+    *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
+    *   **Requirement**: All items created must be associated with the active `projectId`.
 
 3.  **Planning (Epics only)**
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
@@ -27,24 +35,39 @@ This skill enforces the core Agentic Engineering workflow to ensure all software
 
 4.  **Action Authorization (Gatekeeper)**
     *   **Action**: Call `workflow_gatekeeper(intent: string)` BEFORE any code change.
-    *   **Requirement**: Exactly one task must be `IN_PROGRESS`. Rectify if not.
+    *   **Requirement**: Exactly one task must be `IN_PROGRESS` for the active project.
 
-5.  **Measurement & Tracking**
-    *   **Reporting**: Call `log_token_usage(itemId, input, output, model)` for every unit of work.
-    *   **Completion**: Move tasks to `DONE` and update parents when finished.
+5.  **Mandatory Verification**
+    *   **Action**: BEFORE declaring an item as `DONE` (if code was modified), the Agent **MUST** use the `verify_changes(itemId, command)` tool.
+    *   **Review Rules**:
+        *   **TASKS**: Always require individual verification.
+        *   **STORIES with sub-tasks**: Implicitly verified when all children are `DONE`.
+        *   **STORIES without sub-tasks**: Require manual verification via `verify_changes`.
+    *   **Transition Logic (Automated by Tool)**:
+        1. The tool moves the item to `REVIEW`.
+        2. The tool executes the command.
+        3. Success: Moves to `DONE`. Failure: Moves back to `IN_PROGRESS`.
+
+6.  **Measurement & Tracking**
+    *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `verify_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.
+    *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
+    *   **Completion**: Update parent Story/Epic status automatically.
 
 ## When to use me
 
-Use this skill whenever you are performing software engineering tasks to ensure compliance with the Agentic Engineering Framework.
+Use this skill whenever you are performing software engineering tasks to ensure compliance with the AgenFK Engineering Framework.
 
-## Available Tools (MCP: agentic)
+## Available Tools (MCP: agenfk)
 
-*   `create_item`: Create a new workflow item.
+*   `list_projects`: List all existing projects.
+*   `create_project`: Create a new project.
+*   `create_item`: Create a new workflow item (requires `projectId`).
 *   `update_item`: Update status or properties.
-*   `list_items`: Query the backlog.
+*   `list_items`: Query the backlog (filter by `projectId`).
 *   `get_item`: Get full details.
 *   `log_token_usage`: Record resource consumption.
 *   `add_context`: Attach relevant file paths.
 *   `analyze_request`: Categorization strategy.
 *   `workflow_gatekeeper`: Pre-flight authorization.
+*   `verify_changes`: Execute dynamic syntax/build checks and update status.
 *   `get_server_info`: Framework health check.

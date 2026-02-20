@@ -11,12 +11,37 @@ import {
 import { z } from "zod";
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
+import * as path from "path";
+import * as fs from "fs";
+import { execSync } from "child_process";
 
-const API_URL = process.env.AGENTIC_API_URL || "http://localhost:3000";
+const API_URL = process.env.AGENFK_API_URL || "http://127.0.0.1:3000";
+
+const api = axios.create({
+  baseURL: API_URL,
+  timeout: 30000,
+});
+
+const findProjectRoot = (startDir: string): string => {
+  if (process.env.AGENFK_PROJECT_ROOT) {
+    return process.env.AGENFK_PROJECT_ROOT;
+  }
+  if (process.env.AGENFK_DB_PATH) {
+    return path.dirname(path.dirname(process.env.AGENFK_DB_PATH));
+  }
+  let currentDir = startDir;
+  while (currentDir !== path.parse(currentDir).root) {
+    if (fs.existsSync(path.join(currentDir, ".agenfk"))) {
+      return currentDir;
+    }
+    currentDir = path.dirname(currentDir);
+  }
+  return startDir;
+};
 
 const server = new Server(
   {
-    name: "agentic-mcp-server",
+    name: "agenfk-mcp-server",
     version: "0.1.0",
   },
   {
@@ -27,7 +52,13 @@ const server = new Server(
 );
 
 // Define Tool Schemas
+const CreateProjectSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+});
+
 const CreateItemSchema = z.object({
+  projectId: z.string(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]),
   title: z.string(),
   description: z.string().optional(),
@@ -45,6 +76,7 @@ const UpdateItemSchema = z.object({
 });
 
 const ListItemsSchema = z.object({
+  projectId: z.string().optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"]).optional(),
   parentId: z.string().optional(),
@@ -73,39 +105,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "create_item",
-        description: "Create a new Epic, Story, Task, or Bug in the Agentic framework.",
+        name: "list_projects",
+        description: "List all existing AgenFK projects.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "create_project",
+        description: "Create a new AgenFK project.",
         inputSchema: {
           type: "object",
           properties: {
-            type: {
-              type: "string",
-              enum: ["EPIC", "STORY", "TASK", "BUG"],
-              description: "The type of item to create",
-            },
-            title: {
-              type: "string",
-              description: "The title of the item",
-            },
-            description: {
-              type: "string",
-              description: "Detailed description of the item",
-            },
-            parentId: {
-              type: "string",
-              description: "ID of the parent item (e.g., Story ID for a Task)",
-            },
-            status: {
-              type: "string",
-              enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
-              description: "Initial status (default: TODO)",
-            },
-            implementationPlan: {
-              type: "string",
-              description: "Markdown implementation plan (required for Epics)",
-            },
+            name: { type: "string", description: "The name of the project." },
+            description: { type: "string", description: "A brief description." },
           },
-          required: ["type", "title"],
+          required: ["name"],
+        },
+      },
+      {
+        name: "create_item",
+        description: "Create a new Epic, Story, Task, or Bug in the AgenFK framework.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: { type: "string" },
+            type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
+            title: { type: "string" },
+            description: { type: "string" },
+            parentId: { type: "string" },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            implementationPlan: { type: "string" },
+          },
+          required: ["projectId", "type", "title"],
         },
       },
       {
@@ -114,48 +144,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            id: {
-              type: "string",
-              description: "The ID of the item to update",
-            },
-            title: {
-              type: "string",
-              description: "New title",
-            },
-            description: {
-              type: "string",
-              description: "New description",
-            },
-            status: {
-              type: "string",
-              enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
-              description: "New status",
-            },
-            implementationPlan: {
-              type: "string",
-              description: "Updated Markdown implementation plan",
-            },
+            id: { type: "string" },
+            title: { type: "string" },
+            description: { type: "string" },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            implementationPlan: { type: "string" },
           },
           required: ["id"],
         },
       },
       {
         name: "list_items",
-        description: "List items, optionally filtering by type, status, or parent.",
+        description: "List items, optionally filtering by project, type, status, or parent.",
         inputSchema: {
           type: "object",
           properties: {
-            type: {
-              type: "string",
-              enum: ["EPIC", "STORY", "TASK", "BUG"],
-            },
-            status: {
-              type: "string",
-              enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
-            },
-            parentId: {
-              type: "string",
-            },
+            projectId: { type: "string" },
+            type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            parentId: { type: "string" },
           },
         },
       },
@@ -164,12 +171,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "Get details of a specific item by ID.",
         inputSchema: {
           type: "object",
-          properties: {
-            id: {
-              type: "string",
-              description: "The ID of the item",
-            },
-          },
+          properties: { id: { type: "string" } },
           required: ["id"],
         },
       },
@@ -204,38 +206,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_server_info",
-        description: "Get information about the Agentic server.",
-        inputSchema: {
-          type: "object",
-          properties: {},
-        },
+        description: "Get information about the AgenFK server.",
+        inputSchema: { type: "object", properties: {} },
       },
       {
         name: "workflow_gatekeeper",
         description: "Mandatory pre-flight check before any code change. Verifies that an active task exists.",
         inputSchema: {
           type: "object",
-          properties: {
-            intent: {
-              type: "string",
-              description: "The description of what you are about to change in the code.",
-            },
-          },
+          properties: { intent: { type: "string" } },
           required: ["intent"],
         },
       },
       {
         name: "analyze_request",
-        description: "Analyze a user request to suggest the appropriate Agentic item type (Epic, Story, Task, Bug).",
+        description: "Analyze a user request to suggest the appropriate AgenFK item type.",
+        inputSchema: {
+          type: "object",
+          properties: { request: { type: "string" } },
+          required: ["request"],
+        },
+      },
+      {
+        name: "verify_changes",
+        description: "Executes a verification command and automatically updates the task status.",
         inputSchema: {
           type: "object",
           properties: {
-            request: {
-              type: "string",
-              description: "The user request or description of work.",
-            },
+            itemId: { type: "string" },
+            command: { type: "string" },
           },
-          required: ["request"],
+          required: ["itemId", "command"],
         },
       },
     ],
@@ -245,152 +246,131 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
   try {
     switch (request.params.name) {
+      case "list_projects": {
+        const { data } = await api.get(`/projects`);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+      case "create_project": {
+        const args = CreateProjectSchema.parse(request.params.arguments);
+        const { data } = await api.post(`/projects`, args);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+      case "verify_changes": {
+        const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
+        await api.put(`/items/${itemId}`, { status: "REVIEW" });
+        const projectRoot = findProjectRoot(process.cwd());
+        try {
+          const output = execSync(command, { encoding: 'utf8', stdio: 'pipe', cwd: projectRoot });
+          const { data: item } = await api.get(`/items/${itemId}`);
+          const reviews = item.reviews || [];
+          reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
+          await api.put(`/items/${itemId}`, { status: "DONE", reviews });
+          return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${output}` }] };
+        } catch (error: any) {
+          const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
+          try {
+            const { data: item } = await api.get(`/items/${itemId}`);
+            const reviews = item.reviews || [];
+            reviews.push({ id: uuidv4(), command, output: errorOutput, status: "FAILED", executedAt: new Date() });
+            await api.put(`/items/${itemId}`, { status: "IN_PROGRESS", reviews });
+          } catch (e) {}
+          return { isError: true, content: [{ type: "text", text: `❌ Verification Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nErrors:\n${errorOutput}` }] };
+        }
+      }
       case "workflow_gatekeeper": {
         const { intent } = z.object({ intent: z.string() }).parse(request.params.arguments);
-        const { data: inProgressItems } = await axios.get(`${API_URL}/items`, { params: { status: "IN_PROGRESS" } });
-        
+        const { data: inProgressItems } = await api.get(`/items`, { params: { status: "IN_PROGRESS" } });
         if (inProgressItems.length === 0) {
-          return {
-            isError: true,
-            content: [{ 
-              type: "text", 
-              text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS. \n\nYou must create a task or move an existing one to IN_PROGRESS before making any code changes. \n\nIntent: "${intent}"` 
-            }],
-          };
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS.` }] };
         }
-
         if (inProgressItems.length > 1) {
-          return {
-            isError: true,
-            content: [{ 
-              type: "text", 
-              text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are currently IN_PROGRESS. \n\nPlease ensure only one task is active to maintain clear measurability. \n\nActive Tasks:\n${inProgressItems.map((i: any) => `- [${i.id.substring(0,8)}] ${i.title}`).join('\n')}` 
-            }],
-          };
+          return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are currently IN_PROGRESS.` }] };
         }
-
         const activeTask = inProgressItems[0];
-        return {
-          content: [{ 
-            type: "text", 
-            text: `✅ WORKFLOW VALIDATED. \n\nActive Task: [${activeTask.id.substring(0,8)}] ${activeTask.title}\nIntent: "${intent}"\n\nYou are authorized to proceed with the code changes for this specific task.` 
-          }],
-        };
+        let reminder = `REMINDER: Move to REVIEW and run 'verify_changes' before completion.`;
+        if (activeTask.type === 'STORY') {
+          reminder = `STORY REMINDER: If this story has no sub-tasks, you MUST call 'verify_changes' manually before it can be DONE. If it has sub-tasks, it will be implicitly reviewed via its children.`;
+        }
+        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${activeTask.id.substring(0,8)}] ${activeTask.title}\nIntent: "${intent}"\n\n${reminder}\n\nTOKEN REMINDER: Do not forget to call 'log_token_usage' explicitly when you finish this segment of work.` }] };
       }
-
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
-        
-        const suggestions = {
-          EPIC: "A high-level objective or a large feature set (e.g., 'Add User Profiles'). Requires an Implementation Plan.",
-          STORY: "A user-facing functional unit within an Epic (e.g., 'Edit Avatar').",
-          TASK: "A technical unit of work or minor change (e.g., 'Update API endpoint').",
-          BUG: "A defect or unintended behavior (e.g., 'Avatar not saving')."
-        };
-
-        return {
-          content: [{
-            type: "text",
-            text: `Framework Analysis Strategy:\n\n1. If the request is a large feature -> Suggested: EPIC (Ask user for Implementation Plan details if not provided).\n2. If it is a functional unit -> Suggested: STORY.\n3. If it is technical/small -> Suggested: TASK.\n4. If it is a fix -> Suggested: BUG.\n\nUser Request: "${userRequest}"\n\nRecommendation: Based on the scope, select the most appropriate type. If unsure, ask the user for clarification.`
-          }]
-        };
+        return { content: [{ type: "text", text: `Framework Analysis Strategy applied to: "${userRequest}"` }] };
       }
       case "get_server_info": {
-        const { data } = await axios.get(`${API_URL}/`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                mcp: "agentic-mcp-server",
-                api: data,
-                api_url: API_URL,
-              }, null, 2),
-            },
-          ],
+        const { data } = await api.get(`/`);
+        const projectRoot = findProjectRoot(process.cwd());
+        return { 
+          content: [{ 
+            type: "text", 
+            text: JSON.stringify({ 
+              mcp: "agenfk-mcp-server", 
+              api: data, 
+              api_url: API_URL,
+              env: {
+                AGENFK_DB_PATH: process.env.AGENFK_DB_PATH,
+                AGENFK_PROJECT_ROOT: process.env.AGENFK_PROJECT_ROOT
+              },
+              derivedProjectRoot: projectRoot,
+              cwd: process.cwd()
+            }, null, 2) 
+          }] 
         };
       }
       case "create_item": {
         const args = CreateItemSchema.parse(request.params.arguments);
-        const { data } = await axios.post(`${API_URL}/items`, args);
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        };
+        const { data } = await api.post(`/items`, args);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
-
       case "update_item": {
         const args = UpdateItemSchema.parse(request.params.arguments);
         const { id, ...updates } = args;
-        const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        };
+        const { data } = await api.put(`/items/${id}`, updates);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
-
       case "list_items": {
         const args = ListItemsSchema.parse(request.params.arguments || {});
-        const { data } = await axios.get(`${API_URL}/items`, { params: args });
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        };
+        const { data } = await api.get(`/items`, { params: args });
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
-
       case "get_item": {
         const args = GetItemSchema.parse(request.params.arguments);
-        const { data } = await axios.get(`${API_URL}/items/${args.id}`);
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        };
+        const { data } = await api.get(`/items/${args.id}`);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
-
       case "log_token_usage": {
         const args = LogTokenUsageSchema.parse(request.params.arguments);
         const { itemId, ...usage } = args;
-        
-        // Fetch current item to get usage array
-        const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+        const { data: item } = await api.get(`/items/${itemId}`);
         const tokenUsage = item.tokenUsage || [];
         tokenUsage.push(usage);
-
-        const { data: updated } = await axios.put(`${API_URL}/items/${itemId}`, { tokenUsage });
-        return {
-          content: [{ type: "text", text: "Token usage logged." }],
-        };
+        await api.put(`/items/${itemId}`, { tokenUsage });
+        return { content: [{ type: "text", text: "Token usage logged." }] };
       }
-
       case "add_context": {
         const args = AddContextSchema.parse(request.params.arguments);
         const { itemId, ...contextItem } = args;
-        
-        const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+        const { data: item } = await api.get(`/items/${itemId}`);
         const context = item.context || [];
-        context.push({
-          id: uuidv4(),
-          ...contextItem
-        });
-
-        await axios.put(`${API_URL}/items/${itemId}`, { context });
-        return {
-          content: [{ type: "text", text: "Context added." }],
-        };
+        context.push({ id: uuidv4(), ...contextItem });
+        await api.put(`/items/${itemId}`, { context });
+        return { content: [{ type: "text", text: "Context added." }] };
       }
-
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
     }
   } catch (error: any) {
-    if (error instanceof z.ZodError) {
-      throw new McpError(ErrorCode.InvalidParams, `Invalid arguments: ${error.message}`);
-    }
-    const message = error.response?.data?.error || error.message;
-    throw new McpError(ErrorCode.InternalError, `API Error: ${message}`);
+    let errorMessage = error.message;
+    if (error.response) errorMessage = `API Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
+    else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgenFK API at ${API_URL}.`;
+    return { content: [{ type: "text", text: `❌ Error: ${errorMessage}` }], isError: true };
   }
 });
 
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Agentic MCP Server running on stdio (Client Mode)");
+  console.error("AgenFK MCP Server running on stdio (Client Mode)");
 }
 
 run().catch((error) => {

@@ -3,7 +3,8 @@ export enum Status {
   IN_PROGRESS = "IN_PROGRESS",
   REVIEW = "REVIEW",
   DONE = "DONE",
-  BLOCKED = "BLOCKED"
+  BLOCKED = "BLOCKED",
+  ARCHIVED = "ARCHIVED"
 }
 
 export enum ItemType {
@@ -27,8 +28,25 @@ export interface ContextItem {
   content?: string; // Optional full content, mostly for context window management
 }
 
+export interface ReviewRecord {
+  id: string;
+  command: string;
+  output: string;
+  status: "PASSED" | "FAILED";
+  executedAt: Date;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface BaseItem {
   id: string;
+  projectId: string; // Every item belongs to a project
   type: ItemType;
   title: string;
   description: string;
@@ -36,9 +54,11 @@ export interface BaseItem {
   assignee?: string;
   tokenUsage?: TokenUsage[]; // Array to track usage over time/sessions
   context?: ContextItem[];
+  reviews?: ReviewRecord[];
   createdAt: Date;
   updatedAt: Date;
   parentId?: string; // For hierarchy (Story -> Epic, Task -> Story)
+  previousStatus?: Status; // To restore status after unarchiving
   implementationPlan?: string; // Markdown implementation plan
 }
 
@@ -64,4 +84,4 @@ export interface Bug extends BaseItem {
   severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 }
 
-export type AgenticItem = Epic | Story | Task | Bug;
+export type AgenFKItem = Epic | Story | Task | Bug;

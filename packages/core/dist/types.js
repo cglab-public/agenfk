@@ -8,6 +8,7 @@ var Status;
     Status["REVIEW"] = "REVIEW";
     Status["DONE"] = "DONE";
     Status["BLOCKED"] = "BLOCKED";
+    Status["ARCHIVED"] = "ARCHIVED";
 })(Status || (exports.Status = Status = {}));
 var ItemType;
 (function (ItemType) {

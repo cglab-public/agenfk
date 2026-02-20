@@ -1,6 +1,0 @@
-[SERVER_START] Using Database: /home/danielp/agefk/agentic-framework/.agentic/db.json
-Agentic API Server running on port 3000 (with WebSockets)
-Client connected to WebSockets
-Client connected to WebSockets
-Database file changed on disk, notifying clients...
-Database file changed on disk, notifying clients...

@@ -1,7 +1,7 @@
 {
-  "name": "@agentic/storage-json",
+  "name": "@agenfk/storage-json",
   "version": "0.1.0",
-  "description": "JSON storage implementation for Agentic Framework",
+  "description": "JSON storage implementation for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -11,11 +11,11 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "@agentic/core": "*",
+    "@agenfk/core": "*",
     "@types/uuid": "^9.0.8",
     "typescript": "^5.3.3"
   },
-  "keywords": ["json", "agentic", "storage"],
+  "keywords": ["json", "agenfk", "storage"],
   "author": "",
   "license": "ISC"
 }

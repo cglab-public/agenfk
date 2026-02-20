@@ -11,24 +11,24 @@ const child_process_1 = require("child_process");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const program = new commander_1.Command();
-const API_URL = process.env.AGENTIC_API_URL || "http://localhost:3000";
+const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
 console.log(chalk_1.default.cyan(figlet_1.default.textSync('agenfk', { horizontalLayout: 'full' })));
 program
     .version('0.1.0')
-    .description('Agentic Engineering CLI');
+    .description('AgenFK Engineering CLI');
 program
     .command('up')
-    .description('Bootstrap and start Agentic Engineering Framework')
+    .description('Bootstrap and start AgenFK Engineering Framework')
     .action(async () => {
     const rootDir = path_1.default.resolve(__dirname, '../../..');
-    console.log(chalk_1.default.blue('🚀 Bringing up Agentic Engineering Framework (agenfk)...'));
+    console.log(chalk_1.default.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
     // Check if bootstrap required
-    const agenticDir = path_1.default.join(rootDir, '.agentic');
+    const agenfkDir = path_1.default.join(rootDir, '.agenfk');
     const serverDist = path_1.default.join(rootDir, 'packages/server/dist/server.js');
-    if (!fs_1.default.existsSync(agenticDir) || !fs_1.default.existsSync(serverDist)) {
+    if (!fs_1.default.existsSync(agenfkDir) || !fs_1.default.existsSync(serverDist)) {
         console.log(chalk_1.default.yellow('📦 Initial bootstrap required...'));
         try {
-            (0, child_process_1.execSync)('./integrate_opencode.sh', { cwd: rootDir, stdio: 'inherit' });
+            (0, child_process_1.execSync)('./install.sh', { cwd: rootDir, stdio: 'inherit' });
         }
         catch (e) {
             console.error(chalk_1.default.red('Bootstrap failed.'));
@@ -48,18 +48,62 @@ program
 });
 program
     .command('ui')
-    .description('Show dashboard information')
+    .description('Show dashboard information and open in browser')
     .action(() => {
     console.log(chalk_1.default.cyan('🌐 Opening UI...'));
     console.log(chalk_1.default.white('Dashboard: http://localhost:5173'));
+    const uiUrl = 'http://localhost:5173';
+    try {
+        if (fs_1.default.existsSync('/proc/version') && fs_1.default.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
+            (0, child_process_1.execSync)(`explorer.exe "${uiUrl}"`, { stdio: 'ignore' });
+        }
+        else if (process.platform === 'linux') {
+            (0, child_process_1.execSync)(`xdg-open "${uiUrl}"`, { stdio: 'ignore' });
+        }
+        else if (process.platform === 'darwin') {
+            (0, child_process_1.execSync)(`open "${uiUrl}"`, { stdio: 'ignore' });
+        }
+    }
+    catch (e) {
+        // Ignore errors if browser launch fails
+    }
+});
+program
+    .command('list-projects')
+    .description('List all projects')
+    .action(async () => {
+    try {
+        const { data: projects } = await axios_1.default.get(`${API_URL}/projects`);
+        console.table(projects.map((p) => ({
+            ID: p.id,
+            Name: p.name,
+            Created: new Date(p.createdAt).toLocaleDateString()
+        })));
+    }
+    catch (error) {
+        console.error(chalk_1.default.red('Error listing projects:'), error.message);
+    }
+});
+program
+    .command('create-project <name>')
+    .description('Create a new project')
+    .option('-d, --description <desc>', 'Project description', '')
+    .action(async (name, options) => {
+    try {
+        const { data } = await axios_1.default.post(`${API_URL}/projects`, { name, description: options.description });
+        console.log(chalk_1.default.green(`Created project: ${data.name} (ID: ${data.id})`));
+    }
+    catch (error) {
+        console.error(chalk_1.default.red('Error creating project:'), error.message);
+    }
 });
 program
     .command('init')
-    .description('Initialize a new Agentic project (Note: Ensure API server is running)')
+    .description('Initialize a new AgenFK project (Note: Ensure API server is running)')
     .action(async () => {
     try {
         const { data } = await axios_1.default.get(`${API_URL}/`);
-        console.log(chalk_1.default.green('Connected to Agentic API Server.'));
+        console.log(chalk_1.default.green('Connected to AgenFK API Server.'));
         console.log(JSON.stringify(data, null, 2));
     }
     catch (e) {
@@ -71,14 +115,29 @@ program
     .description('Create a new item (epic, story, task, bug)')
     .option('-d, --description <desc>', 'Description of the item', '')
     .option('-p, --parent <id>', 'Parent ID')
+    .option('--project <id>', 'Project ID')
     .action(async (type, title, options) => {
     try {
         const itemType = type.toUpperCase();
+        let projectId = options.project;
+        if (!projectId) {
+            // Try to find in .agenfk/project.json
+            const rootDir = path_1.default.resolve(__dirname, '../../..');
+            const projFile = path_1.default.join(rootDir, '.agenfk', 'project.json');
+            if (fs_1.default.existsSync(projFile)) {
+                projectId = JSON.parse(fs_1.default.readFileSync(projFile, 'utf8')).projectId;
+            }
+        }
+        if (!projectId) {
+            console.error(chalk_1.default.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
+            process.exit(1);
+        }
         const payload = {
             type: itemType,
             title,
             description: options.description,
-            parentId: options.parent
+            parentId: options.parent,
+            projectId
         };
         const { data } = await axios_1.default.post(`${API_URL}/items`, payload);
         console.log(chalk_1.default.green(`Created ${type}: ${data.title} (ID: ${data.id})`));
@@ -174,5 +233,80 @@ program
     catch (error) {
         console.error(chalk_1.default.red('Error deleting item:'), error.response?.data?.error || error.message);
     }
+});
+program
+    .command('health')
+    .description('Verify framework health and configuration')
+    .action(async () => {
+    console.log(chalk_1.default.blue('\n🔍 AgenFK Health Check\n'));
+    let issues = 0;
+    // 1. API Server Check
+    process.stdout.write('Checking API Server... ');
+    try {
+        const { data } = await axios_1.default.get(`${API_URL}/`);
+        console.log(chalk_1.default.green('OK'));
+        console.log(chalk_1.default.gray(`   - Message: ${data.message}`));
+    }
+    catch (e) {
+        console.log(chalk_1.default.red('FAILED'));
+        console.log(chalk_1.default.yellow(`   - Error: Could not connect to ${API_URL}`));
+        issues++;
+    }
+    // 2. Configuration & DB Check
+    process.stdout.write('Checking Database... ');
+    const rootDir = path_1.default.resolve(__dirname, '../../..');
+    const dbPath = process.env.AGENFK_DB_PATH || path_1.default.join(rootDir, '.agenfk', 'db.json');
+    if (fs_1.default.existsSync(dbPath)) {
+        console.log(chalk_1.default.green('OK'));
+        console.log(chalk_1.default.gray(`   - Path: ${dbPath}`));
+        try {
+            const db = JSON.parse(fs_1.default.readFileSync(dbPath, 'utf8'));
+            console.log(chalk_1.default.gray(`   - Items: ${db.items.length}`));
+        }
+        catch (e) {
+            console.log(chalk_1.default.red('   - Error: Could not parse db.json'));
+            issues++;
+        }
+    }
+    else {
+        console.log(chalk_1.default.red('MISSING'));
+        issues++;
+    }
+    // 3. MCP Config Check
+    process.stdout.write('Checking Opencode MCP Config... ');
+    const opencodeConfig = path_1.default.join(process.env.HOME || '', '.config', 'opencode', 'opencode.json');
+    if (fs_1.default.existsSync(opencodeConfig)) {
+        try {
+            const config = JSON.parse(fs_1.default.readFileSync(opencodeConfig, 'utf8'));
+            if (config.mcp && config.mcp.agenfk) {
+                console.log(chalk_1.default.green('OK'));
+                console.log(chalk_1.default.gray(`   - Enabled: ${config.mcp.agenfk.enabled}`));
+            }
+            else {
+                console.log(chalk_1.default.yellow('NOT CONFIGURED'));
+                issues++;
+            }
+        }
+        catch (e) {
+            console.log(chalk_1.default.red('ERROR READING CONFIG'));
+            issues++;
+        }
+    }
+    else {
+        console.log(chalk_1.default.gray('N/A (Opencode not detected)'));
+    }
+    // 4. Skills Check
+    process.stdout.write('Checking Global Skills... ');
+    const skillPath = path_1.default.join(process.env.HOME || '', '.config', 'opencode', 'skills', 'agenfk', 'SKILL.md');
+    if (fs_1.default.existsSync(skillPath)) {
+        console.log(chalk_1.default.green('OK'));
+    }
+    else {
+        console.log(chalk_1.default.yellow('MISSING'));
+        issues++;
+    }
+    console.log('\n' + (issues === 0
+        ? chalk_1.default.green('✨ All systems healthy!')
+        : chalk_1.default.yellow(`⚠️ Found ${issues} potential issue(s). Run './agenfk up' to fix.`)) + '\n');
 });
 program.parse(process.argv);

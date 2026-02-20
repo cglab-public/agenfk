@@ -1,14 +1,37 @@
 import axios from 'axios';
-import { AgenticItem, ItemType, Status } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgenFKItem, ItemType, Status } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 // For MVP, we'll duplicate the types interface or use `any`.
-// Better: configure vite to aliase @agentic/core to the local package.
+// Better: configure vite to aliase @agenfk/core to the local package.
 
 const API_URL = 'http://localhost:3000';
 
 export const api = {
-  listItems: async (params?: { type?: string; status?: string; parentId?: string }) => {
+  listProjects: async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/items`, { params });
+      const { data } = await axios.get(`${API_URL}/projects`);
+      return data;
+    } catch (e) {
+      console.error("API Error listing projects:", e);
+      throw e;
+    }
+  },
+  createProject: async (project: { name: string; description?: string }) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/projects`, project);
+      return data;
+    } catch (e) {
+      console.error("API Error creating project:", e);
+      throw e;
+    }
+  },
+  listItems: async (params?: { type?: string; status?: string; parentId?: string; includeArchived?: boolean; projectId?: string }) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items`, { 
+        params: {
+          ...params,
+          includeArchived: params?.includeArchived ? 'true' : undefined
+        }
+      });
       return data;
     } catch (e) {
       console.error("API Error listing items:", e);
@@ -24,7 +47,7 @@ export const api = {
       throw e;
     }
   },
-  createItem: async (item: Partial<AgenticItem>) => {
+  createItem: async (item: Partial<AgenFKItem>) => {
     try {
       const { data } = await axios.post(`${API_URL}/items`, item);
       return data;
@@ -33,7 +56,7 @@ export const api = {
       throw e;
     }
   },
-  updateItem: async (id: string, updates: Partial<AgenticItem>) => {
+  updateItem: async (id: string, updates: Partial<AgenFKItem>) => {
     try {
       const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
       return data;

@@ -1,10 +1,10 @@
-import { AgenticItem, ItemType, Status } from './types';
+import { AgenFKItem, ItemType, Status, Project } from './types';
 
 export interface PluginConfig {
   [key: string]: any;
 }
 
-export interface AgenticPlugin {
+export interface AgenFKPlugin {
   name: string;
   version: string;
   init(config: PluginConfig): Promise<void>;
@@ -12,6 +12,7 @@ export interface AgenticPlugin {
 }
 
 export interface StorageQuery {
+  projectId?: string;
   type?: ItemType;
   status?: Status;
   parentId?: string;
@@ -19,20 +20,28 @@ export interface StorageQuery {
   offset?: number;
 }
 
-export interface StorageProvider extends AgenticPlugin {
-  createItem(item: AgenticItem): Promise<AgenticItem>;
-  updateItem(id: string, updates: Partial<AgenticItem>): Promise<AgenticItem>;
+export interface StorageProvider extends AgenFKPlugin {
+  // Projects
+  createProject(project: Project): Promise<Project>;
+  updateProject(id: string, updates: Partial<Project>): Promise<Project>;
+  deleteProject(id: string): Promise<boolean>;
+  getProject(id: string): Promise<Project | null>;
+  listProjects(): Promise<Project[]>;
+
+  // Items
+  createItem(item: AgenFKItem): Promise<AgenFKItem>;
+  updateItem(id: string, updates: Partial<AgenFKItem>): Promise<AgenFKItem>;
   deleteItem(id: string): Promise<boolean>;
-  getItem(id: string): Promise<AgenticItem | null>;
-  listItems(query?: StorageQuery): Promise<AgenticItem[]>;
-  listChildren(parentId: string): Promise<AgenticItem[]>;
+  getItem(id: string): Promise<AgenFKItem | null>;
+  listItems(query?: StorageQuery): Promise<AgenFKItem[]>;
+  listChildren(parentId: string): Promise<AgenFKItem[]>;
 }
 
-export interface TokenTracker extends AgenticPlugin {
+export interface TokenTracker extends AgenFKPlugin {
   trackUsage(itemId: string, input: number, output: number, model: string): Promise<void>;
   getUsage(itemId: string): Promise<any>; // Define stricter type later
 }
 
-export interface LLMProvider extends AgenticPlugin {
+export interface LLMProvider extends AgenFKPlugin {
   generate(prompt: string, context?: any): Promise<string>;
 }
