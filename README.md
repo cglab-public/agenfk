@@ -66,7 +66,30 @@ AgenFK utilizes a **Single Owner Architecture** to ensure data consistency and r
 
 ## Core Workflow
 
-The framework enforces a strict sequence of operations for every task:
+The framework enforces a strict sequence of operations for every task. This process is fully automated and verified by the MCP tools and global skills:
+
+```mermaid
+graph TD
+    A[User Request] --> B{Analyze Request}
+    B -->|Epic| C[Generate Implementation Plan]
+    B -->|Story/Task/Bug| D[Create Item]
+    C --> D
+    D --> E[Gatekeeper: Authorize Code Change]
+    E -->|No Active Task| F[Pause: Select/Create Task]
+    F --> E
+    E -->|Authorized| G[Execute Code Changes]
+    G --> H[Verify Changes <br><i>(Runs build/test)</i>]
+    H -->|Failure| I[Auto-move to IN_PROGRESS<br>Report Errors]
+    I --> G
+    H -->|Success| J[Auto-move to DONE]
+    J --> K[Log Token Usage]
+    K --> L[Auto-sync Parent Status]
+    
+    style A fill:#f8fafc,stroke:#94a3b8,color:#334155
+    style E fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#3730a3
+    style H fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e
+    style J fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46
+```
 
 1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgenFK project. *In Opencode or Claude Code, you can simply type `/agenfk` to have the agent set this up for you.*
 2.  **Analyze**: Every request is analyzed to determine if it's an Epic, Story, Task, or Bug within the current project's scope.
@@ -84,6 +107,8 @@ If you are using Opencode or Claude Code, getting started is as easy as typing a
 ```
 
 This slash command will automatically load the framework skill, ask you to select or create a project context, and generate the foundational architecture documents (`AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md`) for your repository.
+
+![AgenFK Dashboard](./docs/dashboard-screenshot.png)
 
 ---
 *Built with ❤️ by the CG/lab AgenFK Platform Team.*
