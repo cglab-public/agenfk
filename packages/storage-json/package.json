@@ -1,0 +1,21 @@
+{
+  "name": "@agentic/storage-json",
+  "version": "0.1.0",
+  "description": "JSON storage implementation for Agentic Framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@agentic/core": "*",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.3.3"
+  },
+  "keywords": ["json", "agentic", "storage"],
+  "author": "",
+  "license": "ISC"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@agentic/core",
+  "version": "0.1.0",
+  "description": "Core logic and interfaces for the Agentic Engineering Framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

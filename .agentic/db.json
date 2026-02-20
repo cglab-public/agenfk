@@ -1,0 +1,458 @@
+{
+  "items": [
+    {
+      "id": "2826c26b-7f84-45cd-8607-ce4b513bd272",
+      "type": "EPIC",
+      "title": "Phase 1: Foundation",
+      "description": "",
+      "status": "DONE",
+      "createdAt": "2026-02-19T10:51:30.001Z",
+      "updatedAt": "2026-02-19T10:53:41.910Z"
+    },
+    {
+      "id": "57723979-0a0b-4fc4-aae8-a9572ddb0ce6",
+      "type": "EPIC",
+      "title": "Phase 2: Measurability",
+      "description": "",
+      "status": "BLOCKED",
+      "createdAt": "2026-02-19T10:51:30.037Z",
+      "updatedAt": "2026-02-19T20:16:12.878Z"
+    },
+    {
+      "id": "0c70a23f-6403-4309-8050-bec25393a8a8",
+      "type": "EPIC",
+      "title": "Phase 3: Visualization",
+      "description": "",
+      "status": "BLOCKED",
+      "createdAt": "2026-02-19T10:51:30.075Z",
+      "updatedAt": "2026-02-19T20:16:08.776Z"
+    },
+    {
+      "id": "9bded4ee-4066-41bc-8ee3-906ead0e0bab",
+      "type": "EPIC",
+      "title": "Framework Self-Improvement",
+      "description": "Tasks for the framework to improve itself using its own workflow.",
+      "status": "TODO",
+      "createdAt": "2026-02-19T14:28:36.023Z",
+      "updatedAt": "2026-02-19T14:28:36.023Z"
+    },
+    {
+      "id": "3b953cf8-f246-4ced-9b69-e5712702f842",
+      "type": "STORY",
+      "title": "Real-time Updates",
+      "description": "UI should update instantly when CLI/Agent makes changes.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T14:28:47.586Z",
+      "updatedAt": "2026-02-19T20:16:16.045Z",
+      "parentId": "9bded4ee-4066-41bc-8ee3-906ead0e0bab"
+    },
+    {
+      "id": "6cc7e81f-aeaa-4496-95bf-5c880349d64e",
+      "type": "TASK",
+      "title": "Implement WebSockets",
+      "description": "Add Socket.io to server and client for live events.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T14:28:54.456Z",
+      "updatedAt": "2026-02-19T18:12:20.730Z",
+      "parentId": "3b953cf8-f246-4ced-9b69-e5712702f842",
+      "tokenUsage": [
+        {
+          "input": 800,
+          "output": 300,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "e0e5888d-1206-405a-ade5-383865502c2d",
+      "type": "TASK",
+      "title": "Fix Mobile Layout",
+      "description": "Kanban board is squashed on small screens.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T14:29:01.496Z",
+      "updatedAt": "2026-02-19T18:12:15.171Z",
+      "parentId": "9bded4ee-4066-41bc-8ee3-906ead0e0bab",
+      "tokenUsage": [
+        {
+          "input": 500,
+          "output": 200,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "e2af5ef8-4c7f-4416-b0b2-880193024a05",
+      "type": "STORY",
+      "title": "Card Detail View",
+      "description": "Allows the user to double-click a card to view its full details in a modal or side panel.",
+      "status": "DONE",
+      "parentId": "0c70a23f-6403-4309-8050-bec25393a8a8",
+      "createdAt": "2026-02-19T17:16:23.748Z",
+      "updatedAt": "2026-02-19T18:12:09.596Z",
+      "tokenUsage": [
+        {
+          "input": 1200,
+          "output": 400,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "d6c82f0b-32fe-45b0-9ed4-8ca6ce3e0bd9",
+      "type": "STORY",
+      "title": "Drill-down Kanban View",
+      "description": "Implement a switch to toggle between 'Exploded Kanban' (all items mixed) and 'Drill-down Kanban' (level-by-level navigation from Epics to Stories to Tasks).",
+      "status": "DONE",
+      "parentId": "0c70a23f-6403-4309-8050-bec25393a8a8",
+      "createdAt": "2026-02-19T17:16:23.803Z",
+      "updatedAt": "2026-02-19T18:16:09.829Z",
+      "tokenUsage": [
+        {
+          "input": 1500,
+          "output": 500,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "6ec50950-8392-4eb7-bba1-f87dbeb06b35",
+      "type": "BUG",
+      "title": "Split Brain Database Issue",
+      "description": "Database inconsistency between MCP server and API server. Items created via MCP are not reflecting in the UI. Absolute pathing needs to be strictly enforced across all components.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T17:17:48.108Z",
+      "updatedAt": "2026-02-19T19:12:30.546Z",
+      "severity": "LOW",
+      "tokenUsage": [
+        {
+          "input": 1000,
+          "output": 500,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "3832136f-ffd0-4df2-8126-5af949be900e",
+      "type": "TASK",
+      "title": "Treat Bugs as Top-level Items",
+      "description": "In Drill-down mode, Bugs should be visible at the root level alongside Epics.",
+      "status": "DONE",
+      "parentId": "9bded4ee-4066-41bc-8ee3-906ead0e0bab",
+      "createdAt": "2026-02-19T18:58:03.410Z",
+      "updatedAt": "2026-02-19T18:58:39.972Z",
+      "tokenUsage": [
+        {
+          "input": 400,
+          "output": 150,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "91b05076-4584-4179-a174-80a305af1def",
+      "type": "TASK",
+      "title": "Rename Epics to Top Level in Drill-down",
+      "description": "Rename the 'Epics' breadcrumb/tag to 'Top Level' in Drill-down mode since it now contains Bugs as well.",
+      "status": "DONE",
+      "parentId": "9bded4ee-4066-41bc-8ee3-906ead0e0bab",
+      "createdAt": "2026-02-19T19:02:48.205Z",
+      "updatedAt": "2026-02-19T19:03:31.642Z",
+      "tokenUsage": [
+        {
+          "input": 350,
+          "output": 100,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "56736887-a94e-4ec9-afa8-029e2d293d46",
+      "type": "EPIC",
+      "title": "Reliability & Workflow Enforcement",
+      "description": "Enforce a workflow where every code change is linked to an item in the Agentic database.",
+      "status": "TODO",
+      "createdAt": "2026-02-19T19:14:40.190Z",
+      "updatedAt": "2026-02-19T19:14:40.190Z"
+    },
+    {
+      "id": "14bc9d6e-dcaf-4287-9f3b-372c9b549cc5",
+      "type": "TASK",
+      "title": "Enforce Task ID in Commits",
+      "description": "Implement a Git pre-commit hook that validates the commit message for a Task ID or automatically creates a placeholder task.",
+      "status": "DONE",
+      "parentId": "56736887-a94e-4ec9-afa8-029e2d293d46",
+      "createdAt": "2026-02-19T19:14:51.491Z",
+      "updatedAt": "2026-02-19T19:15:29.375Z",
+      "tokenUsage": [
+        {
+          "input": 800,
+          "output": 300,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "a95cd173-0d9c-4110-9c79-86bae2d40437",
+      "type": "STORY",
+      "title": "Proactive Task Enforcement (Pre-Action Guard)",
+      "description": "Implement a mechanism that guarantees a task exists BEFORE any code change is made. The framework should require an active task context for all write operations.",
+      "status": "DONE",
+      "parentId": "56736887-a94e-4ec9-afa8-029e2d293d46",
+      "createdAt": "2026-02-19T19:17:04.324Z",
+      "updatedAt": "2026-02-19T19:26:47.863Z",
+      "tokenUsage": [
+        {
+          "input": 300,
+          "output": 50,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "95612c78-7ab8-4ee9-8054-0f1288744855",
+      "type": "TASK",
+      "title": "Implement Workflow Gatekeeper Tool",
+      "description": "Add a 'workflow_gatekeeper' tool to the MCP server that validates task existence before changes. Update core logic to track 'Active Task Context'.",
+      "status": "DONE",
+      "parentId": "a95cd173-0d9c-4110-9c79-86bae2d40437",
+      "createdAt": "2026-02-19T19:17:15.524Z",
+      "updatedAt": "2026-02-19T19:20:10.057Z",
+      "tokenUsage": [
+        {
+          "input": 1000,
+          "output": 400,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "d1fec1cc-478f-487c-bf24-dd20f547c50e",
+      "type": "EPIC",
+      "title": "Intelligent Workflow Automation",
+      "description": "Automate the detection of item types (Epic, Story, Task, Bug) and enforcement of implementation plans for Epics.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T19:27:51.935Z",
+      "updatedAt": "2026-02-19T20:16:22.972Z"
+    },
+    {
+      "id": "8cdab62c-0b1a-487d-a0f6-adaeb095b125",
+      "type": "STORY",
+      "title": "Epic Plan Preview in UI",
+      "description": "Display and preview Markdown implementation plans when opening an Epic card.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T19:27:51.972Z",
+      "updatedAt": "2026-02-19T19:31:31.390Z",
+      "tokenUsage": [
+        {
+          "input": 1000,
+          "output": 300,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "54502b6e-c96e-479b-8a1e-c04613f7d26a",
+      "type": "STORY",
+      "title": "Item Type Detection & Prompting Strategy",
+      "description": "Implementation of the detection logic and prompt engineering to guide the agent in categorizing user requests and asking for details.",
+      "status": "DONE",
+      "createdAt": "2026-02-19T19:27:52.011Z",
+      "updatedAt": "2026-02-19T19:31:31.288Z",
+      "tokenUsage": [
+        {
+          "input": 1500,
+          "output": 500,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "9d35d7be-d71f-4dfe-b55a-855a96a6c0e1",
+      "type": "TASK",
+      "title": "Core Type Update for Epic Plans",
+      "description": "Add implementationPlan field to Epic/BaseItem in @agentic/core.",
+      "status": "DONE",
+      "parentId": "54502b6e-c96e-479b-8a1e-c04613f7d26a",
+      "createdAt": "2026-02-19T19:28:00.189Z",
+      "updatedAt": "2026-02-19T19:31:25.104Z"
+    },
+    {
+      "id": "7a1dda21-700e-4b9c-8e48-57624838184b",
+      "type": "TASK",
+      "title": "MCP Tool: analyze_request",
+      "description": "Add analyze_request tool to MCP server to guide the agent in categorizing requests.",
+      "status": "DONE",
+      "parentId": "54502b6e-c96e-479b-8a1e-c04613f7d26a",
+      "createdAt": "2026-02-19T19:28:00.224Z",
+      "updatedAt": "2026-02-19T19:31:25.328Z"
+    },
+    {
+      "id": "d6972e0a-450c-416b-b854-4d4f7ab79fba",
+      "type": "TASK",
+      "title": "UI Markdown Support",
+      "description": "Install and configure react-markdown in the UI package.",
+      "status": "DONE",
+      "parentId": "8cdab62c-0b1a-487d-a0f6-adaeb095b125",
+      "createdAt": "2026-02-19T19:28:00.269Z",
+      "updatedAt": "2026-02-19T19:31:25.360Z"
+    },
+    {
+      "id": "71b97780-441c-448f-b7f8-c541b026242a",
+      "type": "BUG",
+      "title": "Fix redundant double header in UI",
+      "description": "The UI is displaying two headers (one from App.tsx and one from KanbanBoard.tsx). Remove the redundant header in App.tsx.",
+      "status": "DONE",
+      "parentId": "9bded4ee-4066-41bc-8ee3-906ead0e0bab",
+      "implementationPlan": "",
+      "createdAt": "2026-02-19T20:11:11.611Z",
+      "updatedAt": "2026-02-19T20:12:00.739Z",
+      "severity": "LOW",
+      "tokenUsage": [
+        {
+          "input": 500,
+          "output": 150,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "21de987b-567f-4f86-bdf4-52f18d0312e4",
+      "type": "STORY",
+      "title": "Item Type Filtering",
+      "description": "Add a dropdown filter in the header to filter the Kanban board by item type (Epic, Story, Task, Bug). Works in both Exploded and Drill-down modes.",
+      "status": "DONE",
+      "parentId": "0c70a23f-6403-4309-8050-bec25393a8a8",
+      "implementationPlan": "",
+      "createdAt": "2026-02-19T20:14:40.496Z",
+      "updatedAt": "2026-02-19T20:15:25.730Z",
+      "tokenUsage": [
+        {
+          "input": 1000,
+          "output": 300,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "ff699e9e-5499-4e03-a81b-2d5c0e4b15b9",
+      "type": "STORY",
+      "title": "Streamlined Onboarding (agenfk)",
+      "description": "Implement a streamlined bootstrapping experience under the name 'agenfk'. This includes a single command to initialize a project, set up MCP, and start services.",
+      "status": "DONE",
+      "implementationPlan": "",
+      "createdAt": "2026-02-19T20:17:41.893Z",
+      "updatedAt": "2026-02-19T20:18:35.273Z",
+      "tokenUsage": [
+        {
+          "input": 500,
+          "output": 100,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "badd503b-2271-4fb3-ba69-0ae241c13c96",
+      "type": "TASK",
+      "title": "Create agenfk CLI wrapper",
+      "description": "Create a root-level 'agenfk' shell script or bin that wraps the CLI and provides a simple 'bootstrap' command.",
+      "status": "DONE",
+      "parentId": "ff699e9e-5499-4e03-a81b-2d5c0e4b15b9",
+      "implementationPlan": "",
+      "createdAt": "2026-02-19T20:17:48.657Z",
+      "updatedAt": "2026-02-19T20:18:22.817Z"
+    },
+    {
+      "id": "5c047b9f-9021-443a-9ae3-5e3a47c86a85",
+      "type": "TASK",
+      "title": "Single Command Workflow (agenfk up)",
+      "description": "Consolidate bootstrap and start into a single command for the agenfk CLI.",
+      "status": "DONE",
+      "parentId": "ff699e9e-5499-4e03-a81b-2d5c0e4b15b9",
+      "implementationPlan": "",
+      "createdAt": "2026-02-19T20:19:26.366Z",
+      "updatedAt": "2026-02-19T20:25:58.385Z",
+      "tokenUsage": [
+        {
+          "input": 600,
+          "output": 200,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "2171d63d-9306-4c61-9b30-b1cd0df93913",
+      "type": "EPIC",
+      "title": "Agentic Skills Integration",
+      "description": "Expose the framework's capabilities and workflows as loadable agent skills using the SKILLS.md pattern.",
+      "status": "DONE",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T13:03:26.704Z",
+      "updatedAt": "2026-02-20T13:04:20.052Z",
+      "tokenUsage": [
+        {
+          "input": 1200,
+          "output": 400,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "23399340-43fa-4535-8dfa-73f0c3fd5a5b",
+      "type": "STORY",
+      "title": "Framework as a Skill (SKILLS.md)",
+      "description": "Expose agenfk workflow as a loadable skill via SKILLS.md.",
+      "status": "DONE",
+      "parentId": "2171d63d-9306-4c61-9b30-b1cd0df93913",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T13:03:34.304Z",
+      "updatedAt": "2026-02-20T13:04:04.684Z"
+    },
+    {
+      "id": "33cdba88-80c0-4df3-bc69-418e95a6742f",
+      "type": "TASK",
+      "title": "Create SKILLS.md definition",
+      "description": "Create the SKILLS.md file defining the Agentic Engineering workflow.",
+      "status": "DONE",
+      "parentId": "23399340-43fa-4535-8dfa-73f0c3fd5a5b",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T13:03:41.784Z",
+      "updatedAt": "2026-02-20T13:03:57.349Z"
+    },
+    {
+      "id": "241ec48a-c0be-4f74-b80c-8ecb26452469",
+      "type": "TASK",
+      "title": "Simplify Kanban Navigation (Remove View Toggle)",
+      "description": "Simplify the UI by removing the Exploded/Drill-down toggle. Make Top-Level the default view and add an explicit 'Drill Down' action button to Epic and Story cards.",
+      "status": "DONE",
+      "parentId": "0c70a23f-6403-4309-8050-bec25393a8a8",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T13:39:07.395Z",
+      "updatedAt": "2026-02-20T13:45:14.635Z",
+      "tokenUsage": [
+        {
+          "input": 800,
+          "output": 250,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "d61f7f50-ed43-4e67-a435-50342b710161",
+      "type": "TASK",
+      "title": "Comply with SKILL.md formatting",
+      "description": "Adapt SKILLS.md to follow the official OpenCode SKILL.md formatting requirements (YAML frontmatter, specific naming rules).",
+      "status": "DONE",
+      "parentId": "2171d63d-9306-4c61-9b30-b1cd0df93913",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T13:47:08.086Z",
+      "updatedAt": "2026-02-20T13:47:31.513Z",
+      "tokenUsage": [
+        {
+          "input": 800,
+          "output": 200,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    }
+  ]
+}

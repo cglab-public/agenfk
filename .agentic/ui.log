@@ -1,0 +1,96 @@
+
+> ui@0.0.0 dev
+> vite
+
+
+  VITE v7.3.1  ready in 124 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+10:39:38 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:44:00 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:44:01 AM [vite] Internal server error: /home/danielp/agefk/agentic-framework/packages/ui/src/components/KanbanBoard.tsx: Unexpected token (323:2)
+
+  321 |   );
+  322 | };
+> 323 |   }, [queryClient]);
+      |   ^
+  324 |
+  325 |   const updateMutation = useMutation({
+  326 |     mutationFn: (variables: { id: string, updates: Partial<AgenticItem> }) => 
+  Plugin: vite:react-babel
+  File: /home/danielp/agefk/agentic-framework/packages/ui/src/components/KanbanBoard.tsx:323:2
+  321 |    );
+  322 |  };
+  323 |    }, [queryClient]);
+      |    ^
+  324 |  
+  325 |    const updateMutation = useMutation({
+      at constructor (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:365:19)
+      at TypeScriptParserMixin.raise (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:6599:19)
+      at TypeScriptParserMixin.unexpected (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:6619:16)
+      at TypeScriptParserMixin.parseExprAtom (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11442:22)
+      at TypeScriptParserMixin.parseExprAtom (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:4764:20)
+      at TypeScriptParserMixin.parseExprSubscripts (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11081:23)
+      at TypeScriptParserMixin.parseUpdate (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11066:21)
+      at TypeScriptParserMixin.parseMaybeUnary (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11046:23)
+      at TypeScriptParserMixin.parseMaybeUnary (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9837:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10899:61)
+      at TypeScriptParserMixin.parseExprOps (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10904:23)
+      at TypeScriptParserMixin.parseMaybeConditional (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10881:23)
+      at TypeScriptParserMixin.parseMaybeAssign (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10831:21)
+      at TypeScriptParserMixin.parseMaybeAssign (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9786:20)
+      at TypeScriptParserMixin.parseExpressionBase (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10784:23)
+      at /home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10780:39
+      at TypeScriptParserMixin.allowInAnd (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12421:16)
+      at TypeScriptParserMixin.parseExpression (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10780:17)
+      at TypeScriptParserMixin.parseStatementContent (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12895:23)
+      at TypeScriptParserMixin.parseStatementContent (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9508:18)
+      at TypeScriptParserMixin.parseStatementLike (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12767:17)
+      at TypeScriptParserMixin.parseModuleItem (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12744:17)
+      at TypeScriptParserMixin.parseBlockOrModuleBlockBody (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:13316:36)
+      at TypeScriptParserMixin.parseBlockBody (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:13309:10)
+      at TypeScriptParserMixin.parseProgram (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12622:10)
+      at TypeScriptParserMixin.parseTopLevel (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12612:25)
+      at TypeScriptParserMixin.parse (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:14488:25)
+      at TypeScriptParserMixin.parse (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10126:18)
+      at parse (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:14522:38)
+      at parser (/home/danielp/agefk/agentic-framework/node_modules/@babel/core/lib/parser/index.js:41:34)
+      at parser.next (<anonymous>)
+      at normalizeFile (/home/danielp/agefk/agentic-framework/node_modules/@babel/core/lib/transformation/normalize-file.js:64:37)
+      at normalizeFile.next (<anonymous>)
+      at run (/home/danielp/agefk/agentic-framework/node_modules/@babel/core/lib/transformation/index.js:22:50)
+      at run.next (<anonymous>)
+      at transform (/home/danielp/agefk/agentic-framework/node_modules/@babel/core/lib/transform.js:22:33)
+      at transform.next (<anonymous>)
+      at step (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:261:32)
+      at /home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:273:13
+      at async.call.result.err.err (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:223:11)
+      at /home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:189:28
+      at /home/danielp/agefk/agentic-framework/node_modules/@babel/core/lib/gensync-utils/async.js:67:7
+      at /home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:113:33
+      at step (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:287:14)
+      at /home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:273:13
+      at async.call.result.err.err (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:223:11)
+10:44:46 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:50:50 AM [vite] (client) hmr update /src/index.css
+10:51:12 AM [vite] (client) page reload src/main.tsx
+10:51:18 AM [vite] (client) hmr update /src/App.tsx, /src/index.css
+10:51:36 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:51:48 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:52:13 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:52:32 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+10:53:06 AM [vite] (client) hmr update /src/index.css, /src/components/CardDetailModal.tsx
+10:54:37 AM [vite] (client) hmr update /src/index.css
+10:56:22 AM [vite] (client) hmr update /src/index.css
+10:56:33 AM [vite] (client) hmr update /src/ThemeContext.tsx, /src/index.css
+10:56:33 AM [vite] (client) hmr invalidate /src/ThemeContext.tsx Could not Fast Refresh ("useTheme" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+10:56:33 AM [vite] (client) page reload src/ThemeContext.tsx
+10:57:32 AM [vite] (client) hmr update /src/index.css
+10:58:03 AM [vite] (client) hmr update /src/App.tsx, /src/index.css
+10:58:12 AM [vite] (client) page reload src/index.css
+10:58:31 AM [vite] (client) hmr update /src/ThemeContext.tsx, /src/index.css
+10:58:31 AM [vite] (client) hmr invalidate /src/ThemeContext.tsx Could not Fast Refresh ("useTheme" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+10:58:31 AM [vite] (client) page reload src/ThemeContext.tsx
+10:58:37 AM [vite] (client) hmr update /src/index.css
+10:59:06 AM [vite] (client) hmr update /src/App.tsx, /src/index.css

@@ -1,0 +1,16 @@
+{
+  "name": "agentic-framework",
+  "version": "1.0.0",
+  "description": "Agentic Engineering Framework",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+}

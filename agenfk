@@ -1,0 +1,16 @@
+#!/bin/bash
+# agenfk - Agentic Engineering Framework CLI Wrapper
+
+# Get the directory where this script is located
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CLI_BIN="$DIR/packages/cli/bin/agenfk.js"
+
+# 1. First-time build if dist/index.js is missing
+if [ ! -f "$DIR/packages/cli/dist/index.js" ]; then
+    echo "📦 Initial build required..."
+    (cd "$DIR" && npm install && npm run build)
+fi
+
+# 2. Forward all commands to the JS CLI
+# This includes 'up', 'ui', and everything else
+node "$CLI_BIN" "$@"
