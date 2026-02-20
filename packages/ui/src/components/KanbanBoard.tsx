@@ -172,7 +172,16 @@ export const KanbanBoard: React.FC = () => {
             </div>
 
             <div className="text-right hidden sm:block border-l border-slate-200 dark:border-slate-700 pl-4">
-              <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight">TOTAL TOKENS</div>
+              <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight flex items-center gap-2 justify-end">
+                Total Tokens
+                <button 
+                  onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })}
+                  className="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                  title="Force Refresh"
+                >
+                  <Loader2 size={12} className={clsx(isLoading && "animate-spin")} />
+                </button>
+              </div>
               <div className="font-mono font-bold text-indigo-600 dark:text-indigo-400 transition-colors">
                 {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
               </div>
@@ -299,7 +308,13 @@ export const KanbanBoard: React.FC = () => {
         </div>
       </main>
 
-      {selectedItem && <CardDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+      {selectedItem && (
+        <CardDetailModal 
+          item={selectedItem} 
+          allItems={items || []}
+          onClose={() => setSelectedItem(null)} 
+        />
+      )}
     </div>
   );
 };

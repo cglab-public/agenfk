@@ -3,34 +3,33 @@
 > vite
 
 
-  VITE v7.3.1  ready in 124 ms
+  VITE v7.3.1  ready in 92 ms
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: use --host to expose
-10:39:38 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:44:00 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:44:01 AM [vite] Internal server error: /home/danielp/agefk/agentic-framework/packages/ui/src/components/KanbanBoard.tsx: Unexpected token (323:2)
+11:43:41 AM [vite] (client) hmr update /src/index.css, /src/components/CardDetailModal.tsx
+11:43:41 AM [vite] Internal server error: /home/danielp/agefk/agentic-framework/packages/ui/src/components/CardDetailModal.tsx: Adjacent JSX elements must be wrapped in an enclosing tag. Did you want a JSX fragment <>...</>? (256:6)
 
-  321 |   );
-  322 | };
-> 323 |   }, [queryClient]);
-      |   ^
-  324 |
-  325 |   const updateMutation = useMutation({
-  326 |     mutationFn: (variables: { id: string, updates: Partial<AgenticItem> }) => 
+  254 |           </button>
+  255 |         </div>
+> 256 |       </div>
+      |       ^
+  257 |     </div>
+  258 |   );
+  259 | };
   Plugin: vite:react-babel
-  File: /home/danielp/agefk/agentic-framework/packages/ui/src/components/KanbanBoard.tsx:323:2
-  321 |    );
-  322 |  };
-  323 |    }, [queryClient]);
-      |    ^
-  324 |  
-  325 |    const updateMutation = useMutation({
+  File: /home/danielp/agefk/agentic-framework/packages/ui/src/components/CardDetailModal.tsx:256:6
+  254 |            </button>
+  255 |          </div>
+  256 |        </div>
+      |        ^
+  257 |      </div>
+  258 |    );
       at constructor (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:365:19)
       at TypeScriptParserMixin.raise (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:6599:19)
-      at TypeScriptParserMixin.unexpected (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:6619:16)
-      at TypeScriptParserMixin.parseExprAtom (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11442:22)
-      at TypeScriptParserMixin.parseExprAtom (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:4764:20)
+      at TypeScriptParserMixin.jsxParseElementAt (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:4742:18)
+      at TypeScriptParserMixin.jsxParseElement (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:4749:17)
+      at TypeScriptParserMixin.parseExprAtom (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:4762:19)
       at TypeScriptParserMixin.parseExprSubscripts (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11081:23)
       at TypeScriptParserMixin.parseUpdate (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11066:21)
       at TypeScriptParserMixin.parseMaybeUnary (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:11046:23)
@@ -39,7 +38,9 @@
       at TypeScriptParserMixin.parseExprOps (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10904:23)
       at TypeScriptParserMixin.parseMaybeConditional (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10881:23)
       at TypeScriptParserMixin.parseMaybeAssign (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10831:21)
-      at TypeScriptParserMixin.parseMaybeAssign (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9786:20)
+      at /home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9775:39
+      at TypeScriptParserMixin.tryParse (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:6907:20)
+      at TypeScriptParserMixin.parseMaybeAssign (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:9775:18)
       at TypeScriptParserMixin.parseExpressionBase (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10784:23)
       at /home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:10780:39
       at TypeScriptParserMixin.allowInAnd (/home/danielp/agefk/agentic-framework/node_modules/@babel/parser/lib/index.js:12421:16)
@@ -72,25 +73,22 @@
       at step (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:287:14)
       at /home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:273:13
       at async.call.result.err.err (/home/danielp/agefk/agentic-framework/node_modules/gensync/index.js:223:11)
-10:44:46 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:50:50 AM [vite] (client) hmr update /src/index.css
-10:51:12 AM [vite] (client) page reload src/main.tsx
-10:51:18 AM [vite] (client) hmr update /src/App.tsx, /src/index.css
-10:51:36 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:51:48 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:52:13 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:52:32 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
-10:53:06 AM [vite] (client) hmr update /src/index.css, /src/components/CardDetailModal.tsx
-10:54:37 AM [vite] (client) hmr update /src/index.css
-10:56:22 AM [vite] (client) hmr update /src/index.css
-10:56:33 AM [vite] (client) hmr update /src/ThemeContext.tsx, /src/index.css
-10:56:33 AM [vite] (client) hmr invalidate /src/ThemeContext.tsx Could not Fast Refresh ("useTheme" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
-10:56:33 AM [vite] (client) page reload src/ThemeContext.tsx
-10:57:32 AM [vite] (client) hmr update /src/index.css
-10:58:03 AM [vite] (client) hmr update /src/App.tsx, /src/index.css
-10:58:12 AM [vite] (client) page reload src/index.css
-10:58:31 AM [vite] (client) hmr update /src/ThemeContext.tsx, /src/index.css
-10:58:31 AM [vite] (client) hmr invalidate /src/ThemeContext.tsx Could not Fast Refresh ("useTheme" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
-10:58:31 AM [vite] (client) page reload src/ThemeContext.tsx
-10:58:37 AM [vite] (client) hmr update /src/index.css
-10:59:06 AM [vite] (client) hmr update /src/App.tsx, /src/index.css
+11:43:49 AM [vite] (client) hmr update /src/components/KanbanBoard.tsx, /src/index.css
+11:43:49 AM [vite] (client) Pre-transform error: /home/danielp/agefk/agentic-framework/packages/ui/src/components/CardDetailModal.tsx: Adjacent JSX elements must be wrapped in an enclosing tag. Did you want a JSX fragment <>...</>? (256:6)
+
+  254 |           </button>
+  255 |         </div>
+> 256 |       </div>
+      |       ^
+  257 |     </div>
+  258 |   );
+  259 | };
+  Plugin: vite:react-babel
+  File: /home/danielp/agefk/agentic-framework/packages/ui/src/components/CardDetailModal.tsx:256:6
+  254 |            </button>
+  255 |          </div>
+  256 |        </div>
+      |        ^
+  257 |      </div>
+  258 |    );
+11:44:28 AM [vite] (client) hmr update /src/index.css, /src/components/CardDetailModal.tsx
