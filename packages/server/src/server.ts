@@ -54,7 +54,7 @@ const initStorage = async () => {
   // Watch for changes to db.json to notify clients (e.g. from MCP or CLI)
   fs.watch(dbPath, (event) => {
     if (event === 'change') {
-      console.log('Database file changed on disk, notifying clients...');
+      console.log(`[DISK_CHANGE] Database file ${dbPath} modified. Broadcasting refresh to UI...`);
       io.emit('items_updated');
     }
   });
@@ -117,6 +117,7 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   }
 
   const created = await storage.createItem(newItem);
+  console.log(`[API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
   io.emit('items_updated');
   res.status(201).json(created);
 }));
@@ -134,6 +135,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   
   try {
     const updated = await storage.updateItem(req.params.id, updates);
+    console.log(`[API_UPDATE] Item updated: ${updated.id} (${updated.title}). Broadcasting refresh...`);
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -144,6 +146,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
   const success = await storage.deleteItem(req.params.id);
   if (success) {
+    console.log(`[API_DELETE] Item deleted: ${req.params.id}. Broadcasting refresh...`);
     io.emit('items_updated');
     res.status(204).send();
   } else {

@@ -44,7 +44,12 @@ export const KanbanBoard: React.FC = () => {
   useEffect(() => {
     const socket = io('http://localhost:3000');
     
+    socket.on('connect', () => {
+      console.log('%c[WS_CONNECT] %cConnected to Agentic Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
+    });
+
     socket.on('items_updated', () => {
+      console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
       queryClient.invalidateQueries({ queryKey: ['items'] });
     });
 
