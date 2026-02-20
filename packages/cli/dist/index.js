@@ -51,8 +51,22 @@ program
     .description('Show dashboard information and open in browser')
     .action(() => {
     console.log(chalk_1.default.cyan('🌐 Opening UI...'));
-    console.log(chalk_1.default.white('Dashboard: http://localhost:5173'));
-    const uiUrl = 'http://localhost:5173';
+    let uiUrl = 'http://localhost:5173';
+    try {
+        const rootDir = path_1.default.resolve(__dirname, '../../..');
+        const uiLogPath = path_1.default.join(rootDir, '.agenfk', 'ui.log');
+        if (fs_1.default.existsSync(uiLogPath)) {
+            const logContent = fs_1.default.readFileSync(uiLogPath, 'utf8');
+            const match = logContent.match(/http:\/\/localhost:\d+/);
+            if (match) {
+                uiUrl = match[0];
+            }
+        }
+    }
+    catch (err) {
+        // ignore parsing errors
+    }
+    console.log(chalk_1.default.white(`Dashboard: ${uiUrl}`));
     try {
         if (fs_1.default.existsSync('/proc/version') && fs_1.default.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
             (0, child_process_1.execSync)(`explorer.exe "${uiUrl}"`, { stdio: 'ignore' });
