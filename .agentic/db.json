@@ -453,6 +453,63 @@
           "model": "gemini-3-flash-preview"
         }
       ]
+    },
+    {
+      "id": "ae44ee96-7577-4109-81bb-9b8258029001",
+      "type": "STORY",
+      "title": "Add Subitems tab to CardDetailModal",
+      "description": "Implement a new 'Subitems' tab in the CardDetailModal to show child items (name and status) of the selected item.",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T14:26:49.250Z",
+      "updatedAt": "2026-02-20T14:26:49.250Z"
+    },
+    {
+      "id": "68ccbaad-fb03-4116-aa29-9e333518127d",
+      "type": "TASK",
+      "title": "Implement Subitems tab UI and logic",
+      "description": "Modify CardDetailModal to support tabs and display subitems. Pass the full items list to the modal from KanbanBoard.",
+      "status": "TODO",
+      "parentId": "ae44ee96-7577-4109-81bb-9b8258029001",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T14:26:54.928Z",
+      "updatedAt": "2026-02-20T14:31:19.966Z"
+    },
+    {
+      "id": "6fbbaceb-4861-4841-bad0-f3bbd8fdbb04",
+      "type": "EPIC",
+      "title": "Test Epic",
+      "description": "A placeholder epic to verify framework functionality and hierarchy.",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "# Test Epic Implementation Plan\n\n## Objectives\n- Validate the framework\n- Test hierarchy\n- Verify real-time updates\n\n## Steps\n1. Create Stories\n2. Add Tasks\n3. Transition states",
+      "createdAt": "2026-02-20T14:29:27.461Z",
+      "updatedAt": "2026-02-20T14:33:18.626Z",
+      "tokenUsage": [
+        {
+          "input": 300,
+          "output": 100,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "0d6f7da7-9991-4737-a1cf-9c1e7a4938ad",
+      "type": "BUG",
+      "title": "Fix MCP Tool Schemas for Implementation Plans",
+      "description": "The MCP tools (create_item, update_item) are missing the implementationPlan field in their input schemas, forcing a fallback to curl. Fix the schemas to ensure full framework compliance.",
+      "status": "DONE",
+      "parentId": "d1fec1cc-478f-487c-bf24-dd20f547c50e",
+      "implementationPlan": "",
+      "createdAt": "2026-02-20T14:31:02.388Z",
+      "updatedAt": "2026-02-20T14:32:18.694Z",
+      "severity": "LOW",
+      "tokenUsage": [
+        {
+          "input": 800,
+          "output": 250,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
     }
   ]
 }

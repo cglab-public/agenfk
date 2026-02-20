@@ -100,6 +100,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
               description: "Initial status (default: TODO)",
             },
+            implementationPlan: {
+              type: "string",
+              description: "Markdown implementation plan (required for Epics)",
+            },
           },
           required: ["type", "title"],
         },
@@ -126,6 +130,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "string",
               enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"],
               description: "New status",
+            },
+            implementationPlan: {
+              type: "string",
+              description: "Updated Markdown implementation plan",
             },
           },
           required: ["id"],
