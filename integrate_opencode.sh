@@ -11,18 +11,18 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo -e "${BLUE}=== Agentic Framework Integration ===${NC}"
 
 # 1. Build the project
-echo -e "${GREEN}[1/5] Building project...${NC}"
+echo -e "${GREEN}[1/6] Building project...${NC}"
 npm install
 npm run build
 
 # 2. Ensure configuration exists
-echo -e "${GREEN}[2/5] Initializing configuration...${NC}"
+echo -e "${GREEN}[2/6] Initializing configuration...${NC}"
 if [ ! -d ".agentic" ]; then
     node packages/cli/bin/agenfk.js init
 fi
 
 # 3. Create start script for UI/API
-echo -e "${GREEN}[3/5] Creating background service script (start-services.sh)...${NC}"
+echo -e "${GREEN}[3/6] Creating background service script (start-services.sh)...${NC}"
 DB_PATH="$(pwd)/.agentic/db.json"
 cat > start-services.sh << EOF
 #!/bin/bash
@@ -51,7 +51,7 @@ EOF
 chmod +x start-services.sh
 
 # 4. Configure Opencode MCP
-echo -e "${GREEN}[4/5] Configuring Opencode MCP...${NC}"
+echo -e "${GREEN}[4/6] Configuring Opencode MCP...${NC}"
 SERVER_PATH="$(pwd)/packages/server/dist/index.js"
 DB_PATH="$(pwd)/.agentic/db.json"
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
@@ -89,7 +89,7 @@ else
 fi
 
 # 5. Install Agentic Skills
-echo -e "${GREEN}[5/5] Installing agenfk skills...${NC}"
+echo -e "${GREEN}[5/6] Installing agenfk skills...${NC}"
 SKILLS_DIR="$HOME/.config/opencode/skills/agenfk"
 mkdir -p "$SKILLS_DIR"
 if [ -f "$DIR/SKILL.md" ]; then
@@ -98,6 +98,22 @@ if [ -f "$DIR/SKILL.md" ]; then
 else
     echo -e "${BLUE}SKILL.md not found in $DIR. Skipping skills installation.${NC}"
 fi
+
+# 6. Enforce Skill Usage (The "Pre-select" Hook)
+echo -e "${GREEN}[6/6] Enforcing agenfk skill for this project...${NC}"
+mkdir -p "$DIR/.opencode"
+cat > "$DIR/.opencode/instructions.md" << EOF
+# Project-Specific Workflow Enforcement (agenfk)
+This project is configured with the 'agenfk' engineering workflow.
+
+## MANDATORY INSTRUCTIONS:
+1. For ANY engineering task (implementing features, fixing bugs, refactoring), you MUST call the 'skill' tool with name 'agenfk' immediately after the "Understand" phase.
+2. You MUST use the 'agentic_workflow_gatekeeper' tool BEFORE making any file modifications (write/edit).
+3. Strictly follow the instructions provided by the 'agenfk' skill once loaded.
+4. Your goal is to ensure every change is tracked and validated against the Agentic database.
+EOF
+
+echo -e "Successfully created project-level instructions in $DIR/.opencode/instructions.md"
 
 echo -e "${GREEN}Integration Complete.${NC}"
 echo ""
