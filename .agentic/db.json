@@ -480,10 +480,10 @@
       "type": "EPIC",
       "title": "Test Epic",
       "description": "A placeholder epic to verify framework functionality and hierarchy.",
-      "status": "IN_PROGRESS",
+      "status": "BLOCKED",
       "implementationPlan": "# Test Epic Implementation Plan\n\n## Objectives\n- Validate the framework\n- Test hierarchy\n- Verify real-time updates\n\n## Steps\n1. Create Stories\n2. Add Tasks\n3. Transition states",
       "createdAt": "2026-02-20T14:29:27.461Z",
-      "updatedAt": "2026-02-20T14:33:18.626Z",
+      "updatedAt": "2026-02-20T14:43:19.062Z",
       "tokenUsage": [
         {
           "input": 300,
