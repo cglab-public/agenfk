@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
-import { ItemType, Status, AgenFKItem, Project } from "@agenfk/core";
+import { ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -89,7 +89,7 @@ const syncParentStatus = async (parentId: string) => {
   if (children.length === 0) return;
 
   const allDone = children.every(c => c.status === Status.DONE);
-  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.REVIEW);
+  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.TEST || c.status === Status.REVIEW);
   const anyDone = children.some(c => c.status === Status.DONE);
 
   let newStatus: Status | null = null;

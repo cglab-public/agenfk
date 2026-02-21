@@ -74,7 +74,7 @@ const CreateItemSchema = z.object({
   title: z.string(),
   description: z.string().optional(),
   parentId: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -82,14 +82,14 @@ const UpdateItemSchema = z.object({
   id: z.string(),
   title: z.string().optional(),
   description: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
   implementationPlan: z.string().optional(),
 });
 
 const ListItemsSchema = z.object({
   projectId: z.string().optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
   parentId: z.string().optional(),
 });
 
@@ -143,7 +143,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             title: { type: "string" },
             description: { type: "string" },
             parentId: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
             implementationPlan: { type: "string" },
           },
           required: ["projectId", "type", "title"],
@@ -158,7 +158,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string" },
             title: { type: "string" },
             description: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
             implementationPlan: { type: "string" },
           },
           required: ["id"],
@@ -172,7 +172,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectId: { type: "string" },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
             parentId: { type: "string" },
           },
         },
@@ -276,8 +276,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           const { data: item } = await api.get(`/items/${itemId}`);
           const reviews = item.reviews || [];
           reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
-          await api.put(`/items/${itemId}`, { status: "DONE", reviews }, { headers: verifyHeaders });
-          return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${output}` }] };
+          // Move to TEST instead of DONE to trigger automated coverage check
+          await api.put(`/items/${itemId}`, { status: "TEST", reviews }, { headers: verifyHeaders });
+          return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nItem moved to TEST column for automated coverage check.` }] };
         } catch (error: any) {
           const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
           try {
@@ -292,9 +293,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "workflow_gatekeeper": {
         const { intent } = z.object({ intent: z.string() }).parse(request.params.arguments);
         const { data: items } = await api.get(`/items`, { params: { status: "IN_PROGRESS" } });
-        // Filter out parents (Epics and Stories with children) or just filter by type
-        // For simplicity and to follow the rule "exactly one task", we filter for TASK and BUG
-        const inProgressItems = items.filter((i: any) => i.type === 'TASK' || i.type === 'BUG' || (i.type === 'STORY' && (!i.children || i.children.length === 0)));
+        // Strictly only allow one leaf-level work item (TASK or BUG)
+        const inProgressItems = items.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
         
         if (inProgressItems.length === 0) {
           return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS.` }] };

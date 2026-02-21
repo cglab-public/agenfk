@@ -7,14 +7,21 @@ import {
   Plus, Loader2, AlertCircle, Layout, Tag, 
   AlignLeft, Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
-  FolderOpen, Briefcase, Clock
+  FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 
-const statuses = Object.values(Status).filter(s => s !== Status.ARCHIVED);
+const statuses = [
+  Status.TODO,
+  Status.IN_PROGRESS,
+  Status.REVIEW,
+  Status.TEST,
+  Status.DONE,
+  Status.BLOCKED
+];
 
 interface NavItem {
   id: string;
@@ -25,6 +32,7 @@ interface NavItem {
 const statusBorderColors: Record<Status, string> = {
   [Status.TODO]: "border-t-slate-400",
   [Status.IN_PROGRESS]: "border-t-blue-500",
+  [Status.TEST]: "border-t-purple-500",
   [Status.REVIEW]: "border-t-amber-500",
   [Status.DONE]: "border-t-emerald-500",
   [Status.BLOCKED]: "border-t-red-500",
@@ -39,6 +47,16 @@ export const formatDuration = (ms: number) => {
   
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+};
+
+const statusIcons: Record<Status, React.ReactNode> = {
+  [Status.TODO]: <Plus size={14} />,
+  [Status.IN_PROGRESS]: <Zap size={14} />,
+  [Status.TEST]: <FlaskConical size={14} />,
+  [Status.REVIEW]: <ShieldCheck size={14} />,
+  [Status.DONE]: <ChevronRight size={14} />,
+  [Status.BLOCKED]: <AlertCircle size={14} />,
+  [Status.ARCHIVED]: <Archive size={14} />,
 };
 
 export const KanbanBoard: React.FC = () => {
@@ -435,8 +453,19 @@ export const KanbanBoard: React.FC = () => {
             <div key={status} className="flex flex-col w-full md:w-80 h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
                 <div className="flex items-center gap-2">
+                  <div className={clsx(
+                    "p-1 rounded-md",
+                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
+                    status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
+                    status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
+                    status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
+                    status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
+                    "text-slate-500 bg-slate-50 dark:bg-slate-800"
+                  )}>
+                    {statusIcons[status as Status]}
+                  </div>
                   <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors">
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
                   </button>
                 </div>
