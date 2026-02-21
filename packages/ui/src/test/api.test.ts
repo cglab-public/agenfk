@@ -40,4 +40,16 @@ describe('UI API Client', () => {
     await api.deleteItem('i1');
     expect(mockedAxios.delete).toHaveBeenCalledWith(expect.stringContaining('/items/i1'));
   });
+
+  describe('Error handling', () => {
+    it('should handle listProjects error', async () => {
+      mockedAxios.get.mockRejectedValue(new Error('API Error'));
+      await expect(api.listProjects()).rejects.toThrow('API Error');
+    });
+
+    it('should handle createItem error', async () => {
+      mockedAxios.post.mockRejectedValue(new Error('API Error'));
+      await expect(api.createItem({})).rejects.toThrow('API Error');
+    });
+  });
 });
