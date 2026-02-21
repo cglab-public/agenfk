@@ -42,7 +42,7 @@ describe('CLI Commands', () => {
       await program.parseAsync(['node', 'agenfk', 'create', 'task', 'My Task', '--project', 'p1']);
       
       expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
-        type: 'task',
+        type: 'TASK',
         title: 'My Task'
       }));
     });
