@@ -92,7 +92,7 @@ describe('CardDetailModal', () => {
     expect(screen.getByText(/gpt-4/i)).toBeDefined();
   });
 
-  it('should render subitems for stories', () => {
+  it('should render subitems for stories', async () => {
     const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', type: ItemType.TASK };
     render(
       <CardDetailModal 
