@@ -105,8 +105,31 @@ describe('CardDetailModal', () => {
       { wrapper }
     );
 
-    const subitemsTabs = await screen.findAllByRole('button', { name: /Subitems/i });
-    fireEvent.click(subitemsTabs[subitemsTabs.length - 1]);
+    const subitemsTab = await screen.findAllByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTab[subitemsTab.length - 1]);
     expect(await screen.findByText('Sub Task')).toBeDefined();
+  });
+
+  it('should handle status changes', async () => {
+    vi.mocked(api.updateItem).mockResolvedValue({ ...mockItem, status: Status.IN_PROGRESS } as any);
+    
+    render(
+      <CardDetailModal 
+        item={mockItem as any} 
+        allItems={[]} 
+        onClose={() => {}} 
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+      />, 
+      { wrapper }
+    );
+
+    const statusBadge = screen.getByText(Status.TODO);
+    fireEvent.click(statusBadge);
+    
+    const inProgressOption = await screen.findByText(Status.IN_PROGRESS);
+    fireEvent.click(inProgressOption);
+    
+    expect(api.updateItem).toHaveBeenCalledWith(mockItem.id, expect.objectContaining({ status: Status.IN_PROGRESS }));
   });
 });

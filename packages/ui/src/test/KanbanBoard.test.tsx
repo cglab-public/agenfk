@@ -85,6 +85,23 @@ describe('KanbanBoard', () => {
     expect(screen.getByText('TODO')).toBeDefined();
   });
 
+  it('should render items in correct columns', async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    const items = [
+      { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() },
+      { id: 'i2', projectId: 'p1', type: ItemType.TASK, title: 'Task 2', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() },
+    ];
+    
+    vi.mocked(api.listProjects).mockResolvedValue([project]);
+    vi.mocked(api.listItems).mockResolvedValue(items);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    
+    render(<KanbanBoard />, { wrapper });
+    
+    expect(await screen.findByText('Task 1')).toBeDefined();
+    expect(screen.getByText('Task 2')).toBeDefined();
+  });
+
   it('should allow creating a new project', async () => {
     vi.mocked(api.listProjects).mockResolvedValue([]);
     vi.mocked(api.createProject).mockResolvedValue({ id: 'p2', name: 'New Project' });
