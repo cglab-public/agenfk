@@ -25,9 +25,9 @@ import { exec } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
-const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
+export const app = express();
+export const httpServer = createServer(app);
+export const io = new Server(httpServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
@@ -202,9 +202,13 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
-  const updated = await storage.updateProject(req.params.id, req.body);
-  io.emit('items_updated');
-  res.json(updated);
+  try {
+    const updated = await storage.updateProject(req.params.id, req.body);
+    io.emit('items_updated');
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
 }));
 
 app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
@@ -381,8 +385,12 @@ io.on('connection', (socket) => {
 });
 
 // Init and Listen
-initStorage().then(() => {
-  httpServer.listen(PORT, () => {
-    console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+if (process.env.NODE_ENV !== 'test') {
+  initStorage().then(() => {
+    httpServer.listen(PORT, () => {
+      console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+    });
   });
-});
+}
+
+export { initStorage, storage };
