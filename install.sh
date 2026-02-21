@@ -47,6 +47,10 @@ trap "kill 0" EXIT
 
 mkdir -p "\${AGENFK_ROOT}/.agenfk"
 
+echo "Clearing port 3000..."
+fuser -k 3000/tcp > /dev/null 2>&1 || true
+sleep 0.5
+
 echo "Starting API Server on port 3000..."
 export AGENFK_DB_PATH="${DB_PATH}"
 node "\${AGENFK_ROOT}/packages/server/dist/server.js" > "\${AGENFK_ROOT}/.agenfk/api.log" 2>&1 &
