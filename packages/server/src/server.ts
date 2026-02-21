@@ -136,41 +136,6 @@ const autoGitCommit = (item: AgenFKItem, projectRoot: string): void => {
   });
 };
 
-const runCoverageCheck = async (itemId: string, projectRoot: string) => {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [TEST_HOOK] Triggering async coverage check for ${itemId}`);
-  
-  const scriptPath = path.join(projectRoot, 'scripts/check-coverage.cjs');
-  if (!fs.existsSync(scriptPath)) {
-    console.log(`[${timestamp}] [TEST_HOOK] No check-coverage.js script found, auto-passing to REVIEW.`);
-    await storage.updateItem(itemId, { status: Status.REVIEW });
-    io.emit('items_updated');
-    return;
-  }
-
-  exec(`node ${scriptPath} ${projectRoot}`, async (err, stdout, stderr) => {
-    const ts = new Date().toISOString();
-    const item = await storage.getItem(itemId);
-    if (!item) return;
-
-    const output = stdout + '\n' + stderr;
-    console.log(`[${ts}] [TEST_HOOK] Coverage check for ${itemId}:\n${output}`);
-
-    const reviews = item.reviews || [];
-    
-    if (err) {
-      console.log(`[${ts}] [TEST_HOOK] Coverage check failed for ${itemId}. Reverting to IN_PROGRESS.`);
-      reviews.push({ id: crypto.randomUUID(), command: 'check-coverage', output, status: 'FAILED', executedAt: new Date() });
-      await storage.updateItem(itemId, { status: Status.IN_PROGRESS, reviews });
-    } else {
-      console.log(`[${ts}] [TEST_HOOK] Coverage check passed for ${itemId}. Advancing to REVIEW.`);
-      reviews.push({ id: crypto.randomUUID(), command: 'check-coverage', output, status: 'PASSED', executedAt: new Date() });
-      await storage.updateItem(itemId, { status: Status.REVIEW, reviews });
-    }
-    io.emit('items_updated');
-  });
-};
-
 const initStorage = async () => {
   const envPath = process.env.AGENFK_DB_PATH;
   if (envPath) {
@@ -380,12 +345,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.parentId && updated.status !== Status.ARCHIVED) {
       await syncParentStatus(updated.parentId);
-    }
-
-    if (updated.status === Status.TEST && currentItem.status !== Status.TEST) {
-      const projectRoot = findProjectRoot(process.cwd());
-      // Run coverage check asynchronously
-      setTimeout(() => runCoverageCheck(updated.id, projectRoot), 0);
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
