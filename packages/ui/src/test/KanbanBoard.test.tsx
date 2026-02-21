@@ -8,6 +8,16 @@ import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { io } from 'socket.io-client';
+
+// Mock socket.io-client
+vi.mock('socket.io-client', () => ({
+  io: vi.fn(() => ({
+    on: vi.fn(),
+    off: vi.fn(),
+    emit: vi.fn(),
+  })),
+}));
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -134,5 +144,10 @@ describe('KanbanBoard', () => {
     if (archiveBtn) fireEvent.click(archiveBtn);
     
     // expect(api.updateItem).toHaveBeenCalled();
+  });
+
+  it('should connect to WebSocket on mount', () => {
+    render(<KanbanBoard />, { wrapper });
+    expect(io).toHaveBeenCalled();
   });
 });

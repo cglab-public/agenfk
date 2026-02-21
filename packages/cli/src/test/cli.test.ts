@@ -3,13 +3,16 @@ import { program } from '../index';
 import axios from 'axios';
 import * as child_process from 'child_process';
 import * as fs from 'fs';
+import inquirer from 'inquirer';
 
 vi.mock('axios');
 vi.mock('child_process');
 vi.mock('fs');
+vi.mock('inquirer');
 const mockedAxios = vi.mocked(axios);
 const mockedChildProcess = vi.mocked(child_process);
 const mockedFs = vi.mocked(fs);
+const mockedInquirer = vi.mocked(inquirer);
 
 describe('CLI Commands', () => {
   beforeEach(() => {
@@ -35,6 +38,17 @@ describe('CLI Commands', () => {
   });
 
   describe('create command', () => {
+    it('should handle interactive input if title missing', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj' }] });
+      mockedInquirer.prompt.mockResolvedValue({ type: 'TASK', title: 'Interactive Task' });
+      mockedAxios.post.mockResolvedValue({ data: { id: 'i2', title: 'Interactive Task' } });
+
+      await program.parseAsync(['node', 'agenfk', 'create', '--project', 'p1']);
+
+      expect(mockedInquirer.prompt).toHaveBeenCalled();
+      expect(mockedAxios.post).toHaveBeenCalled();
+    });
+
     it('should call the API to create an item', async () => {
       mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj' }] });
       mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'Task' } });
