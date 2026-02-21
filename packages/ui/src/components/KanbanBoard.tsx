@@ -45,6 +45,20 @@ export const KanbanBoard: React.FC = () => {
     queryFn: () => api.listProjects()
   });
 
+  // Clear stale localStorage project ID if it no longer exists in the DB
+  useEffect(() => {
+    if (isLoadingProjects || !projects) return;
+    if (selectedProjectId && !projects.find(p => p.id === selectedProjectId)) {
+      const fallback = projects.length === 1 ? projects[0].id : null;
+      setSelectedProjectId(fallback);
+      if (fallback) {
+        localStorage.setItem('agenfk_project_id', fallback);
+      } else {
+        localStorage.removeItem('agenfk_project_id');
+      }
+    }
+  }, [projects, isLoadingProjects]);
+
   const { data: items, isLoading, error } = useQuery({ 
     queryKey: ['items', selectedProjectId], 
     queryFn: () => api.listItems({ includeArchived: true, projectId: selectedProjectId || undefined }),
