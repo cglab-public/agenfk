@@ -10,7 +10,9 @@ function run() {
   try {
     // 1. Run tests with coverage reporters
     console.log('Running tests with coverage...');
-    execSync('npx vitest run --coverage --coverage.reporter=json-summary --coverage.reporter=text', { stdio: 'inherit' });
+    // Cleanup dist folders to prevent Vitest CJS errors
+    execSync('rm -rf packages/*/dist', { stdio: 'inherit' });
+    execSync('npx vitest run --coverage --coverage.reporter=json-summary --coverage.reporter=text --exclude="**/dist/**"', { stdio: 'inherit' });
 
     // 2. Read summary
     // Vitest usually outputs to ./coverage/coverage-summary.json

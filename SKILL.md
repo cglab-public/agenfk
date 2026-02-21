@@ -47,24 +47,22 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Requirement**: Exactly one task must be `IN_PROGRESS` for the active project.
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `verify_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
-5.  **Mandatory Automated Testing**
-    *   **Action**: Moving an item to the `TEST` column (status: `TEST`) triggers an automated verification run on the server.
-    *   **Enforcement**: The server executes `npm run test:coverage` (or a configured command) and parses the output.
+5.  **Mandatory Automated Testing (Agent Driven)**
+    *   **Action**: Moving an item to the `TEST` column (status: `TEST`) is a signal that the Agent (Opencode/Claude) must now perform deep verification.
+    *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
     *   **Coverage Rule**: New code MUST be covered at 80% minimum.
-    *   **Automation**: 
-        *   Success: Item moves automatically to `REVIEW`.
-        *   Failure: Item moves back to `IN_PROGRESS` with logs attached to `reviews`.
+    *   **Workflow**: 
+        *   The `verify_changes` tool automatically moves items from `REVIEW` to `TEST` upon success.
+        *   The Agent verifies coverage and regressions in `TEST`.
+        *   Success: Agent moves item to `DONE`.
+        *   Failure: Agent moves item back to `IN_PROGRESS`.
 
-6.  **Final Verification (Review)**
-    *   **Action**: BEFORE declaring an item as `DONE` (if code was modified), the Agent **MUST** use the `verify_changes(itemId, command)` tool.
-    *   **Review Rules**:
-        *   **TASKS**: Always require individual verification.
-        *   **STORIES with sub-tasks**: Implicitly verified when all children are `DONE`.
-        *   **STORIES without sub-tasks**: Require manual verification via `verify_changes`.
+6.  **Final Verification (Review Tool)**
+    *   **Action**: BEFORE moving to `TEST`, the Agent **MUST** use the `verify_changes(itemId, command)` tool.
     *   **Transition Logic (Automated by Tool)**:
         1. The tool moves the item to `REVIEW`.
         2. The tool executes the command.
-        3. Success: Moves to `DONE`. Failure: Moves back to `IN_PROGRESS`.
+        3. Success: Moves to `TEST`. Failure: Moves back to `IN_PROGRESS`.
 
 7.  **Measurement & Tracking**
     *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `verify_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.

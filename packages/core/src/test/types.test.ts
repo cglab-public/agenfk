@@ -5,6 +5,7 @@ describe('Core Types', () => {
   it('should have all expected Status values', () => {
     expect(Status.TODO).toBe('TODO');
     expect(Status.IN_PROGRESS).toBe('IN_PROGRESS');
+    expect(Status.TEST).toBe('TEST');
     expect(Status.REVIEW).toBe('REVIEW');
     expect(Status.DONE).toBe('DONE');
     expect(Status.BLOCKED).toBe('BLOCKED');
