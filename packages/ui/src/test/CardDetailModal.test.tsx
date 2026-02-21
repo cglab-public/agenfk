@@ -6,7 +6,6 @@ import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { api } from '../api';
 import { ItemType, Status } from '../types';
 
 // Mock window.matchMedia
@@ -16,21 +15,13 @@ Object.defineProperty(window, 'matchMedia', {
     matches: false,
     media: query,
     onchange: null,
-    addListener: vi.fn(), // deprecated
-    removeListener: vi.fn(), // deprecated
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(),
   })),
 });
-
-vi.mock('../api', () => ({
-  api: {
-    getItem: vi.fn(),
-    updateItem: vi.fn(),
-    listItems: vi.fn(),
-  }
-}));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -56,6 +47,8 @@ describe('CardDetailModal', () => {
     status: Status.TODO,
     createdAt: new Date(),
     updatedAt: new Date(),
+    tokenUsage: [],
+    reviews: [],
   };
 
   beforeEach(() => {
@@ -64,35 +57,18 @@ describe('CardDetailModal', () => {
   });
 
   it('should render item details', async () => {
-    vi.mocked(api.getItem).mockResolvedValue(mockItem);
-    
     render(
       <CardDetailModal 
-        itemId="i1" 
-        isOpen={true} 
+        item={mockItem} 
+        allItems={[]} 
         onClose={() => {}} 
-        allAvailableItems={[]}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
       />, 
       { wrapper }
     );
     
-    expect(await screen.findByText('Test Task')).toBeDefined();
+    expect(screen.getByText('Test Task')).toBeDefined();
     expect(screen.getByText('Test Description')).toBeDefined();
-  });
-
-  it('should show "Loading..." while fetching item', () => {
-    vi.mocked(api.getItem).mockReturnValue(new Promise(() => {})); // Never resolves
-    
-    render(
-      <CardDetailModal 
-        itemId="i1" 
-        isOpen={true} 
-        onClose={() => {}} 
-        allAvailableItems={[]}
-      />, 
-      { wrapper }
-    );
-    
-    expect(screen.getByText(/Loading item details/i)).toBeDefined();
   });
 });
