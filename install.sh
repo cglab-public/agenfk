@@ -133,8 +133,19 @@ else
     echo -e "${BLUE}SKILL.md not found in $DIR. Skipping skills installation.${NC}"
 fi
 
-# 7. Install Global Slash Commands (Opencode)
-echo -e "${GREEN}[7/8] Installing global slash commands (Opencode)...${NC}"
+# 7. Symlink CLI to ~/.local/bin
+echo -e "${GREEN}[7/9] Installing agenfk command to ~/.local/bin...${NC}"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$DIR/packages/cli/bin/agenfk.js" "$HOME/.local/bin/agenfk"
+chmod +x "$DIR/packages/cli/bin/agenfk.js"
+echo -e "  Symlinked: $HOME/.local/bin/agenfk -> $DIR/packages/cli/bin/agenfk.js"
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    echo -e "${YELLOW}  Note: Add ~/.local/bin to your PATH if not already present:${NC}"
+    echo -e "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+fi
+
+# 8. Install Global Slash Commands (Opencode)
+echo -e "${GREEN}[8/9] Installing global slash commands (Opencode)...${NC}"
 OC_COMMANDS_DIR="$HOME/.config/opencode/commands"
 mkdir -p "$OC_COMMANDS_DIR"
 for cmd_file in "$DIR/commands/"*.md; do
@@ -142,8 +153,8 @@ for cmd_file in "$DIR/commands/"*.md; do
     echo -e "  Installed: $OC_COMMANDS_DIR/$(basename "$cmd_file")"
 done
 
-# 8. Install Global Slash Commands (Claude Code)
-echo -e "${GREEN}[8/8] Installing global slash commands (Claude Code)...${NC}"
+# 9. Install Global Slash Commands (Claude Code)
+echo -e "${GREEN}[9/9] Installing global slash commands (Claude Code)...${NC}"
 CL_COMMANDS_DIR="$HOME/.claude/commands"
 mkdir -p "$CL_COMMANDS_DIR"
 for cmd_file in "$DIR/commands/"*.md; do

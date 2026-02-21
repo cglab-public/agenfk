@@ -43,16 +43,23 @@ if [ -d "$SKILL_DIR" ]; then
     echo "  Removed: $SKILL_DIR"
 fi
 
-# 4. MCP config — Claude Code
-echo -e "${GREEN}[4/5] Removing Claude Code MCP config...${NC}"
+# 4. CLI symlink
+echo -e "${GREEN}[4/6] Removing agenfk CLI symlink...${NC}"
+if [ -L "$HOME/.local/bin/agenfk" ]; then
+    rm "$HOME/.local/bin/agenfk"
+    echo "  Removed: $HOME/.local/bin/agenfk"
+fi
+
+# 5. MCP config — Claude Code
+echo -e "${GREEN}[5/6] Removing Claude Code MCP config...${NC}"
 if command -v claude &> /dev/null; then
     claude mcp remove agenfk 2>/dev/null && echo "  Removed: agenfk MCP from Claude Code" || echo "  Not found in Claude Code (skipping)"
 else
     echo "  Claude Code CLI not found (skipping)"
 fi
 
-# 5. MCP config — Opencode
-echo -e "${GREEN}[5/5] Removing Opencode MCP config...${NC}"
+# 6. MCP config — Opencode
+echo -e "${GREEN}[6/6] Removing Opencode MCP config...${NC}"
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [ -f "$OPENCODE_CONFIG" ]; then
     node -e "
