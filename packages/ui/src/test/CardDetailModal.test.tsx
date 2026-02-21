@@ -121,26 +121,26 @@ describe('CardDetailModal', () => {
     expect(await screen.findByText('Sub Task')).toBeDefined();
   });
 
-  it('should handle status changes', async () => {
-    (api.updateItem as any).mockResolvedValue({ ...mockItem, status: Status.IN_PROGRESS });
-    
+  it('should allow adding a subitem', async () => {
+    const onAddItem = vi.fn().mockResolvedValue(undefined);
     render(
       <CardDetailModal 
         item={mockItem as any} 
         allItems={[]} 
         onClose={() => {}} 
         onSelectItem={() => {}}
-        onAddItem={async () => {}}
+        onAddItem={onAddItem}
       />, 
       { wrapper }
     );
 
-    const statusBadge = screen.getByText(Status.TODO);
-    fireEvent.click(statusBadge);
-    
-    const inProgressOption = await screen.findByText(Status.IN_PROGRESS);
-    fireEvent.click(inProgressOption);
-    
-    expect(api.updateItem).toHaveBeenCalledWith(mockItem.id, expect.objectContaining({ status: Status.IN_PROGRESS }));
+    const subitemsTabs = await screen.findAllByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTabs[subitemsTabs.length - 1]);
+
+    const input = screen.getByPlaceholderText(/Quick add/i);
+    fireEvent.change(input, { target: { value: 'New Task' } });
+    fireEvent.submit(input.closest('form')!);
+
+    expect(onAddItem).toHaveBeenCalledWith('New Task', ItemType.TASK);
   });
 });
