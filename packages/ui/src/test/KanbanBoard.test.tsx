@@ -62,7 +62,8 @@ describe('KanbanBoard', () => {
     
     render(<KanbanBoard />, { wrapper });
     
-    expect(await screen.findByText(/Select a Project/i)).toBeDefined();
+    expect(await screen.findByText(/Welcome to AgenFK/i)).toBeDefined();
+    expect(screen.getByText(/Select an existing project/i)).toBeDefined();
   });
 
   it('should show board when project is selected', async () => {
