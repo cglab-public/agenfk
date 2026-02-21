@@ -23,6 +23,11 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 });
 
+// Mock scrollTo
+if (typeof window !== 'undefined') {
+  window.HTMLElement.prototype.scrollTo = vi.fn();
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: false },
