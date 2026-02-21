@@ -18,6 +18,8 @@ echo -e "${YELLOW}This will remove:${NC}"
 echo "  - Slash commands from Claude Code and Opencode"
 echo "  - Opencode skill"
 echo "  - MCP server config from Claude Code and Opencode"
+echo "  - AgenFK workflow rules from ~/.claude/CLAUDE.md"
+echo "  - AgenFK PreToolUse hook from ~/.claude/settings.json"
 echo "  - ~/.agenfk-system (the framework files)"
 echo ""
 if [ "$SKIP_CONFIRM" = false ]; then
@@ -82,6 +84,50 @@ if [ -f "$OPENCODE_CONFIG" ]; then
     "
 else
     echo "  Opencode config not found (skipping)"
+fi
+
+# 5b. Gatekeeper hook script
+echo -e "${GREEN}[4b] Removing agenfk-gatekeeper hook script...${NC}"
+if [ -f "$HOME/.local/bin/agenfk-gatekeeper" ]; then
+    rm "$HOME/.local/bin/agenfk-gatekeeper"
+    echo "  Removed: $HOME/.local/bin/agenfk-gatekeeper"
+fi
+
+# 5c. CLAUDE.md workflow rules
+echo -e "${GREEN}[4c] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}"
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+if [ -f "$CLAUDE_MD" ]; then
+    node -e "
+    const fs = require('fs');
+    let content = fs.readFileSync('$CLAUDE_MD', 'utf8');
+    content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+    fs.writeFileSync('$CLAUDE_MD', content);
+    console.log('  Removed AgenFK block from $CLAUDE_MD');
+    "
+else
+    echo "  Not found (skipping)"
+fi
+
+# 5d. PreToolUse hook in ~/.claude/settings.json
+echo -e "${GREEN}[4d] Removing PreToolUse hook from ~/.claude/settings.json...${NC}"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$CLAUDE_SETTINGS" ]; then
+    node -e "
+    const fs = require('fs');
+    let config = {};
+    try { config = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf8')); } catch(e) {}
+    if (config.hooks && config.hooks.PreToolUse) {
+        config.hooks.PreToolUse = config.hooks.PreToolUse.filter(entry =>
+            !JSON.stringify(entry).includes('agenfk-gatekeeper')
+        );
+        fs.writeFileSync('$CLAUDE_SETTINGS', JSON.stringify(config, null, 2));
+        console.log('  Removed agenfk-gatekeeper hook from $CLAUDE_SETTINGS');
+    } else {
+        console.log('  Hook not found (skipping)');
+    }
+    "
+else
+    echo "  Not found (skipping)"
 fi
 
 echo ""

@@ -162,6 +162,83 @@ for cmd_file in "$DIR/commands/"*.md; do
     echo -e "  Installed: $CL_COMMANDS_DIR/$(basename "$cmd_file")"
 done
 
+# 10. Install gatekeeper hook script
+echo -e "${GREEN}[10/12] Installing agenfk-gatekeeper hook script...${NC}"
+cp "$DIR/bin/agenfk-gatekeeper.sh" "$HOME/.local/bin/agenfk-gatekeeper"
+chmod +x "$HOME/.local/bin/agenfk-gatekeeper"
+echo -e "  Installed: $HOME/.local/bin/agenfk-gatekeeper"
+
+# 11. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
+echo -e "${GREEN}[11/12] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}"
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+mkdir -p "$HOME/.claude"
+# Remove any previous agenfk block
+if [ -f "$CLAUDE_MD" ]; then
+    node -e "
+    const fs = require('fs');
+    let content = fs.readFileSync('$CLAUDE_MD', 'utf8');
+    content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+    fs.writeFileSync('$CLAUDE_MD', content);
+    "
+fi
+cat >> "$CLAUDE_MD" << 'AGENFK_RULES'
+
+<!-- agenfk:start -->
+## AgenFK Workflow — MANDATORY
+
+Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
+1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
+2. Call `workflow_gatekeeper(intent)` via MCP to confirm authorization.
+
+If no task is `IN_PROGRESS`, stop and do this first — using MCP tools:
+- `create_item(projectId, "TASK", "<title>")`
+- `update_item(id, {status: "IN_PROGRESS"})`
+
+After completing changes — using MCP tools:
+- `verify_changes(itemId, command)` — handles REVIEW → DONE automatically.
+- `log_token_usage(itemId, input, output, model)`.
+
+**ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
+to create items, update status, or close tasks — the CLI bypasses enforcement.**
+
+A PreToolUse hook enforces the IN_PROGRESS check mechanically.
+<!-- agenfk:end -->
+AGENFK_RULES
+echo -e "  Written: $CLAUDE_MD"
+
+# 12. Register PreToolUse hook in ~/.claude/settings.json
+echo -e "${GREEN}[12/12] Registering PreToolUse hook in ~/.claude/settings.json...${NC}"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+GATEKEEPER_PATH="$HOME/.local/bin/agenfk-gatekeeper"
+node -e "
+const fs = require('fs');
+const os = require('os');
+const settingsPath = '$CLAUDE_SETTINGS';
+const gatekeeperPath = '$GATEKEEPER_PATH';
+
+let config = {};
+if (fs.existsSync(settingsPath)) {
+    try { config = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch(e) {}
+}
+
+if (!config.hooks) config.hooks = {};
+if (!config.hooks.PreToolUse) config.hooks.PreToolUse = [];
+
+// Remove any existing agenfk gatekeeper entry
+config.hooks.PreToolUse = config.hooks.PreToolUse.filter(entry =>
+    !JSON.stringify(entry).includes('agenfk-gatekeeper')
+);
+
+// Add the gatekeeper hook
+config.hooks.PreToolUse.push({
+    matcher: 'Edit|Write|NotebookEdit',
+    hooks: [{ type: 'command', command: gatekeeperPath }]
+});
+
+fs.writeFileSync(settingsPath, JSON.stringify(config, null, 2));
+console.log('  Registered PreToolUse hook in ' + settingsPath);
+"
+
 echo -e "${GREEN}Installation Complete.${NC}"
 echo ""
 echo -e "${BLUE}=== Usage Instructions ===${NC}"

@@ -257,14 +257,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       }
       case "verify_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
-        await api.put(`/items/${itemId}`, { status: "REVIEW" });
+        const verifyHeaders = { 'x-agenfk-internal': 'verify' };
+        await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
         const projectRoot = findProjectRoot(process.cwd());
         try {
           const output = execSync(command, { encoding: 'utf8', stdio: 'pipe', cwd: projectRoot });
           const { data: item } = await api.get(`/items/${itemId}`);
           const reviews = item.reviews || [];
           reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
-          await api.put(`/items/${itemId}`, { status: "DONE", reviews });
+          await api.put(`/items/${itemId}`, { status: "DONE", reviews }, { headers: verifyHeaders });
           return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${output}` }] };
         } catch (error: any) {
           const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');

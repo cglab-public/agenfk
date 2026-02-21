@@ -274,14 +274,15 @@ server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
             }
             case "verify_changes": {
                 const { itemId, command } = zod_1.z.object({ itemId: zod_1.z.string(), command: zod_1.z.string() }).parse(request.params.arguments);
-                await api.put(`/items/${itemId}`, { status: "REVIEW" });
+                const verifyHeaders = { 'x-agenfk-internal': 'verify' };
+                await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
                 const projectRoot = findProjectRoot(process.cwd());
                 try {
                     const output = (0, child_process_1.execSync)(command, { encoding: 'utf8', stdio: 'pipe', cwd: projectRoot });
                     const { data: item } = await api.get(`/items/${itemId}`);
                     const reviews = item.reviews || [];
                     reviews.push({ id: (0, uuid_1.v4)(), command, output, status: "PASSED", executedAt: new Date() });
-                    await api.put(`/items/${itemId}`, { status: "DONE", reviews });
+                    await api.put(`/items/${itemId}`, { status: "DONE", reviews }, { headers: verifyHeaders });
                     return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${output}` }] };
                 }
                 catch (error) {

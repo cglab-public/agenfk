@@ -36,6 +36,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 4.  **Action Authorization (Gatekeeper)**
     *   **Action**: Call `workflow_gatekeeper(intent: string)` BEFORE any code change.
     *   **Requirement**: Exactly one task must be `IN_PROGRESS` for the active project.
+    *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `verify_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
 5.  **Mandatory Verification**
     *   **Action**: BEFORE declaring an item as `DONE` (if code was modified), the Agent **MUST** use the `verify_changes(itemId, command)` tool.

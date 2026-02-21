@@ -38,10 +38,28 @@ This will:
 *   Configure the **MCP Server** for both **Opencode** and **Claude Code**.
 *   Install the **`/agenfk`** and **`/agenfk-push`** slash commands in your AI editors.
 *   Install the **Agent Skill** into Opencode.
+*   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
+*   Generate a **`start-services.sh`** script to launch the API and Web UI.
 
 > **Requirements**: Node.js 18+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup.
+
+### Post-Install Steps
+
+After installation, complete the setup:
+
+1.  **Restart your AI editor** (Opencode requires a restart to pick up the new MCP server).
+2.  **Start the services** in a dedicated terminal — this keeps the API and Web UI running in the background:
+    ```bash
+    agenfk up
+    ```
+    This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
+3.  **Verify your installation** at any time:
+    ```bash
+    agenfk health
+    ```
+4.  **Initialize a project** — go to any repository and type `/agenfk` in your AI editor to link it to the framework.
 
 ## Multi-Project Support
 
@@ -97,7 +115,7 @@ graph TD
 
 ## Quick Start (Opencode & Claude Code)
 
-After running `npx agenfk`, two slash commands are available in your AI editor:
+After running `npx github:cglab-PRIVATE/agenfk`, two slash commands are available in your AI editor:
 
 | Command | Description |
 |---|---|

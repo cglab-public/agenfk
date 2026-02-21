@@ -283,6 +283,18 @@ app.put("/items/:id", asyncHandler(async (req, res) => {
     if (!currentItem) {
         return res.status(404).json({ error: "Item not found" });
     }
+    // Enforce REVIEW/DONE transition guard — only verify_changes may set these
+    const isInternalVerify = req.headers['x-agenfk-internal'] === 'verify';
+    if (!isInternalVerify && status === core_1.Status.DONE) {
+        return res.status(403).json({
+            error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Use verify_changes via MCP to validate work before completion."
+        });
+    }
+    if (!isInternalVerify && status === core_1.Status.REVIEW) {
+        return res.status(403).json({
+            error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. The REVIEW state is managed automatically by verify_changes via MCP."
+        });
+    }
     // Handle Archival
     if (status === core_1.Status.ARCHIVED && currentItem.status !== core_1.Status.ARCHIVED) {
         await archiveRecursively(req.params.id);

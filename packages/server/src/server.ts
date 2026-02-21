@@ -270,10 +270,23 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
   const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews } = req.body;
-  
+
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
     return res.status(404).json({ error: "Item not found" });
+  }
+
+  // Enforce REVIEW/DONE transition guard — only verify_changes may set these
+  const isInternalVerify = req.headers['x-agenfk-internal'] === 'verify';
+  if (!isInternalVerify && status === Status.DONE) {
+    return res.status(403).json({
+      error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Use verify_changes via MCP to validate work before completion."
+    });
+  }
+  if (!isInternalVerify && status === Status.REVIEW) {
+    return res.status(403).json({
+      error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. The REVIEW state is managed automatically by verify_changes via MCP."
+    });
   }
 
   // Handle Archival
