@@ -1,11 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ItemType, Status } from '../types';
 import { api } from '../api';
 
@@ -71,6 +71,10 @@ describe('CardDetailModal', () => {
     queryClient.clear();
   });
 
+  afterEach(() => {
+    cleanup();
+  });
+
   it('should render item details and switch tabs', async () => {
     (api.getItem as any).mockResolvedValue(mockItem);
     
@@ -88,17 +92,17 @@ describe('CardDetailModal', () => {
     expect(screen.getByText('Test Story')).toBeDefined();
     
     // Switch to Plan tab
-    const planTab = screen.getAllByRole('button', { name: /Plan/i })[0];
+    const planTab = screen.getByRole('button', { name: /Plan/i });
     fireEvent.click(planTab);
     expect(screen.getByText(/step 1/i)).toBeDefined();
 
     // Switch to Reviews tab
-    const reviewsTab = screen.getAllByRole('button', { name: /Reviews/i })[0];
+    const reviewsTab = screen.getByRole('button', { name: /Reviews/i });
     fireEvent.click(reviewsTab);
     expect(screen.getByText(/npm test/i)).toBeDefined();
 
     // Switch to Usage tab
-    const usageTab = screen.getAllByRole('button', { name: /Usage/i })[0];
+    const usageTab = screen.getByRole('button', { name: /Usage/i });
     fireEvent.click(usageTab);
     expect(screen.getByText(/gpt-4/i)).toBeDefined();
   });
@@ -116,8 +120,8 @@ describe('CardDetailModal', () => {
       { wrapper }
     );
 
-    const subitemsTabs = await screen.findAllByRole('button', { name: /Subitems/i });
-    fireEvent.click(subitemsTabs[subitemsTabs.length - 1]);
+    const subitemsTab = screen.getByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTab);
     expect(await screen.findByText('Sub Task')).toBeDefined();
   });
 
@@ -134,8 +138,8 @@ describe('CardDetailModal', () => {
       { wrapper }
     );
 
-    const subitemsTabs = await screen.findAllByRole('button', { name: /Subitems/i });
-    fireEvent.click(subitemsTabs[subitemsTabs.length - 1]);
+    const subitemsTab = screen.getByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTab);
 
     const input = screen.getByPlaceholderText(/Quick add/i);
     fireEvent.change(input, { target: { value: 'New Task' } });
