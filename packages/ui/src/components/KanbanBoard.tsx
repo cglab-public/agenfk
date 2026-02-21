@@ -224,13 +224,13 @@ export const KanbanBoard: React.FC = () => {
       setHighlightedId(found.id);
       setSearchTerm('');
       
-      // Give DOM time to update if we expanded archive
+      // Give DOM time to update if we expanded archive or changed levels
       setTimeout(() => {
         const element = document.getElementById(`card-${found.id}`);
         if (element) {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-      }, found.status === Status.ARCHIVED ? 300 : 100);
+      }, found.status === Status.ARCHIVED || chain.length > 0 ? 400 : 100);
       
       setTimeout(() => setHighlightedId(null), 3000);
     } else {
@@ -447,7 +447,17 @@ export const KanbanBoard: React.FC = () => {
               
               <div className="flex-1 overflow-y-auto pr-2 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
                 {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
-                  <div key={item.id} id={`card-${item.id}`} className={clsx("group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative", highlightedId === item.id && "ring-2 ring-indigo-500 ring-offset-2 dark:ring-offset-slate-950 scale-[1.02] shadow-lg z-20")} draggable onDragStart={(e) => handleDragStart(e, item.id)} onDoubleClick={() => setSelectedItem(item)}>
+                  <div 
+                    key={item.id} 
+                    id={`card-${item.id}`} 
+                    className={clsx(
+                      "group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative", 
+                      highlightedId === item.id && "ring-4 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950 scale-[1.05] shadow-2xl z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20"
+                    )} 
+                    draggable 
+                    onDragStart={(e) => handleDragStart(e, item.id)} 
+                    onDoubleClick={() => setSelectedItem(item)}
+                  >
                     <div className="flex justify-between items-start mb-3">
                       <div className="flex items-center gap-2">
                         <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
@@ -469,9 +479,9 @@ export const KanbanBoard: React.FC = () => {
                     {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
                       <div className="mb-3">
                         {(() => {
-                          const subitems = items?.filter(i => i.parentId === item.id) || [];
+                          const subitems = items?.filter((i: AgenFKItem) => i.parentId === item.id) || [];
                           if (subitems.length === 0) return null;
-                          const progress = Math.round((subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100);
+                          const progress = Math.round((subitems.filter((i: AgenFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
                           return (
                             <div className="space-y-1.5">
                               <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
@@ -532,10 +542,17 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 <div className="flex-1 overflow-y-auto pr-2 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200">
                   {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
-                    <div key={item.id} className="bg-white/60 dark:bg-slate-900/60 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800">
+                    <div 
+                      key={item.id} 
+                      id={`card-${item.id}`}
+                      className={clsx(
+                        "bg-white/60 dark:bg-slate-900/60 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 transition-all duration-200 relative",
+                        highlightedId === item.id && "ring-4 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950 scale-[1.05] shadow-2xl z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20"
+                      )}
+                    >
                        <div className="flex justify-between items-start mb-2">
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase text-slate-400 border-slate-200 dark:border-slate-700">{item.type}</span>
-                          <button onClick={() => updateMutation.mutate({ id: item.id, updates: { status: item.previousStatus || Status.TODO } })} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded text-indigo-500 transition-colors"><ArchiveRestore size={12} /></button>
+                          <button onClick={() => updateMutation.mutate({ id: item.id, updates: { status: item.previousStatus || Status.TODO } })} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded text-indigo-500 transition-colors" title="Restore"><ArchiveRestore size={12} /></button>
                        </div>
                        <h3 className="font-medium text-slate-500 dark:text-slate-400 text-sm leading-snug">{item.title}</h3>
                     </div>

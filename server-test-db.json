@@ -73,10 +73,33 @@
       "type": "STORY",
       "title": "Parent Story",
       "description": "D",
-      "status": "TODO",
+      "status": "IN_PROGRESS",
       "implementationPlan": "",
       "createdAt": "2026-02-21T16:34:04.353Z",
-      "updatedAt": "2026-02-21T16:34:04.353Z"
+      "updatedAt": "2026-02-21T16:34:04.359Z"
+    },
+    {
+      "id": "bdd8e95a-eced-45bc-8664-3bf5e6214ca5",
+      "projectId": "308e500e-c711-4557-8227-57fb752edf93",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "cb354504-f389-4945-97eb-0faa923cfc3f",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T16:34:04.356Z",
+      "updatedAt": "2026-02-21T16:34:04.358Z"
+    },
+    {
+      "id": "e8ad1282-0bdd-4fea-98d8-fa364da58d4b",
+      "projectId": "308e500e-c711-4557-8227-57fb752edf93",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T16:34:04.362Z",
+      "updatedAt": "2026-02-21T16:34:04.367Z"
     }
   ]
 }
