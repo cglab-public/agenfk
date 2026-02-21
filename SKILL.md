@@ -47,7 +47,15 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Requirement**: Exactly one task must be `IN_PROGRESS` for the active project.
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `verify_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
-5.  **Mandatory Verification**
+5.  **Mandatory Automated Testing**
+    *   **Action**: Moving an item to the `TEST` column (status: `TEST`) triggers an automated verification run on the server.
+    *   **Enforcement**: The server executes `npm run test:coverage` (or a configured command) and parses the output.
+    *   **Coverage Rule**: New code MUST be covered at 80% minimum.
+    *   **Automation**: 
+        *   Success: Item moves automatically to `REVIEW`.
+        *   Failure: Item moves back to `IN_PROGRESS` with logs attached to `reviews`.
+
+6.  **Final Verification (Review)**
     *   **Action**: BEFORE declaring an item as `DONE` (if code was modified), the Agent **MUST** use the `verify_changes(itemId, command)` tool.
     *   **Review Rules**:
         *   **TASKS**: Always require individual verification.
@@ -58,7 +66,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
         2. The tool executes the command.
         3. Success: Moves to `DONE`. Failure: Moves back to `IN_PROGRESS`.
 
-6.  **Measurement & Tracking**
+7.  **Measurement & Tracking**
     *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `verify_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion**: Update parent Story/Epic status automatically.

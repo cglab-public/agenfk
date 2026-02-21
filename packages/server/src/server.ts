@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
-import { ItemType, Status, AgenFKItem, Project } from "@agenfk/core";
+import { ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -89,7 +89,7 @@ const syncParentStatus = async (parentId: string) => {
   if (children.length === 0) return;
 
   const allDone = children.every(c => c.status === Status.DONE);
-  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.REVIEW);
+  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.TEST || c.status === Status.REVIEW);
   const anyDone = children.some(c => c.status === Status.DONE);
 
   let newStatus: Status | null = null;
@@ -200,6 +200,51 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
   if (!project) return res.status(404).json({ error: "Project not found" });
   res.json(project);
 }));
+
+const triggerAutoTest = async (itemId: string, projectRoot: string) => {
+  const item = await storage.getItem(itemId);
+  if (!item) return;
+
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [AUTO_TEST] Starting tests for item ${itemId}...`);
+
+  // Use the specialized enforcement script
+  const command = "npx ts-node --esm scripts/enforce-coverage.ts";
+
+  exec(command, { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 }, async (err, stdout, stderr) => {
+    const executedAt = new Date();
+    const output = stdout + "\n" + stderr;
+    const passed = !err;
+    
+    const finalStatus = passed ? "PASSED" : "FAILED";
+    const record: ReviewRecord = {
+      id: uuidv4(),
+      command,
+      output: output,
+      status: finalStatus,
+      executedAt
+    };
+
+    const currentItem = await storage.getItem(itemId);
+    if (!currentItem) return;
+
+    const reviews = [...(currentItem.reviews || []), record];
+    const nextStatus = (finalStatus === "PASSED") ? Status.DONE : Status.IN_PROGRESS;
+
+    await storage.updateItem(itemId, { 
+      reviews,
+      status: nextStatus 
+    });
+
+    const updateTs = new Date().toISOString();
+    console.log(`[${updateTs}] [AUTO_TEST] Item ${itemId} finished: ${finalStatus}. Moving to ${nextStatus}.`);
+    io.emit('items_updated');
+    
+    if (currentItem.parentId) {
+      await syncParentStatus(currentItem.parentId);
+    }
+  });
+};
 
 app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   try {
@@ -350,6 +395,11 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
       const projectRoot = findProjectRoot(process.cwd());
       autoGitCommit(updated, projectRoot);
+    }
+
+    if (updated.status === Status.TEST && currentItem.status !== Status.TEST) {
+      const projectRoot = findProjectRoot(process.cwd());
+      triggerAutoTest(updated.id, projectRoot);
     }
 
     res.json(updated);
