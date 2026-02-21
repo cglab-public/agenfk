@@ -7,6 +7,11 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+SKIP_CONFIRM=false
+if [[ "$1" == "-y" || "$1" == "--yes" ]]; then
+    SKIP_CONFIRM=true
+fi
+
 echo -e "${BLUE}=== AgenFK Uninstaller ===${NC}"
 echo ""
 echo -e "${YELLOW}This will remove:${NC}"
@@ -15,10 +20,12 @@ echo "  - Opencode skill"
 echo "  - MCP server config from Claude Code and Opencode"
 echo "  - ~/.agenfk-system (the framework files)"
 echo ""
-read -r -p "Are you sure? [y/N] " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo "Aborted."
-    exit 0
+if [ "$SKIP_CONFIRM" = false ]; then
+    read -r -p "Are you sure? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
 fi
 
 echo ""

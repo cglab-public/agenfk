@@ -26,12 +26,12 @@ program
   .action(async () => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
-    
-    // Check if bootstrap required
-    const agenfkDir = path.join(rootDir, '.agenfk');
+
+    // Only bootstrap if start-services.sh or server dist is missing
+    const startScript = path.join(rootDir, 'start-services.sh');
     const serverDist = path.join(rootDir, 'packages/server/dist/server.js');
-    
-    if (!fs.existsSync(agenfkDir) || !fs.existsSync(serverDist)) {
+
+    if (!fs.existsSync(startScript) || !fs.existsSync(serverDist)) {
         console.log(chalk.yellow('📦 Initial bootstrap required...'));
         try {
             execSync('./install.sh', { cwd: rootDir, stdio: 'inherit' });
@@ -39,6 +39,8 @@ program
             console.error(chalk.red('Bootstrap failed.'));
             return;
         }
+    } else {
+        console.log(chalk.green('Build artifacts found, skipping rebuild.'));
     }
     
     console.log(chalk.blue('⚡ Starting agenfk services...'));

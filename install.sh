@@ -22,36 +22,37 @@ if [ ! -d ".agenfk" ]; then
 fi
 
 # 3. Create start script for UI/API
-echo -e "${GREEN}[3/8] Creating background service script (start-services.sh)...${NC}"
-DB_PATH="$(pwd)/.agenfk/db.json"
+echo -e "${GREEN}[3/9] Creating background service script (start-services.sh)...${NC}"
+AGENFK_ROOT="$(pwd)"
+DB_PATH="${AGENFK_ROOT}/.agenfk/db.json"
 cat > start-services.sh << INNEREOF
 #!/bin/bash
-# Kill background jobs on exit
+# AgenFK service launcher — all paths are absolute so this works from anywhere
+AGENFK_ROOT="${AGENFK_ROOT}"
+
 trap "exit" INT TERM
 trap "kill 0" EXIT
 
+mkdir -p "\${AGENFK_ROOT}/.agenfk"
+
 echo "Starting API Server on port 3000..."
-export AGENFK_DB_PATH="\$DB_PATH"
-node packages/server/dist/server.js > .agenfk/api.log 2>&1 &
-API_PID=\$!
+export AGENFK_DB_PATH="${DB_PATH}"
+node "\${AGENFK_ROOT}/packages/server/dist/server.js" > "\${AGENFK_ROOT}/.agenfk/api.log" 2>&1 &
 
 echo "Starting UI..."
-> .agenfk/ui.log
-cd packages/ui && npm run dev > ../../.agenfk/ui.log 2>&1 &
-UI_PID=\$!
+cd "\${AGENFK_ROOT}/packages/ui" && npm run dev > "\${AGENFK_ROOT}/.agenfk/ui.log" 2>&1 &
 
 echo "Services started."
 echo "API: http://localhost:3000"
-echo "Database: \$AGENFK_DB_PATH"
-echo "Logs are in .agenfk/*.log"
+echo "Database: \${AGENFK_DB_PATH}"
+echo "Logs: \${AGENFK_ROOT}/.agenfk/*.log"
 echo "Press Ctrl+C to stop both services."
 
-# Wait a moment for UI server to boot and detect port
 echo "Waiting for UI to be ready..."
 UI_URL=""
 for i in {1..15}; do
-    if grep -q "http://localhost:" .agenfk/ui.log 2>/dev/null; then
-        UI_URL=\$(grep -o 'http://localhost:[0-9]*' .agenfk/ui.log | head -n 1)
+    if grep -q "http://localhost:" "\${AGENFK_ROOT}/.agenfk/ui.log" 2>/dev/null; then
+        UI_URL=\$(grep -o 'http://localhost:[0-9]*' "\${AGENFK_ROOT}/.agenfk/ui.log" | head -n 1)
         break
     fi
     sleep 1
@@ -63,7 +64,6 @@ fi
 
 echo "UI available at: \$UI_URL"
 
-# Attempt to open browser
 if grep -qEi "(Microsoft|WSL)" /proc/version &> /dev/null; then
     explorer.exe "\$UI_URL" > /dev/null 2>&1 || true
 elif [[ "\$OSTYPE" == "linux-gnu"* ]]; then
@@ -166,6 +166,7 @@ echo -e "${GREEN}Installation Complete.${NC}"
 echo ""
 echo -e "${BLUE}=== Usage Instructions ===${NC}"
 echo "1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP)."
-echo "2. Run './start-services.sh' in a separate terminal to enable the Web UI."
+echo "2. Run 'agenfk up' in a separate terminal to start the API and Web UI."
 echo "3. Go to ANY project repository and type '/agenfk' in your AI editor's prompt to initialize your project context and start the workflow."
 echo "4. Use '/agenfk-push' to push to remote and optionally cut a GitHub release."
+echo "5. Run 'agenfk health' to verify your installation at any time."
