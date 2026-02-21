@@ -14,12 +14,21 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 ## What I do
 
 1.  **Initialization**
-    *   **Action**: 
+    *   **Action**:
         1. Check for `.agenfk/project.json` in the project root.
         2. If missing, call `list_projects()` via MCP to see existing projects.
         3. Ask the user if they want to use an existing project or create a new one (recommended).
         4. Create/link the project by creating `.agenfk/project.json` with the `{ "projectId": "..." }`.
         5. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
+        6. Fetch all items via `list_items(projectId)` and render the **Board Report** as described below.
+    *   **Board Report Format**:
+        *   **Cycle Time Calculation**: For each item, compute cycle time as `updatedAt - createdAt`. Format durations as `Xd Yh` (days and hours). For DONE/ARCHIVED items this represents total elapsed time. For active items (TODO, IN_PROGRESS, BLOCKED) it represents age.
+        *   **Per-card display**: Include a `Cycle Time` column in every status group table.
+        *   **Summary Header**: Show a metrics line with:
+            - Total token usage (sum of all `tokenUsage[].input + tokenUsage[].output` across all items)
+            - Total cycle time (sum of cycle times of all DONE items, formatted as `Xd Yh`)
+            - Average cycle time across DONE items
+            - Format: `Tokens: X in / Y out | Cycle: Xtotal (Yavg avg across Z tasks)`
     *   **Objective**: Maintain project identity and a living map.
 
 2.  **Request Analysis & Clarification**
