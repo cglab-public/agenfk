@@ -46,7 +46,18 @@ const axios_1 = __importDefault(require("axios"));
 const uuid_1 = require("uuid");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const child_process_1 = require("child_process");
+// Load the install-time secret token — must match what the API server loaded.
+const VERIFY_TOKEN = (() => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    try {
+        return fs.readFileSync(tokenPath, 'utf8').trim();
+    }
+    catch {
+        return ''; // Token missing — verify_changes calls will be rejected by the API server.
+    }
+})();
 const API_URL = process.env.AGENFK_API_URL || "http://127.0.0.1:3000";
 const api = axios_1.default.create({
     baseURL: API_URL,
@@ -274,7 +285,7 @@ server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
             }
             case "verify_changes": {
                 const { itemId, command } = zod_1.z.object({ itemId: zod_1.z.string(), command: zod_1.z.string() }).parse(request.params.arguments);
-                const verifyHeaders = { 'x-agenfk-internal': 'verify' };
+                const verifyHeaders = { 'x-agenfk-internal': VERIFY_TOKEN };
                 await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
                 const projectRoot = findProjectRoot(process.cwd());
                 try {

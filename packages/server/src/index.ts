@@ -13,7 +13,18 @@ import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import { execSync } from "child_process";
+
+// Load the install-time secret token — must match what the API server loaded.
+const VERIFY_TOKEN = (() => {
+  const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+  try {
+    return fs.readFileSync(tokenPath, 'utf8').trim();
+  } catch {
+    return ''; // Token missing — verify_changes calls will be rejected by the API server.
+  }
+})();
 
 const API_URL = process.env.AGENFK_API_URL || "http://127.0.0.1:3000";
 
@@ -257,7 +268,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       }
       case "verify_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
-        const verifyHeaders = { 'x-agenfk-internal': 'verify' };
+        const verifyHeaders = { 'x-agenfk-internal': VERIFY_TOKEN };
         await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
         const projectRoot = findProjectRoot(process.cwd());
         try {

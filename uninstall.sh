@@ -108,6 +108,13 @@ else
     echo "  Not found (skipping)"
 fi
 
+# 5e. Verify token
+echo -e "${GREEN}[4e] Removing verify token...${NC}"
+if [ -f "$HOME/.agenfk/verify-token" ]; then
+    rm "$HOME/.agenfk/verify-token"
+    echo "  Removed: $HOME/.agenfk/verify-token"
+fi
+
 # 5d. PreToolUse hook in ~/.claude/settings.json
 echo -e "${GREEN}[4d] Removing PreToolUse hook from ~/.claude/settings.json...${NC}"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"

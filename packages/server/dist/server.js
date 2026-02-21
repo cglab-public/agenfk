@@ -44,6 +44,21 @@ const core_1 = require("@agenfk/core");
 const uuid_1 = require("uuid");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
+// Load the install-time secret token used to authenticate verify_changes transitions.
+// Generated at install time and stored in ~/.agenfk/verify-token — not in the codebase.
+const VERIFY_TOKEN = (() => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    try {
+        return fs.readFileSync(tokenPath, 'utf8').trim();
+    }
+    catch {
+        const ephemeral = crypto.randomBytes(32).toString('hex');
+        console.warn(`[SERVER_START] Warning: ~/.agenfk/verify-token not found. Run install.sh to generate it. Using ephemeral token for this session.`);
+        return ephemeral;
+    }
+})();
 const child_process_1 = require("child_process");
 const http_1 = require("http");
 const socket_io_1 = require("socket.io");
@@ -284,7 +299,7 @@ app.put("/items/:id", asyncHandler(async (req, res) => {
         return res.status(404).json({ error: "Item not found" });
     }
     // Enforce REVIEW/DONE transition guard — only verify_changes may set these
-    const isInternalVerify = req.headers['x-agenfk-internal'] === 'verify';
+    const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
     if (!isInternalVerify && status === core_1.Status.DONE) {
         return res.status(403).json({
             error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Use verify_changes via MCP to validate work before completion."

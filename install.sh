@@ -15,8 +15,20 @@ echo -e "${GREEN}[1/8] Building project...${NC}"
 npm install
 npm run build
 
-# 2. Ensure configuration exists
-echo -e "${GREEN}[2/8] Initializing configuration...${NC}"
+# 2. Generate install-time secret verify token
+echo -e "${GREEN}[2/8] Generating secret verify token...${NC}"
+mkdir -p "$HOME/.agenfk"
+node -e "
+const crypto = require('crypto');
+const fs = require('fs');
+const tokenPath = require('os').homedir() + '/.agenfk/verify-token';
+fs.writeFileSync(tokenPath, crypto.randomBytes(32).toString('hex'), 'utf8');
+fs.chmodSync(tokenPath, 0o600);
+console.log('  Generated: ' + tokenPath);
+"
+
+# 3. Ensure configuration exists
+echo -e "${GREEN}[3/8] Initializing configuration...${NC}"
 if [ ! -d ".agenfk" ]; then
     node packages/cli/bin/agenfk.js init
 fi

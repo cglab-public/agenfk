@@ -6,6 +6,21 @@ import { ItemType, Status, AgenFKItem, Project } from "@agenfk/core";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
+import * as crypto from "crypto";
+
+// Load the install-time secret token used to authenticate verify_changes transitions.
+// Generated at install time and stored in ~/.agenfk/verify-token — not in the codebase.
+const VERIFY_TOKEN = (() => {
+  const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+  try {
+    return fs.readFileSync(tokenPath, 'utf8').trim();
+  } catch {
+    const ephemeral = crypto.randomBytes(32).toString('hex');
+    console.warn(`[SERVER_START] Warning: ~/.agenfk/verify-token not found. Run install.sh to generate it. Using ephemeral token for this session.`);
+    return ephemeral;
+  }
+})();
 import { exec } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -277,7 +292,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   }
 
   // Enforce REVIEW/DONE transition guard — only verify_changes may set these
-  const isInternalVerify = req.headers['x-agenfk-internal'] === 'verify';
+  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify && status === Status.DONE) {
     return res.status(403).json({
       error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Use verify_changes via MCP to validate work before completion."
