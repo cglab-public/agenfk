@@ -77,17 +77,17 @@ describe('CardDetailModal', () => {
     expect(screen.getByText('Test Story')).toBeDefined();
     
     // Switch to Plan tab
-    const planTab = screen.getByText(/Plan/i);
+    const planTab = screen.getAllByText(/Plan/i)[0];
     fireEvent.click(planTab);
     expect(screen.getByText(/step 1/i)).toBeDefined();
 
     // Switch to Reviews tab
-    const reviewsTab = screen.getByText(/Reviews/i);
+    const reviewsTab = screen.getAllByText(/Reviews/i)[0];
     fireEvent.click(reviewsTab);
     expect(screen.getByText(/npm test/i)).toBeDefined();
 
     // Switch to Usage tab
-    const usageTab = screen.getByText(/Usage/i);
+    const usageTab = screen.getAllByText(/Usage/i)[0];
     fireEvent.click(usageTab);
     expect(screen.getByText(/gpt-4/i)).toBeDefined();
   });
@@ -105,7 +105,7 @@ describe('CardDetailModal', () => {
       { wrapper }
     );
 
-    const subitemsTab = screen.getByText(/Subitems/i);
+    const subitemsTab = screen.getAllByText(/Subitems/i)[0];
     fireEvent.click(subitemsTab);
     expect(screen.getByText('Sub Task')).toBeDefined();
   });
