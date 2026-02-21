@@ -10,7 +10,7 @@
     "agenfk": "bin/agenfk.js"
   },
   "scripts": {
-    "build": "npm run build --workspaces"
+    "build": "npm run build -w packages/core -w packages/storage-json && npm run build -w packages/cli -w packages/server -w packages/ui"
   },
   "keywords": [],
   "author": "",
