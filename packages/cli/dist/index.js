@@ -50,6 +50,38 @@ program
     }
 });
 program
+    .command('down')
+    .description('Stop all AgenFK services (API server and UI)')
+    .action(() => {
+    const rootDir = path_1.default.resolve(__dirname, '../../..');
+    console.log(chalk_1.default.blue('🛑 Bringing down AgenFK services...'));
+    let stopped = 0;
+    // Stop API server — match the specific server.js path
+    try {
+        (0, child_process_1.execSync)(`pkill -f "packages/server/dist/server.js"`, { stdio: 'pipe' });
+        console.log(chalk_1.default.green('  ✓ API server stopped'));
+        stopped++;
+    }
+    catch {
+        console.log(chalk_1.default.gray('  - API server was not running'));
+    }
+    // Stop UI dev server — match vite process rooted in packages/ui
+    try {
+        (0, child_process_1.execSync)(`pkill -f "packages/ui"`, { stdio: 'pipe' });
+        console.log(chalk_1.default.green('  ✓ UI server stopped'));
+        stopped++;
+    }
+    catch {
+        console.log(chalk_1.default.gray('  - UI server was not running'));
+    }
+    if (stopped > 0) {
+        console.log(chalk_1.default.green(`\n✅ Stopped ${stopped} service(s).`));
+    }
+    else {
+        console.log(chalk_1.default.yellow('\nNo running services found.'));
+    }
+});
+program
     .command('ui')
     .description('Show dashboard information and open in browser')
     .action(() => {
