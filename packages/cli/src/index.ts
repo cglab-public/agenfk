@@ -27,7 +27,22 @@ program
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
 
-    // Only bootstrap if start-services.sh or server dist is missing
+    // 0. Cleanup zombies
+    console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
+    try {
+      // Kill anything on port 3000 (API)
+      execSync(`fuser -k 3000/tcp`, { stdio: 'ignore' });
+    } catch {}
+    try {
+      // Kill anything on port 5173 (UI default)
+      execSync(`fuser -k 5173/tcp`, { stdio: 'ignore' });
+    } catch {}
+    try {
+      execSync(`pkill -f "packages/server/dist/server.js"`, { stdio: 'ignore' });
+      execSync(`pkill -f "packages/ui"`, { stdio: 'ignore' });
+    } catch {}
+
+    // 1. Only bootstrap if start-services.sh or server dist is missing
     const startScript = path.join(rootDir, 'start-services.sh');
     const serverDist = path.join(rootDir, 'packages/server/dist/server.js');
 

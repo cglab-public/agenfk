@@ -22,7 +22,24 @@ program
     .action(async () => {
     const rootDir = path_1.default.resolve(__dirname, '../../..');
     console.log(chalk_1.default.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
-    // Only bootstrap if start-services.sh or server dist is missing
+    // 0. Cleanup zombies
+    console.log(chalk_1.default.gray('🧹 Cleaning up zombie processes...'));
+    try {
+        // Kill anything on port 3000 (API)
+        (0, child_process_1.execSync)(`fuser -k 3000/tcp`, { stdio: 'ignore' });
+    }
+    catch { }
+    try {
+        // Kill anything on port 5173 (UI default)
+        (0, child_process_1.execSync)(`fuser -k 5173/tcp`, { stdio: 'ignore' });
+    }
+    catch { }
+    try {
+        (0, child_process_1.execSync)(`pkill -f "packages/server/dist/server.js"`, { stdio: 'ignore' });
+        (0, child_process_1.execSync)(`pkill -f "packages/ui"`, { stdio: 'ignore' });
+    }
+    catch { }
+    // 1. Only bootstrap if start-services.sh or server dist is missing
     const startScript = path_1.default.join(rootDir, 'start-services.sh');
     const serverDist = path_1.default.join(rootDir, 'packages/server/dist/server.js');
     if (!fs_1.default.existsSync(startScript) || !fs_1.default.existsSync(serverDist)) {
