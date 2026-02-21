@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { api } from '../api';
+import { ItemType, Status } from '../types';
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
