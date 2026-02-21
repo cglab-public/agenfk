@@ -27,8 +27,8 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
         *   **Summary Header**: Show a metrics line with:
             - Total token usage (sum of all `tokenUsage[].input + tokenUsage[].output` across all items)
             - Total cycle time (sum of cycle times of all DONE items, formatted as `Xd Yh`)
-            - Average cycle time across DONE items
-            - Format: `Tokens: X in / Y out | Cycle: Xtotal (Yavg avg across Z tasks)`
+            - Average cycle time across DONE items (total ÷ count, formatted as `Xd Yh`)
+            - Format: `Tokens: X in / Y out | Cycle Total: Xd Yh | Cycle Avg: Xd Yh (N tasks)`
     *   **Objective**: Maintain project identity and a living map.
 
 2.  **Request Analysis & Clarification**
