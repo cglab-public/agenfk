@@ -10,11 +10,15 @@ import path from 'path';
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
 
-console.log(
-  chalk.cyan(
-    figlet.textSync('agenfk', { horizontalLayout: 'full' })
-  )
-);
+if (process.env.NODE_ENV !== 'test') {
+  console.log(
+    chalk.cyan(
+      figlet.textSync('agenfk', { horizontalLayout: 'full' })
+    )
+  );
+}
+
+export { program };
 
 program
   .version('0.1.0')
@@ -384,4 +388,6 @@ program
       : chalk.yellow(`⚠️ Found ${issues} potential issue(s). Run './agenfk up' to fix.`)) + '\n');
   });
 
-program.parse(process.argv);
+if (process.env.NODE_ENV !== 'test') {
+  program.parse(process.argv);
+}
