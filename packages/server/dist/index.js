@@ -158,7 +158,7 @@ server.setRequestHandler(types_js_1.ListToolsRequestSchema, async () => {
             },
             {
                 name: "update_item",
-                description: "Update an existing item's status, title, or description.",
+                description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE or REVIEW directly — use 'verify_changes' instead.",
                 inputSchema: {
                     type: "object",
                     properties: {
@@ -344,6 +344,19 @@ server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
             case "update_item": {
                 const args = UpdateItemSchema.parse(request.params.arguments);
                 const { id, ...updates } = args;
+                // Enforce REVIEW workflow: block direct transitions to DONE or REVIEW
+                if (updates.status === "DONE") {
+                    return {
+                        isError: true,
+                        content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly via update_item. You MUST use 'verify_changes(itemId, command)' to validate your work before completion. The verify_changes tool will move the item through REVIEW → DONE automatically.` }],
+                    };
+                }
+                if (updates.status === "REVIEW") {
+                    return {
+                        isError: true,
+                        content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. The REVIEW state is managed automatically by 'verify_changes(itemId, command)'. Call verify_changes instead.` }],
+                    };
+                }
                 const { data } = await api.put(`/items/${id}`, updates);
                 return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
             }
