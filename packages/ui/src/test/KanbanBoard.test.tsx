@@ -15,13 +15,18 @@ Object.defineProperty(window, 'matchMedia', {
     matches: false,
     media: query,
     onchange: null,
-    addListener: vi.fn(), // deprecated
-    removeListener: vi.fn(), // deprecated
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(),
   })),
 });
+
+// Mock scrollTo
+if (typeof window !== 'undefined') {
+  window.HTMLElement.prototype.scrollTo = vi.fn();
+}
 
 vi.mock('../api', () => ({
   api: {
@@ -31,6 +36,7 @@ vi.mock('../api', () => ({
     createItem: vi.fn(),
     updateItem: vi.fn(),
     deleteItem: vi.fn(),
+    createProject: vi.fn(),
   }
 }));
 
@@ -88,7 +94,7 @@ describe('KanbanBoard', () => {
     const createBtn = await screen.findByText(/Create New Project/i);
     createBtn.click();
     
-    // Check if input appeared (this might need more RTL queries)
-    // For now, just check if the flow starts.
+    // The button click should trigger a state change to show the project creation form.
+    // For now we just verify the click didn't crash.
   });
 });

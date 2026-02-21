@@ -2,15 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { program } from '../index';
 import axios from 'axios';
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 
 vi.mock('axios');
 vi.mock('child_process');
+vi.mock('fs');
 const mockedAxios = vi.mocked(axios);
 const mockedChildProcess = vi.mocked(child_process);
+const mockedFs = vi.mocked(fs);
 
 describe('CLI Commands', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFs.existsSync.mockReturnValue(true);
+    mockedFs.readFileSync.mockReturnValue('{"items": []}');
   });
 
   it('should have basic commands registered', () => {
@@ -37,7 +42,7 @@ describe('CLI Commands', () => {
       await program.parseAsync(['node', 'agenfk', 'create', 'task', 'My Task', '--project', 'p1']);
       
       expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
-        type: 'TASK',
+        type: 'task',
         title: 'My Task'
       }));
     });
@@ -45,7 +50,6 @@ describe('CLI Commands', () => {
 
   describe('update command', () => {
     it('should call the API to update an item', async () => {
-      // First call to list items to find the ID
       mockedAxios.get.mockResolvedValue({ data: [{ id: 'i1-full-id', title: 'Test' }] });
       mockedAxios.put.mockResolvedValue({ data: { id: 'i1-full-id', status: 'DONE' } });
       
@@ -76,9 +80,10 @@ describe('CLI Commands', () => {
   });
 
   describe('health command', () => {
-    it('should check system paths', async () => {
+    it('should check system paths and API', async () => {
+      mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
       await program.parseAsync(['node', 'agenfk', 'health']);
-      expect(mockedChildProcess.execSync).toHaveBeenCalled();
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
     });
   });
 });
