@@ -74,4 +74,11 @@ describe('CLI Commands', () => {
       expect(mockedChildProcess.execSync).toHaveBeenCalled();
     });
   });
+
+  describe('health command', () => {
+    it('should check system paths', async () => {
+      await program.parseAsync(['node', 'agenfk', 'health']);
+      expect(mockedChildProcess.execSync).toHaveBeenCalled();
+    });
+  });
 });
