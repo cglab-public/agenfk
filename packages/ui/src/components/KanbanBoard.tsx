@@ -474,14 +474,14 @@ export const KanbanBoard: React.FC = () => {
                 </span>
               </div>
               
-              <div className="flex-1 overflow-y-auto pr-2 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
+              <div className="flex-1 overflow-y-auto px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
                 {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
                   <div 
                     key={item.id} 
                     id={`card-${item.id}`} 
                     className={clsx(
                       "group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative", 
-                      highlightedId === item.id && "ring-4 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950 scale-[1.05] shadow-2xl z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20"
+                      highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30"
                     )} 
                     draggable 
                     onDragStart={(e) => handleDragStart(e, item.id)} 
@@ -576,7 +576,7 @@ export const KanbanBoard: React.FC = () => {
                       id={`card-${item.id}`}
                       className={clsx(
                         "bg-white/60 dark:bg-slate-900/60 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 transition-all duration-200 relative",
-                        highlightedId === item.id && "ring-4 ring-indigo-500 ring-offset-4 dark:ring-offset-slate-950 scale-[1.05] shadow-2xl z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/30 dark:bg-indigo-900/20"
+                        highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30"
                       )}
                     >
                        <div className="flex justify-between items-start mb-2">
