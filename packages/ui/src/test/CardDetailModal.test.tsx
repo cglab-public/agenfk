@@ -108,7 +108,7 @@ describe('CardDetailModal', () => {
   });
 
   it('should render subitems for stories', async () => {
-    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', type: ItemType.TASK };
+    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', type: ItemType.TASK, status: Status.DONE };
     render(
       <CardDetailModal 
         item={mockItem as any} 
@@ -123,6 +123,24 @@ describe('CardDetailModal', () => {
     const subitemsTab = screen.getByRole('button', { name: /Subitems/i });
     fireEvent.click(subitemsTab);
     expect(await screen.findByText('Sub Task')).toBeDefined();
+    expect(screen.getByText('DONE')).toBeDefined();
+  });
+
+  it('should show "No subitems found" message', () => {
+    render(
+      <CardDetailModal 
+        item={mockItem as any} 
+        allItems={[]} 
+        onClose={() => {}} 
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+      />, 
+      { wrapper }
+    );
+
+    const subitemsTab = screen.getByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTab);
+    expect(screen.getByText(/No subitems found/i)).toBeDefined();
   });
 
   it('should allow adding a subitem', async () => {
