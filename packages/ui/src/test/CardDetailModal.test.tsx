@@ -29,6 +29,14 @@ if (typeof window !== 'undefined') {
   window.HTMLElement.prototype.scrollTo = vi.fn();
 }
 
+vi.mock('../api', () => ({
+  api: {
+    getItem: vi.fn(() => Promise.resolve({})),
+    updateItem: vi.fn(() => Promise.resolve({})),
+    listItems: vi.fn(() => Promise.resolve([])),
+  }
+}));
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: false },
@@ -64,6 +72,8 @@ describe('CardDetailModal', () => {
   });
 
   it('should render item details and switch tabs', async () => {
+    (api.getItem as any).mockResolvedValue(mockItem);
+    
     render(
       <CardDetailModal 
         item={mockItem as any} 
@@ -106,8 +116,8 @@ describe('CardDetailModal', () => {
       { wrapper }
     );
 
-    const subitemsTab = await screen.findAllByRole('button', { name: /Subitems/i });
-    fireEvent.click(subitemsTab[subitemsTab.length - 1]);
+    const subitemsTabs = await screen.findAllByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTabs[subitemsTabs.length - 1]);
     expect(await screen.findByText('Sub Task')).toBeDefined();
   });
 
