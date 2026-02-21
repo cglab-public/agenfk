@@ -3,7 +3,7 @@ import { api } from '../api';
 import axios from 'axios';
 
 vi.mock('axios');
-const mockedAxios = vi.mocked(axios);
+const mockedAxios = vi.mocked(axios, true);
 
 describe('UI API Client', () => {
   beforeEach(() => {

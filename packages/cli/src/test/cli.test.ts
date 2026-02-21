@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { program } from '../index';
 import axios from 'axios';
 import * as child_process from 'child_process';
@@ -9,10 +9,10 @@ vi.mock('axios');
 vi.mock('child_process');
 vi.mock('fs');
 vi.mock('inquirer');
-const mockedAxios = vi.mocked(axios);
-const mockedChildProcess = vi.mocked(child_process);
-const mockedFs = vi.mocked(fs);
-const mockedInquirer = vi.mocked(inquirer);
+const mockedAxios = vi.mocked(axios, true);
+const mockedChildProcess = vi.mocked(child_process, true);
+const mockedFs = vi.mocked(fs, true);
+const mockedInquirer = vi.mocked(inquirer, true);
 
 describe('CLI Commands', () => {
   beforeEach(() => {
