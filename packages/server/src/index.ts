@@ -276,9 +276,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           const { data: item } = await api.get(`/items/${itemId}`);
           const reviews = item.reviews || [];
           reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
-          // Move to TEST instead of DONE to trigger automated coverage check
+          // Move to TEST instead of DONE. The Agent will perform deep verification in TEST.
           await api.put(`/items/${itemId}`, { status: "TEST", reviews }, { headers: verifyHeaders });
-          return { content: [{ type: "text", text: `✅ Verification Successful!\n\nCommand: \`${command}\`\nItem moved to TEST column for automated coverage check.` }] };
+          return { content: [{ type: "text", text: `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to TEST column.\n\nREMINDER: You (the Agent) MUST now run full tests/coverage manually (e.g. \`npm run test:coverage\`) and verify the results before moving the item to DONE.` }] };
         } catch (error: any) {
           const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
           try {
@@ -342,13 +342,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const args = UpdateItemSchema.parse(request.params.arguments);
         const { id, ...updates } = args;
 
-        // Enforce REVIEW workflow: block direct transitions to DONE or REVIEW
+        // Fetch current item to check status for state machine transitions
+        const { data: currentItem } = await api.get(`/items/${id}`);
+
+        // Enforce REVIEW/TEST workflow: block direct transitions to DONE unless from TEST
         if (updates.status === "DONE") {
-          return {
-            isError: true,
-            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly via update_item. You MUST use 'verify_changes(itemId, command)' to validate your work before completion. The verify_changes tool will move the item through REVIEW → DONE automatically.` }],
-          };
+          if (currentItem.status !== "TEST") {
+            return {
+              isError: true,
+              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. You MUST move through TEST column first. Use 'verify_changes(itemId, command)' to reach TEST.` }],
+            };
+          }
+          // Allow TEST -> DONE, using verify token to bypass server guard
+          const { data } = await api.put(`/items/${id}`, updates, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
         }
+
         if (updates.status === "REVIEW") {
           return {
             isError: true,
