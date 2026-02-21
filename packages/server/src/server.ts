@@ -202,9 +202,13 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
-  const updated = await storage.updateProject(req.params.id, req.body);
-  io.emit('items_updated');
-  res.json(updated);
+  try {
+    const updated = await storage.updateProject(req.params.id, req.body);
+    io.emit('items_updated');
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
 }));
 
 app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
