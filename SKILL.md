@@ -22,13 +22,13 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
         5. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
         6. Fetch all items via `list_items(projectId)` and render the **Board Report** as described below.
     *   **Board Report Format**:
-        *   **Cycle Time Calculation**: For each item, compute cycle time as `updatedAt - createdAt`. Format durations as `Xd Yh` (days and hours). For DONE/ARCHIVED items this represents total elapsed time. For active items (TODO, IN_PROGRESS, BLOCKED) it represents age.
+        *   **Cycle Time Calculation**: For each item, compute cycle time as `updatedAt - createdAt`. Format durations as `HH:MM:SS`. For DONE/ARCHIVED items this represents total elapsed time. For active items (TODO, IN_PROGRESS, BLOCKED) it represents age.
         *   **Per-card display**: Include a `Cycle Time` column in every status group table.
         *   **Summary Header**: Show a metrics line with:
             - Total token usage (sum of all `tokenUsage[].input + tokenUsage[].output` across all items)
-            - Total cycle time (sum of cycle times of all DONE items, formatted as `Xd Yh`)
-            - Average cycle time across DONE items (total ÷ count, formatted as `Xd Yh`)
-            - Format: `Tokens: X in / Y out | Cycle Total: Xd Yh | Cycle Avg: Xd Yh (N tasks)`
+            - Total cycle time (sum of cycle times of all DONE items, formatted as `HH:MM:SS`)
+            - Average cycle time across DONE items (total ÷ count, formatted as `HH:MM:SS`)
+            - Format: `Tokens: X in / Y out | Cycle Total: HH:MM:SS | Cycle Avg: HH:MM:SS (N tasks)`
     *   **Objective**: Maintain project identity and a living map.
 
 2.  **Request Analysis & Clarification**

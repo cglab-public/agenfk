@@ -32,10 +32,13 @@ const statusBorderColors: Record<Status, string> = {
 };
 
 const formatDuration = (ms: number) => {
-  const hours = Math.floor(ms / (1000 * 60 * 60));
-  const days = Math.floor(hours / 24);
-  const remainingHours = hours % 24;
-  return `${days}d ${remainingHours}h`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 };
 
 export const KanbanBoard: React.FC = () => {
