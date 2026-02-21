@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { program } from '../index';
 import axios from 'axios';
 import * as child_process from 'child_process';
@@ -40,16 +40,17 @@ describe('CLI Commands', () => {
   describe('create command', () => {
     it('should handle interactive input if title missing', async () => {
       mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj' }] });
-      mockedInquirer.prompt.mockResolvedValue({ type: 'TASK', title: 'Interactive Task' });
+      mockedInquirer.prompt.mockResolvedValue({ title: 'Interactive Task' });
       mockedAxios.post.mockResolvedValue({ data: { id: 'i2', title: 'Interactive Task' } });
 
-      await program.parseAsync(['node', 'agenfk', 'create', '--project', 'p1']);
+      // type is required by commander, so we provide it
+      await program.parseAsync(['node', 'agenfk', 'create', 'task', '--project', 'p1']);
 
       expect(mockedInquirer.prompt).toHaveBeenCalled();
       expect(mockedAxios.post).toHaveBeenCalled();
     });
 
-    it('should call the API to create an item', async () => {
+    it('should call the API to create an item with all arguments', async () => {
       mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj' }] });
       mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'Task' } });
       
@@ -103,7 +104,7 @@ describe('CLI Commands', () => {
 
   describe('up command', () => {
     it('should bootstrap services if missing', async () => {
-      mockedFs.existsSync.mockReturnValue(false); // Simulate missing start script
+      mockedFs.existsSync.mockReturnValue(false);
       mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
       
       await program.parseAsync(['node', 'agenfk', 'up']);

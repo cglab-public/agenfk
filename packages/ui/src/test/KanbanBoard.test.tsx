@@ -16,6 +16,7 @@ vi.mock('socket.io-client', () => ({
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
+    disconnect: vi.fn(),
   })),
 }));
 
@@ -117,7 +118,6 @@ describe('KanbanBoard', () => {
     const drillBtn = await screen.findByText(/Drill/i);
     fireEvent.click(drillBtn);
     
-    // Breadcrumb should show Epic 1
     expect(await screen.findByText('Epic 1')).toBeDefined();
   });
 
@@ -132,17 +132,10 @@ describe('KanbanBoard', () => {
     
     render(<KanbanBoard />, { wrapper });
     
-    // Find archive button (icon) - it has no text, but we can find it via parent or aria if present.
-    // In KanbanBoard.tsx it has no aria-label, but it's a button with Archive icon.
-    // I'll look for all buttons and click the one that has the icon.
-    const buttons = await screen.findAllByRole('button');
-    // The archive button is the one with the Archive icon.
-    // Let's just find by icon if possible? No.
-    // I'll try to find by title if added, but it wasn't.
-    // Actually, I can search for the one that calls updateItem.
-    const archiveBtn = buttons.find(b => b.querySelector('svg'));
-    if (archiveBtn) fireEvent.click(archiveBtn);
+    const archiveBtn = await screen.findByRole('button', { name: /archive/i });
+    fireEvent.click(archiveBtn);
     
+    // Check if updateItem was called
     // expect(api.updateItem).toHaveBeenCalled();
   });
 
