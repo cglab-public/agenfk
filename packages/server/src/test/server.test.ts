@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage } from '../server';
-import { Status, ItemType } from '@agenfk/core';
+import { Status, ItemType, AgenFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -132,7 +132,8 @@ describe('Server API', () => {
 
     it('should allow transition to DONE with internal token', async () => {
       // Find the token
-      const token = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'verify-token'), 'utf8').trim();
+      const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+      const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : 'dummy';
       
       const createRes = await request(app)
         .post('/items')
@@ -165,6 +166,36 @@ describe('Server API', () => {
       // Check parent
       const parentRes = await request(app).get(`/items/${storyId}`);
       expect(parentRes.body.status).toBe(Status.IN_PROGRESS);
+    });
+
+    it('should archive and unarchive an item', async () => {
+      const createRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Archive Me', description: 'D' });
+      const id = createRes.body.id;
+
+      // Archive
+      const archiveRes = await request(app).put(`/items/${id}`).send({ status: Status.ARCHIVED });
+      expect(archiveRes.status).toBe(200);
+      expect(archiveRes.body.status).toBe(Status.ARCHIVED);
+
+      // Unarchive
+      const unarchiveRes = await request(app).put(`/items/${id}`).send({ status: Status.TODO });
+      expect(unarchiveRes.status).toBe(200);
+      expect(unarchiveRes.body.status).toBe(Status.TODO);
+    });
+
+    it('should delete an item', async () => {
+      const createRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Delete Me', description: 'D' });
+      const id = createRes.body.id;
+
+      const delRes = await request(app).delete(`/items/${id}`);
+      expect(delRes.status).toBe(204);
+
+      const getRes = await request(app).get(`/items/${id}`);
+      expect(getRes.status).toBe(404);
     });
   });
 });
