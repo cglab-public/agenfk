@@ -33,9 +33,15 @@ describe('CLI Commands', () => {
   });
 
   describe('create command', () => {
-...
+    it('should call the API to create an item', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj' }] }); // project check
+      mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'Task' } });
+      
+      // Simulate: agenfk create task "My Task" --project p1
+      await program.parseAsync(['node', 'agenfk', 'create', 'task', 'My Task', '--project', 'p1']);
+      
       expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
-        type: 'TASK',
+        type: 'task',
         title: 'My Task'
       }));
     });
