@@ -107,6 +107,6 @@ describe('CardDetailModal', () => {
 
     const subitemsTab = screen.getAllByRole('button', { name: /Subitems/i })[0];
     fireEvent.click(subitemsTab);
-    expect(screen.getByText('Sub Task')).toBeDefined();
+    expect(await screen.findByText('Sub Task')).toBeDefined();
   });
 });
