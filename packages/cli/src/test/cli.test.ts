@@ -86,4 +86,15 @@ describe('CLI Commands', () => {
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
     });
   });
+
+  describe('up command', () => {
+    it('should bootstrap services if missing', async () => {
+      mockedFs.existsSync.mockReturnValue(false); // Simulate missing start script
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
+      
+      await program.parseAsync(['node', 'agenfk', 'up']);
+      
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('npm install'), expect.any(Object));
+    });
+  });
 });
