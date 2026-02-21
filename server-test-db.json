@@ -2230,6 +2230,40 @@
       "implementationPlan": "",
       "createdAt": "2026-02-21T16:25:17.662Z",
       "updatedAt": "2026-02-21T16:25:17.671Z"
+    },
+    {
+      "id": "c1c187ab-b74f-448d-807d-2431a3790fe6",
+      "projectId": "f19bb1f4-8b7e-4ac6-b1c1-6410f05b907d",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T16:25:17.687Z",
+      "updatedAt": "2026-02-21T16:25:17.703Z"
+    },
+    {
+      "id": "0378810c-86ba-42ef-a99a-915c1d0b71bb",
+      "projectId": "f19bb1f4-8b7e-4ac6-b1c1-6410f05b907d",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "c1c187ab-b74f-448d-807d-2431a3790fe6",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T16:25:17.692Z",
+      "updatedAt": "2026-02-21T16:25:17.698Z"
+    },
+    {
+      "id": "28845107-c057-4a36-96d8-7e3ebf3b0e0a",
+      "projectId": "f19bb1f4-8b7e-4ac6-b1c1-6410f05b907d",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T16:25:17.712Z",
+      "updatedAt": "2026-02-21T16:25:17.735Z"
     }
   ]
 }
