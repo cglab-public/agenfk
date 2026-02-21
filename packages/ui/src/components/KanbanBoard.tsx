@@ -206,6 +206,10 @@ export const KanbanBoard: React.FC = () => {
     );
 
     if (found) {
+      if (found.status === Status.ARCHIVED) {
+        setIsArchiveCollapsed(false);
+      }
+
       const chain: NavItem[] = [];
       let currentParentId = found.parentId;
       while (currentParentId) {
@@ -219,11 +223,20 @@ export const KanbanBoard: React.FC = () => {
       setSelectedItemType('ALL');
       setHighlightedId(found.id);
       setSearchTerm('');
+      
+      // Give DOM time to update if we expanded archive
       setTimeout(() => {
         const element = document.getElementById(`card-${found.id}`);
-        if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 100);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, found.status === Status.ARCHIVED ? 300 : 100);
+      
       setTimeout(() => setHighlightedId(null), 3000);
+    } else {
+      // Temporary visual feedback for not found
+      setSearchTerm('NOT FOUND');
+      setTimeout(() => setSearchTerm(''), 1000);
     }
   };
 
@@ -452,6 +465,28 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-snug mb-2 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
                     {item.description && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">{item.description}</p>}
+                    
+                    {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
+                      <div className="mb-3">
+                        {(() => {
+                          const subitems = items?.filter(i => i.parentId === item.id) || [];
+                          if (subitems.length === 0) return null;
+                          const progress = Math.round((subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100);
+                          return (
+                            <div className="space-y-1.5">
+                              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
+                                <span>Progress</span>
+                                <span>{progress}%</span>
+                              </div>
+                              <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-50 dark:border-slate-800">
+                                <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
                       <div className="flex items-center gap-2">
                         <span>#{item.id.substring(0, 4)}</span>
