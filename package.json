@@ -6,6 +6,9 @@
   "workspaces": [
     "packages/*"
   ],
+  "bin": {
+    "agenfk": "bin/agenfk.js"
+  },
   "scripts": {
     "build": "npm run build --workspaces"
   },

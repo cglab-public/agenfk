@@ -44,6 +44,7 @@ const core_1 = require("@agenfk/core");
 const uuid_1 = require("uuid");
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const child_process_1 = require("child_process");
 const http_1 = require("http");
 const socket_io_1 = require("socket.io");
 const app = (0, express_1.default)();
@@ -133,6 +134,19 @@ const findProjectRoot = (startDir) => {
         currentDir = path.dirname(currentDir);
     }
     return startDir;
+};
+const autoGitCommit = (item, projectRoot) => {
+    const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
+    const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
+    (0, child_process_1.exec)(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
+        const timestamp = new Date().toISOString();
+        if (err) {
+            console.log(`[${timestamp}] [AUTO_GIT] Commit skipped: ${err.message.trim()}`);
+        }
+        else {
+            console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
+        }
+    });
 };
 const initStorage = async () => {
     const envPath = process.env.AGENFK_DB_PATH;
@@ -310,6 +324,10 @@ app.put("/items/:id", asyncHandler(async (req, res) => {
         io.emit('project_switched', { projectId: updated.projectId });
         if (updated.parentId && updated.status !== core_1.Status.ARCHIVED) {
             await syncParentStatus(updated.parentId);
+        }
+        if (updated.status === core_1.Status.DONE && currentItem.status !== core_1.Status.DONE) {
+            const projectRoot = findProjectRoot(process.cwd());
+            autoGitCommit(updated, projectRoot);
         }
         res.json(updated);
     }

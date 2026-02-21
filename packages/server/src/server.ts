@@ -6,6 +6,7 @@ import { ItemType, Status, AgenFKItem, Project } from "@agenfk/core";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
+import { exec } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
@@ -105,6 +106,19 @@ const findProjectRoot = (startDir: string): string => {
     currentDir = path.dirname(currentDir);
   }
   return startDir;
+};
+
+const autoGitCommit = (item: AgenFKItem, projectRoot: string): void => {
+  const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
+  const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
+  exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
+    const timestamp = new Date().toISOString();
+    if (err) {
+      console.log(`[${timestamp}] [AUTO_GIT] Commit skipped: ${err.message.trim()}`);
+    } else {
+      console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
+    }
+  });
 };
 
 const initStorage = async () => {
@@ -299,6 +313,11 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.parentId && updated.status !== Status.ARCHIVED) {
       await syncParentStatus(updated.parentId);
+    }
+
+    if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
+      const projectRoot = findProjectRoot(process.cwd());
+      autoGitCommit(updated, projectRoot);
     }
 
     res.json(updated);

@@ -26,25 +26,22 @@ AgenFK is built on six core mandates to ensure your AI-assisted development is c
 
 ## Installation & Setup
 
-AgenFK is designed to bootstrap itself. To start using it in your project:
+AgenFK installs with a single command — no cloning required:
 
-1.  **Clone** the AgenFK repository to a dedicated location on your system (e.g., `~/.agenfk-system`):
-    ```bash
-    git clone https://github.com/your-repo/agentic-framework.git ~/.agenfk-system
-    cd ~/.agenfk-system
-    ```
-2.  **Run the 'Up' command**:
-    ```bash
-    ./agenfk up
-    ```
+```bash
+npx github:cglab-PRIVATE/agenfk
+```
 
-    This single command will configure the framework for both **Opencode** and **Claude Code** simultaneously. It will:
-    *   Install all dependencies.
-    *   Build the core, CLI, server, and UI packages.
-    *   Initialize the `.agenfk` metadata directory.
-    *   Install the **MCP Server** and **Agent Skills** into your AI environment configurations.
-    *   Install the **`/agenfk` slash command** in your AI editors.
-    *   Start the **API Server** (Port 3000) and the **Web Dashboard** (Port 5173).
+This will:
+*   Download the framework directly from GitHub.
+*   Install all dependencies and build the full stack.
+*   Configure the **MCP Server** for both **Opencode** and **Claude Code**.
+*   Install the **`/agenfk`** and **`/agenfk-push`** slash commands in your AI editors.
+*   Install the **Agent Skill** into Opencode.
+
+> **Requirements**: Node.js 18+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+
+**To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup.
 
 ## Multi-Project Support
 
@@ -78,8 +75,8 @@ graph TD
     E -->|No Active Task| F[Pause: Select/Create Task]
     F --> E
     E -->|Authorized| G[Execute Code Changes]
-    G --> H[Verify Changes <br><i>Runs build/test</i>]
-    H -->|Failure| I[Auto-move to IN_PROGRESS<br>Report Errors]
+    G --> H[Verify Changes <br/>Runs build/test]
+    H -->|Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
     I --> G
     H -->|Success| J[Auto-move to DONE]
     J --> K[Log Token Usage]
@@ -98,15 +95,16 @@ graph TD
 5.  **Verify**: The `verify_changes` tool executes stack-appropriate verification (e.g., `npm run build`, `pytest`) and automatically manages the transition from `REVIEW` to `DONE`. The results of these checks are permanently logged in the item's Review History.
 6.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
 
-## ⚡ Quick Start (Opencode & Claude Code)
+## Quick Start (Opencode & Claude Code)
 
-If you are using Opencode or Claude Code, getting started is as easy as typing a single command in your prompt:
+After running `npx agenfk`, two slash commands are available in your AI editor:
 
-```text
-/agenfk
-```
+| Command | Description |
+|---|---|
+| `/agenfk` | Initialize the framework for a project, create scope & architecture docs |
+| `/agenfk-push` | Push to remote and optionally cut a GitHub release |
 
-This slash command will automatically load the framework skill, ask you to select or create a project context, and generate the foundational architecture documents (`AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md`) for your repository.
+Type `/agenfk` in any project to create its scope and architecture documents and link it to the framework.
 
 ![AgenFK Dashboard](./docs/dashboard-screenshot.png)
 

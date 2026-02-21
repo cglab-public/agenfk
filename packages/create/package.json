@@ -1,0 +1,28 @@
+{
+  "name": "agenfk",
+  "version": "0.1.0",
+  "description": "AgenFK Agentic Engineering Framework — installer",
+  "bin": {
+    "agenfk": "bin/agenfk.js"
+  },
+  "scripts": {
+    "build": "echo 'No build step required'"
+  },
+  "keywords": [
+    "agenfk",
+    "agentic",
+    "engineering",
+    "framework",
+    "ai",
+    "mcp"
+  ],
+  "author": "CG/lab",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cglab-PRIVATE/agenfk.git"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

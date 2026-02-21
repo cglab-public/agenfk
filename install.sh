@@ -133,31 +133,23 @@ else
     echo -e "${BLUE}SKILL.md not found in $DIR. Skipping skills installation.${NC}"
 fi
 
-# 7. Create Global Slash Command (Opencode)
-echo -e "${GREEN}[7/8] Installing global /agenfk slash command (Opencode)...${NC}"
+# 7. Install Global Slash Commands (Opencode)
+echo -e "${GREEN}[7/8] Installing global slash commands (Opencode)...${NC}"
 OC_COMMANDS_DIR="$HOME/.config/opencode/commands"
 mkdir -p "$OC_COMMANDS_DIR"
-cat > "$OC_COMMANDS_DIR/agenfk.md" << INNEREOF
----
-description: Initialize and load the AgenFK Engineering Framework for this project
----
+for cmd_file in "$DIR/commands/"*.md; do
+    cp "$cmd_file" "$OC_COMMANDS_DIR/$(basename "$cmd_file")"
+    echo -e "  Installed: $OC_COMMANDS_DIR/$(basename "$cmd_file")"
+done
 
-Load the \`agenfk\` skill. Run its Initialization protocol. If this is a new project, scan the codebase and create the required markdown files (AFK_PROJECT_SCOPE.md and AFK_ARCHITECTURE.md). Always associate my requests with the current active project.
-INNEREOF
-echo -e "Successfully installed slash command to $OC_COMMANDS_DIR/agenfk.md"
-
-# 8. Create Global Slash Command (Claude Code)
-echo -e "${GREEN}[8/8] Installing global /agenfk slash command (Claude Code)...${NC}"
+# 8. Install Global Slash Commands (Claude Code)
+echo -e "${GREEN}[8/8] Installing global slash commands (Claude Code)...${NC}"
 CL_COMMANDS_DIR="$HOME/.claude/commands"
 mkdir -p "$CL_COMMANDS_DIR"
-cat > "$CL_COMMANDS_DIR/agenfk.md" << INNEREOF
----
-description: Initialize and load the AgenFK Engineering Framework for this project
----
-
-Load the \`agenfk\` skill. Run its Initialization protocol. If this is a new project, scan the codebase and create the required markdown files (AFK_PROJECT_SCOPE.md and AFK_ARCHITECTURE.md). Always associate my requests with the current active project.
-INNEREOF
-echo -e "Successfully installed slash command to $CL_COMMANDS_DIR/agenfk.md"
+for cmd_file in "$DIR/commands/"*.md; do
+    cp "$cmd_file" "$CL_COMMANDS_DIR/$(basename "$cmd_file")"
+    echo -e "  Installed: $CL_COMMANDS_DIR/$(basename "$cmd_file")"
+done
 
 echo -e "${GREEN}Installation Complete.${NC}"
 echo ""
@@ -165,3 +157,4 @@ echo -e "${BLUE}=== Usage Instructions ===${NC}"
 echo "1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP)."
 echo "2. Run './start-services.sh' in a separate terminal to enable the Web UI."
 echo "3. Go to ANY project repository and type '/agenfk' in your AI editor's prompt to initialize your project context and start the workflow."
+echo "4. Use '/agenfk-push' to push to remote and optionally cut a GitHub release."
