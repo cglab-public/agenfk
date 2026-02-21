@@ -31,7 +31,7 @@ const statusBorderColors: Record<Status, string> = {
   [Status.ARCHIVED]: "border-t-gray-300",
 };
 
-const formatDuration = (ms: number) => {
+export const formatDuration = (ms: number) => {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
