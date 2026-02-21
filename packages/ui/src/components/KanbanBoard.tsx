@@ -7,7 +7,7 @@ import {
   Plus, Loader2, AlertCircle, Layout, Tag, 
   AlignLeft, Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
-  FolderOpen, Briefcase
+  FolderOpen, Briefcase, Clock
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -29,6 +29,13 @@ const statusBorderColors: Record<Status, string> = {
   [Status.DONE]: "border-t-emerald-500",
   [Status.BLOCKED]: "border-t-red-500",
   [Status.ARCHIVED]: "border-t-gray-300",
+};
+
+const formatDuration = (ms: number) => {
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return `${days}d ${remainingHours}h`;
 };
 
 export const KanbanBoard: React.FC = () => {
@@ -301,6 +308,10 @@ export const KanbanBoard: React.FC = () => {
 
   const activeProject = projects?.find(p => p.id === selectedProjectId);
 
+  const doneItems = items?.filter((i: AgenFKItem) => i.status === Status.DONE) || [];
+  const totalCycleMs = doneItems.reduce((acc: number, i: AgenFKItem) => acc + (new Date(i.updatedAt).getTime() - new Date(i.createdAt).getTime()), 0);
+  const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
+
   return (
     <div className="h-full min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col font-sans text-slate-900 dark:text-slate-100 transition-colors duration-300">
       <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex flex-col gap-4 sticky top-0 z-10 shadow-sm dark:shadow-none">
@@ -364,6 +375,15 @@ export const KanbanBoard: React.FC = () => {
               </div>
               <div className="font-mono font-bold text-indigo-600 dark:text-indigo-400 transition-colors">
                 {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
+              </div>
+            </div>
+
+            <div className="text-right hidden sm:block border-l border-slate-200 dark:border-slate-700 pl-4">
+              <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight flex items-center gap-2 justify-end">
+                Cycle Total / Avg
+              </div>
+              <div className="font-mono font-bold text-emerald-600 dark:text-emerald-400 transition-colors">
+                {formatDuration(totalCycleMs)} / {formatDuration(avgCycleMs)}
               </div>
             </div>
             <button 
@@ -430,7 +450,16 @@ export const KanbanBoard: React.FC = () => {
                     <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-snug mb-2 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
                     {item.description && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">{item.description}</p>}
                     <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
-                      <span>#{item.id.substring(0, 4)}</span>
+                      <div className="flex items-center gap-2">
+                        <span>#{item.id.substring(0, 4)}</span>
+                        <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
+                          <Clock size={10} />
+                          {item.status === Status.DONE 
+                            ? formatDuration(new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime())
+                            : formatDuration(Date.now() - new Date(item.createdAt).getTime())
+                          }
+                        </div>
+                      </div>
                       {item.tokenUsage && item.tokenUsage.length > 0 && (
                         <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
                           <Zap size={10} className="fill-amber-600" />
