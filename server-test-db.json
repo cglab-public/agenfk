@@ -1,71 +1,94 @@
 {
   "projects": [
     {
-      "id": "792a9499-31b3-42ff-a9ae-d65536016b2b",
+      "id": "63773cc0-81e3-453f-8fa1-e0a658d72488",
       "name": "Test Project",
       "description": "Test Desc",
-      "createdAt": "2026-02-21T15:37:50.396Z",
-      "updatedAt": "2026-02-21T15:37:50.396Z"
+      "createdAt": "2026-02-21T15:38:03.961Z",
+      "updatedAt": "2026-02-21T15:38:03.961Z"
     },
     {
-      "id": "3b7cc28a-98bb-492b-b3d2-cf1493c7101c",
+      "id": "98cdd261-0234-4227-94da-4fffd96584a9",
       "name": "P1 Updated",
       "description": "",
-      "createdAt": "2026-02-21T15:37:50.401Z",
-      "updatedAt": "2026-02-21T15:37:50.403Z"
+      "createdAt": "2026-02-21T15:38:03.968Z",
+      "updatedAt": "2026-02-21T15:38:03.973Z"
     },
     {
-      "id": "3704594c-c4f9-43cc-8f13-cb86f80520cb",
+      "id": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
       "name": "Item Test",
       "description": "",
-      "createdAt": "2026-02-21T15:37:50.426Z",
-      "updatedAt": "2026-02-21T15:37:50.426Z"
+      "createdAt": "2026-02-21T15:38:03.990Z",
+      "updatedAt": "2026-02-21T15:38:03.990Z"
     }
   ],
   "items": [
     {
-      "id": "def6d675-1565-462d-9f6e-afde45f02444",
-      "projectId": "3704594c-c4f9-43cc-8f13-cb86f80520cb",
+      "id": "1432c6c1-5c58-463f-960e-dde2c4b51b25",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
       "type": "TASK",
       "title": "T1",
       "description": "D1",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-21T15:37:50.431Z",
-      "updatedAt": "2026-02-21T15:37:50.431Z"
+      "createdAt": "2026-02-21T15:38:03.993Z",
+      "updatedAt": "2026-02-21T15:38:03.993Z"
     },
     {
-      "id": "bb2758ba-33b5-4efd-9da0-54f15217bee1",
-      "projectId": "3704594c-c4f9-43cc-8f13-cb86f80520cb",
+      "id": "e2d1dfff-b8d0-43cc-84ae-e395556f9f0c",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
       "type": "TASK",
       "title": "To Update",
       "description": "D",
       "status": "IN_PROGRESS",
       "implementationPlan": "",
-      "createdAt": "2026-02-21T15:37:50.434Z",
-      "updatedAt": "2026-02-21T15:37:50.440Z"
+      "createdAt": "2026-02-21T15:38:03.997Z",
+      "updatedAt": "2026-02-21T15:38:04.001Z"
     },
     {
-      "id": "bb2e5fcd-8bdc-4f63-9ff0-94e2daa7358c",
-      "projectId": "3704594c-c4f9-43cc-8f13-cb86f80520cb",
+      "id": "471284b5-4748-4e4a-ad80-d8d89712211e",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
       "type": "TASK",
       "title": "No Cheat",
       "description": "D",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-21T15:37:50.444Z",
-      "updatedAt": "2026-02-21T15:37:50.444Z"
+      "createdAt": "2026-02-21T15:38:04.004Z",
+      "updatedAt": "2026-02-21T15:38:04.004Z"
     },
     {
-      "id": "8f6c343f-0b12-42e3-8aa2-dc4747724fec",
-      "projectId": "3704594c-c4f9-43cc-8f13-cb86f80520cb",
+      "id": "e364ecaa-09c0-4c8f-9609-dc156c9335d7",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
       "type": "TASK",
       "title": "Verify Me",
       "description": "D",
       "status": "DONE",
       "implementationPlan": "",
-      "createdAt": "2026-02-21T15:37:50.452Z",
-      "updatedAt": "2026-02-21T15:37:50.458Z"
+      "createdAt": "2026-02-21T15:38:04.010Z",
+      "updatedAt": "2026-02-21T15:38:04.016Z"
+    },
+    {
+      "id": "d089faae-689c-409d-91b5-3161004fb2ec",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T15:38:04.023Z",
+      "updatedAt": "2026-02-21T15:38:04.027Z"
+    },
+    {
+      "id": "48f5b296-3eb6-483a-b7da-67845c02e9bf",
+      "projectId": "0c82e179-4e58-4152-bbba-1cf6ef65960b",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "d089faae-689c-409d-91b5-3161004fb2ec",
+      "implementationPlan": "",
+      "createdAt": "2026-02-21T15:38:04.024Z",
+      "updatedAt": "2026-02-21T15:38:04.026Z"
     }
   ]
 }
