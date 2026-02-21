@@ -112,7 +112,7 @@ describe('CardDetailModal', () => {
   });
 
   it('should handle status changes', async () => {
-    vi.mocked(api.updateItem).mockResolvedValue({ ...mockItem, status: Status.IN_PROGRESS } as any);
+    (api.updateItem as any).mockResolvedValue({ ...mockItem, status: Status.IN_PROGRESS });
     
     render(
       <CardDetailModal 
