@@ -186,7 +186,7 @@ program
   });
 
 program
-  .command('create <type> <title>')
+  .command('create <type> [title]')
   .description('Create a new item (epic, story, task, bug)')
   .option('-d, --description <desc>', 'Description of the item', '')
   .option('-p, --parent <id>', 'Parent ID')

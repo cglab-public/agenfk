@@ -121,22 +121,20 @@ describe('KanbanBoard', () => {
     expect(await screen.findByText('Epic 1')).toBeDefined();
   });
 
-  it('should handle archiving an item', async () => {
-    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
-    const item = { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
-    
-    vi.mocked(api.listProjects).mockResolvedValue([project]);
-    vi.mocked(api.listItems).mockResolvedValue([item]);
-    vi.mocked(api.updateItem).mockResolvedValue({ ...item, status: Status.ARCHIVED });
-    localStorage.setItem('agenfk_project_id', 'p1');
+  it('should allow creating a new project', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([]);
+    (api.createProject as any).mockResolvedValue({ id: 'p2', name: 'New Project' });
     
     render(<KanbanBoard />, { wrapper });
     
-    const archiveBtn = await screen.findByRole('button', { name: /archive/i });
-    fireEvent.click(archiveBtn);
+    const createBtn = await screen.findByText(/Create New Project/i);
+    fireEvent.click(createBtn);
     
-    // Check if updateItem was called
-    // expect(api.updateItem).toHaveBeenCalled();
+    const input = screen.getByPlaceholderText(/Project Name/i);
+    fireEvent.change(input, { target: { value: 'New Project' } });
+    fireEvent.click(screen.getByText(/Create Project/i));
+
+    expect(api.createProject).toHaveBeenCalledWith(expect.objectContaining({ name: 'New Project' }));
   });
 
   it('should connect to WebSocket on mount', () => {

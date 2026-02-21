@@ -47,9 +47,24 @@ describe('UI API Client', () => {
       await expect(api.listProjects()).rejects.toThrow('API Error');
     });
 
+    it('should handle getItem error', async () => {
+      mockedAxios.get.mockRejectedValue(new Error('API Error'));
+      await expect(api.getItem('i1')).rejects.toThrow('API Error');
+    });
+
     it('should handle createItem error', async () => {
       mockedAxios.post.mockRejectedValue(new Error('API Error'));
       await expect(api.createItem({})).rejects.toThrow('API Error');
+    });
+
+    it('should handle updateItem error', async () => {
+      mockedAxios.put.mockRejectedValue(new Error('API Error'));
+      await expect(api.updateItem('i1', {})).rejects.toThrow('API Error');
+    });
+
+    it('should handle deleteItem error', async () => {
+      mockedAxios.delete.mockRejectedValue(new Error('API Error'));
+      await expect(api.deleteItem('i1')).rejects.toThrow('API Error');
     });
   });
 });
