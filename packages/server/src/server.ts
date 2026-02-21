@@ -25,9 +25,9 @@ import { exec } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
-const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
+export const app = express();
+export const httpServer = createServer(app);
+export const io = new Server(httpServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
@@ -381,8 +381,12 @@ io.on('connection', (socket) => {
 });
 
 // Init and Listen
-initStorage().then(() => {
-  httpServer.listen(PORT, () => {
-    console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+if (process.env.NODE_ENV !== 'test') {
+  initStorage().then(() => {
+    httpServer.listen(PORT, () => {
+      console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+    });
   });
-});
+}
+
+export { initStorage, storage };

@@ -291,7 +291,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       }
       case "workflow_gatekeeper": {
         const { intent } = z.object({ intent: z.string() }).parse(request.params.arguments);
-        const { data: inProgressItems } = await api.get(`/items`, { params: { status: "IN_PROGRESS" } });
+        const { data: items } = await api.get(`/items`, { params: { status: "IN_PROGRESS" } });
+        // Filter out parents (Epics and Stories with children) or just filter by type
+        // For simplicity and to follow the rule "exactly one task", we filter for TASK and BUG
+        const inProgressItems = items.filter((i: any) => i.type === 'TASK' || i.type === 'BUG' || (i.type === 'STORY' && (!i.children || i.children.length === 0)));
+        
         if (inProgressItems.length === 0) {
           return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS.` }] };
         }
