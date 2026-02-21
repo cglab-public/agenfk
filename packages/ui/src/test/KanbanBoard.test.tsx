@@ -130,9 +130,9 @@ describe('KanbanBoard', () => {
     const createBtn = await screen.findByText(/Create New Project/i);
     fireEvent.click(createBtn);
     
-    const input = screen.getByPlaceholderText(/Project Name/i);
+    const input = screen.getByPlaceholderText(/e.g. My Awesome App/i);
     fireEvent.change(input, { target: { value: 'New Project' } });
-    fireEvent.click(screen.getByText(/Create Project/i));
+    fireEvent.click(screen.getByRole('button', { name: /Create Project/i }));
 
     expect(api.createProject).toHaveBeenCalledWith(expect.objectContaining({ name: 'New Project' }));
   });
