@@ -10,6 +10,6 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    environment: 'jsdom',
+    environment: 'node', // Use node for server/storage
   },
 });
