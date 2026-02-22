@@ -165,4 +165,24 @@ describe('CardDetailModal', () => {
 
     expect(onAddItem).toHaveBeenCalledWith('New Task', ItemType.TASK);
   });
+
+  it('should always show the History tab even if empty', () => {
+    const itemWithNoHistory = { ...mockItem, history: [] };
+    render(
+      <CardDetailModal 
+        item={itemWithNoHistory as any} 
+        allItems={[]} 
+        onClose={() => {}} 
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+      />, 
+      { wrapper }
+    );
+
+    const historyTab = screen.getByRole('button', { name: /History/i });
+    expect(historyTab).toBeDefined();
+    
+    fireEvent.click(historyTab);
+    expect(screen.getByText(/No state transitions recorded/i)).toBeDefined();
+  });
 });

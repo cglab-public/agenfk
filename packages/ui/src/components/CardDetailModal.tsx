@@ -33,7 +33,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'overview', label: 'Overview', icon: <AlignLeft size={14} /> },
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: !item.implementationPlan },
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: item.type === ItemType.TASK || item.type === ItemType.BUG },
-    { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: !item.history?.length },
+    { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, badge: item.reviews?.length, hidden: !item.reviews?.length },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: !item.tokenUsage?.length },
   ].filter(t => !t.hidden);
@@ -357,39 +357,46 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             </div>
           )}
 
-          {activeTab === 'history' && item.history && (
+          {activeTab === 'history' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300 space-y-4">
               <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                State Transitions ({item.history.length})
+                State Transitions ({item.history?.length || 0})
               </h4>
-              <div className="relative space-y-4 before:absolute before:left-3.5 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-slate-100 dark:before:bg-slate-800">
-                {[...item.history].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((record) => (
-                  <div key={record.id} className="relative pl-10">
-                    <div className="absolute left-1.5 top-1.5 w-4 h-4 rounded-full bg-white dark:bg-slate-900 border-2 border-indigo-500 z-10" />
-                    <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-3 border border-slate-100 dark:border-slate-800/50">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 uppercase">
-                            {record.fromStatus}
-                          </span>
-                          <span className="text-slate-400">→</span>
-                          <span className={clsx(
-                            "text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
-                            record.toStatus === Status.DONE ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
-                            record.toStatus === Status.IN_PROGRESS ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" :
-                            "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400"
-                          )}>
-                            {record.toStatus}
+              
+              {item.history && item.history.length > 0 ? (
+                <div className="relative space-y-4 before:absolute before:left-3.5 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-slate-100 dark:before:bg-slate-800">
+                  {[...item.history].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((record) => (
+                    <div key={record.id} className="relative pl-10">
+                      <div className="absolute left-1.5 top-1.5 w-4 h-4 rounded-full bg-white dark:bg-slate-900 border-2 border-indigo-500 z-10" />
+                      <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-3 border border-slate-100 dark:border-slate-800/50">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 uppercase">
+                              {record.fromStatus}
+                            </span>
+                            <span className="text-slate-400">→</span>
+                            <span className={clsx(
+                              "text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
+                              record.toStatus === Status.DONE ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
+                              record.toStatus === Status.IN_PROGRESS ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" :
+                              "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400"
+                            )}>
+                              {record.toStatus}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                            {new Date(record.timestamp).toLocaleString()}
                           </span>
                         </div>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                          {new Date(record.timestamp).toLocaleString()}
-                        </span>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+                  <p className="text-slate-400 text-sm italic">No state transitions recorded.</p>
+                </div>
+              )}
             </div>
           )}
 
