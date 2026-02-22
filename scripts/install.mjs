@@ -29,10 +29,14 @@ async function run() {
         await fs.mkdir(agenfkHome, { recursive: true });
     }
     const tokenPath = path.join(agenfkHome, 'verify-token');
-    const token = crypto.randomBytes(32).toString('hex');
-    await fs.writeFile(tokenPath, token, 'utf8');
-    chmodSync(tokenPath, 0o600);
-    console.log(`  Generated: ${tokenPath}`);
+    if (!existsSync(tokenPath)) {
+        const token = crypto.randomBytes(32).toString('hex');
+        await fs.writeFile(tokenPath, token, 'utf8');
+        chmodSync(tokenPath, 0o600);
+        console.log(`  Generated: ${tokenPath}`);
+    } else {
+        console.log(`  Token already exists: ${tokenPath}`);
+    }
 
     // 3. Ensure configuration exists
     console.log(`${GREEN}[3/12] Initializing configuration...${NC}`);
