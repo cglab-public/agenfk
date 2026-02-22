@@ -20,4 +20,5 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - Use `add_comment(id, "### FINAL SUMMARY\n\n" + summary)` to log the closing statement.
 
 **Step 4 — Move to DONE**
+- Call `add_comment(id, "Phase Close complete: Final summary prepared.")` to log the phase completion.
 - PAUSE and ask the user: "I have prepared the final summary for item <id>. Should I mark it as DONE?"

@@ -19,4 +19,5 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 - Use `add_comment(id, "I have proposed the following decomposition: ...")` to log your reasoning on the parent item.
 
 **Step 4 — Finalize**
+- Call `add_comment(id, "Phase Plan complete: Decomposed into sub-tasks.")` to log the phase completion.
 - PAUSE and ask the user: "I have decomposed item <id> into sub-tasks. Please review them on the Kanban board. Should I proceed or would you like to make changes?"
