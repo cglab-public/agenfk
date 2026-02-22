@@ -114,7 +114,7 @@ graph TD
 1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgenFK project. *In Opencode or Claude Code, you can simply type `/agenfk` to have the agent set this up for you.*
 2.  **Analyze**: Every request is analyzed to determine if it's an Epic, Story, Task, or Bug within the current project's scope.
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
-4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. This prevents rogue edits.
+4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
 5.  **Implementation Logging**: Agents log every significant step as a **Comment** on the card, providing a real-time audit trail in the UI.
 6.  **Verify**: The `verify_changes` tool executes stack-appropriate tests (e.g., `npm test`, `pytest`) and automatically manages the transition through `REVIEW` and `TEST` statuses. The full output of these checks is permanently logged in the item's **Test Results**.
 7.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
@@ -142,8 +142,9 @@ Designed for daily engineering tasks. The primary agent acts proactively, handli
 ### Deep Mode (`/agenfk-deep`)
 Designed for complex architectural changes. The primary agent acts as a **Supervisor**, enforcing a strict multi-agent lifecycle:
 1.  **Plan & Pause**: Decomposes the task into sub-items and waits for your approval.
-2.  **Autonomous Handover**: Once approved, automatically spawns specialized sub-agents for Coding, Review (Security/Logic), and Testing (80% Coverage).
-3.  **Final Summary**: A Closing Agent collates all work logs into a final report before completion.
+2.  **Parallel Execution**: Deep Mode supports simultaneous execution of independent tasks. The supervisor can spawn multiple sub-agents using the `task` tool to work on different components concurrently.
+3.  **Autonomous Handover**: Once approved, automatically spawns specialized sub-agents for Coding, Review (Security/Logic), and Testing (80% Coverage).
+4.  **Final Summary**: A Closing Agent collates all work logs into a final report before completion.
 
 ---
 
