@@ -35,7 +35,7 @@ async function run() {
     }
 
     // 1. Slash commands — Claude Code
-    console.log(`${GREEN}[1/5] Removing Claude Code slash commands...${NC}`);
+    console.log(`${GREEN}[1/10] Removing Claude Code slash commands...${NC}`);
     const claudeCommandsDir = path.join(os.homedir(), '.claude', 'commands');
     if (existsSync(claudeCommandsDir)) {
         const files = await fs.readdir(claudeCommandsDir);
@@ -49,7 +49,7 @@ async function run() {
     }
 
     // 2. Slash commands — Opencode
-    console.log(`${GREEN}[2/5] Removing Opencode slash commands...${NC}`);
+    console.log(`${GREEN}[2/10] Removing Opencode slash commands...${NC}`);
     const opencodeCommandsDir = path.join(os.homedir(), '.config', 'opencode', 'commands');
     if (existsSync(opencodeCommandsDir)) {
         const files = await fs.readdir(opencodeCommandsDir);
@@ -63,7 +63,7 @@ async function run() {
     }
 
     // 3. Opencode skill
-    console.log(`${GREEN}[3/5] Removing Opencode skill...${NC}`);
+    console.log(`${GREEN}[3/10] Removing Opencode skill...${NC}`);
     const skillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
     if (existsSync(skillDir)) {
         await fs.rm(skillDir, { recursive: true, force: true });
@@ -71,7 +71,7 @@ async function run() {
     }
 
     // 4. CLI symlink
-    console.log(`${GREEN}[4/6] Removing agenfk CLI symlink...${NC}`);
+    console.log(`${GREEN}[4/10] Removing agenfk CLI symlink...${NC}`);
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
     const cliDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk.cmd' : 'agenfk');
     if (existsSync(cliDest)) {
@@ -80,7 +80,7 @@ async function run() {
     }
 
     // 5. MCP config — Claude Code
-    console.log(`${GREEN}[5/6] Removing Claude Code MCP config...${NC}`);
+    console.log(`${GREEN}[5/10] Removing Claude Code MCP config...${NC}`);
     try {
         const claudeCheck = spawnSync('claude', ['--version'], { shell: true });
         if (claudeCheck.status === 0) {
@@ -92,7 +92,7 @@ async function run() {
     }
 
     // 6. MCP config — Opencode
-    console.log(`${GREEN}[6/6] Removing Opencode MCP config...${NC}`);
+    console.log(`${GREEN}[6/10] Removing Opencode MCP config...${NC}`);
     const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
     if (existsSync(opencodeConfigPath)) {
         try {
@@ -109,16 +109,16 @@ async function run() {
         }
     }
 
-    // 5b. Gatekeeper hook script
-    console.log(`${GREEN}[4b] Removing agenfk-gatekeeper hook script...${NC}`);
+    // 7. Gatekeeper hook script
+    console.log(`${GREEN}[7/10] Removing agenfk-gatekeeper hook script...${NC}`);
     const gatekeeperDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk-gatekeeper.cmd' : 'agenfk-gatekeeper');
     if (existsSync(gatekeeperDest)) {
         await fs.unlink(gatekeeperDest);
         console.log(`  Removed: ${gatekeeperDest}`);
     }
 
-    // 5c. CLAUDE.md workflow rules
-    console.log(`${GREEN}[4c] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}`);
+    // 8. CLAUDE.md workflow rules
+    console.log(`${GREEN}[8/10] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}`);
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
     if (existsSync(claudeMdPath)) {
         let content = await fs.readFile(claudeMdPath, 'utf8');
@@ -127,8 +127,8 @@ async function run() {
         console.log(`  Removed AgenFK block from ${claudeMdPath}`);
     }
 
-    // 5e. Verify token
-    console.log(`${GREEN}[4e] Removing verify token...${NC}`);
+    // 9. Verify token
+    console.log(`${GREEN}[9/10] Removing verify token...${NC}`);
     const agenfkHome = path.join(os.homedir(), '.agenfk');
     const tokenPath = path.join(agenfkHome, 'verify-token');
     if (existsSync(tokenPath)) {
@@ -136,8 +136,8 @@ async function run() {
         console.log(`  Removed: ${tokenPath}`);
     }
 
-    // 5d. PreToolUse hook in ~/.claude/settings.json
-    console.log(`${GREEN}[4d] Removing PreToolUse hook from ~/.claude/settings.json...${NC}`);
+    // 10. PreToolUse hook in ~/.claude/settings.json
+    console.log(`${GREEN}[10/10] Removing PreToolUse hook from ~/.claude/settings.json...${NC}`);
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (existsSync(settingsPath)) {
         try {

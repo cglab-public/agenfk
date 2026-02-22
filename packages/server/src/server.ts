@@ -17,7 +17,7 @@ const VERIFY_TOKEN = (() => {
     return fs.readFileSync(tokenPath, 'utf8').trim();
   } catch {
     const ephemeral = crypto.randomBytes(32).toString('hex');
-    console.warn(`[SERVER_START] Warning: ~/.agenfk/verify-token not found. Run install.sh to generate it. Using ephemeral token for this session.`);
+    console.warn(`[SERVER_START] Warning: ~/.agenfk/verify-token not found. Run npm run install:framework to generate it. Using ephemeral token for this session.`);
     return ephemeral;
   }
 })();

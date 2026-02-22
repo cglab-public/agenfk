@@ -39,7 +39,7 @@ This will:
 *   Install the **`/agenfk`** and **`/agenfk-release`** slash commands in your AI editors.
 *   Install the **Agent Skill** into Opencode.
 *   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
-*   Generate a **`start-services.sh`** script to launch the API and Web UI.
+*   Configure the **`start:services`** Node script to launch the API and Web UI.
 
 > **Requirements**: Node.js 18+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
@@ -52,7 +52,7 @@ After installation, complete the setup:
 1.  **Restart your AI editor** (Opencode requires a restart to pick up the new MCP server).
 2.  **Start the services** in a dedicated terminal — this keeps the API and Web UI running in the background:
     ```bash
-    agenfk up
+    npm run start:services
     ```
     This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
 3.  **Service Lifecycle**: Manage your installation with the following commands:
@@ -61,6 +61,7 @@ After installation, complete the setup:
     *   `agenfk restart`: Quickly cycle both the API and UI.
     *   `agenfk down`: Stop all running AgenFK processes.
     *   `agenfk health`: Verify configuration, database, and connectivity.
+    *   `npm run uninstall:framework`: Fully remove AgenFK from your system.
 4.  **Initialize a project** — go to any repository and type `/agenfk` in your AI editor to link it to the framework.
 
 ## Multi-Project Support
