@@ -20,7 +20,9 @@ if (process.env.NODE_ENV !== 'test') {
 
 export { program };
 
-const CURRENT_VERSION = '0.1.0';
+const pkgPath = path.resolve(__dirname, '../package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+const CURRENT_VERSION = pkg.version;
 
 program
   .version(CURRENT_VERSION)
