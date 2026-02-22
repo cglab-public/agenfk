@@ -163,6 +163,40 @@ describe('CLI Commands', () => {
       expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('down'), expect.any(Object));
       expect(mockedChildProcess.spawn).toHaveBeenCalledWith('node', expect.arrayContaining(['up']), expect.any(Object));
     });
+
+    it('should handle restart failure', async () => {
+      mockedChildProcess.spawn.mockImplementation(() => { throw new Error('Spawn failed'); });
+      await program.parseAsync(['node', 'agenfk', 'restart']);
+      // Should catch error and log it
+    });
+  });
+
+  describe('update command', () => {
+    it('should update an item by full ID', async () => {
+      mockedAxios.put.mockResolvedValue({ data: { id: 'full-id', title: 'T', status: 'DONE' } });
+      await program.parseAsync(['node', 'agenfk', 'update', 'full-id-uuid-format-here-36-chars', '--status', 'DONE']);
+      expect(mockedAxios.put).toHaveBeenCalled();
+    });
+
+    it('should handle short ID with no matches', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [] });
+      await program.parseAsync(['node', 'agenfk', 'update', 'short', '--status', 'DONE']);
+      expect(mockedAxios.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('create command', () => {
+    it('should use project ID from local config if not provided', async () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('{"projectId": "local-p1"}');
+      mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'T' } });
+      
+      await program.parseAsync(['node', 'agenfk', 'create', 'task', 'Local Task']);
+      
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
+        projectId: 'local-p1'
+      }));
+    });
   });
 
   describe('health command', () => {
