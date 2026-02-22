@@ -1,113 +1,152 @@
 {
   "projects": [
     {
-      "id": "2311028c-3dd5-4d27-9a14-fd97c92bfe84",
+      "id": "52fb688a-5d43-47ca-bf61-cf1f5738b52c",
       "name": "Test Project",
       "description": "Test Desc",
-      "createdAt": "2026-02-22T17:32:18.491Z",
-      "updatedAt": "2026-02-22T17:32:18.491Z"
+      "createdAt": "2026-02-22T17:32:32.192Z",
+      "updatedAt": "2026-02-22T17:32:32.192Z"
     },
     {
-      "id": "99c5ed55-ff96-46ef-9711-3c36635977f3",
+      "id": "68b9e4ec-d714-423c-b20a-a52b5917b489",
       "name": "P1 Updated",
       "description": "",
-      "createdAt": "2026-02-22T17:32:18.525Z",
-      "updatedAt": "2026-02-22T17:32:18.534Z"
+      "createdAt": "2026-02-22T17:32:32.196Z",
+      "updatedAt": "2026-02-22T17:32:32.206Z"
     },
     {
-      "id": "378e0c95-220e-423a-ae9e-330c9bfb927c",
+      "id": "04d5f559-3102-4a5d-bf02-57911d822434",
       "name": "Item Test",
       "description": "",
-      "createdAt": "2026-02-22T17:32:18.578Z",
-      "updatedAt": "2026-02-22T17:32:18.578Z"
+      "createdAt": "2026-02-22T17:32:32.243Z",
+      "updatedAt": "2026-02-22T17:32:32.243Z"
     }
   ],
   "items": [
     {
-      "id": "12c679b8-4a76-4ff9-8c32-dd67d218c5bc",
-      "projectId": "378e0c95-220e-423a-ae9e-330c9bfb927c",
+      "id": "c7908d1a-016d-48c7-a911-3e3f6c0a95f8",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
       "type": "TASK",
       "title": "T1",
       "description": "D1",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T17:32:18.585Z",
-      "updatedAt": "2026-02-22T17:32:18.585Z",
+      "createdAt": "2026-02-22T17:32:32.252Z",
+      "updatedAt": "2026-02-22T17:32:32.252Z",
       "history": [
         {
-          "id": "90e60c69-a24c-4b14-af5d-6d5a19cb0819",
+          "id": "aa35c698-65f9-4122-8298-f876f0866e6e",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T17:32:18.585Z"
+          "timestamp": "2026-02-22T17:32:32.253Z"
         }
       ]
     },
     {
-      "id": "8e859e8f-7a71-41c6-a947-b344a38b08de",
-      "projectId": "378e0c95-220e-423a-ae9e-330c9bfb927c",
+      "id": "833c4995-154b-47ef-87d6-29907fa5f4c7",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
       "type": "TASK",
       "title": "To Update",
       "description": "D",
       "status": "IN_PROGRESS",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T17:32:18.589Z",
-      "updatedAt": "2026-02-22T17:32:18.598Z",
+      "createdAt": "2026-02-22T17:32:32.255Z",
+      "updatedAt": "2026-02-22T17:32:32.259Z",
       "history": [
         {
-          "id": "952da819-dec8-40a7-9e12-66b60e94ff01",
+          "id": "b9273405-44e2-4a0c-b601-ec9e691832ca",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T17:32:18.590Z"
+          "timestamp": "2026-02-22T17:32:32.255Z"
         },
         {
-          "id": "ec080f2c-0f16-4cee-8cbb-eaff479e4c08",
+          "id": "6f2edcf1-f5ca-4fdd-85e1-ad3bf47c6d9b",
           "fromStatus": "TODO",
           "toStatus": "IN_PROGRESS",
-          "timestamp": "2026-02-22T17:32:18.598Z"
+          "timestamp": "2026-02-22T17:32:32.259Z"
         }
       ]
     },
     {
-      "id": "704449a7-296a-457f-a92b-2d1e76a72b5c",
-      "projectId": "378e0c95-220e-423a-ae9e-330c9bfb927c",
+      "id": "070ade57-5529-433f-bdab-90458ec2eaac",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
       "type": "TASK",
       "title": "No Cheat",
       "description": "D",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T17:32:18.601Z",
-      "updatedAt": "2026-02-22T17:32:18.601Z",
+      "createdAt": "2026-02-22T17:32:32.262Z",
+      "updatedAt": "2026-02-22T17:32:32.262Z",
       "history": [
         {
-          "id": "66e0f6ce-983e-43a1-88b2-9b5279e1dd6d",
+          "id": "824fb7a6-cc50-4137-8c36-04d1c58319a0",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T17:32:18.601Z"
+          "timestamp": "2026-02-22T17:32:32.262Z"
         }
       ]
     },
     {
-      "id": "b4aa393f-28fa-42b8-ad8e-bec0a9dff6a5",
-      "projectId": "378e0c95-220e-423a-ae9e-330c9bfb927c",
+      "id": "0848eed7-f4f3-40c2-85b4-70544c908bb7",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
       "type": "TASK",
       "title": "Verify Me",
       "description": "D",
       "status": "DONE",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T17:32:18.629Z",
-      "updatedAt": "2026-02-22T17:32:18.631Z",
+      "createdAt": "2026-02-22T17:32:32.270Z",
+      "updatedAt": "2026-02-22T17:32:32.276Z",
       "history": [
         {
-          "id": "015bad99-84cb-4a40-b6d5-bacab41d796e",
+          "id": "1e6dbfbd-95b3-4e80-98ba-93218e996afc",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T17:32:18.629Z"
+          "timestamp": "2026-02-22T17:32:32.271Z"
         },
         {
-          "id": "3bd7d448-1a4f-4566-ac75-02241c9beeb3",
+          "id": "fcfc1834-1444-4dd8-8e3a-86e266b37adf",
           "fromStatus": "TODO",
           "toStatus": "DONE",
-          "timestamp": "2026-02-22T17:32:18.631Z"
+          "timestamp": "2026-02-22T17:32:32.276Z"
+        }
+      ]
+    },
+    {
+      "id": "8e64cd60-d59e-4efd-81c5-21de84642af0",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T17:32:32.289Z",
+      "updatedAt": "2026-02-22T17:32:32.289Z",
+      "history": [
+        {
+          "id": "54222013-8cf5-492a-a45b-8b3695c720c6",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T17:32:32.289Z"
+        }
+      ]
+    },
+    {
+      "id": "980c9071-347e-45b7-8735-824b40a2b79d",
+      "projectId": "04d5f559-3102-4a5d-bf02-57911d822434",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "TODO",
+      "parentId": "8e64cd60-d59e-4efd-81c5-21de84642af0",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T17:32:32.290Z",
+      "updatedAt": "2026-02-22T17:32:32.290Z",
+      "history": [
+        {
+          "id": "cb2aecc7-15e1-4b8c-acc6-a39af0cb5452",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T17:32:32.291Z"
         }
       ]
     }
