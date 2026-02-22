@@ -117,16 +117,79 @@
       "type": "STORY",
       "title": "Parent Story",
       "description": "D",
-      "status": "TODO",
+      "status": "IN_PROGRESS",
       "implementationPlan": "",
       "createdAt": "2026-02-22T06:41:39.019Z",
-      "updatedAt": "2026-02-22T06:41:39.019Z",
+      "updatedAt": "2026-02-22T06:41:39.033Z",
       "history": [
         {
           "id": "7d5db899-550f-4482-96dd-f417fb9933f3",
           "fromStatus": "TODO",
           "toStatus": "TODO",
           "timestamp": "2026-02-22T06:41:39.019Z"
+        },
+        {
+          "id": "0d6d4824-ae86-4be0-a66e-53c3aec0ef07",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T06:41:39.033Z"
+        }
+      ]
+    },
+    {
+      "id": "222356d7-261e-40c7-b689-123e42c93646",
+      "projectId": "5d09bd3f-8c85-475e-83fe-ecd232d7e745",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "5e896c1f-7089-44f5-82c5-338e7f21c9d4",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T06:41:39.025Z",
+      "updatedAt": "2026-02-22T06:41:39.032Z",
+      "history": [
+        {
+          "id": "8283bcfc-f2c9-4042-9981-9c9cdea22321",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:41:39.026Z"
+        },
+        {
+          "id": "ef8692b3-7410-4c55-af5f-de627b610fc4",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T06:41:39.032Z"
+        }
+      ]
+    },
+    {
+      "id": "1374377b-ac16-43e1-af71-d0ec6abd03de",
+      "projectId": "5d09bd3f-8c85-475e-83fe-ecd232d7e745",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T06:41:39.040Z",
+      "updatedAt": "2026-02-22T06:41:39.051Z",
+      "history": [
+        {
+          "id": "f9e32db7-e7dc-47ca-8d01-b00b58e3abf2",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:41:39.041Z"
+        },
+        {
+          "id": "a23c3d3e-a0b6-4dd9-99c8-d12d6154a79f",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-02-22T06:41:39.048Z"
+        },
+        {
+          "id": "2cc5d606-1362-43dc-8f7f-e9de022b85f9",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:41:39.050Z"
         }
       ]
     }
