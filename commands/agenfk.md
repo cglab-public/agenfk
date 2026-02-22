@@ -1,5 +1,10 @@
 ---
-description: Initialize and load the AgenFK Engineering Framework for this project
+description: Initialize AgenFK and execute tasks in Standard Mode (Single Agent)
 ---
 
-Load the `agenfk` skill. Run its Initialization protocol. If this is a new project, scan the codebase and create the required markdown files (AFK_PROJECT_SCOPE.md and AFK_ARCHITECTURE.md). Always associate my requests with the current active project.
+Load the `agenfk` skill. Run its Initialization protocol if needed.
+Identify the user's request and follow the **Standard Mode** protocol in the skill:
+1. Proceed directly to implementation for simple tasks.
+2. Execute the entire lifecycle (Code, Verify, Close) proactively in this session.
+3. Do not spawn specialized sub-agents.
+

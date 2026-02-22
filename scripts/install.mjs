@@ -287,7 +287,7 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
     console.log("1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP).");
     console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
-    console.log("3. Go to ANY project repository and type '/agenfk' in your AI editor's prompt to initialize your project context and start the workflow.");
+    console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
     console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");
     console.log("5. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'.");
     console.log("6. Run 'agenfk health' to verify your installation at any time.");

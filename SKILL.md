@@ -11,6 +11,29 @@ metadata:
 
 This skill enforces the core AgenFK Engineering workflow to ensure all software tasks are Agile, Measurable, Visual, Repeatable, Reliable, and Flexible.
 
+## Operation Modes
+
+AgenFK supports two distinct operation modes based on the slash command invoked:
+
+### 1. Standard Mode (via `/agenfk`)
+*   **Behavior**: Single-agent, proactive execution.
+*   **Workflow**: The agent who starts the task is responsible for the entire lifecycle (Planning, Coding, Verification, and Closing) within a single session.
+*   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
+*   **Decomposition**: Optional. If the task is simple, do not decompose into sub-items unless it provides significant organizational value.
+*   **Handoff**: None. Do not spawn sub-agents.
+
+### 2. Deep Mode (via `/agenfk-deep`)
+*   **Behavior**: Multi-agent, automated orchestration.
+*   **Trigger**: Use this mode for complex architectural changes, high-security code, or large features.
+*   **Supervisor Pattern**: You act as a supervisor, responsible for decomposing the task and spawning specialized sub-agents via the `task` tool at every phase transition.
+*   **Plan & Pause**: Mandatory decomposition into sub-items. You **MUST PAUSE** and obtain human approval of the plan before moving any item to `IN_PROGRESS`.
+*   **Automated Handover**:
+    - **Coding to Review**: Automatically spawn a "Review Agent" after `verify_changes`.
+    - **Review to Test**: Automatically spawn a "Test Agent" after successful review.
+    - **Test to Done**: Automatically spawn a "Closing Agent" after successful testing.
+
+---
+
 ## What I do
 
 1.  **Initialization**
@@ -32,14 +55,11 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Objective**: Maintain project identity and a living map.
 
 2.  **Request Analysis & Clarification**
-    *   **Context**: Take int account `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` for informed reasoning.
+    *   **Context**: Take into account `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` for informed reasoning.
     *   **Action**: Call `analyze_request(request: string)` for every new user requirement.
-    *   **Complexity & Decomposition**: 
-        1. Evaluate if the request requires multiple steps or touches multiple components.
-        2. If complex, categorize as **EPIC** or **STORY**.
-        3. **Sub-item Creation**: For every EPIC/STORY, you MUST define and create the necessary sub-items (Stories for Epics, Tasks for Stories) in `TODO` status immediately after creating the parent.
-        4. **Plan & Pause**: After creating the hierarchy (Parent + Children), you **MUST PAUSE** and present the proposed items to the user. Ask: "I've decomposed your request into the following items. Should I proceed with implementation or would you like to make changes?"
-        5. **Authorization**: NEVER move a task to `IN_PROGRESS` until the user has confirmed the plan.
+    *   **Mode Selection**: 
+        - If the user invoked `/agenfk`, use **Standard Mode**.
+        - If the user invoked `/agenfk-deep`, use **Deep Mode**.
     *   **Reasoning Step**: Before creating ANY item or initializing a project, you MUST reason about the implementation details. 
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
@@ -80,16 +100,6 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion**: Update parent Story/Epic status automatically.
-
-## Automated Lifecycle Orchestration
-AgenFK agents MUST act as proactive orchestrators of the work lifecycle. You are responsible for automatically spawning specialized sub-agents via the `task` tool at every phase transition. DO NOT wait for explicit user instructions to proceed between phases once the initial plan is approved.
-
-*   **Plan & Pause**: For complex requests (EPIC/STORY), you MUST decompose the task, create all sub-items, and PAUSE for human approval. Once approved, the rest of the lifecycle is autonomous.
-*   **Automatic Handover (Coding to Review)**: Immediately after a successful implementation and `verify_changes` call (moving item to `REVIEW`), you MUST spawn a "Review Agent" via `task(subagent_type="explore", prompt="/agenfk-review <id> in project <projectId>")`.
-*   **Automatic Handover (Review to Test)**: If the Review Agent returns success, move the item to `TEST` and immediately spawn a "Test Agent" via `task(subagent_type="general", prompt="/agenfk-test <id> in project <projectId>")`.
-*   **Automatic Handover (Test to Done)**: If the Test Agent returns success, move the item to `DONE` and spawn a "Closing Agent" via `task(subagent_type="general", prompt="/agenfk-close <id> in project <projectId>")` to summarize and log the final comment.
-
-If any sub-agent fails, move the item back to `IN_PROGRESS` and report the specific errors to the user.
 
 ## When to use me
 
