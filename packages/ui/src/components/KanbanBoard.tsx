@@ -7,7 +7,8 @@ import {
   Plus, Loader2, AlertCircle, Layout, Tag, 
   AlignLeft, Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
-  FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck
+  FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
+  Copy, Check
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -99,6 +100,13 @@ export const KanbanBoard: React.FC = () => {
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyId = (id: string) => {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   // Keep selected item in sync with fresh data
   useEffect(() => {
@@ -542,7 +550,16 @@ export const KanbanBoard: React.FC = () => {
 
                     <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
                       <div className="flex items-center gap-2">
-                        <span>#{item.id.substring(0, 4)}</span>
+                        <div 
+                          className="flex items-center gap-1.5 group/id cursor-pointer" 
+                          onClick={(e) => { e.stopPropagation(); handleCopyId(item.id); }}
+                          title="Copy Full ID"
+                        >
+                          <span className="group-hover/id:text-indigo-500 transition-colors">#{item.id.substring(0, 4)}</span>
+                          <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
+                            {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+                          </div>
+                        </div>
                         <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
                           <Clock size={10} />
                           {item.status === Status.DONE 

@@ -115,4 +115,28 @@ describe('KanbanBoard', () => {
       expect(api.createProject).toHaveBeenCalled();
     });
   });
+
+  it('should copy ID to clipboard when clicked', async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date(), history: [] };
+    const item = { id: 'i1-abcd-efgh', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] };
+    
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue([item as any]);
+    localStorage.setItem('agenfk_project_id', 'p1');
+
+    // Mock clipboard
+    const writeTextMock = vi.fn();
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+
+    render(<KanbanBoard />, { wrapper });
+    
+    const idElement = await screen.findByText('#i1-a');
+    fireEvent.click(idElement);
+
+    expect(writeTextMock).toHaveBeenCalledWith('i1-abcd-efgh');
+  });
 });
