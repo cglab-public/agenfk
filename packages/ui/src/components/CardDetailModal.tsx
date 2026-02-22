@@ -223,6 +223,39 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </div>
                 </div>
               </div>
+
+              {/* Progress Comments Section */}
+              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <Tag size={14} />
+                  Progress Log ({item.comments?.length || 0})
+                </h4>
+                
+                {item.comments && item.comments.length > 0 ? (
+                  <div className="space-y-3">
+                    {[...item.comments].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((comment) => (
+                      <div key={comment.id} className="bg-slate-50/50 dark:bg-slate-950/30 rounded-xl p-4 border border-slate-100 dark:border-slate-800/50 group hover:border-indigo-200 dark:hover:border-indigo-900/50 transition-colors">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+                            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500"></div>
+                            @{comment.author}
+                          </span>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                            {new Date(comment.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+                          {comment.content}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 bg-slate-50/50 dark:bg-slate-950/20 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+                    <p className="text-slate-400 text-xs italic">No progress steps logged yet.</p>
+                  </div>
+                )}
+              </div>
             </>
           )}
 

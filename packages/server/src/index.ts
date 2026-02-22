@@ -112,6 +112,12 @@ const AddContextSchema = z.object({
   content: z.string().optional(),
 });
 
+const AddCommentSchema = z.object({
+  itemId: z.string(),
+  content: z.string(),
+  author: z.string().optional(),
+});
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
@@ -199,6 +205,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             cost: { type: "number" },
           },
           required: ["itemId", "input", "output", "model"],
+        },
+      },
+      {
+        name: "add_comment",
+        description: "Add a comment to an item to log progress or steps.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            content: { type: "string", description: "The comment text." },
+            author: { type: "string", description: "Optional author name (e.g. 'opencode')." },
+          },
+          required: ["itemId", "content"],
         },
       },
       {
@@ -387,14 +406,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         await api.put(`/items/${itemId}`, { tokenUsage });
         return { content: [{ type: "text", text: "Token usage logged." }] };
       }
-      case "add_context": {
-        const args = AddContextSchema.parse(request.params.arguments);
-        const { itemId, ...contextItem } = args;
+      case "add_comment": {
+        const args = AddCommentSchema.parse(request.params.arguments);
+        const { itemId, content, author } = args;
         const { data: item } = await api.get(`/items/${itemId}`);
-        const context = item.context || [];
-        context.push({ id: uuidv4(), ...contextItem });
-        await api.put(`/items/${itemId}`, { context });
-        return { content: [{ type: "text", text: "Context added." }] };
+        const comments = item.comments || [];
+        comments.push({ 
+          id: uuidv4(), 
+          content, 
+          author: author || "agent", 
+          timestamp: new Date() 
+        });
+        await api.put(`/items/${itemId}`, { comments });
+        return { content: [{ type: "text", text: "Comment added." }] };
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
