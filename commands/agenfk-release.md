@@ -1,13 +1,18 @@
 ---
-description: Push current branch to remote and optionally create a GitHub release
+description: Commit local changes, push to remote, and optionally create a GitHub release
 ---
 
-You are executing the `/agenfk-push` command. Follow these steps precisely:
+You are executing the `/agenfk-release` command. Follow these steps precisely:
 
-**Step 1 — Push to remote**
+**Step 1 — Commit local changes**
+Check for local changes using `git status`. If there are unstaged or uncommitted changes:
+- Ask the user for a commit message (or offer to generate one).
+- Run `git add . && git commit -m "<message>"` and show the output.
+
+**Step 2 — Push to remote**
 Run `git push` and show the output to the user.
 
-**Step 2 — GitHub Release (optional)**
+**Step 3 — GitHub Release (optional)**
 Ask the user: "Do you want to create a GitHub release?"
 
 If YES:

@@ -36,7 +36,7 @@ This will:
 *   Download the framework directly from GitHub.
 *   Install all dependencies and build the full stack.
 *   Configure the **MCP Server** for both **Opencode** and **Claude Code**.
-*   Install the **`/agenfk`** and **`/agenfk-push`** slash commands in your AI editors.
+*   Install the **`/agenfk`** and **`/agenfk-release`** slash commands in your AI editors.
 *   Install the **Agent Skill** into Opencode.
 *   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
 *   Generate a **`start-services.sh`** script to launch the API and Web UI.
@@ -120,7 +120,7 @@ After running `npx github:cglab-PRIVATE/agenfk`, two slash commands are availabl
 | Command | Description |
 |---|---|
 | `/agenfk` | Initialize the framework for a project, create scope & architecture docs |
-| `/agenfk-push` | Push to remote and optionally cut a GitHub release |
+| `/agenfk-release` | Push to remote and optionally cut a GitHub release |
 
 Type `/agenfk` in any project to create its scope and architecture documents and link it to the framework.
 
