@@ -90,7 +90,7 @@ function killPattern(pattern: string) {
   } catch (e) {}
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp')) {
   console.log(
     chalk.cyan(
       figlet.textSync('agenfk', { horizontalLayout: 'full' })
