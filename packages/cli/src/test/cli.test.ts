@@ -168,9 +168,43 @@ describe('CLI Commands', () => {
   describe('health command', () => {
     it('should check system paths and API', async () => {
       mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
+      mockedFs.readFileSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('db.json')) return '{"items":[]}';
+        if (typeof p === 'string' && p.endsWith('opencode.json')) return '{"mcp":{"agenfk":{"enabled":true}}}';
+        return '';
+      });
       await program.parseAsync(['node', 'agenfk', 'health']);
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
     });
+  });
+
+  describe('up command', () => {
+    it('should bootstrap services if missing', async () => {
+      mockedFs.existsSync.mockImplementation((p) => {
+        if (typeof p === 'string' && (p.endsWith('start-services.mjs') || p.endsWith('server.js'))) return false;
+        return true;
+      });
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
+      
+      await program.parseAsync(['node', 'agenfk', 'up']);
+      
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+
+    it('should skip bootstrap if artifacts found', async () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      await program.parseAsync(['node', 'agenfk', 'up']);
+      expect(mockedChildProcess.execSync).not.toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+  });
+
+  describe('down command', () => {
+    it('should call killPattern for services', async () => {
+      await program.parseAsync(['node', 'agenfk', 'down']);
+      // Should call execSync for ps -ef or similar inside killPattern
+      expect(mockedChildProcess.execSync).toHaveBeenCalled();
+    });
+  });
   });
 
   describe('up command', () => {
