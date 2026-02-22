@@ -350,8 +350,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
-      const projectRoot = findProjectRoot(process.cwd());
-      autoGitCommit(updated, projectRoot);
+      if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        const projectRoot = findProjectRoot(process.cwd());
+        autoGitCommit(updated, projectRoot);
+      } else {
+        console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
+      }
     }
 
     res.json(updated);
