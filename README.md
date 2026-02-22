@@ -121,15 +121,31 @@ graph TD
 
 ## Quick Start (Opencode & Claude Code)
 
-After running `npx github:cglab-PRIVATE/agenfk`, three slash commands are available in your AI editor:
+After installation, four primary slash commands are available in your AI editor:
 
 | Command | Description |
 |---|---|
-| `/agenfk` | Initialize the framework for a project, create scope & architecture docs |
-| `/agenfk-release` | Push to remote and optionally cut a GitHub release |
-| `/agenfk-release-beta` | Push to remote and create a GitHub pre-release (beta) |
+| `/agenfk` | **Standard Mode**: Execute tasks proactively in a single session. |
+| `/agenfk-deep` | **Deep Mode**: Full multi-agent orchestration with planning and review gates. |
+| `/agenfk-release` | Push to remote and cut a stable GitHub release. |
+| `/agenfk-release-beta` | Push to remote and cut a pre-release (beta). |
 
-Type `/agenfk` in any project to create its scope and architecture documents and link it to the framework.
+Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
+
+## Operation Modes
+
+AgenFK operates in two distinct modes to balance speed and rigor:
+
+### Standard Mode (`/agenfk`)
+Designed for daily engineering tasks. The primary agent acts proactively, handling implementation, verification, and closure in a single streamlined session. No mandatory pauses for simple tasks.
+
+### Deep Mode (`/agenfk-deep`)
+Designed for complex architectural changes. The primary agent acts as a **Supervisor**, enforcing a strict multi-agent lifecycle:
+1.  **Plan & Pause**: Decomposes the task into sub-items and waits for your approval.
+2.  **Autonomous Handover**: Once approved, automatically spawns specialized sub-agents for Coding, Review (Security/Logic), and Testing (80% Coverage).
+3.  **Final Summary**: A Closing Agent collates all work logs into a final report before completion.
+
+---
 
 ![AgenFK Dashboard](./docs/dashboard-screenshot.png)
 
