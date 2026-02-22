@@ -8,3 +8,4 @@ scripts/start-services.mjs
 .env
 coverage/
 .opencode/
+*.tar.gz

@@ -18,7 +18,9 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 ### 1. Standard Mode (via `/agenfk`)
 *   **Behavior**: Single-agent, proactive execution.
 *   **Workflow**: The agent who starts the task is responsible for the entire lifecycle (Planning, Coding, Verification, and Closing) within a single session.
+*   **Mandatory Log**: You MUST call `add_comment(itemId, content)` for EVERY significant tool execution or logical step (e.g. "Analyzed file X", "Implemented function Y", "Running tests").
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
+*   **Verification**: You MUST use `verify_changes` to run tests before closing.
 *   **Decomposition**: Optional. If the task is simple, do not decompose into sub-items unless it provides significant organizational value.
 *   **Handoff**: None. Do not spawn sub-agents.
 
