@@ -38,6 +38,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
     *   **Requirement**: All items created must be associated with the active `projectId`.
+    *   **Transparency**: If you're opencode, display every MCP call parameter and return value.
 
 3.  **Planning (Epics only)**
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
