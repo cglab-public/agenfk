@@ -19,5 +19,5 @@ You are executing the `/agenfk-review <id>` command as a **Review Agent**. Follo
 
 **Step 4 — Log Review Results**
 - Use `add_comment(id, "REVIEW PASSED: ...")` or `add_comment(id, "REVIEW FAILED: ...")` with detailed feedback.
-- If passed, call `update_item(id, {status: "TEST"})`.
-- If failed, call `update_item(id, {status: "IN_PROGRESS"})` and provide actionable fix instructions.
+- If passed, call `update_item(id, {status: "TEST"})` and **immediately stop and yield to the supervisor.**
+- If failed, call `update_item(id, {status: "IN_PROGRESS"})`, provide actionable fix instructions, and **yield to the supervisor.**
