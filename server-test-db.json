@@ -6659,6 +6659,88 @@
           "timestamp": "2026-02-22T14:32:21.960Z"
         }
       ]
+    },
+    {
+      "id": "0d9beaaa-2b45-4eda-a481-85c138a55599",
+      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:32:21.970Z",
+      "updatedAt": "2026-02-22T14:32:22.018Z",
+      "history": [
+        {
+          "id": "a16726f7-317f-4987-9687-f381d95fbff4",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:32:21.976Z"
+        },
+        {
+          "id": "f8bf4a59-078d-4ccd-9c57-66aaef3a60eb",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:32:22.018Z"
+        }
+      ]
+    },
+    {
+      "id": "692eb299-1d37-40cd-bad5-57bbc2b48438",
+      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "0d9beaaa-2b45-4eda-a481-85c138a55599",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:32:21.982Z",
+      "updatedAt": "2026-02-22T14:32:22.002Z",
+      "history": [
+        {
+          "id": "f73e7077-d9ec-4823-ba29-c896aea401aa",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:32:21.984Z"
+        },
+        {
+          "id": "d1dcb55e-68dc-4f44-9937-0de341f03c79",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:32:22.002Z"
+        }
+      ]
+    },
+    {
+      "id": "9c6a4f6b-785d-40db-823c-e058c886d25e",
+      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:32:22.052Z",
+      "updatedAt": "2026-02-22T14:32:22.132Z",
+      "history": [
+        {
+          "id": "8d03bf68-10fe-408a-966e-da220beef291",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:32:22.066Z"
+        },
+        {
+          "id": "c7cbeeaa-5ee9-4277-95bb-5f4e44544b27",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-02-22T14:32:22.092Z"
+        },
+        {
+          "id": "d9935b83-c619-48dc-a402-0b5a089b6f00",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:32:22.120Z"
+        }
+      ]
     }
   ]
 }
