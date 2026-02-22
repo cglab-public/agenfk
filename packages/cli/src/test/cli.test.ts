@@ -173,8 +173,8 @@ describe('CLI Commands', () => {
 
   describe('update command', () => {
     it('should update an item by full ID', async () => {
-      mockedAxios.put.mockResolvedValue({ data: { id: 'full-id', title: 'T', status: 'DONE' } });
-      await program.parseAsync(['node', 'agenfk', 'update', 'full-id-uuid-format-here-36-chars', '--status', 'DONE']);
+      mockedAxios.put.mockResolvedValue({ data: { id: 'uuid-36-chars-long-xxxxxxxxxxxxxxxxx', title: 'T', status: 'DONE' } });
+      await program.parseAsync(['node', 'agenfk', 'update', 'uuid-36-chars-long-xxxxxxxxxxxxxxxxx', '--status', 'DONE']);
       expect(mockedAxios.put).toHaveBeenCalled();
     });
 
@@ -187,8 +187,14 @@ describe('CLI Commands', () => {
 
   describe('create command', () => {
     it('should use project ID from local config if not provided', async () => {
-      mockedFs.existsSync.mockReturnValue(true);
-      mockedFs.readFileSync.mockReturnValue('{"projectId": "local-p1"}');
+      mockedFs.existsSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('project.json')) return true;
+        return true;
+      });
+      mockedFs.readFileSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('project.json')) return '{"projectId": "local-p1"}';
+        return '{"items":[]}';
+      });
       mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'T' } });
       
       await program.parseAsync(['node', 'agenfk', 'create', 'task', 'Local Task']);
