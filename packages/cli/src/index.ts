@@ -334,7 +334,7 @@ program
     
     try {
       if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
-        execSync(`explorer.exe "${uiUrl}"`, { stdio: 'ignore' });
+        execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore' });
       } else if (process.platform === 'linux') {
         execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore' });
       } else if (process.platform === 'darwin') {
