@@ -62,6 +62,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 
 6.  **Final Verification (Review Tool)**
     *   **Action**: BEFORE moving to `TEST`, the Agent **MUST** use the `verify_changes(itemId, command)` tool.
+    *   **Mandatory Tests**: The `command` passed to `verify_changes` MUST include the project's primary testing solution (e.g., `npm test`, `pytest`, `go test`). Simple builds (`npm run build`) are NOT sufficient. The Agent must perform stack detection (e.g., checking `package.json`, `requirements.txt`, `go.mod`) to identify the correct test command.
     *   **Transition Logic (Automated by Tool)**:
         1. The tool moves the item to `REVIEW`.
         2. The tool executes the command.
