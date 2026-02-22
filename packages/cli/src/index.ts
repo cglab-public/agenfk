@@ -34,14 +34,13 @@ program
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}...`));
 
     try {
-      const { data: latestRelease } = await axios.get(`https://api.github.com/repos/${REPO}/releases/latest`, {
-          headers: {
-              'Accept': 'application/vnd.github.v3+json',
-              'User-Agent': 'agenfk-cli'
-          }
-      });
+      // Use gh CLI to fetch the latest release tag for private repository support
+      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'] 
+      }).trim();
       
-      const latestVersion = latestRelease.tag_name.replace(/^v/, '');
+      const latestVersion = latestTag.replace(/^v/, '');
       
       if (latestVersion !== CURRENT_VERSION) {
         console.log(chalk.yellow(`New version available: ${latestVersion} (current: ${CURRENT_VERSION})`));
@@ -65,11 +64,8 @@ program
         console.log(chalk.green('You are already on the latest version.'));
       }
     } catch (error: any) {
-      if (error.response?.status === 404) {
-        console.error(chalk.red(`Error: Repository or releases not found for ${REPO}`));
-      } else {
-        console.error(chalk.red('Error checking for updates:'), error.message);
-      }
+      console.error(chalk.red('Error checking for updates. Ensure "gh" CLI is installed and authenticated.'));
+      console.error(chalk.gray(`Repo: ${REPO}`));
     }
   });
 
