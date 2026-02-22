@@ -46,6 +46,14 @@ export interface ReviewRecord {
   executedAt: string;
 }
 
+export interface HistoryRecord {
+  id: string;
+  fromStatus: Status;
+  toStatus: Status;
+  timestamp: string;
+  user?: string;
+}
+
 export interface AgenFKItem {
   id: string;
   projectId: string;
@@ -57,6 +65,7 @@ export interface AgenFKItem {
   tokenUsage?: TokenUsage[];
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  history?: HistoryRecord[];
   createdAt: string; // Date comes as string from JSON
   updatedAt: string;
   parentId?: string;

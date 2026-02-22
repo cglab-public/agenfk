@@ -37,6 +37,14 @@ export interface ReviewRecord {
   executedAt: Date;
 }
 
+export interface HistoryRecord {
+  id: string;
+  fromStatus: Status;
+  toStatus: Status;
+  timestamp: Date;
+  user?: string; // Optional for future use
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -56,6 +64,7 @@ export interface BaseItem {
   tokenUsage?: TokenUsage[]; // Array to track usage over time/sessions
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  history?: HistoryRecord[];
   createdAt: Date;
   updatedAt: Date;
   parentId?: string; // For hierarchy (Story -> Epic, Task -> Story)
