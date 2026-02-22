@@ -22,5 +22,6 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 
 **Step 4 — Handover**
 - Call `add_comment(id, "IMPLEMENTATION COMPLETE: ...")` to log the final summary of code changes.
+- Call `add_comment(id, "Phase Code complete: Implementation and self-verification finished.")` to log the phase completion.
 - Call `verify_changes(id, "<build_command>")` to move the item to **REVIEW**.
 - **STOP IMMEDIATELY** after calling `verify_changes`. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
