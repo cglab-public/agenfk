@@ -3,14 +3,39 @@ import http from 'http';
 
 const API_URL = process.env.AGENFK_API_URL || 'http://127.0.0.1:3000';
 
-// Drain stdin
-process.stdin.on('data', () => {});
+// Read and parse stdin robustly to understand the tool context
+async function getToolIntent() {
+    return new Promise((resolve) => {
+        let data = '';
+        const timeout = setTimeout(() => resolve(null), 500); // Wait up to 500ms
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk) => data += chunk);
+        process.stdin.on('end', () => {
+            clearTimeout(timeout);
+            try {
+                if (!data.trim()) {
+                    resolve(null);
+                    return;
+                }
+                const json = JSON.parse(data);
+                resolve(json && typeof json === 'object' ? json : null);
+            } catch {
+                resolve(null);
+            }
+        });
+        // If stdin is closed but no data was received
+        process.stdin.on('close', () => {
+            clearTimeout(timeout);
+            resolve(null);
+        });
+    });
+}
 
 async function checkInProgress() {
     return new Promise((resolve) => {
         const req = http.get(`${API_URL}/items?status=IN_PROGRESS`, { timeout: 2000 }, (res) => {
             if (res.statusCode !== 200) {
-                resolve(true); // Graceful skip
+                resolve(true); // Graceful skip on API issues
                 return;
             }
 
@@ -19,11 +44,9 @@ async function checkInProgress() {
             res.on('end', () => {
                 try {
                     const items = JSON.parse(data);
-                    if (Array.isArray(items) && items.length > 0) {
-                        resolve(true);
-                    } else {
-                        resolve(false);
-                    }
+                    // Filter leaf tasks/bugs if possible, or just check for any
+                    const hasActive = Array.isArray(items) && items.some(i => i.status === 'IN_PROGRESS');
+                    resolve(hasActive);
                 } catch (e) {
                     resolve(true); // Graceful skip on parse error
                 }
@@ -38,12 +61,16 @@ async function checkInProgress() {
     });
 }
 
+const toolIntent = await getToolIntent();
 const hasInProgress = await checkInProgress();
 
 if (!hasInProgress) {
+    const toolName = toolIntent?.tool || 'unknown tool';
+    const reason = `AgenFK WORKFLOW VIOLATION: No task is IN_PROGRESS while attempting to use ${toolName}.\n\nBefore modifying files you must:\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk update <id> --status IN_PROGRESS\n\nThen retry your change.`;
+    
     process.stdout.write(JSON.stringify({
         decision: 'block',
-        reason: 'AgenFK WORKFLOW VIOLATION: No task is IN_PROGRESS.\n\nBefore modifying files you must:\n  1. Create a task:  agenfk create task "<title>"\n  2. Start it:       agenfk update <id> --status IN_PROGRESS\n\nThen retry your change.'
+        reason: reason
     }));
 }
 

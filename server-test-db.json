@@ -15,25 +15,32 @@
       "updatedAt": "2026-02-20T20:38:33.905Z"
     },
     {
-      "id": "c86bedba-3257-46ea-b225-bf09ef9b920c",
+      "id": "42eb58b4-5e7a-44e8-8401-3436706cde4b",
+      "name": "Stability Test Project",
+      "description": "Stability test for shell-to-node migration.",
+      "createdAt": "2026-02-22T14:46:43.752Z",
+      "updatedAt": "2026-02-22T14:46:43.752Z"
+    },
+    {
+      "id": "813571ff-b1af-4204-84ff-a4eec6b09f14",
       "name": "Test Project",
       "description": "Test Desc",
-      "createdAt": "2026-02-22T14:32:21.770Z",
-      "updatedAt": "2026-02-22T14:32:21.770Z"
+      "createdAt": "2026-02-22T14:47:49.355Z",
+      "updatedAt": "2026-02-22T14:47:49.355Z"
     },
     {
-      "id": "e492ff96-1e47-4e3c-8bb9-0516df86ef5b",
+      "id": "6836d29a-127d-4cb6-9854-d2ebb73b4143",
       "name": "P1 Updated",
       "description": "",
-      "createdAt": "2026-02-22T14:32:21.781Z",
-      "updatedAt": "2026-02-22T14:32:21.794Z"
+      "createdAt": "2026-02-22T14:47:49.377Z",
+      "updatedAt": "2026-02-22T14:47:49.404Z"
     },
     {
-      "id": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "id": "c8ce74d4-dad4-4676-be2c-644d2eaf8a9f",
       "name": "Item Test",
       "description": "",
-      "createdAt": "2026-02-22T14:32:21.880Z",
-      "updatedAt": "2026-02-22T14:32:21.880Z"
+      "createdAt": "2026-02-22T14:47:49.536Z",
+      "updatedAt": "2026-02-22T14:47:49.536Z"
     }
   ],
   "items": [
@@ -6046,7 +6053,7 @@
       "status": "IN_PROGRESS",
       "implementationPlan": "",
       "createdAt": "2026-02-22T07:20:01.164Z",
-      "updatedAt": "2026-02-22T14:24:07.602Z",
+      "updatedAt": "2026-02-22T14:47:17.831Z",
       "history": [
         {
           "id": "ec68c519-6fc8-4df9-b432-0bd418cc1e14",
@@ -6095,6 +6102,42 @@
           "fromStatus": "TODO",
           "toStatus": "IN_PROGRESS",
           "timestamp": "2026-02-22T14:24:07.602Z"
+        },
+        {
+          "id": "71c19a35-a852-4b39-be10-e8cb25a6d512",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:37:07.411Z"
+        },
+        {
+          "id": "c651c567-f3eb-415a-9113-97de1b8ab71b",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:37:07.576Z"
+        },
+        {
+          "id": "19e92223-6fd3-4594-8bb3-dd4965a48828",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:38:43.597Z"
+        },
+        {
+          "id": "45c51dc6-6a50-49a3-97c3-52a6e0b23133",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:38:55.461Z"
+        },
+        {
+          "id": "b8c79c6e-8caf-499e-852b-16498bdcc791",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:47:03.647Z"
+        },
+        {
+          "id": "48dd977a-d791-4ff4-abc5-59361f81ee8c",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:47:04.368Z"
         }
       ]
     },
@@ -6104,11 +6147,11 @@
       "type": "STORY",
       "title": "Story: Migrate Core Lifecycle Scripts",
       "description": "Migrate core lifecycle scripts (install, uninstall, start-services) to Node.js.",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "parentId": "e66503cf-29de-41d9-a5d4-4ba185ddaefb",
       "implementationPlan": "",
       "createdAt": "2026-02-22T07:20:06.713Z",
-      "updatedAt": "2026-02-22T14:24:07.587Z",
+      "updatedAt": "2026-02-22T14:35:04.402Z",
       "history": [
         {
           "id": "c038f79e-ce99-4c06-a9ce-01f95be1e73f",
@@ -6157,6 +6200,28 @@
           "fromStatus": "TODO",
           "toStatus": "IN_PROGRESS",
           "timestamp": "2026-02-22T14:24:07.587Z"
+        },
+        {
+          "id": "18697b01-1c9b-4083-99c1-e8bc2e3ddf25",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "DONE",
+          "timestamp": "2026-02-22T14:34:45.577Z"
+        }
+      ],
+      "tokenUsage": [
+        {
+          "input": 10000,
+          "output": 2000,
+          "model": "gemini-3-flash-preview",
+          "cost": 0.2
+        }
+      ],
+      "comments": [
+        {
+          "id": "1d20ab2d-c223-4e99-8646-329789a47900",
+          "content": "### Core Lifecycle Script Migration Summary (install, uninstall, start-services)\n\nThe migration of the core lifecycle scripts from Bash to Node.js (ESM) is now complete and stable.\n\n#### 1. Logic Migration & Modernization\n- **install.mjs**: Fully reimplemented the framework installation logic. Replaced shell commands with `fs.promises`, `os.homedir()`, and cross-platform child process handling.\n- **uninstall.mjs**: Reimplemented the uninstallation process. Safely removes slash commands (Claude Code & Opencode), skills, MCP configurations, gatekeeper hooks, and system files.\n- **start-services.mjs**: Migrated background service management to Node.js. Handles API server and UI bootstrapping with robust logging and automatic browser launching.\n\n#### 2. Cross-Platform Compatibility\n- Replaced Unix-specific commands (e.g., `fuser`, `pkill`, `rm -rf`, `HOME`) with Node.js equivalents.\n- Used `rootDir`-relative paths and `os.platform()` checks to ensure consistent behavior across environments.\n\n#### 3. Integration & Tooling\n- Updated the CLI to invoke the new `.mjs` scripts.\n- Synchronized installation steps between `install.mjs` and `start-services.mjs`.\n- Replaced old `.sh` scripts with lightweight wrappers where necessary, while the primary logic now resides in the Node.js implementation.\n\nAll verification checks and existing tests passed. The system is now fully modernized and ready for cross-platform distribution.",
+          "author": "agent",
+          "timestamp": "2026-02-22T14:35:04.392Z"
         }
       ]
     },
@@ -6166,17 +6231,53 @@
       "type": "STORY",
       "title": "Story: Migrate Utility Scripts",
       "description": "Migrate bin/agenfk-gatekeeper.sh and other utility scripts to Node.js.",
-      "status": "TODO",
+      "status": "REVIEW",
       "parentId": "e66503cf-29de-41d9-a5d4-4ba185ddaefb",
       "implementationPlan": "",
       "createdAt": "2026-02-22T07:20:06.742Z",
-      "updatedAt": "2026-02-22T07:20:06.742Z",
+      "updatedAt": "2026-02-22T14:47:48.178Z",
       "history": [
         {
           "id": "ee4dc065-dd0b-4e29-a2d4-03a3de21abbc",
           "fromStatus": "TODO",
           "toStatus": "TODO",
           "timestamp": "2026-02-22T07:20:06.744Z"
+        },
+        {
+          "id": "692ee2d2-bf80-49ca-aded-f1f376d31580",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:35:27.487Z"
+        },
+        {
+          "id": "c3c65a42-884f-4f0a-866d-e3b4ec48df19",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:37:07.516Z"
+        },
+        {
+          "id": "6cd6963a-8576-42b9-80ae-3ada5a92af32",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:38:55.445Z"
+        },
+        {
+          "id": "2116c172-0a12-43b7-9cde-db8928d3d784",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:47:03.734Z"
+        },
+        {
+          "id": "2892bd60-99fc-4c3d-9de3-754fb162ed9b",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:47:17.855Z"
+        },
+        {
+          "id": "3a4572bd-ead9-4c29-a544-3da36af70135",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:47:48.178Z"
         }
       ]
     },
@@ -6343,11 +6444,11 @@
       "type": "TASK",
       "title": "Task: Migrate uninstall.sh to uninstall.js",
       "description": "Migrate uninstall.sh logic to a Node.js script.",
-      "status": "REVIEW",
+      "status": "DONE",
       "parentId": "8dbe767c-5c01-4849-b634-8cffad3528fb",
       "implementationPlan": "",
       "createdAt": "2026-02-22T07:20:12.347Z",
-      "updatedAt": "2026-02-22T14:32:20.881Z",
+      "updatedAt": "2026-02-22T14:35:01.657Z",
       "history": [
         {
           "id": "a7fb0bbd-880a-4a1d-9c35-db428c1637dd",
@@ -6432,6 +6533,30 @@
           "fromStatus": "IN_PROGRESS",
           "toStatus": "REVIEW",
           "timestamp": "2026-02-22T14:31:49.588Z"
+        },
+        {
+          "id": "f08fa70e-9e6f-480c-8f54-045c64e9db11",
+          "fromStatus": "REVIEW",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:34:23.136Z"
+        },
+        {
+          "id": "5dde18e4-76cd-475b-a005-39b3eed60b7e",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:34:29.435Z"
+        },
+        {
+          "id": "78ee2281-ef9b-4f97-a603-31fde77119d9",
+          "fromStatus": "REVIEW",
+          "toStatus": "TEST",
+          "timestamp": "2026-02-22T14:34:41.139Z"
+        },
+        {
+          "id": "4d605924-2d13-488b-b08d-e341d072b0fd",
+          "fromStatus": "TEST",
+          "toStatus": "DONE",
+          "timestamp": "2026-02-22T14:34:45.497Z"
         }
       ],
       "reviews": [
@@ -6469,6 +6594,34 @@
           "output": "\n\u001b[1m\u001b[46m RUN \u001b[49m\u001b[22m \u001b[36mv4.0.18 \u001b[39m\u001b[90m/home/danielp/agefk/agentic-framework\u001b[39m\n      \u001b[2mCoverage enabled with \u001b[22m\u001b[33mv8\u001b[39m\n\n \u001b[31m❯\u001b[39m packages/server/src/test/server.test.ts \u001b[2m(\u001b[22m\u001b[2m0 test\u001b[22m\u001b[2m)\u001b[22m\n \u001b[31m❯\u001b[39m packages/storage-json/src/test/storage.test.ts \u001b[2m(\u001b[22m\u001b[2m0 test\u001b[22m\u001b[2m)\u001b[22m\n \u001b[32m✓\u001b[39m packages/core/src/test/types.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 10\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m packages/ui/src/test/api.test.ts \u001b[2m(\u001b[22m\u001b[2m10 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 20\u001b[2mms\u001b[22m\u001b[39m\n\u001b[90mstdout\u001b[2m | packages/cli/src/test/cli.test.ts\n\u001b[22m\u001b[39m                                  __   _    \n   __ _    __ _    ___   _ __    / _| | | __\n  / _` |  / _` |  / _ \\ | '_ \\  | |_  | |/ /\n | (_| | | (_| | |  __/ | | | | |  _| |   < \n  \\__,_|  \\__, |  \\___| |_| |_| |_|   |_|\\_\\\n          |___/                             \n\n \u001b[31m❯\u001b[39m packages/cli/src/test/cli.test.ts \u001b[2m(\u001b[22m\u001b[2m0 test\u001b[22m\u001b[2m)\u001b[22m\n \u001b[32m✓\u001b[39m packages/core/src/test/dummy.test.ts \u001b[2m(\u001b[22m\u001b[2m1 test\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 3\u001b[2mms\u001b[22m\u001b[39m\n \u001b[31m❯\u001b[39m packages/ui/src/test/ThemeContext.test.tsx \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[31m2 failed\u001b[39m\u001b[2m)\u001b[22m\u001b[32m 11\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should provide default theme\u001b[39m\u001b[32m 9\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should toggle theme\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n \u001b[32m✓\u001b[39m packages/ui/src/test/utils.test.ts \u001b[2m(\u001b[22m\u001b[2m2 tests\u001b[22m\u001b[2m)\u001b[22m\u001b[32m 3\u001b[2mms\u001b[22m\u001b[39m\n \u001b[31m❯\u001b[39m packages/ui/src/test/CardDetailModal.test.tsx \u001b[2m(\u001b[22m\u001b[2m6 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[31m6 failed\u001b[39m\u001b[2m)\u001b[22m\u001b[32m 13\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should render item details and switch tabs\u001b[39m\u001b[32m 7\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should render subitems for stories\u001b[39m\u001b[32m 2\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should show \"No subitems found\" message\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should allow adding a subitem\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should always show the History tab even if empty\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should copy ID to clipboard when clicked\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n \u001b[31m❯\u001b[39m packages/ui/src/test/KanbanBoard.test.tsx \u001b[2m(\u001b[22m\u001b[2m4 tests\u001b[22m\u001b[2m | \u001b[22m\u001b[31m4 failed\u001b[39m\u001b[2m)\u001b[22m\u001b[32m 13\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should show project selector when no project is selected\u001b[39m\u001b[32m 6\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should render items in correct columns\u001b[39m\u001b[32m 2\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should allow creating a new project\u001b[39m\u001b[32m 1\u001b[2mms\u001b[22m\u001b[39m\n\u001b[31m     \u001b[31m×\u001b[31m should copy ID to clipboard when clicked\u001b[39m\u001b[32m 2\u001b[2mms\u001b[22m\u001b[39m\n\n\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[31m6 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m\u001b[1m\u001b[32m4 passed\u001b[39m\u001b[22m\u001b[90m (10)\u001b[39m\n\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[31m12 failed\u001b[39m\u001b[22m\u001b[2m | \u001b[22m\u001b[1m\u001b[32m15 passed\u001b[39m\u001b[22m\u001b[90m (27)\u001b[39m\n\u001b[2m   Start at \u001b[22m 11:31:12\n\u001b[2m   Duration \u001b[22m 1.20s\u001b[2m (transform 517ms, setup 0ms, import 1.62s, tests 74ms, environment 1.66s)\u001b[22m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle listProjects error\n\u001b[22m\u001b[39mAPI Error listing projects: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:46:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle getItem error\n\u001b[22m\u001b[39mAPI Error getting item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:51:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle createItem error\n\u001b[22m\u001b[39mAPI Error creating item: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:56:42\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle updateItem error\n\u001b[22m\u001b[39mAPI Error updating item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:61:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle deleteItem error\n\u001b[22m\u001b[39mAPI Error deleting item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:66:44\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\nUsage: forks [options] [command]\n\nAgenFK Engineering CLI\n\nOptions:\n  -V, --version                    output the version number\n  -h, --help                       display help for command\n\nCommands:\n  upgrade [options]                Check for updates and upgrade to the latest\n                                   version if available\n  up                               Bootstrap and start AgenFK Engineering\n                                   Framework\n  down                             Stop all AgenFK services (API server and UI)\n  restart                          Restart all AgenFK services\n  ui                               Show dashboard information and open in\n                                   browser\n  list-projects                    List all projects\n  create-project [options] <name>  Create a new project\n  init                             Initialize a new AgenFK project (Note:\n                                   Ensure API server is running)\n  create [options] <type> [title]  Create a new item (epic, story, task, bug)\n  list [options]                   List items\n  update [options] <id>            Update an item\n  delete <id>                      Delete an item\n  health                           Verify framework health and configuration\n  help [command]                   display help for command\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22m\u001b[2mThemeContext\u001b[2m > \u001b[22m\u001b[2mshould provide default theme\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22m\u001b[2mCardDetailModal\u001b[2m > \u001b[22m\u001b[2mshould render item details and switch tabs\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22m\u001b[2mKanbanBoard\u001b[2m > \u001b[22m\u001b[2mshould show project selector when no project is selected\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\n\u001b[31m⎯⎯⎯⎯⎯⎯\u001b[39m\u001b[1m\u001b[41m Failed Suites 3 \u001b[49m\u001b[22m\u001b[31m⎯⎯⎯⎯⎯⎯⎯\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/cli/src/test/cli.test.ts\u001b[2m [ packages/cli/src/test/cli.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: process.exit unexpectedly called with \"1\"\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command._exit node_modules/commander/lib/command.js:\u001b[2m512:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command.help node_modules/commander/lib/command.js:\u001b[2m2405:10\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command._parseCommand node_modules/commander/lib/command.js:\u001b[2m1480:12\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command.parse node_modules/commander/lib/command.js:\u001b[2m1064:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/cli/src/index.ts:\u001b[2m594:11\u001b[22m\u001b[39m\n    \u001b[90m592| \u001b[39m\n    \u001b[90m593| \u001b[39m\u001b[35mif\u001b[39m (process\u001b[33m.\u001b[39menv\u001b[33m.\u001b[39m\u001b[33mNODE_ENV\u001b[39m \u001b[33m!==\u001b[39m \u001b[32m'test'\u001b[39m) {\n    \u001b[90m594| \u001b[39m  program\u001b[33m.\u001b[39m\u001b[34mparse\u001b[39m(process\u001b[33m.\u001b[39margv)\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m          \u001b[31m^\u001b[39m\n    \u001b[90m595| \u001b[39m}\n    \u001b[90m596| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/server/src/test/server.test.ts\u001b[2m [ packages/server/src/test/server.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: Failed to resolve entry for package \"@agenfk/core\". The package may have incorrect main/module/exports specified in its package.json.\u001b[39m\n  Plugin: \u001b[35mvite:import-analysis\u001b[39m\n  File: \u001b[36m/home/danielp/agefk/agentic-framework/packages/server/src/test/server.test.ts\u001b[39m:4:45\n\u001b[33m  2  |  import request from \"supertest\";\n  3  |  import { app, initStorage } from \"../server\";\n  4  |  import { Status, ItemType } from \"@agenfk/core\";\n     |                                    ^\n  5  |  import * as fs from \"fs\";\n  6  |  import * as path from \"path\";\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m packageEntryFailure node_modules/vite/dist/node/chunks/config.js:\u001b[2m32816:32\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m resolvePackageEntry node_modules/vite/dist/node/chunks/config.js:\u001b[2m32813:2\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m tryNodeResolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m32716:70\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m ResolveIdContext.handler node_modules/vite/dist/node/chunks/config.js:\u001b[2m32555:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m EnvironmentPluginContainer.resolveId node_modules/vite/dist/node/chunks/config.js:\u001b[2m28717:56\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m TransformPluginContext.resolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m28929:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m normalizeUrl node_modules/vite/dist/node/chunks/config.js:\u001b[2m27111:22\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/vite/dist/node/chunks/config.js:\u001b[2m27177:32\u001b[22m\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/storage-json/src/test/storage.test.ts\u001b[2m [ packages/storage-json/src/test/storage.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: Failed to resolve entry for package \"@agenfk/core\". The package may have incorrect main/module/exports specified in its package.json.\u001b[39m\n  Plugin: \u001b[35mvite:import-analysis\u001b[39m\n  File: \u001b[36m/home/danielp/agefk/agentic-framework/packages/storage-json/src/test/storage.test.ts\u001b[39m:3:54\n\u001b[33m  1  |  import { describe, it, expect, beforeEach, afterEach } from \"vitest\";\n  2  |  import { JSONStorageProvider } from \"../index\";\n  3  |  import { ItemType, Status } from \"@agenfk/core\";\n     |                                    ^\n  4  |  import * as fs from \"fs\";\n  5  |  import * as path from \"path\";\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m packageEntryFailure node_modules/vite/dist/node/chunks/config.js:\u001b[2m32816:32\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m resolvePackageEntry node_modules/vite/dist/node/chunks/config.js:\u001b[2m32813:2\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m tryNodeResolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m32716:70\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m ResolveIdContext.handler node_modules/vite/dist/node/chunks/config.js:\u001b[2m32555:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m EnvironmentPluginContainer.resolveId node_modules/vite/dist/node/chunks/config.js:\u001b[2m28717:56\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m TransformPluginContext.resolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m28929:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m normalizeUrl node_modules/vite/dist/node/chunks/config.js:\u001b[2m27111:22\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/vite/dist/node/chunks/config.js:\u001b[2m27177:32\u001b[22m\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/27]⎯\u001b[22m\u001b[39m\n\n\n\u001b[31m⎯⎯⎯⎯⎯⎯\u001b[39m\u001b[1m\u001b[41m Failed Tests 12 \u001b[49m\u001b[22m\u001b[31m⎯⎯⎯⎯⎯⎯⎯\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render item details and switch tabs\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m81:5\u001b[22m\u001b[39m\n    \u001b[90m 79| \u001b[39m    (api\u001b[33m.\u001b[39mgetItem \u001b[35mas\u001b[39m any)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m(mockItem)\u001b[33m;\u001b[39m\n    \u001b[90m 80| \u001b[39m    \n    \u001b[90m 81| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 82| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m 83| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render item details and switch tabs\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render subitems for stories\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould show \"No subitems found\" message\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould allow adding a subitem\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould always show the History tab even if empty\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m75:5\u001b[22m\u001b[39m\n    \u001b[90m 73| \u001b[39m\n    \u001b[90m 74| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 75| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 76| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 77| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render subitems for stories\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m112:5\u001b[22m\u001b[39m\n    \u001b[90m110| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should render subitems for stories'\u001b[39m\u001b[33m,\u001b[39m \u001b[35masync\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m111| \u001b[39m    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', t…\n    \u001b[90m112| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m113| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m114| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould show \"No subitems found\" message\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m130:5\u001b[22m\u001b[39m\n    \u001b[90m128| \u001b[39m\n    \u001b[90m129| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should show \"No subitems found\" message'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m130| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m131| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m132| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould allow adding a subitem\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m148:5\u001b[22m\u001b[39m\n    \u001b[90m146| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should allow adding a subitem'\u001b[39m\u001b[33m,\u001b[39m \u001b[35masync\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m147| \u001b[39m    \u001b[35mconst\u001b[39m onAddItem \u001b[33m=\u001b[39m vi\u001b[33m.\u001b[39m\u001b[34mfn\u001b[39m()\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m(undefined)\u001b[33m;\u001b[39m\n    \u001b[90m148| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m149| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m150| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould always show the History tab even if empty\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m171:5\u001b[22m\u001b[39m\n    \u001b[90m169| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should always show the History tab even if empty'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m170| \u001b[39m    \u001b[35mconst\u001b[39m itemWithNoHistory \u001b[33m=\u001b[39m { \u001b[33m...\u001b[39mmockItem\u001b[33m,\u001b[39m history\u001b[33m:\u001b[39m [] }\u001b[33m;\u001b[39m\n    \u001b[90m171| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m172| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m173| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mitemWithNoHistory \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m197:5\u001b[22m\u001b[39m\n    \u001b[90m195| \u001b[39m    })\u001b[33m;\u001b[39m\n    \u001b[90m196| \u001b[39m\n    \u001b[90m197| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m198| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m199| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould show project selector when no project is selected\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m82:5\u001b[22m\u001b[39m\n    \u001b[90m 80| \u001b[39m  it('should show project selector when no project is selected', async…\n    \u001b[90m 81| \u001b[39m    vi\u001b[33m.\u001b[39m\u001b[34mmocked\u001b[39m(api\u001b[33m.\u001b[39mlistProjects)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m([])\u001b[33m;\u001b[39m\n    \u001b[90m 82| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 83| \u001b[39m    expect(await screen.findByText(/Welcome to AgenFK/i)).toBeDefined(…\n    \u001b[90m 84| \u001b[39m  })\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould show project selector when no project is selected\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould render items in correct columns\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould allow creating a new project\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m77:5\u001b[22m\u001b[39m\n    \u001b[90m 75| \u001b[39m\n    \u001b[90m 76| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 77| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 78| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 79| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould render items in correct columns\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m96:5\u001b[22m\u001b[39m\n    \u001b[90m 94| \u001b[39m    localStorage\u001b[33m.\u001b[39m\u001b[34msetItem\u001b[39m(\u001b[32m'agenfk_project_id'\u001b[39m\u001b[33m,\u001b[39m \u001b[32m'p1'\u001b[39m)\u001b[33m;\u001b[39m\n    \u001b[90m 95| \u001b[39m    \n    \u001b[90m 96| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 97| \u001b[39m    \u001b[34mexpect\u001b[39m(\u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[32m'Task 1'\u001b[39m))\u001b[33m.\u001b[39m\u001b[34mtoBeDefined\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m 98| \u001b[39m  })\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould allow creating a new project\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m103:5\u001b[22m\u001b[39m\n    \u001b[90m101| \u001b[39m    vi\u001b[33m.\u001b[39m\u001b[34mmocked\u001b[39m(api\u001b[33m.\u001b[39mlistProjects)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m([])\u001b[33m;\u001b[39m\n    \u001b[90m102| \u001b[39m    \n    \u001b[90m103| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m104| \u001b[39m    \n    \u001b[90m105| \u001b[39m    \u001b[35mconst\u001b[39m createBtn \u001b[33m=\u001b[39m \u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[36m/Create New Project/i\u001b[39m)\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m135:5\u001b[22m\u001b[39m\n    \u001b[90m133| \u001b[39m    })\u001b[33m;\u001b[39m\n    \u001b[90m134| \u001b[39m\n    \u001b[90m135| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m136| \u001b[39m    \n    \u001b[90m137| \u001b[39m    \u001b[35mconst\u001b[39m idElement \u001b[33m=\u001b[39m \u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[32m'#i1-a'\u001b[39m)\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould provide default theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m43:5\u001b[22m\u001b[39m\n    \u001b[90m 41| \u001b[39m\n    \u001b[90m 42| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should provide default theme'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m 43| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 44| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mThemeProvider\u001b[39m\u001b[33m>\u001b[39m\n    \u001b[90m 45| \u001b[39m        \u001b[33m<\u001b[39m\u001b[33mThemeTester\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould provide default theme\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould toggle theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m39:5\u001b[22m\u001b[39m\n    \u001b[90m 37| \u001b[39m\n    \u001b[90m 38| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 39| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 40| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 41| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould toggle theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m52:5\u001b[22m\u001b[39m\n    \u001b[90m 50| \u001b[39m\n    \u001b[90m 51| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should toggle theme'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m 52| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 53| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mThemeProvider\u001b[39m\u001b[33m>\u001b[39m\n    \u001b[90m 54| \u001b[39m        \u001b[33m<\u001b[39m\u001b[33mThemeTester\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/27]⎯\u001b[22m\u001b[39m\n\nCommand failed: npx vitest run packages --coverage && find . -name \"*.sh\" | wc -l | grep -q \"^0$\"\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle listProjects error\n\u001b[22m\u001b[39mAPI Error listing projects: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:46:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle getItem error\n\u001b[22m\u001b[39mAPI Error getting item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:51:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle createItem error\n\u001b[22m\u001b[39mAPI Error creating item: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:56:42\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle updateItem error\n\u001b[22m\u001b[39mAPI Error updating item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:61:41\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/api.test.ts\u001b[2m > \u001b[22m\u001b[2mUI API Client\u001b[2m > \u001b[22m\u001b[2mError handling\u001b[2m > \u001b[22m\u001b[2mshould handle deleteItem error\n\u001b[22m\u001b[39mAPI Error deleting item i1: Error: API Error\n    at \u001b[90m/home/danielp/agefk/agentic-framework/\u001b[39mpackages/ui/src/test/api.test.ts:66:44\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:145:11\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:915:26\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1243:20\n    at new Promise (<anonymous>)\n    at runWithTimeout \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1209:10\u001b[90m)\u001b[39m\n    at \u001b[90mfile:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:37\n    at Traces.$ \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/traces.CCmnQaNT.js:142:27\u001b[90m)\u001b[39m\n    at trace \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4mvitest\u001b[24m/dist/chunks/test.B8ej_ZHS.js:239:21\u001b[90m)\u001b[39m\n    at runTest \u001b[90m(file:///home/danielp/agefk/agentic-framework/\u001b[39mnode_modules/\u001b[4m@vitest/runner\u001b[24m/dist/index.js:1653:12\u001b[90m)\u001b[39m\n\nUsage: forks [options] [command]\n\nAgenFK Engineering CLI\n\nOptions:\n  -V, --version                    output the version number\n  -h, --help                       display help for command\n\nCommands:\n  upgrade [options]                Check for updates and upgrade to the latest\n                                   version if available\n  up                               Bootstrap and start AgenFK Engineering\n                                   Framework\n  down                             Stop all AgenFK services (API server and UI)\n  restart                          Restart all AgenFK services\n  ui                               Show dashboard information and open in\n                                   browser\n  list-projects                    List all projects\n  create-project [options] <name>  Create a new project\n  init                             Initialize a new AgenFK project (Note:\n                                   Ensure API server is running)\n  create [options] <type> [title]  Create a new item (epic, story, task, bug)\n  list [options]                   List items\n  update [options] <id>            Update an item\n  delete <id>                      Delete an item\n  health                           Verify framework health and configuration\n  help [command]                   display help for command\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22m\u001b[2mThemeContext\u001b[2m > \u001b[22m\u001b[2mshould provide default theme\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22m\u001b[2mCardDetailModal\u001b[2m > \u001b[22m\u001b[2mshould render item details and switch tabs\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\u001b[90mstderr\u001b[2m | packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22m\u001b[2mKanbanBoard\u001b[2m > \u001b[22m\u001b[2mshould show project selector when no project is selected\n\u001b[22m\u001b[39m`ReactDOMTestUtils.act` is deprecated in favor of `React.act`. Import `act` from `react` instead of `react-dom/test-utils`. See https://react.dev/warnings/react-dom-test-utils for more info.\n\n\n\u001b[31m⎯⎯⎯⎯⎯⎯\u001b[39m\u001b[1m\u001b[41m Failed Suites 3 \u001b[49m\u001b[22m\u001b[31m⎯⎯⎯⎯⎯⎯⎯\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/cli/src/test/cli.test.ts\u001b[2m [ packages/cli/src/test/cli.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: process.exit unexpectedly called with \"1\"\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command._exit node_modules/commander/lib/command.js:\u001b[2m512:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command.help node_modules/commander/lib/command.js:\u001b[2m2405:10\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command._parseCommand node_modules/commander/lib/command.js:\u001b[2m1480:12\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Command.parse node_modules/commander/lib/command.js:\u001b[2m1064:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/cli/src/index.ts:\u001b[2m594:11\u001b[22m\u001b[39m\n    \u001b[90m592| \u001b[39m\n    \u001b[90m593| \u001b[39m\u001b[35mif\u001b[39m (process\u001b[33m.\u001b[39menv\u001b[33m.\u001b[39m\u001b[33mNODE_ENV\u001b[39m \u001b[33m!==\u001b[39m \u001b[32m'test'\u001b[39m) {\n    \u001b[90m594| \u001b[39m  program\u001b[33m.\u001b[39m\u001b[34mparse\u001b[39m(process\u001b[33m.\u001b[39margv)\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m          \u001b[31m^\u001b[39m\n    \u001b[90m595| \u001b[39m}\n    \u001b[90m596| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/server/src/test/server.test.ts\u001b[2m [ packages/server/src/test/server.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: Failed to resolve entry for package \"@agenfk/core\". The package may have incorrect main/module/exports specified in its package.json.\u001b[39m\n  Plugin: \u001b[35mvite:import-analysis\u001b[39m\n  File: \u001b[36m/home/danielp/agefk/agentic-framework/packages/server/src/test/server.test.ts\u001b[39m:4:45\n\u001b[33m  2  |  import request from \"supertest\";\n  3  |  import { app, initStorage } from \"../server\";\n  4  |  import { Status, ItemType } from \"@agenfk/core\";\n     |                                    ^\n  5  |  import * as fs from \"fs\";\n  6  |  import * as path from \"path\";\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m packageEntryFailure node_modules/vite/dist/node/chunks/config.js:\u001b[2m32816:32\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m resolvePackageEntry node_modules/vite/dist/node/chunks/config.js:\u001b[2m32813:2\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m tryNodeResolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m32716:70\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m ResolveIdContext.handler node_modules/vite/dist/node/chunks/config.js:\u001b[2m32555:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m EnvironmentPluginContainer.resolveId node_modules/vite/dist/node/chunks/config.js:\u001b[2m28717:56\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m TransformPluginContext.resolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m28929:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m normalizeUrl node_modules/vite/dist/node/chunks/config.js:\u001b[2m27111:22\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/vite/dist/node/chunks/config.js:\u001b[2m27177:32\u001b[22m\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/storage-json/src/test/storage.test.ts\u001b[2m [ packages/storage-json/src/test/storage.test.ts ]\u001b[22m\n\u001b[31m\u001b[1mError\u001b[22m: Failed to resolve entry for package \"@agenfk/core\". The package may have incorrect main/module/exports specified in its package.json.\u001b[39m\n  Plugin: \u001b[35mvite:import-analysis\u001b[39m\n  File: \u001b[36m/home/danielp/agefk/agentic-framework/packages/storage-json/src/test/storage.test.ts\u001b[39m:3:54\n\u001b[33m  1  |  import { describe, it, expect, beforeEach, afterEach } from \"vitest\";\n  2  |  import { JSONStorageProvider } from \"../index\";\n  3  |  import { ItemType, Status } from \"@agenfk/core\";\n     |                                    ^\n  4  |  import * as fs from \"fs\";\n  5  |  import * as path from \"path\";\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m packageEntryFailure node_modules/vite/dist/node/chunks/config.js:\u001b[2m32816:32\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m resolvePackageEntry node_modules/vite/dist/node/chunks/config.js:\u001b[2m32813:2\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m tryNodeResolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m32716:70\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m ResolveIdContext.handler node_modules/vite/dist/node/chunks/config.js:\u001b[2m32555:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m EnvironmentPluginContainer.resolveId node_modules/vite/dist/node/chunks/config.js:\u001b[2m28717:56\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m TransformPluginContext.resolve node_modules/vite/dist/node/chunks/config.js:\u001b[2m28929:13\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m normalizeUrl node_modules/vite/dist/node/chunks/config.js:\u001b[2m27111:22\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/vite/dist/node/chunks/config.js:\u001b[2m27177:32\u001b[22m\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/27]⎯\u001b[22m\u001b[39m\n\n\n\u001b[31m⎯⎯⎯⎯⎯⎯\u001b[39m\u001b[1m\u001b[41m Failed Tests 12 \u001b[49m\u001b[22m\u001b[31m⎯⎯⎯⎯⎯⎯⎯\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render item details and switch tabs\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m81:5\u001b[22m\u001b[39m\n    \u001b[90m 79| \u001b[39m    (api\u001b[33m.\u001b[39mgetItem \u001b[35mas\u001b[39m any)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m(mockItem)\u001b[33m;\u001b[39m\n    \u001b[90m 80| \u001b[39m    \n    \u001b[90m 81| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 82| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m 83| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render item details and switch tabs\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render subitems for stories\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould show \"No subitems found\" message\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould allow adding a subitem\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould always show the History tab even if empty\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m75:5\u001b[22m\u001b[39m\n    \u001b[90m 73| \u001b[39m\n    \u001b[90m 74| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 75| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 76| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 77| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould render subitems for stories\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m112:5\u001b[22m\u001b[39m\n    \u001b[90m110| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should render subitems for stories'\u001b[39m\u001b[33m,\u001b[39m \u001b[35masync\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m111| \u001b[39m    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', t…\n    \u001b[90m112| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m113| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m114| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould show \"No subitems found\" message\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m130:5\u001b[22m\u001b[39m\n    \u001b[90m128| \u001b[39m\n    \u001b[90m129| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should show \"No subitems found\" message'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m130| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m131| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m132| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould allow adding a subitem\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m148:5\u001b[22m\u001b[39m\n    \u001b[90m146| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should allow adding a subitem'\u001b[39m\u001b[33m,\u001b[39m \u001b[35masync\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m147| \u001b[39m    \u001b[35mconst\u001b[39m onAddItem \u001b[33m=\u001b[39m vi\u001b[33m.\u001b[39m\u001b[34mfn\u001b[39m()\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m(undefined)\u001b[33m;\u001b[39m\n    \u001b[90m148| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m149| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m150| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould always show the History tab even if empty\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m171:5\u001b[22m\u001b[39m\n    \u001b[90m169| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should always show the History tab even if empty'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m170| \u001b[39m    \u001b[35mconst\u001b[39m itemWithNoHistory \u001b[33m=\u001b[39m { \u001b[33m...\u001b[39mmockItem\u001b[33m,\u001b[39m history\u001b[33m:\u001b[39m [] }\u001b[33m;\u001b[39m\n    \u001b[90m171| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m172| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m173| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mitemWithNoHistory \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/CardDetailModal.test.tsx\u001b[2m > \u001b[22mCardDetailModal\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/CardDetailModal.test.tsx:\u001b[2m197:5\u001b[22m\u001b[39m\n    \u001b[90m195| \u001b[39m    })\u001b[33m;\u001b[39m\n    \u001b[90m196| \u001b[39m\n    \u001b[90m197| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m198| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mCardDetailModal\u001b[39m \n    \u001b[90m199| \u001b[39m        \u001b[33mitem\u001b[39m\u001b[33m=\u001b[39m\u001b[33m{\u001b[39mmockItem \u001b[35mas\u001b[39m any\u001b[33m}\u001b[39m \n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould show project selector when no project is selected\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m82:5\u001b[22m\u001b[39m\n    \u001b[90m 80| \u001b[39m  it('should show project selector when no project is selected', async…\n    \u001b[90m 81| \u001b[39m    vi\u001b[33m.\u001b[39m\u001b[34mmocked\u001b[39m(api\u001b[33m.\u001b[39mlistProjects)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m([])\u001b[33m;\u001b[39m\n    \u001b[90m 82| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 83| \u001b[39m    expect(await screen.findByText(/Welcome to AgenFK/i)).toBeDefined(…\n    \u001b[90m 84| \u001b[39m  })\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould show project selector when no project is selected\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould render items in correct columns\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould allow creating a new project\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m77:5\u001b[22m\u001b[39m\n    \u001b[90m 75| \u001b[39m\n    \u001b[90m 76| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 77| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 78| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 79| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould render items in correct columns\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m96:5\u001b[22m\u001b[39m\n    \u001b[90m 94| \u001b[39m    localStorage\u001b[33m.\u001b[39m\u001b[34msetItem\u001b[39m(\u001b[32m'agenfk_project_id'\u001b[39m\u001b[33m,\u001b[39m \u001b[32m'p1'\u001b[39m)\u001b[33m;\u001b[39m\n    \u001b[90m 95| \u001b[39m    \n    \u001b[90m 96| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 97| \u001b[39m    \u001b[34mexpect\u001b[39m(\u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[32m'Task 1'\u001b[39m))\u001b[33m.\u001b[39m\u001b[34mtoBeDefined\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m 98| \u001b[39m  })\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould allow creating a new project\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m103:5\u001b[22m\u001b[39m\n    \u001b[90m101| \u001b[39m    vi\u001b[33m.\u001b[39m\u001b[34mmocked\u001b[39m(api\u001b[33m.\u001b[39mlistProjects)\u001b[33m.\u001b[39m\u001b[34mmockResolvedValue\u001b[39m([])\u001b[33m;\u001b[39m\n    \u001b[90m102| \u001b[39m    \n    \u001b[90m103| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m104| \u001b[39m    \n    \u001b[90m105| \u001b[39m    \u001b[35mconst\u001b[39m createBtn \u001b[33m=\u001b[39m \u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[36m/Create New Project/i\u001b[39m)\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/KanbanBoard.test.tsx\u001b[2m > \u001b[22mKanbanBoard\u001b[2m > \u001b[22mshould copy ID to clipboard when clicked\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m Proxy.render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/KanbanBoard.test.tsx:\u001b[2m135:5\u001b[22m\u001b[39m\n    \u001b[90m133| \u001b[39m    })\u001b[33m;\u001b[39m\n    \u001b[90m134| \u001b[39m\n    \u001b[90m135| \u001b[39m    \u001b[34mrender\u001b[39m(\u001b[33m<\u001b[39m\u001b[33mKanbanBoard\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\u001b[33m,\u001b[39m { wrapper })\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m136| \u001b[39m    \n    \u001b[90m137| \u001b[39m    \u001b[35mconst\u001b[39m idElement \u001b[33m=\u001b[39m \u001b[35mawait\u001b[39m screen\u001b[33m.\u001b[39m\u001b[34mfindByText\u001b[39m(\u001b[32m'#i1-a'\u001b[39m)\u001b[33m;\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould provide default theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m43:5\u001b[22m\u001b[39m\n    \u001b[90m 41| \u001b[39m\n    \u001b[90m 42| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should provide default theme'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m 43| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 44| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mThemeProvider\u001b[39m\u001b[33m>\u001b[39m\n    \u001b[90m 45| \u001b[39m        \u001b[33m<\u001b[39m\u001b[33mThemeTester\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould provide default theme\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould toggle theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/pure.js:\u001b[2m306:28\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m cleanup node_modules/@testing-library/react/dist/pure.js:\u001b[2m302:22\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m39:5\u001b[22m\u001b[39m\n    \u001b[90m 37| \u001b[39m\n    \u001b[90m 38| \u001b[39m  \u001b[34mafterEach\u001b[39m(() \u001b[33m=>\u001b[39m {\n    \u001b[90m 39| \u001b[39m    \u001b[34mcleanup\u001b[39m()\u001b[33m;\u001b[39m\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 40| \u001b[39m  })\u001b[33m;\u001b[39m\n    \u001b[90m 41| \u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/27]⎯\u001b[22m\u001b[39m\n\n\u001b[41m\u001b[1m FAIL \u001b[22m\u001b[49m packages/ui/src/test/ThemeContext.test.tsx\u001b[2m > \u001b[22mThemeContext\u001b[2m > \u001b[22mshould toggle theme\n\u001b[31m\u001b[1mTypeError\u001b[22m: React.act is not a function\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m exports.act node_modules/react-dom/cjs/react-dom-test-utils.production.js:\u001b[2m20:16\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m node_modules/@testing-library/react/dist/act-compat.js:\u001b[2m46:25\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m renderRoot node_modules/@testing-library/react/dist/pure.js:\u001b[2m189:26\u001b[22m\u001b[39m\n\u001b[90m \u001b[2m❯\u001b[22m render node_modules/@testing-library/react/dist/pure.js:\u001b[2m291:10\u001b[22m\u001b[39m\n\u001b[36m \u001b[2m❯\u001b[22m packages/ui/src/test/ThemeContext.test.tsx:\u001b[2m52:5\u001b[22m\u001b[39m\n    \u001b[90m 50| \u001b[39m\n    \u001b[90m 51| \u001b[39m  \u001b[34mit\u001b[39m(\u001b[32m'should toggle theme'\u001b[39m\u001b[33m,\u001b[39m () \u001b[33m=>\u001b[39m {\n    \u001b[90m 52| \u001b[39m    \u001b[34mrender\u001b[39m(\n    \u001b[90m   | \u001b[39m    \u001b[31m^\u001b[39m\n    \u001b[90m 53| \u001b[39m      \u001b[33m<\u001b[39m\u001b[33mThemeProvider\u001b[39m\u001b[33m>\u001b[39m\n    \u001b[90m 54| \u001b[39m        \u001b[33m<\u001b[39m\u001b[33mThemeTester\u001b[39m \u001b[33m/\u001b[39m\u001b[33m>\u001b[39m\n\n\u001b[31m\u001b[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/27]⎯\u001b[22m\u001b[39m\n\n",
           "status": "FAILED",
           "executedAt": "2026-02-22T14:31:13.485Z"
+        },
+        {
+          "id": "4add9635-99d2-47dd-98ec-eb523b61efd5",
+          "command": "ls scripts/uninstall.mjs && find . -name \"*.sh\" | wc -l | grep -q \"^0$\"",
+          "output": "scripts/uninstall.mjs\n",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:32:28.076Z"
+        },
+        {
+          "id": "c3330875-e586-4bca-8ba5-2125c55eaf49",
+          "command": "node -c scripts/uninstall.mjs",
+          "output": "",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:33:41.929Z"
+        },
+        {
+          "id": "a86e35ca-8941-40a5-a7e8-c8344bbdaee8",
+          "command": "node -c scripts/uninstall.mjs",
+          "output": "",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:34:29.527Z"
+        },
+        {
+          "id": "8837c032-dc4d-4a73-bb51-76294c88fe76",
+          "command": "node -c scripts/uninstall.mjs && ls -la scripts/uninstall.mjs",
+          "output": "-rw-r--r-- 1 danielp danielp 7312 Feb 22 10:54 scripts/uninstall.mjs\n",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:34:35.518Z"
         }
       ],
       "tokenUsage": [
@@ -6481,6 +6634,18 @@
           "input": 1000,
           "output": 200,
           "model": "gemini-3-flash-preview"
+        },
+        {
+          "input": 50000,
+          "output": 5000,
+          "model": "gemini-3-flash-preview",
+          "cost": 0
+        },
+        {
+          "input": 5000,
+          "output": 1000,
+          "model": "gemini-3-flash-preview",
+          "cost": 0.1
         }
       ]
     },
@@ -6490,11 +6655,11 @@
       "type": "TASK",
       "title": "Task: Migrate start-services.sh to start-services.js",
       "description": "Migrate start-services.sh logic to a Node.js script.",
-      "status": "TODO",
+      "status": "DONE",
       "parentId": "8dbe767c-5c01-4849-b634-8cffad3528fb",
       "implementationPlan": "",
       "createdAt": "2026-02-22T07:20:12.422Z",
-      "updatedAt": "2026-02-22T13:52:25.944Z",
+      "updatedAt": "2026-02-22T14:35:01.688Z",
       "history": [
         {
           "id": "3f087f88-eef4-4adc-8766-0a672f42983a",
@@ -6513,6 +6678,54 @@
           "fromStatus": "IN_PROGRESS",
           "toStatus": "TODO",
           "timestamp": "2026-02-22T13:52:25.944Z"
+        },
+        {
+          "id": "1377b66b-cc91-45e5-8e93-184e8d68654c",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:34:23.197Z"
+        },
+        {
+          "id": "2f357ecf-b836-4229-8d68-913ee26f31a2",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:34:29.537Z"
+        },
+        {
+          "id": "7f6a5f65-d85a-4539-8d02-2b07ed59afbf",
+          "fromStatus": "REVIEW",
+          "toStatus": "TEST",
+          "timestamp": "2026-02-22T14:34:41.163Z"
+        },
+        {
+          "id": "b29d23b4-c1c9-4dd0-a06e-a37b4737416d",
+          "fromStatus": "TEST",
+          "toStatus": "DONE",
+          "timestamp": "2026-02-22T14:34:45.554Z"
+        }
+      ],
+      "reviews": [
+        {
+          "id": "8b11ffab-57e0-4d90-9c29-ab4c39b326c9",
+          "command": "node -c scripts/start-services.mjs",
+          "output": "",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:34:29.620Z"
+        },
+        {
+          "id": "e50d3d17-6be1-4313-ad5f-02e6b9c54c11",
+          "command": "node -c scripts/start-services.mjs && ls -la scripts/start-services.mjs",
+          "output": "-rw-r--r-- 1 danielp danielp 2109 Feb 22 10:54 scripts/start-services.mjs\n",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:34:35.608Z"
+        }
+      ],
+      "tokenUsage": [
+        {
+          "input": 2000,
+          "output": 500,
+          "model": "gemini-3-flash-preview",
+          "cost": 0.05
         }
       ]
     },
@@ -6573,172 +6786,211 @@
       ]
     },
     {
-      "id": "76d98ab6-1b15-4fb6-8930-21fabfd6a404",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "id": "2a490917-7782-484e-8c3c-dcd0705ed906",
+      "projectId": "duaa8dto2g6wdyc75bvbuh",
+      "type": "TASK",
+      "title": "Finalize Gatekeeper Migration",
+      "description": "Finalize the migration of bin/agenfk-gatekeeper.sh to bin/agenfk-gatekeeper.mjs. Ensure robust JSON handling and clean up all .sh references.",
+      "status": "REVIEW",
+      "parentId": "37894dcb-bc40-428d-b654-5a494cf311a2",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:35:55.443Z",
+      "updatedAt": "2026-02-22T14:39:10.688Z",
+      "history": [
+        {
+          "id": "09a0cf5e-cb9c-4517-8ce9-9e550fd9d0f7",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:35:55.449Z"
+        },
+        {
+          "id": "00cdfa72-b80a-4ec9-a0bb-4604f2998baf",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:38:27.252Z"
+        },
+        {
+          "id": "13925656-3581-4774-bf81-67fdcf566c42",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:38:55.425Z"
+        },
+        {
+          "id": "95f173ef-12d0-4c9b-940a-b8b011128d8f",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:39:00.631Z"
+        },
+        {
+          "id": "b06dacf9-ba0e-404f-96ab-5b502b0217b4",
+          "fromStatus": "REVIEW",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:39:00.778Z"
+        },
+        {
+          "id": "aeb25731-c73e-4290-9007-beed0c456f4f",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:39:05.112Z"
+        }
+      ],
+      "reviews": [
+        {
+          "id": "24a08a33-1562-4762-8aeb-cd94b6ab37e9",
+          "command": "find . -name \"*.sh\" | wc -l | xargs -I {} test {} -eq 0 && node -e \"require('fs').readFileSync('agentic-framework/bin/agenfk-gatekeeper.mjs', 'utf8').includes('getToolIntent') || process.exit(1)\"",
+          "output": "node:fs:439\n    return binding.readFileUtf8(path, stringToFlags(options.flag));\n                   ^\n\nError: ENOENT: no such file or directory, open 'agentic-framework/bin/agenfk-gatekeeper.mjs'\n    at Object.readFileSync (node:fs:439:20)\n    at [eval]:1:15\n    at runScriptInThisContext (node:internal/vm:219:10)\n    at node:internal/process/execution:451:12\n    at [eval]-wrapper:6:24\n    at runScriptInContext (node:internal/process/execution:449:60)\n    at evalFunction (node:internal/process/execution:283:30)\n    at evalTypeScript (node:internal/process/execution:295:3)\n    at node:internal/main/eval_string:71:3 {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: 'agentic-framework/bin/agenfk-gatekeeper.mjs'\n}\n\nNode.js v24.13.1\nCommand failed: find . -name \"*.sh\" | wc -l | xargs -I {} test {} -eq 0 && node -e \"require('fs').readFileSync('agentic-framework/bin/agenfk-gatekeeper.mjs', 'utf8').includes('getToolIntent') || process.exit(1)\"\nnode:fs:439\n    return binding.readFileUtf8(path, stringToFlags(options.flag));\n                   ^\n\nError: ENOENT: no such file or directory, open 'agentic-framework/bin/agenfk-gatekeeper.mjs'\n    at Object.readFileSync (node:fs:439:20)\n    at [eval]:1:15\n    at runScriptInThisContext (node:internal/vm:219:10)\n    at node:internal/process/execution:451:12\n    at [eval]-wrapper:6:24\n    at runScriptInContext (node:internal/process/execution:449:60)\n    at evalFunction (node:internal/process/execution:283:30)\n    at evalTypeScript (node:internal/process/execution:295:3)\n    at node:internal/main/eval_string:71:3 {\n  errno: -2,\n  code: 'ENOENT',\n  syscall: 'open',\n  path: 'agentic-framework/bin/agenfk-gatekeeper.mjs'\n}\n\nNode.js v24.13.1\n",
+          "status": "FAILED",
+          "executedAt": "2026-02-22T14:39:00.757Z"
+        },
+        {
+          "id": "b54654de-cff0-475d-bb57-c765a8533a95",
+          "command": "find . -name \"*.sh\" | wc -l | xargs -I {} test {} -eq 0 && node -e \"require('fs').readFileSync('bin/agenfk-gatekeeper.mjs', 'utf8').includes('getToolIntent') || process.exit(1)\"",
+          "output": "",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:39:05.201Z"
+        }
+      ],
+      "tokenUsage": [
+        {
+          "input": 15000,
+          "output": 2000,
+          "model": "gemini-3-flash-preview"
+        }
+      ]
+    },
+    {
+      "id": "8b5b6f3e-fac7-4a82-a4c4-d846adb2ba4c",
+      "projectId": "42eb58b4-5e7a-44e8-8401-3436706cde4b",
+      "type": "TASK",
+      "title": "Core Stability Task",
+      "description": "Test task to verify the new Node.js workflow.",
+      "status": "REVIEW",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:46:47.498Z",
+      "updatedAt": "2026-02-22T14:47:17.737Z",
+      "history": [
+        {
+          "id": "7ddebe95-20c1-4b2e-b85b-bf08258907dd",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:46:47.501Z"
+        },
+        {
+          "id": "5ed7ffb4-8c0c-4a2a-bb09-9933f28f9525",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T14:46:51.252Z"
+        },
+        {
+          "id": "716e90d9-dbdf-47c8-bcf9-f630105f83aa",
+          "fromStatus": "IN_PROGRESS",
+          "toStatus": "REVIEW",
+          "timestamp": "2026-02-22T14:47:13.151Z"
+        }
+      ],
+      "reviews": [
+        {
+          "id": "2cce700d-225e-4caf-ab34-bec6101bcd98",
+          "command": "ls",
+          "output": "AFK_ARCHITECTURE.md\nAFK_PROJECT_SCOPE.md\nREADME.md\nSKILL.md\nagenfk\nbin\ncleanup_config.cjs\ncommands\ndebug-mcp.js\ndebug-mcp.mjs\ndedupe_tokens.cjs\ndocs\nmerge_dbs.cjs\nnode_modules\npackage-lock.json\npackage.json\npackages\nscripts\nserver-test-db.json\nvitest.config.ts\nvitest.workspace.ts\n",
+          "status": "PASSED",
+          "executedAt": "2026-02-22T14:47:13.216Z"
+        }
+      ],
+      "tokenUsage": [
+        {
+          "input": 500,
+          "output": 200,
+          "model": "gemini-3-flash-preview",
+          "cost": 0.001
+        }
+      ]
+    },
+    {
+      "id": "ca5595e8-a456-4f12-9360-b7261da6c999",
+      "projectId": "c8ce74d4-dad4-4676-be2c-644d2eaf8a9f",
       "type": "TASK",
       "title": "T1",
       "description": "D1",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.893Z",
-      "updatedAt": "2026-02-22T14:32:21.893Z",
+      "createdAt": "2026-02-22T14:47:49.547Z",
+      "updatedAt": "2026-02-22T14:47:49.547Z",
       "history": [
         {
-          "id": "a2a0bacf-c285-4fcc-ba83-d9e798d4d6fa",
+          "id": "942923a1-763c-4ce5-ac7a-8b8df8b820be",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.896Z"
+          "timestamp": "2026-02-22T14:47:49.551Z"
         }
       ]
     },
     {
-      "id": "8421428a-c2dd-4a39-97fd-d9b79e5e3229",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "id": "894bcd91-c497-4be2-b815-2dd96f1409e4",
+      "projectId": "c8ce74d4-dad4-4676-be2c-644d2eaf8a9f",
       "type": "TASK",
       "title": "To Update",
       "description": "D",
       "status": "IN_PROGRESS",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.902Z",
-      "updatedAt": "2026-02-22T14:32:21.919Z",
+      "createdAt": "2026-02-22T14:47:49.561Z",
+      "updatedAt": "2026-02-22T14:47:49.581Z",
       "history": [
         {
-          "id": "d92c6d0d-4af2-40ae-afc5-f0c0419f3719",
+          "id": "b3d65cb9-0b40-4373-be28-f9aaf45959da",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.905Z"
+          "timestamp": "2026-02-22T14:47:49.564Z"
         },
         {
-          "id": "0d26ca04-1289-4e3e-8be5-2162e72045ac",
+          "id": "93a45f8b-7490-4ae3-8fab-374efe6a6be8",
           "fromStatus": "TODO",
           "toStatus": "IN_PROGRESS",
-          "timestamp": "2026-02-22T14:32:21.919Z"
+          "timestamp": "2026-02-22T14:47:49.581Z"
         }
       ]
     },
     {
-      "id": "60bf0a4d-babb-4bb1-b208-0c53889bee49",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "id": "0c766502-d019-4f14-bc33-dc9852c5d5da",
+      "projectId": "c8ce74d4-dad4-4676-be2c-644d2eaf8a9f",
       "type": "TASK",
       "title": "No Cheat",
       "description": "D",
       "status": "TODO",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.926Z",
-      "updatedAt": "2026-02-22T14:32:21.926Z",
+      "createdAt": "2026-02-22T14:47:49.586Z",
+      "updatedAt": "2026-02-22T14:47:49.586Z",
       "history": [
         {
-          "id": "5c72c9e4-8e2d-42f4-bf4b-b44892479c26",
+          "id": "c4ef8fe4-98fa-44aa-b03b-17ea0c6f0c71",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.929Z"
+          "timestamp": "2026-02-22T14:47:49.589Z"
         }
       ]
     },
     {
-      "id": "2cb29e01-4a8d-4794-9c48-6d9e27b37839",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
+      "id": "bb893166-5c22-4f2e-89c6-2208c43ec4d8",
+      "projectId": "c8ce74d4-dad4-4676-be2c-644d2eaf8a9f",
       "type": "TASK",
       "title": "Verify Me",
       "description": "D",
       "status": "DONE",
       "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.941Z",
-      "updatedAt": "2026-02-22T14:32:21.960Z",
+      "createdAt": "2026-02-22T14:47:49.601Z",
+      "updatedAt": "2026-02-22T14:47:49.620Z",
       "history": [
         {
-          "id": "e9cc1f3c-68a8-4b8b-bb5b-cf126da4fa55",
+          "id": "ce5134c3-cdeb-4eef-9582-b98f1f6a6c6a",
           "fromStatus": "TODO",
           "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.944Z"
+          "timestamp": "2026-02-22T14:47:49.603Z"
         },
         {
-          "id": "a2ecf000-e00b-4a4b-9aa1-ab39edce4f02",
+          "id": "54144e6a-2e1a-4e8b-bf9c-36fa421483b0",
           "fromStatus": "TODO",
           "toStatus": "DONE",
-          "timestamp": "2026-02-22T14:32:21.960Z"
-        }
-      ]
-    },
-    {
-      "id": "0d9beaaa-2b45-4eda-a481-85c138a55599",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
-      "type": "STORY",
-      "title": "Parent Story",
-      "description": "D",
-      "status": "IN_PROGRESS",
-      "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.970Z",
-      "updatedAt": "2026-02-22T14:32:22.018Z",
-      "history": [
-        {
-          "id": "a16726f7-317f-4987-9687-f381d95fbff4",
-          "fromStatus": "TODO",
-          "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.976Z"
-        },
-        {
-          "id": "f8bf4a59-078d-4ccd-9c57-66aaef3a60eb",
-          "fromStatus": "TODO",
-          "toStatus": "IN_PROGRESS",
-          "timestamp": "2026-02-22T14:32:22.018Z"
-        }
-      ]
-    },
-    {
-      "id": "692eb299-1d37-40cd-bad5-57bbc2b48438",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
-      "type": "TASK",
-      "title": "Child Task",
-      "description": "D",
-      "status": "IN_PROGRESS",
-      "parentId": "0d9beaaa-2b45-4eda-a481-85c138a55599",
-      "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:21.982Z",
-      "updatedAt": "2026-02-22T14:32:22.002Z",
-      "history": [
-        {
-          "id": "f73e7077-d9ec-4823-ba29-c896aea401aa",
-          "fromStatus": "TODO",
-          "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:21.984Z"
-        },
-        {
-          "id": "d1dcb55e-68dc-4f44-9937-0de341f03c79",
-          "fromStatus": "TODO",
-          "toStatus": "IN_PROGRESS",
-          "timestamp": "2026-02-22T14:32:22.002Z"
-        }
-      ]
-    },
-    {
-      "id": "9c6a4f6b-785d-40db-823c-e058c886d25e",
-      "projectId": "9c63d021-8861-45a0-8c48-cf2efa1b663f",
-      "type": "TASK",
-      "title": "Archive Me",
-      "description": "D",
-      "status": "TODO",
-      "implementationPlan": "",
-      "createdAt": "2026-02-22T14:32:22.052Z",
-      "updatedAt": "2026-02-22T14:32:22.132Z",
-      "history": [
-        {
-          "id": "8d03bf68-10fe-408a-966e-da220beef291",
-          "fromStatus": "TODO",
-          "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:22.066Z"
-        },
-        {
-          "id": "c7cbeeaa-5ee9-4277-95bb-5f4e44544b27",
-          "fromStatus": "TODO",
-          "toStatus": "ARCHIVED",
-          "timestamp": "2026-02-22T14:32:22.092Z"
-        },
-        {
-          "id": "d9935b83-c619-48dc-a402-0b5a089b6f00",
-          "fromStatus": "ARCHIVED",
-          "toStatus": "TODO",
-          "timestamp": "2026-02-22T14:32:22.120Z"
+          "timestamp": "2026-02-22T14:47:49.620Z"
         }
       ]
     }
