@@ -82,6 +82,15 @@ describe('CLI Commands', () => {
     });
   });
 
+  describe('restart command', () => {
+    it('should call down and up', async () => {
+      await program.parseAsync(['node', 'agenfk', 'restart']);
+      // Should call down (execSync) and up (spawn)
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('down'), expect.any(Object));
+      expect(mockedChildProcess.spawn).toHaveBeenCalledWith('node', expect.arrayContaining(['up']), expect.any(Object));
+    });
+  });
+
   describe('health command', () => {
     it('should check system paths and API', async () => {
       mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
