@@ -73,6 +73,80 @@ describe('CLI Commands', () => {
       
       expect(mockedAxios.delete).toHaveBeenCalledWith(expect.stringContaining('/items/i1-full-id'));
     });
+
+    it('should handle item not found for delete', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [] });
+      await program.parseAsync(['node', 'agenfk', 'delete', 'missing']);
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('list command', () => {
+    it('should call the API with filters', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'i1', title: 'T', type: 'TASK', status: 'TODO' }] });
+      await program.parseAsync(['node', 'agenfk', 'list', '--type', 'task', '--status', 'todo']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
+        params: { type: 'TASK', status: 'TODO' }
+      }));
+    });
+  });
+
+  describe('update command', () => {
+    it('should handle ambiguous ID', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'i1-a', title: 'A' }, { id: 'i1-b', title: 'B' }] });
+      await program.parseAsync(['node', 'agenfk', 'update', 'i1', '--status', 'DONE']);
+      expect(mockedAxios.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('upgrade command', () => {
+    it('should check for updates and run installer', async () => {
+      mockedAxios.get.mockRejectedValue(new Error('Down')); // services not running
+      mockedChildProcess.execSync.mockImplementation((cmd: any) => {
+        if (typeof cmd === 'string' && cmd.includes('gh release')) return 'v1.0.0';
+        return Buffer.from('ok');
+      });
+      
+      mockedFs.existsSync.mockImplementation(() => true);
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.1"}');
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade', '--force']);
+      
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('gh release view'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+  });
+
+  describe('ui command', () => {
+    it('should show dashboard information', async () => {
+      mockedFs.existsSync.mockReturnValue(false);
+      await program.parseAsync(['node', 'agenfk', 'ui']);
+      // No specific expectation other than it doesn't crash
+    });
+  });
+
+  describe('list-projects command', () => {
+    it('should call the API to list projects', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj', createdAt: new Date().toISOString() }] });
+      await program.parseAsync(['node', 'agenfk', 'list-projects']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/projects'));
+    });
+  });
+
+  describe('create-project command', () => {
+    it('should call the API to create a project', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { id: 'p1', name: 'New Proj' } });
+      await program.parseAsync(['node', 'agenfk', 'create-project', 'New Proj']);
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/projects'), expect.objectContaining({ name: 'New Proj' }));
+    });
+  });
+
+  describe('init command', () => {
+    it('should check connection to API', async () => {
+      mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
+      await program.parseAsync(['node', 'agenfk', 'init']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
+    });
   });
 
   describe('down command', () => {
@@ -89,13 +163,86 @@ describe('CLI Commands', () => {
       expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('down'), expect.any(Object));
       expect(mockedChildProcess.spawn).toHaveBeenCalledWith('node', expect.arrayContaining(['up']), expect.any(Object));
     });
+
+    it('should handle restart failure', async () => {
+      mockedChildProcess.spawn.mockImplementation(() => { throw new Error('Spawn failed'); });
+      await program.parseAsync(['node', 'agenfk', 'restart']);
+      // Should catch error and log it
+    });
+  });
+
+  describe('update command', () => {
+    it('should update an item by full ID', async () => {
+      mockedAxios.put.mockResolvedValue({ data: { id: 'uuid-36-chars-long-xxxxxxxxxxxxxxxxx', title: 'T', status: 'DONE' } });
+      await program.parseAsync(['node', 'agenfk', 'update', 'uuid-36-chars-long-xxxxxxxxxxxxxxxxx', '--status', 'DONE']);
+      expect(mockedAxios.put).toHaveBeenCalled();
+    });
+
+    it('should handle short ID with no matches', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [] });
+      await program.parseAsync(['node', 'agenfk', 'update', 'short', '--status', 'DONE']);
+      expect(mockedAxios.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('create command', () => {
+    it('should use project ID from local config if not provided', async () => {
+      mockedFs.existsSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('project.json')) return true;
+        return true;
+      });
+      mockedFs.readFileSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('project.json')) return '{"projectId": "local-p1"}';
+        return '{"items":[]}';
+      });
+      mockedAxios.post.mockResolvedValue({ data: { id: 'i1', title: 'T' } });
+      
+      await program.parseAsync(['node', 'agenfk', 'create', 'task', 'Local Task']);
+      
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
+        projectId: 'local-p1'
+      }));
+    });
   });
 
   describe('health command', () => {
     it('should check system paths and API', async () => {
       mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
+      mockedFs.readFileSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('db.json')) return '{"items":[]}';
+        if (typeof p === 'string' && p.endsWith('opencode.json')) return '{"mcp":{"agenfk":{"enabled":true}}}';
+        return '';
+      });
       await program.parseAsync(['node', 'agenfk', 'health']);
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
+    });
+  });
+
+  describe('up command', () => {
+    it('should bootstrap services if missing', async () => {
+      mockedFs.existsSync.mockImplementation((p) => {
+        if (typeof p === 'string' && (p.endsWith('start-services.mjs') || p.endsWith('server.js'))) return false;
+        return true;
+      });
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
+      
+      await program.parseAsync(['node', 'agenfk', 'up']);
+      
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+
+    it('should skip bootstrap if artifacts found', async () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      await program.parseAsync(['node', 'agenfk', 'up']);
+      expect(mockedChildProcess.execSync).not.toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+  });
+
+  describe('down command', () => {
+    it('should call killPattern for services', async () => {
+      await program.parseAsync(['node', 'agenfk', 'down']);
+      // Should call execSync for ps -ef or similar inside killPattern
+      expect(mockedChildProcess.execSync).toHaveBeenCalled();
     });
   });
 
@@ -106,7 +253,7 @@ describe('CLI Commands', () => {
       
       await program.parseAsync(['node', 'agenfk', 'up']);
       
-      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.sh'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
     });
   });
 });

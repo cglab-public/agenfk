@@ -36,15 +36,23 @@ if (isNpxCache) {
   if (fs.existsSync(INSTALL_DIR)) {
     console.log(`${GREEN}Updating AgenFK at ${INSTALL_DIR}...${RESET}`);
     // Overlay new files from the npx cache onto the existing install
-    execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
+    if (fs.cpSync) {
+      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
+    } else {
+      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
+    }
   } else {
     console.log(`${GREEN}Installing AgenFK to ${INSTALL_DIR}...${RESET}`);
-    execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+    if (fs.cpSync) {
+      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
+    } else {
+      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+    }
   }
   console.log(`\n${GREEN}Running setup from ${INSTALL_DIR}...${RESET}\n`);
-  execSync('./install.sh', { cwd: INSTALL_DIR, stdio: 'inherit' });
+  execSync('node scripts/install.mjs', { cwd: INSTALL_DIR, stdio: 'inherit' });
 } else {
   // Running from a real git clone — install in place
   console.log(`${GREEN}Running install from ${REPO_ROOT}...${RESET}\n`);
-  execSync('./install.sh', { cwd: REPO_ROOT, stdio: 'inherit' });
+  execSync('node scripts/install.mjs', { cwd: REPO_ROOT, stdio: 'inherit' });
 }

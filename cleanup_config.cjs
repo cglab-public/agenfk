@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const configPath = path.join(process.env.HOME, '.config', 'opencode', 'opencode.json');
+const os = require('os');
+const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
 
 try {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));

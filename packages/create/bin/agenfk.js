@@ -45,4 +45,4 @@ if (fs.existsSync(INSTALL_DIR)) {
 }
 
 console.log(`\n${GREEN}Running install...${RESET}\n`);
-execSync('./install.sh', { cwd: INSTALL_DIR, stdio: 'inherit' });
+execSync('node scripts/install.mjs', { cwd: INSTALL_DIR, stdio: 'inherit' });
