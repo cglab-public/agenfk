@@ -386,7 +386,7 @@ io.on('connection', (socket) => {
 });
 
 // Init and Listen
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   initStorage().then(() => {
     httpServer.listen(PORT, () => {
       console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
