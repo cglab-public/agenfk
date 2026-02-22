@@ -1,7 +1,12 @@
 const fs = require('fs');
-const dbPath = '/home/danielp/agefk/agenfk-framework/.agenfk/db.json';
+const path = require('path');
+const dbPath = process.env.AGENFK_DB_PATH || path.join(process.cwd(), '.agenfk', 'db.json');
 
 function deduplicate() {
+    if (!fs.existsSync(dbPath)) {
+        console.error(`Database not found at ${dbPath}`);
+        return;
+    }
     const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
     
     db.items.forEach(item => {

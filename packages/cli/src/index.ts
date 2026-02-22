@@ -6,9 +6,89 @@ import { ItemType, Status } from '@agenfk/core';
 import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
+
+/**
+ * Cross-platform port killing logic
+ */
+function killPort(port: number) {
+  try {
+    if (process.platform === 'win32') {
+      const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' });
+      const lines = output.split('\n').filter(l => l.includes('LISTENING'));
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[parts.length - 1];
+        if (pid) execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      }
+    } else {
+      try {
+        const pid = execSync(`lsof -t -i:${port}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (pid) {
+          process.kill(parseInt(pid, 10), 'SIGKILL');
+        }
+      } catch {
+        // Fallback to cross-platform ps check if lsof fails
+        try {
+          const output = execSync('ps -ef', { encoding: 'utf8' });
+          const lines = output.split('\n');
+          for (const line of lines) {
+            if (line.includes(`:${port}`) || line.includes(` ${port}`)) {
+               const parts = line.trim().split(/\s+/);
+               const pid = parts[1];
+               if (pid && /^\d+$/.test(pid)) {
+                 process.kill(parseInt(pid, 10), 'SIGKILL');
+               }
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    // Port might not be in use
+  }
+}
+
+/**
+ * Kill process by pattern (cross-platform)
+ */
+function killPattern(pattern: string) {
+  try {
+    if (process.platform === 'win32') {
+      // Very basic pattern matching for Windows
+      const output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%'" get processid`, { encoding: 'utf8' });
+      const pids = output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
+      for (const pid of pids) {
+        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      }
+    } else {
+      try {
+        const output = execSync('ps -ef', { encoding: 'utf8' });
+        const lines = output.split('\n');
+        for (const line of lines) {
+          if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
+            const parts = line.trim().split(/\s+/);
+            const pid = parts[1];
+            if (pid && /^\d+$/.test(pid)) {
+              process.kill(parseInt(pid, 10), 'SIGKILL');
+            }
+          }
+        }
+      } catch (e) {
+        // Fallback to pgrep if ps fails
+        try {
+          const pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean);
+          for (const pid of pids) {
+            process.kill(parseInt(pid, 10), 'SIGKILL');
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {}
+}
 
 if (process.env.NODE_ENV !== 'test') {
   console.log(
@@ -88,12 +168,12 @@ program
         console.log(chalk.blue('Upgrading...'));
         
         const rootDir = path.resolve(__dirname, '../../..');
-        const installScript = path.join(rootDir, 'install.sh');
+        const installScript = path.join(rootDir, 'scripts', 'install.mjs');
         
         if (fs.existsSync(installScript)) {
           console.log(chalk.gray('Running install script...'));
           try {
-            execSync('./install.sh', { cwd: rootDir, stdio: 'inherit' });
+            execSync('node scripts/install.mjs', { cwd: rootDir, stdio: 'inherit' });
             console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
 
             if (servicesRunning) {
@@ -128,27 +208,19 @@ program
 
     // 0. Cleanup zombies
     console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
-    try {
-      // Kill anything on port 3000 (API)
-      execSync(`fuser -k 3000/tcp`, { stdio: 'ignore' });
-    } catch {}
-    try {
-      // Kill anything on port 5173 (UI default)
-      execSync(`fuser -k 5173/tcp`, { stdio: 'ignore' });
-    } catch {}
-    try {
-      execSync(`pkill -f "packages/server/dist/server.js"`, { stdio: 'ignore' });
-      execSync(`pkill -f "packages/ui"`, { stdio: 'ignore' });
-    } catch {}
+    killPort(3000); // API
+    killPort(5173); // UI default
+    killPattern('packages/server/dist/server.js');
+    killPattern('packages/ui');
 
-    // 1. Only bootstrap if start-services.sh or server dist is missing
-    const startScript = path.join(rootDir, 'start-services.sh');
+    // 1. Only bootstrap if start-services.mjs or server dist is missing
+    const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
     const serverDist = path.join(rootDir, 'packages/server/dist/server.js');
 
     if (!fs.existsSync(startScript) || !fs.existsSync(serverDist)) {
         console.log(chalk.yellow('📦 Initial bootstrap required...'));
         try {
-            execSync('./install.sh', { cwd: rootDir, stdio: 'inherit' });
+            execSync('node scripts/install.mjs', { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
             return;
@@ -159,7 +231,7 @@ program
     
     console.log(chalk.blue('⚡ Starting agenfk services...'));
     try {
-        const start = spawn('./start-services.sh', { cwd: rootDir, stdio: 'inherit' });
+        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit' });
         start.on('close', (code) => {
             process.exit(code || 0);
         });
@@ -179,7 +251,7 @@ program
 
     // Stop API server — match the specific server.js path
     try {
-      execSync(`pkill -f "packages/server/dist/server.js"`, { stdio: 'pipe' });
+      killPattern('packages/server/dist/server.js');
       console.log(chalk.green('  ✓ API server stopped'));
       stopped++;
     } catch {
@@ -188,7 +260,7 @@ program
 
     // Stop UI dev server — match vite process rooted in packages/ui
     try {
-      execSync(`pkill -f "packages/ui"`, { stdio: 'pipe' });
+      killPattern('packages/ui');
       console.log(chalk.green('  ✓ UI server stopped'));
       stopped++;
     } catch {
@@ -484,7 +556,7 @@ program
 
     // 3. MCP Config Check
     process.stdout.write('Checking Opencode MCP Config... ');
-    const opencodeConfig = path.join(process.env.HOME || '', '.config', 'opencode', 'opencode.json');
+    const opencodeConfig = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
     if (fs.existsSync(opencodeConfig)) {
       try {
         const config = JSON.parse(fs.readFileSync(opencodeConfig, 'utf8'));
@@ -505,7 +577,7 @@ program
 
     // 4. Skills Check
     process.stdout.write('Checking Global Skills... ');
-    const skillPath = path.join(process.env.HOME || '', '.config', 'opencode', 'skills', 'agenfk', 'SKILL.md');
+    const skillPath = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk', 'SKILL.md');
     if (fs.existsSync(skillPath)) {
       console.log(chalk.green('OK'));
     } else {

@@ -11,7 +11,19 @@ function run() {
     // 1. Run tests with coverage reporters
     console.log('Running tests with coverage...');
     // Cleanup dist folders to prevent Vitest CJS errors
-    execSync('rm -rf packages/*/dist', { stdio: 'inherit' });
+    const rootDir = process.cwd();
+    const dists = [
+      path.join(rootDir, 'packages', 'core', 'dist'),
+      path.join(rootDir, 'packages', 'storage-json', 'dist'),
+      path.join(rootDir, 'packages', 'cli', 'dist'),
+      path.join(rootDir, 'packages', 'server', 'dist'),
+      path.join(rootDir, 'packages', 'ui', 'dist'),
+    ];
+    for (const dist of dists) {
+      if (fs.existsSync(dist)) {
+        fs.rmSync(dist, { recursive: true, force: true });
+      }
+    }
     execSync('npx vitest run --coverage --coverage.reporter=json-summary --coverage.reporter=text --exclude="**/dist/**"', { stdio: 'inherit' });
 
     // 2. Read summary

@@ -1,8 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const db1Path = '/home/danielp/agefk/.agenfk/db.json';
-const db2Path = '/home/danielp/agefk/agenfk-framework/.agenfk/db.json';
+const rootDir = process.cwd();
+const db1Path = path.join(rootDir, '.agenfk', 'db.json');
+const db2Path = path.join(rootDir, 'agentic-framework', '.agenfk', 'db.json');
 const targetPath = db2Path;
 
 function merge() {

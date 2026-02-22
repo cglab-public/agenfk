@@ -106,7 +106,7 @@ describe('CLI Commands', () => {
       
       await program.parseAsync(['node', 'agenfk', 'up']);
       
-      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.sh'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
     });
   });
 });
