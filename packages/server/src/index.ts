@@ -330,7 +330,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
-        return { content: [{ type: "text", text: `Framework Analysis Strategy applied to: "${userRequest}"` }] };
+        return { 
+          content: [{ 
+            type: "text", 
+            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: If this request is complex (multiple steps/components), you MUST:\n1. Categorize as EPIC or STORY.\n2. Create ALL sub-items (Stories/Tasks) in TODO status.\n3. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
+          }] 
+        };
       }
       case "get_server_info": {
         const { data } = await api.get(`/`);

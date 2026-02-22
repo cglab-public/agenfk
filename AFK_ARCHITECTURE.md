@@ -16,7 +16,11 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
 1.  **Server as Source of Truth**: All state changes must go through the Server.
 2.  **CLI/UI as Clients**: The CLI and Web UI communicate with the Server via a RESTful API.
 3.  **Real-time Updates**: The Server uses WebSockets to push state changes to the UI for immediate visual feedback.
-4.  **Verification Loop**:
+4.  **Planning Phase (Complex Items)**:
+    - For items identified as EPIC or STORY, the system enforces a decomposition step.
+    - All sub-items (Stories/Tasks) are created in `TODO` status first.
+    - The Agent MUST obtain explicit user approval of the decomposition before transitioning any child item to `IN_PROGRESS`.
+5.  **Verification Loop**:
     - **REVIEW Status**: Triggered via `verify_changes` tool. MUST run the project's primary test suite (not just builds).
     - **TEST Status**: A mandatory quality gate following Review. In this stage, the Agent (e.g., Opencode/Claude) is responsible for running deep regression tests and verifying coverage requirements (minimum 80% for new code).
     - **Coverage Rule**: Newly inserted code MUST meet a minimum threshold (e.g., 80%). The specific implementation of this check (e.g., parsing Vitest vs Jest outputs) is project-specific. For the AgenFK Framework itself, a helper script at `scripts/enforce-coverage.ts` is provided to perform this check against Vitest output.

@@ -34,7 +34,13 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 2.  **Request Analysis & Clarification**
     *   **Context**: Take int account `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` for informed reasoning.
     *   **Action**: Call `analyze_request(request: string)` for every new user requirement.
-    *   **Reasoning Step**: Before creating ANY item (Epic, Story, Task, or Bug) or initializing a project, you MUST reason about the implementation details. 
+    *   **Complexity & Decomposition**: 
+        1. Evaluate if the request requires multiple steps or touches multiple components.
+        2. If complex, categorize as **EPIC** or **STORY**.
+        3. **Sub-item Creation**: For every EPIC/STORY, you MUST define and create the necessary sub-items (Stories for Epics, Tasks for Stories) in `TODO` status immediately after creating the parent.
+        4. **Plan & Pause**: After creating the hierarchy (Parent + Children), you **MUST PAUSE** and present the proposed items to the user. Ask: "I've decomposed your request into the following items. Should I proceed with implementation or would you like to make changes?"
+        5. **Authorization**: NEVER move a task to `IN_PROGRESS` until the user has confirmed the plan.
+    *   **Reasoning Step**: Before creating ANY item or initializing a project, you MUST reason about the implementation details. 
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
     *   **Requirement**: All items created must be associated with the active `projectId`.
