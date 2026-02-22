@@ -12,7 +12,10 @@
   "scripts": {
     "build": "npm run build -w packages/core -w packages/storage-json && npm run build -w packages/cli -w packages/server -w packages/ui",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "install:framework": "node scripts/install.mjs",
+    "uninstall:framework": "node scripts/uninstall.mjs",
+    "start:services": "node scripts/start-services.mjs"
   },
   "keywords": [],
   "author": "",

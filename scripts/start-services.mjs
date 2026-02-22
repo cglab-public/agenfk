@@ -26,7 +26,8 @@ apiProcess.unref();
 console.log("Starting UI...");
 const uiLogPath = path.join(agenfkDir, 'ui.log');
 const uiLog = fs.openSync(uiLogPath, 'a');
-const uiProcess = spawn('npm', ['run', 'dev'], {
+const npmCmd = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
+const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
     detached: true,
     stdio: ['ignore', uiLog, uiLog],

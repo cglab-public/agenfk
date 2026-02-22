@@ -3,7 +3,7 @@ dist/
 build/
 .agenfk/
 *.log
-start-services.sh
+scripts/start-services.mjs
 .DS_Store
 .env
 coverage/

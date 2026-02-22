@@ -288,11 +288,11 @@ program
 
     // Call 'up'
     // Note: 'up' might keep the terminal open if it doesn't detach.
-    // However, the 'up' command in index.ts spawns start-services.sh which waits.
+    // However, the 'up' command in index.ts spawns start-services.mjs which waits.
     // For auto-restart, maybe we want it to run in background?
     // But 'up' is designed to be interactive usually.
     // If called from upgrade, it might be better to start them in background.
-    // However, start-services.sh handles backgrounding itself inside.
+    // However, start-services.mjs handles backgrounding itself inside.
     
     try {
       const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], { 
