@@ -267,4 +267,5 @@ echo "1. Restart your AI editor/agent (Opencode needs a restart to pick up the n
 echo "2. Run 'agenfk up' in a separate terminal to start the API and Web UI."
 echo "3. Go to ANY project repository and type '/agenfk' in your AI editor's prompt to initialize your project context and start the workflow."
 echo "4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release."
-echo "5. Run 'agenfk health' to verify your installation at any time."
+echo "5. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'."
+echo "6. Run 'agenfk health' to verify your installation at any time."

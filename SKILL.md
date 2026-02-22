@@ -85,12 +85,15 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 1.  **Initialization**
 ...
 (around line 83)
-## Agent Spawning & Phase Delegation
-AgenFK agents should delegate specialized work by spawning new agent sessions via the `task` tool. This ensures each phase is handled by an agent with a focused prompt and fresh context:
+## Automated Lifecycle Orchestration
+AgenFK agents MUST act as proactive orchestrators of the work lifecycle. You are responsible for automatically spawning specialized sub-agents via the `task` tool at every phase transition. DO NOT wait for explicit user instructions to proceed between phases once the initial plan is approved.
 
-*   **Review Phase**: After `verify_changes` moves an item to `REVIEW`, you SHOULD spawn a "Review Agent" via `task(subagent_type="explore", prompt="/review-item <id>")` to perform deep analysis.
-*   **Test Phase**: When an item is in `TEST`, you SHOULD spawn a "Test Agent" via `task(subagent_type="general", prompt="/test-item <id>")` to generate tests and verify coverage.
-*   **Completion**: When moving to `DONE`, you SHOULD spawn a "Closing Agent" via `task(subagent_type="general", prompt="/close-item <id>")` to summarize work and log the final comment.
+*   **Plan & Pause**: For complex requests (EPIC/STORY), you MUST decompose the task, create all sub-items, and PAUSE for human approval. Once approved, the rest of the lifecycle is autonomous.
+*   **Automatic Handover (Coding to Review)**: Immediately after a successful implementation and `verify_changes` call (moving item to `REVIEW`), you MUST spawn a "Review Agent" via `task(subagent_type="explore", prompt="/review-item <id>")`.
+*   **Automatic Handover (Review to Test)**: If the Review Agent returns success, move the item to `TEST` and immediately spawn a "Test Agent" via `task(subagent_type="general", prompt="/test-item <id>")`.
+*   **Automatic Handover (Test to Done)**: If the Test Agent returns success, move the item to `DONE` and spawn a "Closing Agent" via `task(subagent_type="general", prompt="/close-item <id>")` to summarize and log the final comment.
+
+If any sub-agent fails, move the item back to `IN_PROGRESS` and report the specific errors to the user.
 
 ## When to use me
 
