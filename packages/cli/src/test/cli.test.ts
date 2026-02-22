@@ -205,7 +205,6 @@ describe('CLI Commands', () => {
       expect(mockedChildProcess.execSync).toHaveBeenCalled();
     });
   });
-  });
 
   describe('up command', () => {
     it('should bootstrap services if missing', async () => {
