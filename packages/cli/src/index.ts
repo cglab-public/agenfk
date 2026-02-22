@@ -20,16 +20,15 @@ if (process.env.NODE_ENV !== 'test') {
 
 export { program };
 
-let CURRENT_VERSION = '0.1.5';
+let CURRENT_VERSION = '0.0.0'; // Fallback
 try {
   const pkgPath = path.resolve(__dirname, '../package.json');
-  const pkgContent = fs.readFileSync(pkgPath, 'utf8');
-  if (pkgContent) {
-    const pkg = JSON.parse(pkgContent);
+  if (fs.existsSync(pkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     CURRENT_VERSION = pkg.version;
   }
 } catch (e) {
-  // In some environments (like tests with mocked fs), this might fail
+  // In some environments this might fail
 }
 
 program
@@ -39,9 +38,11 @@ program
 program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
-  .action(async () => {
+  .option('-f, --force', 'Force upgrade even if versions match')
+  .action(async (options) => {
     const REPO = 'cglab-PRIVATE/agenfk';
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}...`));
+    console.log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
 
     try {
       // Check if services are currently running
@@ -53,16 +54,27 @@ program
         // Services not running
       }
 
-      // Use gh CLI to fetch the latest release tag for private repository support
-      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'] 
-      }).trim();
+      // Use gh CLI to fetch the latest release tag
+      let latestTag = '';
+      try {
+        latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'] 
+        }).trim();
+      } catch (e) {
+        throw new Error('Failed to fetch latest release from GitHub. Ensure "gh" CLI is authenticated.');
+      }
       
       const latestVersion = latestTag.replace(/^v/, '');
+      console.log(chalk.gray(`Remote version: ${latestVersion}`));
       
-      if (latestVersion !== CURRENT_VERSION) {
-        console.log(chalk.yellow(`New version available: ${latestVersion} (current: ${CURRENT_VERSION})`));
+      if (latestVersion !== CURRENT_VERSION || options.force) {
+        if (options.force && latestVersion === CURRENT_VERSION) {
+          console.log(chalk.yellow('Versions match, but --force was specified. Proceeding with upgrade...'));
+        } else {
+          console.log(chalk.yellow(`New version available: ${latestVersion} (current: ${CURRENT_VERSION})`));
+        }
+        
         console.log(chalk.blue('Upgrading...'));
         
         const rootDir = path.resolve(__dirname, '../../..');
@@ -76,11 +88,6 @@ program
 
             if (servicesRunning) {
               console.log(chalk.blue('Restarting services...'));
-              // We use spawn for 'up' because it stays alive, but here we just want to trigger it.
-              // Actually, better to just tell the user to run 'agenfk up' or trigger a restart.
-              // But the requirement says "automatically called".
-              // Since 'up' usually runs in foreground or starts background stuff,
-              // we can call the 'restart' command logic.
               try {
                 execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
               } catch (e) {
@@ -94,10 +101,10 @@ program
           console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
         }
       } else {
-        console.log(chalk.green('You are already on the latest version.'));
+        console.log(chalk.green('You are already on the latest version. Use --force to reinstall.'));
       }
     } catch (error: any) {
-      console.error(chalk.red('Error checking for updates. Ensure "gh" CLI is installed and authenticated.'));
+      console.error(chalk.red(`Error checking for updates: ${error.message}`));
       console.error(chalk.gray(`Repo: ${REPO}`));
     }
   });
