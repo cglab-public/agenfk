@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 
 const API_URL = process.env.AGENFK_API_URL || 'http://127.0.0.1:3000';
 
@@ -31,6 +33,18 @@ async function getToolIntent() {
     });
 }
 
+// Walk up from filePath looking for .agenfk/project.json
+function isInsideAgenFKProject(filePath) {
+    if (!filePath) return false;
+    let dir = path.isAbsolute(filePath) ? path.dirname(filePath) : path.dirname(path.resolve(filePath));
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
+        dir = path.dirname(dir);
+    }
+    return false;
+}
+
 async function checkInProgress() {
     return new Promise((resolve) => {
         const req = http.get(`${API_URL}/items?status=IN_PROGRESS`, { timeout: 2000 }, (res) => {
@@ -44,7 +58,6 @@ async function checkInProgress() {
             res.on('end', () => {
                 try {
                     const items = JSON.parse(data);
-                    // Filter leaf tasks/bugs if possible, or just check for any
                     const hasActive = Array.isArray(items) && items.some(i => i.status === 'IN_PROGRESS');
                     resolve(hasActive);
                 } catch (e) {
@@ -62,12 +75,21 @@ async function checkInProgress() {
 }
 
 const toolIntent = await getToolIntent();
+
+// Extract file path from tool input (Edit/Write use file_path, NotebookEdit uses notebook_path)
+const filePath = toolIntent?.tool_input?.file_path || toolIntent?.tool_input?.notebook_path || null;
+
+// Only enforce workflow for files inside an AgenFK-managed project directory
+if (!isInsideAgenFKProject(filePath)) {
+    process.exit(0);
+}
+
 const hasInProgress = await checkInProgress();
 
 if (!hasInProgress) {
     const toolName = toolIntent?.tool || 'unknown tool';
     const reason = `AgenFK WORKFLOW VIOLATION: No task is IN_PROGRESS while attempting to use ${toolName}.\n\nBefore modifying files you must:\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk update <id> --status IN_PROGRESS\n\nThen retry your change.`;
-    
+
     process.stdout.write(JSON.stringify({
         decision: 'block',
         reason: reason
