@@ -161,6 +161,37 @@
           "timestamp": "2026-02-22T14:51:16.914Z"
         }
       ]
+    },
+    {
+      "id": "1f3dca52-05a2-4f33-873d-d450cdd19792",
+      "projectId": "38a7ce2f-cfd6-4e3e-99ef-a583f01d4934",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T14:51:16.923Z",
+      "updatedAt": "2026-02-22T14:51:16.955Z",
+      "history": [
+        {
+          "id": "f69b541a-cb2e-4b8e-99fb-7ade8878af73",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:51:16.923Z"
+        },
+        {
+          "id": "485a0b56-7020-48d6-b420-8b7bfaff0abb",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-02-22T14:51:16.949Z"
+        },
+        {
+          "id": "78bbb331-7317-4273-8573-2aad791d6ad4",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T14:51:16.955Z"
+        }
+      ]
     }
   ]
 }
