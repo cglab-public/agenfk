@@ -21,5 +21,6 @@ Run `git push` and show the output to the user.
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
 - Confirm the notes with the user, allow edits.
-- **Push & Create Beta**: Run `git push` then `gh release create <tag> --prerelease --title "<title>" --notes "<notes>"`.
+- **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
+- **Push & Create Beta**: Run `git push` then `gh release create <tag> agenfk-dist.tar.gz --prerelease --title "<title>" --notes "<notes>"`.
 - Show the release URL returned by `gh`.

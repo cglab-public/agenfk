@@ -116,6 +116,30 @@ program
   .description('AgenFK Engineering CLI');
 
 program
+  .action(async () => {
+    console.log(chalk.blue(`AgenFK CLI v${CURRENT_VERSION}`));
+    
+    // Check for updates silently
+    try {
+      const REPO = 'cglab-PRIVATE/agenfk';
+      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'] 
+      }).trim();
+      const latestVersion = latestTag.replace(/^v/, '');
+      
+      if (latestVersion !== CURRENT_VERSION) {
+        console.log(chalk.yellow(`\nUpdate available: ${latestVersion} (current: ${CURRENT_VERSION})`));
+        console.log(chalk.gray(`Run 'agenfk upgrade' to update.`));
+      }
+    } catch (e) {
+      // Silence errors for version check
+    }
+    
+    program.help();
+  });
+
+program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')

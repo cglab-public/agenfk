@@ -21,7 +21,8 @@ If YES:
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
 - Confirm the notes with the user, allow edits.
-- **Push & Create**: Run `git push` then `gh release create <tag> --title "<title>" --notes "<notes>"`.
+- **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
+- **Push & Create**: Run `git push` then `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes>"`.
 - Show the release URL returned by `gh`.
 
 If NO:
