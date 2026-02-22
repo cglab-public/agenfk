@@ -19,6 +19,8 @@ describe('CLI Commands', () => {
     vi.clearAllMocks();
     mockedFs.existsSync.mockReturnValue(true);
     mockedFs.readFileSync.mockReturnValue('{"items": []}');
+    // Reset commander options
+    program.setOptionValue('project', undefined);
   });
 
   it('should have basic commands registered', () => {
