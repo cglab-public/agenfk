@@ -184,33 +184,33 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
+                <div className="flex flex-col">
                   <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Metrics</h4>
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
-                      <div className="bg-amber-100 dark:bg-amber-900/30 p-2 rounded-lg text-amber-600 dark:text-amber-400">
+                      <div className="w-9 h-9 flex items-center justify-center bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-400 shrink-0">
                         <Zap size={18} />
                       </div>
                       <div>
-                        <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-tight">Total Tokens</div>
-                        <div className="text-lg font-bold text-slate-900 dark:text-slate-100">{totalTokens.toLocaleString()}</div>
+                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Total Tokens</div>
+                        <div className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">{totalTokens.toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <div>
+                <div className="flex flex-col">
                   <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Hierarchy</h4>
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
-                      <div className="bg-slate-100 dark:bg-slate-800 p-2 rounded-lg text-slate-600 dark:text-slate-400 font-mono text-xs">
+                      <div className="w-9 h-9 flex items-center justify-center bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-400 font-mono text-sm shrink-0">
                         #
                       </div>
                       <div>
-                        <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-tight">Parent</div>
+                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Parent</div>
                         <div 
                           className={clsx(
-                            "text-xs font-mono truncate max-w-[150px] cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors",
+                            "text-sm font-mono truncate max-w-[150px] cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors leading-none",
                             parentItem ? "text-indigo-500 font-bold" : "text-slate-400"
                           )} 
                           title={item.parentId}
