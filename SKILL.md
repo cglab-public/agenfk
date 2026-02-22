@@ -26,6 +26,9 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Behavior**: Multi-agent, automated orchestration.
 *   **Trigger**: Use this mode for complex architectural changes, high-security code, or large features.
 *   **Supervisor Pattern**: You act as a supervisor, responsible for decomposing the task and spawning specialized sub-agents via the `task` tool at every phase transition.
+*   **Parallel Execution**: Deep Mode supports **parallel execution** of independent tasks.
+    - If an EPIC or STORY has multiple independent sub-items, you SHOULD spawn multiple sub-agents simultaneously using the `task` tool.
+    - When working in parallel, you MUST pass the `itemId` to the `workflow_gatekeeper(intent, role, itemId)` to authorize changes against the specific task.
 *   **Plan & Pause**: Mandatory decomposition into sub-items. You **MUST PAUSE** and obtain human approval of the plan before moving any item to `IN_PROGRESS`.
 *   **Automated Handover**:
     - **Coding to Review**: Automatically spawn a "Review Agent" after `verify_changes`.

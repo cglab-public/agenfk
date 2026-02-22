@@ -246,7 +246,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: { 
             intent: { type: "string" },
-            role: { type: "string", enum: ["planning", "coding", "review", "testing", "closing"], description: "The specialized role of the current agent." }
+            role: { type: "string", enum: ["planning", "coding", "review", "testing", "closing"], description: "The specialized role of the current agent." },
+            itemId: { type: "string", description: "Optional: The specific item ID to authorize against. Required if multiple items are IN_PROGRESS." }
           },
           required: ["intent", "role"],
         },
@@ -313,9 +314,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
       }
       case "workflow_gatekeeper": {
-        const { intent, role } = z.object({ 
+        const { intent, role, itemId } = z.object({ 
           intent: z.string(), 
-          role: z.enum(["planning", "coding", "review", "testing", "closing"]) 
+          role: z.enum(["planning", "coding", "review", "testing", "closing"]),
+          itemId: z.string().optional()
         }).parse(request.params.arguments);
 
         // Fetch all non-DONE/ARCHIVED items
@@ -333,20 +335,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         // Enforcement Logic
         if (role === 'coding') {
           if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status.` }] };
-          if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS.` }] };
-          const task = inProgressItems[0];
+          
+          let task;
+          if (itemId) {
+            task = inProgressItems.find((i: any) => i.id === itemId);
+            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in IN_PROGRESS status.` }] };
+          } else {
+            if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS. Please provide 'itemId' to disambiguate.` }] };
+            task = inProgressItems[0];
+          }
+          
           return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         if (role === 'review') {
-          if (reviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status.` }] };
-          const task = reviewItems[0];
+          const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
+          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status.` }] };
+          const task = activeReviewItems[0];
           return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         if (role === 'testing') {
-          if (testItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status.` }] };
-          const task = testItems[0];
+          const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
+          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status.` }] };
+          const task = activeTestItems[0];
           return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
@@ -355,7 +367,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS.` }] };
         }
         
-        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${inProgressItems[0].id.substring(0,8)}] ${inProgressItems[0].title}\nIntent: "${intent}"` }] };
+        const defaultTask = itemId ? inProgressItems.find((i: any) => i.id === itemId) : inProgressItems[0];
+        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not IN_PROGRESS.` }] };
+
+        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nIntent: "${intent}"` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
