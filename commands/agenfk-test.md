@@ -19,7 +19,8 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 - If coverage is too low, add more tests until the threshold is met.
 
 **Step 4 — Verify & Yield**
-- If tests pass and coverage is met, use `verify_changes(id, "<test-command>")` to transition the task to REVIEW.
+- If tests pass and coverage is met, use `add_comment(id, "TESTS PASSED: ... [85% Coverage]")` to log the result.
+- Use `verify_changes(id, "<test-command>")` to transition the task to REVIEW.
 - DO NOT transition to DONE.
 - STOP and YIELD immediately after verification. The supervisor will assign a closing agent to finalize the task.
 - If failed, use `add_comment(id, "TESTS FAILED: ... [65% Coverage]")`, call `update_item(id, {status: "IN_PROGRESS"})`, and log the coverage gaps.
