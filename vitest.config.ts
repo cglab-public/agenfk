@@ -11,5 +11,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node', // Use node for server/storage
+    include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['**/dist/**', '**/node_modules/**'],
   },
 });

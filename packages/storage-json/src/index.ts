@@ -33,6 +33,9 @@ export class JSONStorageProvider implements StorageProvider {
       fs.mkdirSync(dir, { recursive: true });
     }
 
+    // Reset data to ensure clean state if re-initialized with a different path (e.g. in tests)
+    this.data = { projects: [], items: [] };
+
     return this.runLocked(() => {
       this.load();
     });

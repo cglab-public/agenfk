@@ -40,7 +40,8 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 const storage = new JSONStorageProvider();
 let dbPath: string = "";
@@ -386,7 +387,7 @@ io.on('connection', (socket) => {
 });
 
 // Init and Listen
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   initStorage().then(() => {
     httpServer.listen(PORT, () => {
       console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
