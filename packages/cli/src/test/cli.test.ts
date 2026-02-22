@@ -149,10 +149,24 @@ describe('CLI Commands', () => {
   });
 
   describe('init command', () => {
-    it('should check connection to API', async () => {
-      mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
+    it('should check connection to API and list projects if no name provided', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { message: 'OK' } });
+      mockedAxios.get.mockResolvedValueOnce({ data: [] });
+      mockedFs.existsSync.mockReturnValue(false); // Not initialized
       await program.parseAsync(['node', 'agenfk', 'init']);
       expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/projects'));
+    });
+
+    it('should create a project and save config if name provided', async () => {
+      mockedAxios.get.mockResolvedValueOnce({ data: { message: 'OK' } });
+      mockedAxios.post.mockResolvedValueOnce({ data: { id: 'new-p1', name: 'New' } });
+      mockedFs.existsSync.mockReturnValue(false); // Not initialized
+      
+      await program.parseAsync(['node', 'agenfk', 'init', 'New']);
+      
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/projects'), expect.objectContaining({ name: 'New' }));
+      expect(mockedFs.writeFileSync).toHaveBeenCalledWith(expect.stringContaining('project.json'), expect.stringContaining('new-p1'), 'utf8');
     });
   });
 

@@ -375,17 +375,87 @@ program
   });
 
 program
-  .command('init')
+  .command('init [name]')
   .description('Initialize a new AgenFK project (Note: Ensure API server is running)')
-  .action(async () => {
+  .option('-d, --description <desc>', 'Project description', '')
+  .action(async (name, options) => {
     try {
-        const { data } = await axios.get(`${API_URL}/`);
+        const { data: serverInfo } = await axios.get(`${API_URL}/`);
         console.log(chalk.green('Connected to AgenFK API Server.'));
-        console.log(JSON.stringify(data, null, 2));
+
+        const rootDir = process.cwd();
+        const agenfkDir = path.join(rootDir, '.agenfk');
+        const projFile = path.join(agenfkDir, 'project.json');
+
+        if (fs.existsSync(projFile)) {
+            const currentProj = JSON.parse(fs.readFileSync(projFile, 'utf8'));
+            console.log(chalk.yellow(`Current directory is already initialized with Project ID: ${currentProj.projectId}`));
+            return;
+        }
+
+        let projectId: string;
+        let projectName: string;
+
+        if (name) {
+            console.log(chalk.blue(`Creating new project: ${name}...`));
+            const { data: newProj } = await axios.post(`${API_URL}/projects`, { 
+                name, 
+                description: options.description 
+            });
+            projectId = newProj.id;
+            projectName = newProj.name;
+            console.log(chalk.green(`Created project: ${projectName} (ID: ${projectId})`));
+        } else {
+            console.log(chalk.blue('\nListing existing projects:'));
+            const { data: projects } = await axios.get(`${API_URL}/projects`);
+            console.table(projects.map((p: any) => ({
+              ID: p.id.substring(0, 8),
+              Name: p.name,
+              Created: new Date(p.createdAt).toLocaleDateString()
+            })));
+            
+            console.log(chalk.yellow('\nTo initialize this directory, use:'));
+            console.log(chalk.white('  agenfk init <project-name>'));
+            console.log(chalk.white('\nOr to link to an existing project, create .agenfk/project.json manually:'));
+            console.log(chalk.white('  { "projectId": "EXISTING_ID" }'));
+            return;
+        }
+
+        if (!fs.existsSync(agenfkDir)) {
+            fs.mkdirSync(agenfkDir, { recursive: true });
+        }
+
+        fs.writeFileSync(projFile, JSON.stringify({ projectId }, null, 2), 'utf8');
+        console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
+        console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
+
     } catch (e: any) {
         console.error(chalk.red('Could not connect to API server. Is it running on port 3000?'));
+        if (e.response) {
+            console.error(chalk.red(`Server Error: ${e.response.data.error || e.message}`));
+        }
     }
   });
+
+/**
+ * Find project ID by searching upwards for .agenfk/project.json
+ */
+function findProjectId(startDir: string): string | null {
+  let currentDir = startDir;
+  while (currentDir !== path.parse(currentDir).root) {
+    const projFile = path.join(currentDir, '.agenfk', 'project.json');
+    if (fs.existsSync(projFile)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
+        return config.projectId || null;
+      } catch {
+        return null;
+      }
+    }
+    currentDir = path.dirname(currentDir);
+  }
+  return null;
+}
 
 program
   .command('create <type> [title]')
@@ -397,15 +467,7 @@ program
     try {
       const itemType = type.toUpperCase() as ItemType;
       
-      let projectId = options.project;
-      if (!projectId) {
-        // Try to find in .agenfk/project.json
-        const rootDir = path.resolve(__dirname, '../../..');
-        const projFile = path.join(rootDir, '.agenfk', 'project.json');
-        if (fs.existsSync(projFile)) {
-          projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId;
-        }
-      }
+      let projectId = options.project || findProjectId(process.cwd());
 
       if (!projectId) {
         console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
@@ -432,11 +494,16 @@ program
   .description('List items')
   .option('-t, --type <type>', 'Filter by type')
   .option('-s, --status <status>', 'Filter by status')
+  .option('--project <id>', 'Filter by project ID')
+  .option('--all', 'Show all projects (bypass local project filter)')
   .action(async (options) => {
     try {
       const query: any = {};
       if (options.type) query.type = options.type.toUpperCase();
       if (options.status) query.status = options.status.toUpperCase();
+      
+      let projectId = options.project || (options.all ? undefined : findProjectId(process.cwd()));
+      if (projectId) query.projectId = projectId;
 
       const { data: items } = await axios.get(`${API_URL}/items`, { params: query });
       
