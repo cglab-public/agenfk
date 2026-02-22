@@ -96,9 +96,9 @@ describe('CardDetailModal', () => {
     fireEvent.click(planTab);
     expect(screen.getByText(/step 1/i)).toBeDefined();
 
-    // Switch to Reviews tab
-    const reviewsTab = screen.getByRole('button', { name: /Reviews/i });
-    fireEvent.click(reviewsTab);
+    // Switch to Test Results tab
+    const testsTab = screen.getByRole('button', { name: /Test Results/i });
+    fireEvent.click(testsTab);
     expect(screen.getByText(/npm test/i)).toBeDefined();
 
     // Switch to Usage tab

@@ -3,7 +3,7 @@ import { AgenFKItem, ItemType, Status } from '../types';
 import { 
   X, Layout, Tag, AlignLeft, AlertCircle, Zap, 
   Clock, Calendar, FileText, ArrowLeft, Plus, 
-  Loader2, ShieldCheck 
+  Loader2, ShieldCheck, FlaskConical 
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -17,7 +17,7 @@ interface CardDetailModalProps {
   onAddItem: (title: string, type: ItemType) => Promise<void>;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'reviews' | 'usage';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';
 
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, onClose, onSelectItem, onAddItem }) => {
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
@@ -34,7 +34,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: !item.implementationPlan },
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: item.type === ItemType.TASK || item.type === ItemType.BUG },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length },
-    { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, badge: item.reviews?.length, hidden: !item.reviews?.length },
+    { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.reviews?.length },
+    { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: !item.tokenUsage?.length },
   ].filter(t => !t.hidden);
 
@@ -317,43 +318,50 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             </div>
           )}
 
-          {activeTab === 'reviews' && item.reviews && (
+          {activeTab === 'tests' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300 space-y-6">
               <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                Review History ({item.reviews.length})
+                Verification & Test History ({item.reviews?.length || 0})
               </h4>
-              <div className="space-y-4">
-                {[...item.reviews].sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()).map((review) => (
-                  <div key={review.id} className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
-                    <div className={clsx(
-                      "px-4 py-2 border-b flex items-center justify-between",
-                      review.status === 'PASSED' 
-                        ? "bg-emerald-50/50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/30" 
-                        : "bg-rose-50/50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30"
-                    )}>
-                      <div className="flex items-center gap-2">
-                        <span className={clsx(
-                          "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase",
-                          review.status === 'PASSED' 
-                            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" 
-                            : "bg-rose-100 text-red-700 dark:bg-rose-900/30 dark:text-red-400"
-                        )}>
-                          {review.status}
+              
+              {item.reviews && item.reviews.length > 0 ? (
+                <div className="space-y-4">
+                  {[...item.reviews].sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()).map((review) => (
+                    <div key={review.id} className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+                      <div className={clsx(
+                        "px-4 py-2 border-b flex items-center justify-between",
+                        review.status === 'PASSED' 
+                          ? "bg-emerald-50/50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/30" 
+                          : "bg-rose-50/50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30"
+                      )}>
+                        <div className="flex items-center gap-2">
+                          <span className={clsx(
+                            "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase",
+                            review.status === 'PASSED' 
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" 
+                              : "bg-rose-100 text-red-700 dark:bg-rose-900/30 dark:text-red-400"
+                          )}>
+                            {review.status}
+                          </span>
+                          <code className="text-xs font-mono text-slate-600 dark:text-slate-400">{review.command}</code>
+                        </div>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                          {new Date(review.executedAt).toLocaleString()}
                         </span>
-                        <code className="text-xs font-mono text-slate-600 dark:text-slate-400">{review.command}</code>
                       </div>
-                      <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                        {new Date(review.executedAt).toLocaleString()}
-                      </span>
+                      <div className="p-4 overflow-x-auto bg-slate-900/5 dark:bg-black/20">
+                        <pre className="text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">
+                          {review.output}
+                        </pre>
+                      </div>
                     </div>
-                    <div className="p-4 overflow-x-auto bg-slate-900/5 dark:bg-black/20">
-                      <pre className="text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">
-                        {review.output}
-                      </pre>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+                  <p className="text-slate-400 text-sm italic">No test results found. Move item to REVIEW to trigger verification.</p>
+                </div>
+              )}
             </div>
           )}
 

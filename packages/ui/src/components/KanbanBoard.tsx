@@ -17,8 +17,8 @@ import { Logo } from './Logo';
 const statuses = [
   Status.TODO,
   Status.IN_PROGRESS,
-  Status.TEST,
   Status.REVIEW,
+  Status.TEST,
   Status.DONE,
   Status.BLOCKED
 ];
