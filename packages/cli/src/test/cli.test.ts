@@ -102,12 +102,12 @@ describe('CLI Commands', () => {
   describe('upgrade command', () => {
     it('should check for updates and run installer', async () => {
       mockedAxios.get.mockRejectedValue(new Error('Down')); // services not running
-      mockedChildProcess.execSync.mockReturnValue(Buffer.from('v1.0.0')); // gh output
-      
-      // We need to mock fs.existsSync for the install script check
-      mockedFs.existsSync.mockImplementation((p) => {
-        return true;
+      mockedChildProcess.execSync.mockImplementation((cmd: any) => {
+        if (typeof cmd === 'string' && cmd.includes('gh release')) return 'v1.0.0';
+        return Buffer.from('ok');
       });
+      
+      mockedFs.existsSync.mockImplementation(() => true);
       mockedFs.readFileSync.mockReturnValue('{"version":"0.0.1"}');
 
       await program.parseAsync(['node', 'agenfk', 'upgrade', '--force']);
