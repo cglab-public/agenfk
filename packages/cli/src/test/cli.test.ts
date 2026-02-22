@@ -73,6 +73,50 @@ describe('CLI Commands', () => {
       
       expect(mockedAxios.delete).toHaveBeenCalledWith(expect.stringContaining('/items/i1-full-id'));
     });
+
+    it('should handle item not found for delete', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [] });
+      await program.parseAsync(['node', 'agenfk', 'delete', 'missing']);
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('list command', () => {
+    it('should call the API with filters', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'i1', title: 'T', type: 'TASK', status: 'TODO' }] });
+      await program.parseAsync(['node', 'agenfk', 'list', '--type', 'task', '--status', 'todo']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/items'), expect.objectContaining({
+        params: { type: 'TASK', status: 'TODO' }
+      }));
+    });
+  });
+
+  describe('update command', () => {
+    it('should handle ambiguous ID', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'i1-a', title: 'A' }, { id: 'i1-b', title: 'B' }] });
+      await program.parseAsync(['node', 'agenfk', 'update', 'i1', '--status', 'DONE']);
+      expect(mockedAxios.put).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('upgrade command', () => {
+    it('should check for updates and run installer', async () => {
+      mockedAxios.get.mockRejectedValue(new Error('Down')); // services not running
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('v1.0.0')); // gh output
+      
+      // We need to mock fs.existsSync for the install script check
+      mockedFs.existsSync.mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('install.mjs')) return true;
+        if (typeof p === 'string' && p.endsWith('package.json')) return true;
+        return true;
+      });
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.1"}');
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+      
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('gh release view'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
   });
 
   describe('ui command', () => {
