@@ -17,8 +17,8 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
 2.  **CLI/UI as Clients**: The CLI and Web UI communicate with the Server via a RESTful API.
 3.  **Real-time Updates**: The Server uses WebSockets to push state changes to the UI for immediate visual feedback.
 4.  **Verification Loop**:
-    - **REVIEW Status**: Triggered via `verify_changes` tool. Runs basic build/lint/test checks.
-    - **TEST Status**: A mandatory quality gate following Review. In this stage, the Agent (e.g., Opencode/Claude) is responsible for running project-specific regression tests and verifying coverage requirements.
+    - **REVIEW Status**: Triggered via `verify_changes` tool. MUST run the project's primary test suite (not just builds).
+    - **TEST Status**: A mandatory quality gate following Review. In this stage, the Agent (e.g., Opencode/Claude) is responsible for running deep regression tests and verifying coverage requirements (minimum 80% for new code).
     - **Coverage Rule**: Newly inserted code MUST meet a minimum threshold (e.g., 80%). The specific implementation of this check (e.g., parsing Vitest vs Jest outputs) is project-specific. For the AgenFK Framework itself, a helper script at `scripts/enforce-coverage.ts` is provided to perform this check against Vitest output.
     - **DONE Status**: Only reachable after passing both Review and Test gates.
 
