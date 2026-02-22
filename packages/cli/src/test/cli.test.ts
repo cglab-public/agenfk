@@ -75,6 +75,38 @@ describe('CLI Commands', () => {
     });
   });
 
+  describe('ui command', () => {
+    it('should show dashboard information', async () => {
+      mockedFs.existsSync.mockReturnValue(false);
+      await program.parseAsync(['node', 'agenfk', 'ui']);
+      // No specific expectation other than it doesn't crash
+    });
+  });
+
+  describe('list-projects command', () => {
+    it('should call the API to list projects', async () => {
+      mockedAxios.get.mockResolvedValue({ data: [{ id: 'p1', name: 'Proj', createdAt: new Date().toISOString() }] });
+      await program.parseAsync(['node', 'agenfk', 'list-projects']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/projects'));
+    });
+  });
+
+  describe('create-project command', () => {
+    it('should call the API to create a project', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { id: 'p1', name: 'New Proj' } });
+      await program.parseAsync(['node', 'agenfk', 'create-project', 'New Proj']);
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/projects'), expect.objectContaining({ name: 'New Proj' }));
+    });
+  });
+
+  describe('init command', () => {
+    it('should check connection to API', async () => {
+      mockedAxios.get.mockResolvedValue({ data: { message: 'OK' } });
+      await program.parseAsync(['node', 'agenfk', 'init']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringMatching(/\/$/));
+    });
+  });
+
   describe('down command', () => {
     it('should call pkill or fuser', async () => {
       await program.parseAsync(['node', 'agenfk', 'down']);
