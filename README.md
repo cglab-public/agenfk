@@ -115,12 +115,13 @@ graph TD
 
 ## Quick Start (Opencode & Claude Code)
 
-After running `npx github:cglab-PRIVATE/agenfk`, two slash commands are available in your AI editor:
+After running `npx github:cglab-PRIVATE/agenfk`, three slash commands are available in your AI editor:
 
 | Command | Description |
 |---|---|
 | `/agenfk` | Initialize the framework for a project, create scope & architecture docs |
 | `/agenfk-release` | Push to remote and optionally cut a GitHub release |
+| `/agenfk-release-beta` | Push to remote and create a GitHub pre-release (beta) |
 
 Type `/agenfk` in any project to create its scope and architecture documents and link it to the framework.
 
