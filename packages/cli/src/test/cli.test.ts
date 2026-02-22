@@ -19,9 +19,6 @@ describe('CLI Commands', () => {
     vi.clearAllMocks();
     mockedFs.existsSync.mockReturnValue(true);
     mockedFs.readFileSync.mockReturnValue('{"items": []}');
-    // Reset commander options for create command
-    const createCmd = program.commands.find(c => c.name() === 'create');
-    if (createCmd) createCmd.setOptionValue('project', undefined);
   });
 
   it('should have basic commands registered', () => {
