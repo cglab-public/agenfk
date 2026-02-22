@@ -39,9 +39,10 @@ program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')
+  .option('-b, --beta', 'Include beta/pre-release versions')
   .action(async (options) => {
     const REPO = 'cglab-PRIVATE/agenfk';
-    console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}...`));
+    console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}...`));
     console.log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
 
     try {
@@ -57,12 +58,21 @@ program
       // Use gh CLI to fetch the latest release tag
       let latestTag = '';
       try {
-        latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'] 
-        }).trim();
+        if (options.beta) {
+          // Get the most recent release (could be a pre-release)
+          latestTag = execSync(`gh release list --repo ${REPO} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { 
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'] 
+          }).trim();
+        } else {
+          // Get the latest stable release
+          latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'] 
+          }).trim();
+        }
       } catch (e) {
-        throw new Error('Failed to fetch latest release from GitHub. Ensure "gh" CLI is authenticated.');
+        throw new Error(`Failed to fetch latest ${options.beta ? 'beta ' : ''}release from GitHub. Ensure "gh" CLI is authenticated.`);
       }
       
       const latestVersion = latestTag.replace(/^v/, '');
