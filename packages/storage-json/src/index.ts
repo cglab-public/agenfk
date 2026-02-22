@@ -70,7 +70,11 @@ export class JSONStorageProvider implements StorageProvider {
         this.data.items = (parsed.items || []).map((item: any) => ({
             ...item,
             createdAt: new Date(item.createdAt),
-            updatedAt: new Date(item.updatedAt)
+            updatedAt: new Date(item.updatedAt),
+            history: (item.history || []).map((h: any) => ({
+              ...h,
+              timestamp: new Date(h.timestamp)
+            }))
         }));
       } catch (e) {
         console.error(`[STORAGE] Error parsing ${this.dbPath}. Keeping current in-memory state.`, e);
@@ -144,6 +148,20 @@ export class JSONStorageProvider implements StorageProvider {
   async createItem(item: AgenFKItem): Promise<AgenFKItem> {
     return this.runLocked(() => {
       this.load();
+      
+      // Initialize history if missing
+      if (!item.history) {
+        item.history = [];
+      }
+      
+      // Record initial state
+      item.history.push({
+        id: uuidv4(),
+        fromStatus: "TODO" as Status, // Default starting assumption
+        toStatus: item.status,
+        timestamp: new Date()
+      });
+
       this.data.items.push(item);
       this.save();
       return item;
@@ -157,6 +175,19 @@ export class JSONStorageProvider implements StorageProvider {
       if (index === -1) throw new Error(`Item ${id} not found`);
 
       const currentItem = this.data.items[index];
+      
+      // Record history if status changed
+      if (updates.status !== undefined && updates.status !== currentItem.status) {
+        const history = currentItem.history || [];
+        history.push({
+          id: uuidv4(),
+          fromStatus: currentItem.status,
+          toStatus: updates.status,
+          timestamp: new Date()
+        });
+        updates.history = history;
+      }
+
       const updatedItem = { ...currentItem, ...updates, updatedAt: new Date() };
       
       this.data.items[index] = updatedItem as AgenFKItem;
