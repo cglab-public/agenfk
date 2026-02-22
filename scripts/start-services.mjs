@@ -57,7 +57,23 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
-const openCmd = process.platform === 'win32' ? 'start' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
-spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', shell: true }).unref();
+// Detect WSL
+const isWSL = () => {
+    try {
+        const version = fs.readFileSync('/proc/version', 'utf8').toLowerCase();
+        return version.includes('microsoft') || version.includes('wsl');
+    } catch (e) {
+        return false;
+    }
+};
+
+let openCmd = process.platform === 'win32' ? 'start' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
+
+if (process.platform === 'linux' && isWSL()) {
+    // WSL2: Use powershell.exe to start the browser on host.
+    spawn('powershell.exe', ['-c', 'start', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+} else {
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', shell: true }).unref();
+}
 
 process.exit(0);
