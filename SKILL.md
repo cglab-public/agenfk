@@ -85,9 +85,9 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 AgenFK agents MUST act as proactive orchestrators of the work lifecycle. You are responsible for automatically spawning specialized sub-agents via the `task` tool at every phase transition. DO NOT wait for explicit user instructions to proceed between phases once the initial plan is approved.
 
 *   **Plan & Pause**: For complex requests (EPIC/STORY), you MUST decompose the task, create all sub-items, and PAUSE for human approval. Once approved, the rest of the lifecycle is autonomous.
-*   **Automatic Handover (Coding to Review)**: Immediately after a successful implementation and `verify_changes` call (moving item to `REVIEW`), you MUST spawn a "Review Agent" via `task(subagent_type="explore", prompt="/agenfk-review <id>")`.
-*   **Automatic Handover (Review to Test)**: If the Review Agent returns success, move the item to `TEST` and immediately spawn a "Test Agent" via `task(subagent_type="general", prompt="/agenfk-test <id>")`.
-*   **Automatic Handover (Test to Done)**: If the Test Agent returns success, move the item to `DONE` and spawn a "Closing Agent" via `task(subagent_type="general", prompt="/agenfk-close <id>")` to summarize and log the final comment.
+*   **Automatic Handover (Coding to Review)**: Immediately after a successful implementation and `verify_changes` call (moving item to `REVIEW`), you MUST spawn a "Review Agent" via `task(subagent_type="explore", prompt="/agenfk-review <id> in project <projectId>")`.
+*   **Automatic Handover (Review to Test)**: If the Review Agent returns success, move the item to `TEST` and immediately spawn a "Test Agent" via `task(subagent_type="general", prompt="/agenfk-test <id> in project <projectId>")`.
+*   **Automatic Handover (Test to Done)**: If the Test Agent returns success, move the item to `DONE` and spawn a "Closing Agent" via `task(subagent_type="general", prompt="/agenfk-close <id> in project <projectId>")` to summarize and log the final comment.
 
 If any sub-agent fails, move the item back to `IN_PROGRESS` and report the specific errors to the user.
 

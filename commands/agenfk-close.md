@@ -6,6 +6,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 1 — Collate History**
 - Read the item details using `get_item(id)`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - Extract all progress comments from `item.comments`.
 - Extract the final test coverage metrics from the `item.reviews`.
 
