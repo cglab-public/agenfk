@@ -20,9 +20,58 @@ if (process.env.NODE_ENV !== 'test') {
 
 export { program };
 
+const CURRENT_VERSION = '0.1.0';
+
 program
-  .version('0.1.0')
+  .version(CURRENT_VERSION)
   .description('AgenFK Engineering CLI');
+
+program
+  .command('upgrade')
+  .description('Check for updates and upgrade to the latest version if available')
+  .action(async () => {
+    const REPO = 'cglab-PRIVATE/agenfk';
+    console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}...`));
+
+    try {
+      const { data: latestRelease } = await axios.get(`https://api.github.com/repos/${REPO}/releases/latest`, {
+          headers: {
+              'Accept': 'application/vnd.github.v3+json',
+              'User-Agent': 'agenfk-cli'
+          }
+      });
+      
+      const latestVersion = latestRelease.tag_name.replace(/^v/, '');
+      
+      if (latestVersion !== CURRENT_VERSION) {
+        console.log(chalk.yellow(`New version available: ${latestVersion} (current: ${CURRENT_VERSION})`));
+        console.log(chalk.blue('Upgrading...'));
+        
+        const rootDir = path.resolve(__dirname, '../../..');
+        const installScript = path.join(rootDir, 'install.sh');
+        
+        if (fs.existsSync(installScript)) {
+          console.log(chalk.gray('Running install script...'));
+          try {
+            execSync('./install.sh', { cwd: rootDir, stdio: 'inherit' });
+            console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
+          } catch (e) {
+            console.error(chalk.red('Upgrade failed during installation.'));
+          }
+        } else {
+          console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
+        }
+      } else {
+        console.log(chalk.green('You are already on the latest version.'));
+      }
+    } catch (error: any) {
+      if (error.response?.status === 404) {
+        console.error(chalk.red(`Error: Repository or releases not found for ${REPO}`));
+      } else {
+        console.error(chalk.red('Error checking for updates:'), error.message);
+      }
+    }
+  });
 
 program
   .command('up')

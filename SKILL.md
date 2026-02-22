@@ -32,6 +32,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Objective**: Maintain project identity and a living map.
 
 2.  **Request Analysis & Clarification**
+    *   **Context**: Take int account `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` for informed reasoning.
     *   **Action**: Call `analyze_request(request: string)` for every new user requirement.
     *   **Reasoning Step**: Before creating ANY item (Epic, Story, Task, or Bug) or initializing a project, you MUST reason about the implementation details. 
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
