@@ -106,13 +106,11 @@ describe('CLI Commands', () => {
       
       // We need to mock fs.existsSync for the install script check
       mockedFs.existsSync.mockImplementation((p) => {
-        if (typeof p === 'string' && p.endsWith('install.mjs')) return true;
-        if (typeof p === 'string' && p.endsWith('package.json')) return true;
         return true;
       });
       mockedFs.readFileSync.mockReturnValue('{"version":"0.0.1"}');
 
-      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+      await program.parseAsync(['node', 'agenfk', 'upgrade', '--force']);
       
       expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('gh release view'), expect.any(Object));
       expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
