@@ -54,6 +54,13 @@ export interface HistoryRecord {
   user?: string;
 }
 
+export interface CommentRecord {
+  id: string;
+  content: string;
+  author: string;
+  timestamp: string;
+}
+
 export interface AgenFKItem {
   id: string;
   projectId: string;
@@ -66,6 +73,7 @@ export interface AgenFKItem {
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   history?: HistoryRecord[];
+  comments?: CommentRecord[];
   createdAt: string; // Date comes as string from JSON
   updatedAt: string;
   parentId?: string;

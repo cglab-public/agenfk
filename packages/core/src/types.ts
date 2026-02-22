@@ -45,6 +45,13 @@ export interface HistoryRecord {
   user?: string; // Optional for future use
 }
 
+export interface CommentRecord {
+  id: string;
+  content: string;
+  author: string;
+  timestamp: Date;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -65,6 +72,7 @@ export interface BaseItem {
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   history?: HistoryRecord[];
+  comments?: CommentRecord[];
   createdAt: Date;
   updatedAt: Date;
   parentId?: string; // For hierarchy (Story -> Epic, Task -> Story)
