@@ -20,9 +20,17 @@ if (process.env.NODE_ENV !== 'test') {
 
 export { program };
 
-const pkgPath = path.resolve(__dirname, '../package.json');
-const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-const CURRENT_VERSION = pkg.version;
+let CURRENT_VERSION = '0.1.5';
+try {
+  const pkgPath = path.resolve(__dirname, '../package.json');
+  const pkgContent = fs.readFileSync(pkgPath, 'utf8');
+  if (pkgContent) {
+    const pkg = JSON.parse(pkgContent);
+    CURRENT_VERSION = pkg.version;
+  }
+} catch (e) {
+  // In some environments (like tests with mocked fs), this might fail
+}
 
 program
   .version(CURRENT_VERSION)
@@ -36,6 +44,15 @@ program
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}...`));
 
     try {
+      // Check if services are currently running
+      let servicesRunning = false;
+      try {
+        await axios.get(`${API_URL}/`, { timeout: 2000 });
+        servicesRunning = true;
+      } catch (e) {
+        // Services not running
+      }
+
       // Use gh CLI to fetch the latest release tag for private repository support
       const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
         encoding: 'utf8',
@@ -56,6 +73,20 @@ program
           try {
             execSync('./install.sh', { cwd: rootDir, stdio: 'inherit' });
             console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
+
+            if (servicesRunning) {
+              console.log(chalk.blue('Restarting services...'));
+              // We use spawn for 'up' because it stays alive, but here we just want to trigger it.
+              // Actually, better to just tell the user to run 'agenfk up' or trigger a restart.
+              // But the requirement says "automatically called".
+              // Since 'up' usually runs in foreground or starts background stuff,
+              // we can call the 'restart' command logic.
+              try {
+                execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
+              } catch (e) {
+                console.error(chalk.red('Auto-restart failed. Please run "agenfk up" manually.'));
+              }
+            }
           } catch (e) {
             console.error(chalk.red('Upgrade failed during installation.'));
           }
@@ -151,6 +182,41 @@ program
       console.log(chalk.green(`\n✅ Stopped ${stopped} service(s).`));
     } else {
       console.log(chalk.yellow('\nNo running services found.'));
+    }
+  });
+
+program
+  .command('restart')
+  .description('Restart all AgenFK services')
+  .action(async () => {
+    const rootDir = path.resolve(__dirname, '../../..');
+    console.log(chalk.blue('🔄 Restarting AgenFK services...'));
+    
+    // Call 'down'
+    try {
+      execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+    } catch (e) {}
+
+    // Call 'up'
+    // Note: 'up' might keep the terminal open if it doesn't detach.
+    // However, the 'up' command in index.ts spawns start-services.sh which waits.
+    // For auto-restart, maybe we want it to run in background?
+    // But 'up' is designed to be interactive usually.
+    // If called from upgrade, it might be better to start them in background.
+    // However, start-services.sh handles backgrounding itself inside.
+    
+    try {
+      const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], { 
+        cwd: rootDir, 
+        stdio: 'inherit',
+        detached: true
+      });
+      start.unref();
+      console.log(chalk.green('🚀 Services restart initiated in background.'));
+      // Give it a second to show initial output before exiting the CLI
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch (e) {
+      console.error(chalk.red('Failed to initiate restart.'));
     }
   });
 
