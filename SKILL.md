@@ -80,6 +80,18 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion**: Update parent Story/Epic status automatically.
 
+## What I do
+
+1.  **Initialization**
+...
+(around line 83)
+## Agent Spawning & Phase Delegation
+AgenFK agents should delegate specialized work by spawning new agent sessions via the `task` tool. This ensures each phase is handled by an agent with a focused prompt and fresh context:
+
+*   **Review Phase**: After `verify_changes` moves an item to `REVIEW`, you SHOULD spawn a "Review Agent" via `task(subagent_type="explore", prompt="/review-item <id>")` to perform deep analysis.
+*   **Test Phase**: When an item is in `TEST`, you SHOULD spawn a "Test Agent" via `task(subagent_type="general", prompt="/test-item <id>")` to generate tests and verify coverage.
+*   **Completion**: When moving to `DONE`, you SHOULD spawn a "Closing Agent" via `task(subagent_type="general", prompt="/close-item <id>")` to summarize work and log the final comment.
+
 ## When to use me
 
 Use this skill whenever you are performing software engineering tasks to ensure compliance with the AgenFK Engineering Framework.
