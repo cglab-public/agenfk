@@ -11,12 +11,12 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 echo -e "${BLUE}=== AgenFK Framework Installation ===${NC}"
 
 # 1. Build the project
-echo -e "${GREEN}[1/8] Building project...${NC}"
+echo -e "${GREEN}[1/12] Building project...${NC}"
 npm install
 npm run build
 
 # 2. Generate install-time secret verify token
-echo -e "${GREEN}[2/8] Generating secret verify token...${NC}"
+echo -e "${GREEN}[2/12] Generating secret verify token...${NC}"
 mkdir -p "$HOME/.agenfk"
 node -e "
 const crypto = require('crypto');
@@ -28,13 +28,13 @@ console.log('  Generated: ' + tokenPath);
 "
 
 # 3. Ensure configuration exists
-echo -e "${GREEN}[3/8] Initializing configuration...${NC}"
+echo -e "${GREEN}[3/12] Initializing configuration...${NC}"
 if [ ! -d ".agenfk" ]; then
     node packages/cli/bin/agenfk.js init
 fi
 
-# 3. Create start script for UI/API
-echo -e "${GREEN}[3/9] Creating background service script (start-services.sh)...${NC}"
+# 4. Create start script for UI/API
+echo -e "${GREEN}[4/12] Creating background service script (start-services.sh)...${NC}"
 AGENFK_ROOT="$(pwd)"
 DB_PATH="${AGENFK_ROOT}/.agenfk/db.json"
 cat > start-services.sh << INNEREOF
@@ -94,8 +94,8 @@ chmod +x start-services.sh
 
 SERVER_PATH="$(pwd)/packages/server/dist/index.js"
 
-# 4. Configure Opencode MCP
-echo -e "${GREEN}[4/8] Configuring Opencode MCP...${NC}"
+# 5. Configure Opencode MCP
+echo -e "${GREEN}[5/12] Configuring Opencode MCP...${NC}"
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
 if [ -f "$OPENCODE_CONFIG" ]; then
     node -e "
@@ -130,7 +130,7 @@ else
 fi
 
 # 5. Configure Claude Code MCP
-echo -e "${GREEN}[5/8] Configuring Claude Code MCP...${NC}"
+echo -e "${GREEN}[5/12] Configuring Claude Code MCP...${NC}"
 if command -v claude &> /dev/null; then
     echo "Adding AgenFK MCP Server to Claude Code..."
     claude mcp add agenfk env AGENFK_DB_PATH="$DB_PATH" node "$SERVER_PATH" || echo "MCP server already configured in Claude."
@@ -139,10 +139,11 @@ else
 fi
 
 # 6. Install AgenFK Skills
-echo -e "${GREEN}[6/8] Installing agenfk skills (Opencode)...${NC}"
+echo -e "${GREEN}[6/12] Installing agenfk skills (Opencode)...${NC}"
 SKILLS_DIR="$HOME/.config/opencode/skills/agenfk"
 mkdir -p "$SKILLS_DIR"
 if [ -f "$DIR/SKILL.md" ]; then
+    rm -f "$SKILLS_DIR/SKILL.md"
     cp "$DIR/SKILL.md" "$SKILLS_DIR/SKILL.md"
     echo -e "Successfully installed agenfk skills to $SKILLS_DIR/SKILL.md"
 else
@@ -150,7 +151,7 @@ else
 fi
 
 # 7. Symlink CLI to ~/.local/bin
-echo -e "${GREEN}[7/9] Installing agenfk command to ~/.local/bin...${NC}"
+echo -e "${GREEN}[7/12] Installing agenfk command to ~/.local/bin...${NC}"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$DIR/packages/cli/bin/agenfk.js" "$HOME/.local/bin/agenfk"
 chmod +x "$DIR/packages/cli/bin/agenfk.js"
@@ -161,19 +162,21 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
 fi
 
 # 8. Install Global Slash Commands (Opencode)
-echo -e "${GREEN}[8/9] Installing global slash commands (Opencode)...${NC}"
+echo -e "${GREEN}[8/12] Installing global slash commands (Opencode)...${NC}"
 OC_COMMANDS_DIR="$HOME/.config/opencode/commands"
 mkdir -p "$OC_COMMANDS_DIR"
 for cmd_file in "$DIR/commands/"*.md; do
+    rm -f "$OC_COMMANDS_DIR/$(basename "$cmd_file")"
     cp "$cmd_file" "$OC_COMMANDS_DIR/$(basename "$cmd_file")"
     echo -e "  Installed: $OC_COMMANDS_DIR/$(basename "$cmd_file")"
 done
 
 # 9. Install Global Slash Commands (Claude Code)
-echo -e "${GREEN}[9/9] Installing global slash commands (Claude Code)...${NC}"
+echo -e "${GREEN}[9/12] Installing global slash commands (Claude Code)...${NC}"
 CL_COMMANDS_DIR="$HOME/.claude/commands"
 mkdir -p "$CL_COMMANDS_DIR"
 for cmd_file in "$DIR/commands/"*.md; do
+    rm -f "$CL_COMMANDS_DIR/$(basename "$cmd_file")"
     cp "$cmd_file" "$CL_COMMANDS_DIR/$(basename "$cmd_file")"
     echo -e "  Installed: $CL_COMMANDS_DIR/$(basename "$cmd_file")"
 done
