@@ -6,6 +6,7 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 
 **Step 1 — Understand Context**
 - Read the item details using `get_item(id)`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - If it's an EPIC or STORY, read the `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` to understand the system boundaries.
 - Scan the relevant parts of the codebase using `glob` and `grep` to identify technical touchpoints.
 

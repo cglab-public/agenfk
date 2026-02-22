@@ -6,6 +6,7 @@ You are executing the `/agenfk-review <id>` command as a **Review Agent**. Follo
 
 **Step 1 — Understand Implementation**
 - Read the item details using `get_item(id)`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - Use `git diff` or compare against the parent branch to see the actual code changes introduced for this task.
 - Read `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md`.
 
