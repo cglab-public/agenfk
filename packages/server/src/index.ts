@@ -298,9 +298,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           const { data: item } = await api.get(`/items/${itemId}`);
           const reviews = item.reviews || [];
           reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
-          // Move to TEST instead of DONE. The Agent will perform deep verification in TEST.
-          await api.put(`/items/${itemId}`, { status: "TEST", reviews }, { headers: verifyHeaders });
-          return { content: [{ type: "text", text: `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to TEST column.\n\nREMINDER: You (the Agent) MUST now run full tests/coverage manually (e.g. \`npm run test:coverage\`) and verify the results before moving the item to DONE.` }] };
+          // Move to REVIEW. The Review Agent will perform an audit before moving to TEST.
+          await api.put(`/items/${itemId}`, { status: "REVIEW", reviews }, { headers: verifyHeaders });
+          return { content: [{ type: "text", text: `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nREMINDER: A Review Agent will now be spawned to audit your changes before testing begins.` }] };
         } catch (error: any) {
           const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
           try {
