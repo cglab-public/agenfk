@@ -241,11 +241,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "workflow_gatekeeper",
-        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists.",
+        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists and the agent role matches the phase.",
         inputSchema: {
           type: "object",
-          properties: { intent: { type: "string" } },
-          required: ["intent"],
+          properties: { 
+            intent: { type: "string" },
+            role: { type: "string", enum: ["planning", "coding", "review", "testing", "closing"], description: "The specialized role of the current agent." }
+          },
+          required: ["intent", "role"],
         },
       },
       {
@@ -310,23 +313,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
       }
       case "workflow_gatekeeper": {
-        const { intent } = z.object({ intent: z.string() }).parse(request.params.arguments);
-        const { data: items } = await api.get(`/items`, { params: { status: "IN_PROGRESS" } });
-        // Strictly only allow one leaf-level work item (TASK or BUG)
-        const inProgressItems = items.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
+        const { intent, role } = z.object({ 
+          intent: z.string(), 
+          role: z.enum(["planning", "coding", "review", "testing", "closing"]) 
+        }).parse(request.params.arguments);
+
+        // Fetch all non-DONE/ARCHIVED items
+        const { data: items } = await api.get(`/items`);
         
+        // Find items that are not in terminal states
+        const activeItems = items.filter((i: any) => 
+          i.status !== 'DONE' && i.status !== 'ARCHIVED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY')
+        );
+
+        const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
+        const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
+        const testItems = activeItems.filter((i: any) => i.status === 'TEST');
+
+        // Enforcement Logic
+        if (role === 'coding') {
+          if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status.` }] };
+          if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS.` }] };
+          const task = inProgressItems[0];
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+        }
+
+        if (role === 'review') {
+          if (reviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status.` }] };
+          const task = reviewItems[0];
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+        }
+
+        if (role === 'testing') {
+          if (testItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status.` }] };
+          const task = testItems[0];
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+        }
+
+        // Default to checking for IN_PROGRESS if role is generic or unrecognized
         if (inProgressItems.length === 0) {
           return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS.` }] };
         }
-        if (inProgressItems.length > 1) {
-          return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are currently IN_PROGRESS.` }] };
-        }
-        const activeTask = inProgressItems[0];
-        let reminder = `REMINDER: Move to REVIEW and run 'verify_changes' before completion.`;
-        if (activeTask.type === 'STORY') {
-          reminder = `STORY REMINDER: If this story has no sub-tasks, you MUST call 'verify_changes' manually before it can be DONE. If it has sub-tasks, it will be implicitly reviewed via its children.`;
-        }
-        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${activeTask.id.substring(0,8)}] ${activeTask.title}\nIntent: "${intent}"\n\n${reminder}\n\nTOKEN REMINDER: Do not forget to call 'log_token_usage' explicitly when you finish this segment of work.` }] };
+        
+        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${inProgressItems[0].id.substring(0,8)}] ${inProgressItems[0].title}\nIntent: "${intent}"` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
