@@ -17,6 +17,13 @@ const mockedInquirer = vi.mocked(inquirer, true);
 describe('CLI Commands', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset Commander options to prevent state leakage between tests
+    program.commands.forEach(cmd => {
+      const options = (cmd as any).options || [];
+      options.forEach((opt: any) => {
+        cmd.setOptionValue(opt.attributeName(), undefined);
+      });
+    });
     mockedFs.existsSync.mockReturnValue(true);
     mockedFs.readFileSync.mockReturnValue('{"items": []}');
   });
