@@ -21,4 +21,5 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Do NOT run the full test suite yet (that is for the Testing Agent).
 
 **Step 4 — Handover**
-- Call `verify_changes(id, "npm run build")` (or appropriate build command) to move the item to **REVIEW**.
+- Call `verify_changes(id, "<build_command>")` to move the item to **REVIEW**.
+- **STOP IMMEDIATELY** after calling `verify_changes`. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
