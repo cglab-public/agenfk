@@ -52,8 +52,9 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Objective**: Ensure clear roadmaps for large features. Save in the `implementationPlan` field.
 
 4.  **Action Authorization (Gatekeeper)**
-    *   **Action**: Call `workflow_gatekeeper(intent: string)` BEFORE any code change.
-    *   **Requirement**: Exactly one task must be `IN_PROGRESS` for the active project.
+    *   **Action**: Call `workflow_gatekeeper(intent: string, role: string)` BEFORE any code change.
+    *   **Mandatory Roles**: You MUST specify your current role: `planning`, `coding`, `review`, `testing`, or `closing`.
+    *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `role="coding"` requires status `IN_PROGRESS`).
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `verify_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
 5.  **Mandatory Automated Testing (Agent Driven)**
@@ -110,6 +111,6 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `log_token_usage`: Record resource consumption.
 *   `add_context`: Attach relevant file paths.
 *   `analyze_request`: Categorization strategy.
-*   `workflow_gatekeeper`: Pre-flight authorization.
+*   `workflow_gatekeeper`: Pre-flight authorization and role verification.
 *   `verify_changes`: Execute dynamic syntax/build checks and update status.
 *   `get_server_info`: Framework health check.
