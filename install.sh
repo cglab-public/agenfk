@@ -165,6 +165,7 @@ fi
 echo -e "${GREEN}[8/12] Installing global slash commands (Opencode)...${NC}"
 OC_COMMANDS_DIR="$HOME/.config/opencode/commands"
 mkdir -p "$OC_COMMANDS_DIR"
+rm -f "$OC_COMMANDS_DIR/agenfk-push.md"
 for cmd_file in "$DIR/commands/"*.md; do
     rm -f "$OC_COMMANDS_DIR/$(basename "$cmd_file")"
     cp "$cmd_file" "$OC_COMMANDS_DIR/$(basename "$cmd_file")"
@@ -175,6 +176,7 @@ done
 echo -e "${GREEN}[9/12] Installing global slash commands (Claude Code)...${NC}"
 CL_COMMANDS_DIR="$HOME/.claude/commands"
 mkdir -p "$CL_COMMANDS_DIR"
+rm -f "$CL_COMMANDS_DIR/agenfk-push.md"
 for cmd_file in "$DIR/commands/"*.md; do
     rm -f "$CL_COMMANDS_DIR/$(basename "$cmd_file")"
     cp "$cmd_file" "$CL_COMMANDS_DIR/$(basename "$cmd_file")"
@@ -264,5 +266,5 @@ echo -e "${BLUE}=== Usage Instructions ===${NC}"
 echo "1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP)."
 echo "2. Run 'agenfk up' in a separate terminal to start the API and Web UI."
 echo "3. Go to ANY project repository and type '/agenfk' in your AI editor's prompt to initialize your project context and start the workflow."
-echo "4. Use '/agenfk-push' to push to remote and optionally cut a GitHub release."
+echo "4. Use '/agenfk-release' to push to remote and optionally cut a GitHub release."
 echo "5. Run 'agenfk health' to verify your installation at any time."
