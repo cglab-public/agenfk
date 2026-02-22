@@ -140,6 +140,35 @@ program
   });
 
 program
+  .command('mcp')
+  .description('Start the AgenFK MCP server (Client stdio mode)')
+  .action(() => {
+    // Determine server path relative to this CLI file
+    // CLI is in packages/cli/dist/index.js
+    // Server is in packages/server/dist/index.js
+    const serverPath = path.resolve(__dirname, '../../server/dist/index.js');
+    
+    if (!fs.existsSync(serverPath)) {
+      console.error(chalk.red(`Error: MCP server not found at ${serverPath}.`));
+      console.error(chalk.yellow('Please ensure the project is built: npm run build'));
+      process.exit(1);
+    }
+
+    // Pass environment variables to the spawned server
+    const env = { ...process.env };
+    
+    // Spawn the server process and pipe stdio for MCP communication
+    const serverProcess = spawn('node', [serverPath], {
+      stdio: 'inherit',
+      env
+    });
+
+    serverProcess.on('exit', (code) => {
+      process.exit(code || 0);
+    });
+  });
+
+program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')

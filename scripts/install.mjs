@@ -261,8 +261,8 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
     await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
     console.log(`  Written: ${claudeMdPath}`);
 
-    // 12. Register PreToolUse hook in ~/.claude/settings.json
-    console.log(`${GREEN}[12/12] Registering PreToolUse hook in ~/.claude/settings.json...${NC}`);
+    // 12. Register PreToolUse hook and MCP server in ~/.claude/settings.json
+    console.log(`${GREEN}[12/12] Configuring ~/.claude/settings.json...${NC}`);
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let settings = {};
     if (existsSync(settingsPath)) {
@@ -271,6 +271,7 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
         } catch (e) {}
     }
     
+    // 12a. PreToolUse hook
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
     
@@ -282,9 +283,19 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
         matcher: 'Edit|Write|NotebookEdit',
         hooks: [{ type: 'command', command: gatekeeperDest }]
     });
+
+    // 12b. MCP Server (Visible to Claude Agent)
+    if (!settings.mcpServers) settings.mcpServers = {};
+    settings.mcpServers.agenfk = {
+        command: cliDest,
+        args: ["mcp"],
+        env: {
+            "AGENFK_DB_PATH": dbPath
+        }
+    };
     
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log(`  Registered PreToolUse hook in ${settingsPath}`);
+    console.log(`  Registered PreToolUse hook and MCP server in ${settingsPath}`);
 
     console.log(`${GREEN}Installation Complete.${NC}`);
     console.log("");
