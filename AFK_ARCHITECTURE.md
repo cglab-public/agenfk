@@ -26,6 +26,29 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
     - **Coverage Rule**: Newly inserted code MUST meet a minimum threshold (e.g., 80%). The specific implementation of this check (e.g., parsing Vitest vs Jest outputs) is project-specific. For the AgenFK Framework itself, a helper script at `scripts/enforce-coverage.ts` is provided to perform this check against Vitest output.
     - **DONE Status**: Only reachable after passing both Review and Test gates.
 
+## Multi-Agent Orchestration
+AgenFK supports specialized agents for different lifecycle phases. Handover is managed via status transitions and tool-mediated spawning:
+
+1.  **Planning Agent (TODO Phase)**:
+    - **Trigger**: New user request or creation of an EPIC/STORY.
+    - **Responsibility**: Scans codebase and context to decompose the request into granular sub-items.
+    - **Handover**: Creates child items in `TODO` status and pauses for human approval.
+2.  **Coding Agent (IN_PROGRESS Phase)**:
+    - **Trigger**: Item transition to `IN_PROGRESS`.
+    - **Responsibility**: Executes the implementation plan, writes code, and logs progress comments.
+    - **Handover**: Calls `verify_changes` to transition to `REVIEW`.
+3.  **Review Agent (REVIEW Phase)**:
+    - **Trigger**: `verify_changes` call (auto-transition to `REVIEW`).
+    - **Responsibility**: Scans changes for security vulnerabilities, linting errors, and architectural alignment.
+    - **Handover**: Successfully completing the review moves the item to `TEST`.
+4.  **Testing Agent (TEST Phase)**:
+    - **Trigger**: Transition to `TEST`.
+    - **Responsibility**: Generates new tests, runs the suite, and verifies 80% coverage.
+    - **Handover**: Successful verification allows the transition to `DONE`.
+5.  **Closing Agent (DONE Phase)**:
+    - **Trigger**: Transition to `DONE`.
+    - **Responsibility**: Summarizes work performed and logs a final descriptive comment on the card.
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io
