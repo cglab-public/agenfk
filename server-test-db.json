@@ -110,6 +110,88 @@
           "timestamp": "2026-02-22T06:51:17.559Z"
         }
       ]
+    },
+    {
+      "id": "b1b057e4-0c67-4bcf-a300-7733e04b4d49",
+      "projectId": "3c1cc044-7751-48ad-8509-f88c3e7bcf8e",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T06:51:17.565Z",
+      "updatedAt": "2026-02-22T06:51:17.572Z",
+      "history": [
+        {
+          "id": "70d65b09-57e6-42dc-90b2-ec6557f33b8b",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:51:17.565Z"
+        },
+        {
+          "id": "c57d6f82-03bb-4e57-bb9f-c05c1cfb5587",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T06:51:17.572Z"
+        }
+      ]
+    },
+    {
+      "id": "0112a2c2-dfcb-4652-9d70-160cae41952b",
+      "projectId": "3c1cc044-7751-48ad-8509-f88c3e7bcf8e",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "b1b057e4-0c67-4bcf-a300-7733e04b4d49",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T06:51:17.567Z",
+      "updatedAt": "2026-02-22T06:51:17.571Z",
+      "history": [
+        {
+          "id": "6182e8f8-4a09-4b5d-97ee-a4338c593783",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:51:17.567Z"
+        },
+        {
+          "id": "765b4589-4883-4f36-807f-6367ddfd9218",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-02-22T06:51:17.571Z"
+        }
+      ]
+    },
+    {
+      "id": "9829b86b-9d89-4fb8-9b98-74d7e6547139",
+      "projectId": "3c1cc044-7751-48ad-8509-f88c3e7bcf8e",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-02-22T06:51:17.576Z",
+      "updatedAt": "2026-02-22T06:51:17.584Z",
+      "history": [
+        {
+          "id": "751f51e6-2f06-49e0-81ef-f52faf86dd4f",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:51:17.576Z"
+        },
+        {
+          "id": "a4e6814d-0818-4f70-b515-5dfe6d7de4be",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-02-22T06:51:17.579Z"
+        },
+        {
+          "id": "54430bab-728a-4e15-8bd2-87f129d01472",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-22T06:51:17.583Z"
+        }
+      ]
     }
   ]
 }
