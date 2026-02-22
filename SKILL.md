@@ -39,6 +39,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
     *   **Requirement**: All items created must be associated with the active `projectId`.
     *   **Transparency**: If you're opencode, display every MCP call parameter and return value.
+    *   **Conventional Commits**: Use standard prefixes for all commits: `fix:`, `feat:`, `chore:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`. NEVER use `close:`, `update:`, or other non-standard prefixes. Append the item ID in brackets if relevant, e.g., `fix: resolve crash [id]`.
 
 3.  **Planning (Epics only)**
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
