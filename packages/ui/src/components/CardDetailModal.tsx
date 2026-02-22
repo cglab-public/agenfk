@@ -3,7 +3,7 @@ import { AgenFKItem, ItemType, Status } from '../types';
 import { 
   X, Layout, Tag, AlignLeft, AlertCircle, Zap, 
   Clock, Calendar, FileText, ArrowLeft, Plus, 
-  Loader2, ShieldCheck, FlaskConical 
+  Loader2, ShieldCheck, FlaskConical, Copy, Check 
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -23,7 +23,14 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  const handleCopyId = (id: string) => {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   const totalTokens = item.tokenUsage?.reduce((acc, curr) => acc + curr.input + curr.output, 0) || 0;
   const subitems = allItems.filter(i => i.parentId === item.id);
@@ -102,7 +109,17 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {item.type === ItemType.BUG && <AlertCircle size={12} />}
               {item.type}
             </span>
-            <span className="text-sm font-mono text-slate-400 dark:text-slate-500">ID: {item.id.substring(0, 8)}</span>
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 group">
+              <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-tighter">ID:</span>
+              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{item.id.substring(0, 8)}</span>
+              <button 
+                onClick={() => handleCopyId(item.id)}
+                className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                title="Copy full ID"
+              >
+                {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+              </button>
+            </div>
           </div>
           <button 
             onClick={onClose}

@@ -185,4 +185,29 @@ describe('CardDetailModal', () => {
     fireEvent.click(historyTab);
     expect(screen.getByText(/No state transitions recorded/i)).toBeDefined();
   });
+
+  it('should copy ID to clipboard when clicked', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText,
+      },
+    });
+
+    render(
+      <CardDetailModal 
+        item={mockItem as any} 
+        allItems={[]} 
+        onClose={() => {}} 
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+      />, 
+      { wrapper }
+    );
+
+    const copyButton = screen.getByTitle(/Copy full ID/i);
+    fireEvent.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith(mockItem.id);
+  });
 });
