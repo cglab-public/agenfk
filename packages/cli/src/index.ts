@@ -482,6 +482,50 @@ program
         console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
+        // Configure Claude Code project-level settings to ensure MCP server is available.
+        // Claude Code masks global mcpServers when a project has its own .claude/settings.json
+        // without a mcpServers key. Writing it to settings.local.json at init time fixes this.
+        const globalSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        let mcpConfig: any = null;
+        if (fs.existsSync(globalSettingsPath)) {
+            try {
+                const globalSettings = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf8'));
+                mcpConfig = (globalSettings.mcpServers && globalSettings.mcpServers.agenfk) || null;
+            } catch (e) {}
+        }
+        if (mcpConfig) {
+            const claudeDir = path.join(rootDir, '.claude');
+            const localSettingsPath = path.join(claudeDir, 'settings.local.json');
+            let localSettings: any = {};
+            if (fs.existsSync(localSettingsPath)) {
+                try {
+                    localSettings = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
+                } catch (e) {}
+            }
+            if (!localSettings.mcpServers) localSettings.mcpServers = {};
+            localSettings.mcpServers.agenfk = mcpConfig;
+            if (!localSettings.permissions) localSettings.permissions = {};
+            if (!localSettings.permissions.allow) localSettings.permissions.allow = [];
+            const mcpPermissions = [
+                'mcp__agenfk__list_projects', 'mcp__agenfk__list_items',
+                'mcp__agenfk__get_item', 'mcp__agenfk__create_item',
+                'mcp__agenfk__update_item', 'mcp__agenfk__add_comment',
+                'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__verify_changes',
+                'mcp__agenfk__log_token_usage', 'mcp__agenfk__analyze_request',
+                'mcp__agenfk__get_server_info', 'mcp__agenfk__add_context',
+            ];
+            for (const perm of mcpPermissions) {
+                if (!localSettings.permissions.allow.includes(perm)) {
+                    localSettings.permissions.allow.push(perm);
+                }
+            }
+            if (!fs.existsSync(claudeDir)) {
+                fs.mkdirSync(claudeDir, { recursive: true });
+            }
+            fs.writeFileSync(localSettingsPath, JSON.stringify(localSettings, null, 2), 'utf8');
+            console.log(chalk.green(`✓ Configured Claude Code MCP in ${localSettingsPath}`));
+        }
+
     } catch (e: any) {
         console.error(chalk.red('Could not connect to API server. Is it running on port 3000?'));
         if (e.response) {
