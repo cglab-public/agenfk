@@ -99,6 +99,16 @@ export const KanbanBoard: React.FC = () => {
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
+
+  // Keep selected item in sync with fresh data
+  useEffect(() => {
+    if (selectedItem && items) {
+      const updated = items.find((i: AgenFKItem) => i.id === selectedItem.id);
+      if (updated && JSON.stringify(updated) !== JSON.stringify(selectedItem)) {
+        setSelectedItem(updated);
+      }
+    }
+  }, [items, selectedItem]);
   
   // WebSocket setup
   useEffect(() => {
@@ -115,10 +125,14 @@ export const KanbanBoard: React.FC = () => {
     });
 
     socket.on('project_switched', ({ projectId }: { projectId: string }) => {
-      console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
-      setSelectedProjectId(projectId);
-      localStorage.setItem('agenfk_project_id', projectId);
-      setNavPath([]);
+      setSelectedProjectId(prev => {
+        if (prev !== projectId) {
+          console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
+          setNavPath([]); // Only reset if project actually changed
+          localStorage.setItem('agenfk_project_id', projectId);
+        }
+        return projectId;
+      });
     });
 
     return () => {
