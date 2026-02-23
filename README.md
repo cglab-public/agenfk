@@ -52,7 +52,7 @@ After installation, complete the setup:
 1.  **Restart your AI editor** (Opencode requires a restart to pick up the new MCP server).
 2.  **Start the services** in a dedicated terminal — this keeps the API and Web UI running in the background:
     ```bash
-    npm run start:services
+    agenfk up
     ```
     This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
 3.  **Service Lifecycle**: Manage your installation with the following commands:
