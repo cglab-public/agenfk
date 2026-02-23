@@ -1,9 +1,9 @@
 import React from 'react';
 import { AgenFKItem, ItemType, Status } from '../types';
-import { 
-  X, Layout, Tag, AlignLeft, AlertCircle, Zap, 
-  Clock, Calendar, FileText, ArrowLeft, Plus, 
-  Loader2, ShieldCheck, FlaskConical, Copy, Check 
+import {
+  X, Layout, Tag, AlignLeft, AlertCircle, Zap,
+  Clock, Calendar, FileText, ArrowLeft, Plus,
+  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -19,11 +19,12 @@ interface CardDetailModalProps {
   onSelectItem: (item: AgenFKItem) => void;
   onAddItem: (title: string, type: ItemType, status?: Status, description?: string) => Promise<void>;
   onDeleteItem: (id: string) => Promise<void>;
+  onUpdateItem?: (id: string, updates: Partial<AgenFKItem>) => Promise<void>;
 }
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';
 
-export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem }) => {
+export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem }) => {
   const isNew = !item.id;
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
@@ -33,6 +34,22 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const [description, setDescription] = React.useState(item.description || '');
   const [type, setType] = React.useState<ItemType>(item.type || ItemType.TASK);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  // Edit mode state
+  const [isEditing, setIsEditing] = React.useState(false);
+  const [editTitle, setEditTitle] = React.useState(item.title || '');
+  const [editDescription, setEditDescription] = React.useState(item.description || '');
+  const [editType, setEditType] = React.useState<ItemType>(item.type || ItemType.TASK);
+  const [editStatus, setEditStatus] = React.useState<Status>(item.status || Status.TODO);
+
+  // Sync edit fields when item changes (e.g. navigating between cards)
+  React.useEffect(() => {
+    setIsEditing(false);
+    setEditTitle(item.title || '');
+    setEditDescription(item.description || '');
+    setEditType(item.type || ItemType.TASK);
+    setEditStatus(item.status || Status.TODO);
+  }, [item.id]);
 
   const handleCopyId = (id: string) => {
     if (!id) return;
@@ -124,6 +141,32 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     }
   };
 
+  const handleSave = async () => {
+    if (!editTitle.trim() || isSubmitting || !onUpdateItem) return;
+    setIsSubmitting(true);
+    try {
+      await onUpdateItem(item.id, {
+        title: editTitle.trim(),
+        description: editDescription,
+        type: editType,
+        status: editStatus,
+      });
+      setIsEditing(false);
+    } catch (err) {
+      console.error("Failed to update item:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditTitle(item.title || '');
+    setEditDescription(item.description || '');
+    setEditType(item.type || ItemType.TASK);
+    setEditStatus(item.status || Status.TODO);
+    setIsEditing(false);
+  };
+
   if (!item) return null;
 
 
@@ -182,12 +225,29 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </div>
             )}
           </div>
-          <button 
-            onClick={onClose}
-            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
-          >
-            <X size={20} />
-          </button>
+          <div className="flex items-center gap-1">
+            {!isNew && onUpdateItem && (
+              <button
+                onClick={() => isEditing ? handleCancelEdit() : setIsEditing(true)}
+                title={isEditing ? 'Cancel editing' : 'Edit item'}
+                aria-label={isEditing ? 'Cancel editing' : 'Edit item'}
+                className={clsx(
+                  "p-2 rounded-full transition-colors",
+                  isEditing
+                    ? "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400"
+                    : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300"
+                )}
+              >
+                <Pencil size={16} />
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         {/* Tab Navigation */}
@@ -222,14 +282,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
           {activeTab === 'overview' && (
             <>
               <div>
-                {!isNew ? (
-                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
-                    {item.title}
-                  </h2>
-                ) : (
+                {isNew ? (
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Title</label>
-                    <input 
+                    <input
                       autoFocus
                       type="text"
                       value={title}
@@ -238,8 +294,21 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       className="w-full text-lg font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
                   </div>
+                ) : isEditing ? (
+                  <input
+                    autoFocus
+                    type="text"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    data-testid="edit-title"
+                    className="w-full text-2xl font-bold bg-white dark:bg-slate-950 border border-indigo-300 dark:border-indigo-600 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 dark:text-slate-100 mb-2"
+                  />
+                ) : (
+                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
+                    {item.title}
+                  </h2>
                 )}
-                {!isNew && (
+                {!isNew && !isEditing && (
                   <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
                     <div className="flex items-center gap-1.5">
                       <Clock size={14} />
@@ -251,21 +320,58 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     </div>
                   </div>
                 )}
+                {isEditing && (
+                  <div className="flex flex-wrap gap-4 mt-2">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Type</label>
+                      <select
+                        value={editType}
+                        onChange={(e) => setEditType(e.target.value as ItemType)}
+                        data-testid="edit-type"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 uppercase"
+                      >
+                        {Object.values(ItemType).map(t => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Status</label>
+                      <select
+                        value={editStatus}
+                        onChange={(e) => setEditStatus(e.target.value as Status)}
+                        data-testid="edit-status"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 uppercase"
+                      >
+                        {Object.values(Status).map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
-                {!isNew ? (
-                  <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-4 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap min-h-[100px] border border-slate-100 dark:border-slate-800 text-sm">
-                    {item.description || <span className="italic text-slate-400 dark:text-slate-600">No description provided.</span>}
-                  </div>
-                ) : (
-                  <textarea 
+                {isNew ? (
+                  <textarea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Describe what needs to be done..."
                     className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[150px]"
                   />
+                ) : isEditing ? (
+                  <textarea
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    data-testid="edit-description"
+                    className="w-full bg-white dark:bg-slate-950 border border-indigo-300 dark:border-indigo-600 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[150px] text-slate-700 dark:text-slate-300"
+                  />
+                ) : (
+                  <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-4 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap min-h-[100px] border border-slate-100 dark:border-slate-800 text-sm">
+                    {item.description || <span className="italic text-slate-400 dark:text-slate-600">No description provided.</span>}
+                  </div>
                 )}
               </div>
 
@@ -581,8 +687,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         {/* Modal Footer */}
         <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-between bg-slate-50/50 dark:bg-slate-800/50">
           <div>
-            {!isNew && (
-              <button 
+            {!isNew && !isEditing && (
+              <button
                 onClick={handleDelete}
                 disabled={isSubmitting}
                 className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-900/20 dark:hover:bg-rose-900/40 text-rose-600 dark:text-rose-400 px-4 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 border border-rose-100 dark:border-rose-900/30 flex items-center gap-2"
@@ -592,21 +698,45 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             )}
           </div>
           <div className="flex gap-3">
-            <button 
-              onClick={onClose}
-              className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
-            >
-              Cancel
-            </button>
-            {isNew && (
-              <button 
-                onClick={handleCreateItem}
-                disabled={!title.trim() || isSubmitting}
-                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 flex items-center gap-2"
-              >
-                {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                Create {type.toLowerCase()}
-              </button>
+            {isEditing ? (
+              <>
+                <button
+                  onClick={handleCancelEdit}
+                  disabled={isSubmitting}
+                  className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                  data-testid="cancel-edit"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={!editTitle.trim() || isSubmitting}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 flex items-center gap-2"
+                  data-testid="save-edit"
+                >
+                  {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                  Save
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={onClose}
+                  className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                >
+                  {isNew ? 'Cancel' : 'Close'}
+                </button>
+                {isNew && (
+                  <button
+                    onClick={handleCreateItem}
+                    disabled={!title.trim() || isSubmitting}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 flex items-center gap-2"
+                  >
+                    {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                    Create {type.toLowerCase()}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -739,6 +739,9 @@ export const KanbanBoard: React.FC = () => {
           onDeleteItem={async (id) => {
             await deleteMutation.mutateAsync(id);
           }}
+          onUpdateItem={async (id, updates) => {
+            await updateMutation.mutateAsync({ id, updates });
+          }}
         />
       )}
 
