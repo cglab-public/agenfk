@@ -8,7 +8,7 @@ import {
   AlignLeft, Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download
+  Copy, Check, Download, Pin, PinOff
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -70,6 +70,19 @@ export const KanbanBoard: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
+
+  const togglePin = () => {
+    setIsPinned(prev => {
+      const next = !prev;
+      if (next) {
+        localStorage.setItem('agenfk_project_pinned', 'true');
+      } else {
+        localStorage.removeItem('agenfk_project_pinned');
+      }
+      return next;
+    });
+  };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
 
   const { data: jiraStatus } = useQuery({
@@ -137,10 +150,14 @@ export const KanbanBoard: React.FC = () => {
     }
   }, [items, selectedItem]);
   
+  // Keep a ref to isPinned so the WebSocket handler always reads the latest value
+  const isPinnedRef = React.useRef(isPinned);
+  useEffect(() => { isPinnedRef.current = isPinned; }, [isPinned]);
+
   // WebSocket setup
   useEffect(() => {
     const socket = io('http://localhost:3000');
-    
+
     socket.on('connect', () => {
       console.log('%c[WS_CONNECT] %cConnected to AgenFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
     });
@@ -152,6 +169,10 @@ export const KanbanBoard: React.FC = () => {
     });
 
     socket.on('project_switched', ({ projectId }: { projectId: string }) => {
+      if (isPinnedRef.current) {
+        console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
+        return;
+      }
       setSelectedProjectId(prev => {
         if (prev !== projectId) {
           console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
@@ -414,9 +435,27 @@ export const KanbanBoard: React.FC = () => {
                   <FolderOpen size={14} />
                 </button>
               </div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest mt-1">
-                Project: <span className="text-indigo-600 dark:text-indigo-400">{activeProject?.name || 'Loading...'}</span>
-              </p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
+                  Project: <span className="text-indigo-600 dark:text-indigo-400">{activeProject?.name || 'Loading...'}</span>
+                </p>
+                {selectedProjectId && (
+                  <button
+                    onClick={togglePin}
+                    title={isPinned ? 'Unpin project (allow auto-switching)' : 'Pin project (prevent auto-switching)'}
+                    aria-label={isPinned ? 'Unpin project' : 'Pin project'}
+                    data-testid="pin-project-btn"
+                    className={clsx(
+                      'p-0.5 rounded transition-colors',
+                      isPinned
+                        ? 'text-indigo-500 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300'
+                        : 'text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-400'
+                    )}
+                  >
+                    {isPinned ? <Pin size={11} /> : <PinOff size={11} />}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-4">
