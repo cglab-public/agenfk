@@ -84,6 +84,16 @@ if (!isInsideAgenFKProject(filePath)) {
     process.exit(0);
 }
 
+// Allow release commands to bypass the gatekeeper via a short-lived flag file
+const skipFlagPath = path.join(process.env.HOME || process.env.USERPROFILE || '', '.agenfk', 'skip-gatekeeper');
+if (fs.existsSync(skipFlagPath)) {
+    const ageMs = Date.now() - fs.statSync(skipFlagPath).mtimeMs;
+    if (ageMs < 5 * 60 * 1000) {
+        process.exit(0); // Flag is fresh — release command in progress, allow
+    }
+    fs.unlinkSync(skipFlagPath); // Stale flag — clean up and enforce normally
+}
+
 const hasInProgress = await checkInProgress();
 
 if (!hasInProgress) {
