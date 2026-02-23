@@ -9,6 +9,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as crypto from "crypto";
+import axios from "axios";
 
 // Load the install-time secret token used to authenticate verify_changes transitions.
 // Generated at install time and stored in ~/.agenfk/verify-token — not in the codebase.
@@ -497,6 +498,340 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
     res.status(500).json({ error: "Failed to delete item" });
   }
 }));
+
+// ── JIRA Integration ─────────────────────────────────────────────────────────
+
+const JIRA_TOKEN_PATH = path.join(os.homedir(), '.agenfk', 'jira-token.json');
+
+interface JiraTokenData {
+  access_token: string;
+  refresh_token: string;
+  cloudId: string;
+  cloudUrl: string;
+  email?: string;
+}
+
+interface JiraConfig {
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+}
+
+// In-memory PKCE state store: state → { codeVerifier, expiresAt }
+export const pkceStore = new Map<string, { codeVerifier: string; expiresAt: number }>();
+
+const base64url = (buf: Buffer): string =>
+  buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+
+const generatePKCE = (): { codeVerifier: string; codeChallenge: string; state: string } => {
+  const codeVerifier = base64url(crypto.randomBytes(32));
+  const codeChallenge = base64url(
+    Buffer.from(crypto.createHash('sha256').update(codeVerifier).digest())
+  );
+  const state = base64url(crypto.randomBytes(16));
+  return { codeVerifier, codeChallenge, state };
+};
+
+const loadJiraConfig = (): JiraConfig => {
+  const clientId = process.env.JIRA_CLIENT_ID;
+  const clientSecret = process.env.JIRA_CLIENT_SECRET;
+  const redirectUri = process.env.JIRA_REDIRECT_URI;
+  if (clientId && clientSecret) return { clientId, clientSecret, redirectUri };
+
+  try {
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg.jira) return cfg.jira as JiraConfig;
+    }
+  } catch { /* ignore */ }
+  return {};
+};
+
+const loadJiraToken = (): JiraTokenData | null => {
+  try {
+    if (!fs.existsSync(JIRA_TOKEN_PATH)) return null;
+    return JSON.parse(fs.readFileSync(JIRA_TOKEN_PATH, 'utf8'));
+  } catch { return null; }
+};
+
+const saveJiraToken = (data: JiraTokenData): void => {
+  const dir = path.dirname(JIRA_TOKEN_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(JIRA_TOKEN_PATH, JSON.stringify(data, null, 2));
+};
+
+const deleteJiraToken = (): void => {
+  if (fs.existsSync(JIRA_TOKEN_PATH)) fs.unlinkSync(JIRA_TOKEN_PATH);
+};
+
+const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData | null> => {
+  const { clientId, clientSecret } = loadJiraConfig();
+  if (!clientId || !clientSecret) return null;
+  try {
+    const { data } = await axios.post('https://auth.atlassian.com/oauth/token', {
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: tokenData.refresh_token,
+    });
+    const updated: JiraTokenData = {
+      ...tokenData,
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || tokenData.refresh_token,
+    };
+    saveJiraToken(updated);
+    return updated;
+  } catch { return null; }
+};
+
+const jiraApiRequest = async (
+  tokenData: JiraTokenData,
+  method: string,
+  url: string,
+  body?: any
+): Promise<{ data: any; tokenData: JiraTokenData }> => {
+  const makeRequest = (token: string) =>
+    axios({ method, url, data: body, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+
+  try {
+    const res = await makeRequest(tokenData.access_token);
+    return { data: res.data, tokenData };
+  } catch (err: any) {
+    if (err.response?.status === 401) {
+      const refreshed = await refreshJiraToken(tokenData);
+      if (!refreshed) throw err;
+      const res = await makeRequest(refreshed.access_token);
+      return { data: res.data, tokenData: refreshed };
+    }
+    throw err;
+  }
+};
+
+export const mapJiraTypeToAgenFK = (issueTypeName: string): string => {
+  const t = issueTypeName.toLowerCase();
+  if (t === 'epic') return 'EPIC';
+  if (t === 'story') return 'STORY';
+  if (t === 'bug') return 'BUG';
+  return 'TASK';
+};
+
+const adfToText = (node: any): string => {
+  if (!node) return '';
+  if (node.type === 'text') return node.text || '';
+  if (Array.isArray(node.content)) return node.content.map(adfToText).join(' ');
+  return '';
+};
+
+// JIRA Routes
+
+app.get("/jira/oauth/authorize", (req: any, res: any) => {
+  const jiraConfig = loadJiraConfig();
+  if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
+    return res.status(503).json({
+      error: "JIRA integration is not configured.",
+      configured: false,
+      message: "Run 'agenfk jira setup' in your terminal to configure JIRA integration.",
+      command: "agenfk jira setup",
+    });
+  }
+  const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
+  const { codeVerifier, codeChallenge, state } = generatePKCE();
+  pkceStore.set(state, { codeVerifier, expiresAt: Date.now() + 10 * 60 * 1000 });
+  const params = new URLSearchParams({
+    audience: 'api.atlassian.com',
+    client_id: jiraConfig.clientId,
+    scope: 'read:jira-user read:jira-work offline_access',
+    redirect_uri: redirectUri,
+    state,
+    response_type: 'code',
+    prompt: 'consent',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  });
+  res.redirect(`https://auth.atlassian.com/authorize?${params}`);
+});
+
+app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
+  const { code, state, error } = req.query;
+  const uiBase = process.env.JIRA_UI_URL || 'http://localhost:5173';
+
+  if (error) {
+    return res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(String(error))}`);
+  }
+  if (!code || !state) {
+    return res.redirect(`${uiBase}?jira=error&reason=missing_params`);
+  }
+
+  const pkceEntry = pkceStore.get(String(state));
+  if (!pkceEntry || Date.now() > pkceEntry.expiresAt) {
+    pkceStore.delete(String(state));
+    return res.redirect(`${uiBase}?jira=error&reason=invalid_state`);
+  }
+  pkceStore.delete(String(state));
+
+  const jiraConfig = loadJiraConfig();
+  if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
+    return res.redirect(`${uiBase}?jira=error&reason=server_misconfigured`);
+  }
+  const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
+
+  try {
+    const { data: tokenResponse } = await axios.post('https://auth.atlassian.com/oauth/token', {
+      grant_type: 'authorization_code',
+      client_id: jiraConfig.clientId,
+      client_secret: jiraConfig.clientSecret,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: pkceEntry.codeVerifier,
+    });
+
+    const { data: resources } = await axios.get('https://api.atlassian.com/oauth/token/accessible-resources', {
+      headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
+    });
+
+    if (!resources || resources.length === 0) {
+      return res.redirect(`${uiBase}?jira=error&reason=no_accessible_resources`);
+    }
+
+    const cloud = resources[0];
+    const tokenData: JiraTokenData = {
+      access_token: tokenResponse.access_token,
+      refresh_token: tokenResponse.refresh_token,
+      cloudId: cloud.id,
+      cloudUrl: cloud.url,
+      email: cloud.name,
+    };
+
+    try {
+      const { data: myself } = await axios.get(
+        `https://api.atlassian.com/ex/jira/${cloud.id}/rest/api/3/myself`,
+        { headers: { Authorization: `Bearer ${tokenResponse.access_token}` } }
+      );
+      tokenData.email = myself.emailAddress || cloud.name;
+    } catch { /* non-fatal */ }
+
+    saveJiraToken(tokenData);
+    res.redirect(`${uiBase}?jira=connected`);
+  } catch (err: any) {
+    console.error('[JIRA] OAuth callback error:', err.message);
+    res.redirect(`${uiBase}?jira=error&reason=token_exchange_failed`);
+  }
+}));
+
+app.get("/jira/status", (req: any, res: any) => {
+  const jiraConfig = loadJiraConfig();
+  const configured = !!(jiraConfig.clientId && jiraConfig.clientSecret);
+  const tokenData = loadJiraToken();
+  if (!tokenData) {
+    return res.json({
+      configured,
+      connected: false,
+      ...(configured ? {} : { message: "Run 'agenfk jira setup' to configure JIRA integration." }),
+    });
+  }
+  res.json({ configured, connected: true, cloudId: tokenData.cloudId, email: tokenData.email });
+});
+
+app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
+  const tokenData = loadJiraToken();
+  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+
+  try {
+    const { data } = await jiraApiRequest(
+      tokenData,
+      'get',
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/project/search?maxResults=50`
+    );
+    const projects = (data.values || []).map((p: any) => ({
+      id: p.id,
+      key: p.key,
+      name: p.name,
+      type: p.projectTypeKey,
+    }));
+    res.json(projects);
+  } catch (err: any) {
+    res.status(502).json({ error: "Failed to fetch JIRA projects", detail: err.message });
+  }
+}));
+
+app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) => {
+  const tokenData = loadJiraToken();
+  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+
+  const { key } = req.params;
+  const jql = encodeURIComponent(`project = ${key} ORDER BY created DESC`);
+  const fields = 'summary,issuetype,status,priority';
+  try {
+    const { data } = await jiraApiRequest(
+      tokenData,
+      'get',
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search?jql=${jql}&maxResults=50&fields=${fields}`
+    );
+    const issues = (data.issues || []).map((issue: any) => ({
+      id: issue.id,
+      key: issue.key,
+      summary: issue.fields.summary,
+      type: issue.fields.issuetype?.name || 'Task',
+      mappedType: mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task'),
+      status: issue.fields.status?.name,
+      priority: issue.fields.priority?.name,
+    }));
+    res.json(issues);
+  } catch (err: any) {
+    res.status(502).json({ error: "Failed to fetch JIRA issues", detail: err.message });
+  }
+}));
+
+app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
+  const tokenData = loadJiraToken();
+  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+
+  const { projectId, items } = req.body;
+  if (!projectId || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "projectId and items[] are required" });
+  }
+
+  const imported: any[] = [];
+  const errors: any[] = [];
+
+  for (const { issueKey } of items) {
+    try {
+      const { data: issue } = await jiraApiRequest(
+        tokenData,
+        'get',
+        `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype`
+      );
+      const type = mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task');
+      const description = adfToText(issue.fields.description);
+
+      const newItem: any = {
+        id: uuidv4(),
+        projectId,
+        type,
+        title: `[${issueKey}] ${issue.fields.summary}`,
+        description: description || `Imported from JIRA: ${issueKey}`,
+        status: 'TODO',
+        implementationPlan: '',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const created = await storage.createItem(newItem);
+      io.emit('items_updated');
+      imported.push({ issueKey, itemId: created.id });
+    } catch (err: any) {
+      errors.push({ issueKey, error: err.message });
+    }
+  }
+
+  res.json({ imported, errors });
+}));
+
+app.post("/jira/disconnect", (req: any, res: any) => {
+  deleteJiraToken();
+  res.json({ disconnected: true });
+});
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 

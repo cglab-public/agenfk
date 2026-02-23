@@ -951,6 +951,170 @@ dbCommand
     console.log(chalk.gray('Restart your AI editor to reload the MCP server with the new DB path.'));
   });
 
+// ── agenfk jira ──────────────────────────────────────────────────────────────
+
+const jiraCommand = program
+  .command('jira')
+  .description('JIRA integration commands');
+
+jiraCommand
+  .command('setup')
+  .description('Configure JIRA OAuth integration (Client ID & Secret)')
+  .action(async () => {
+    const readline = await import('readline');
+
+    const ask = (rl: any, question: string, hidden = false): Promise<string> => {
+      return new Promise((resolve) => {
+        if (hidden && process.stdout.isTTY) {
+          process.stdout.write(question);
+          // Disable echo for secret input
+          if ((process.stdin as any).setRawMode) {
+            (process.stdin as any).setRawMode(true);
+          }
+          let input = '';
+          const onData = (char: Buffer) => {
+            const c = char.toString();
+            if (c === '\n' || c === '\r' || c === '\u0003') {
+              process.stdout.write('\n');
+              process.stdin.removeListener('data', onData);
+              process.stdin.setEncoding('utf8');
+              if ((process.stdin as any).setRawMode) (process.stdin as any).setRawMode(false);
+              resolve(input);
+            } else if (c === '\u007f' || c === '\b') {
+              if (input.length > 0) {
+                input = input.slice(0, -1);
+                process.stdout.write('\b \b');
+              }
+            } else {
+              input += c;
+              process.stdout.write('*');
+            }
+          };
+          process.stdin.setEncoding('utf8' as any);
+          process.stdin.on('data', onData);
+          process.stdin.resume();
+        } else {
+          rl.question(question, (answer: string) => resolve(answer.trim()));
+        }
+      });
+    };
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    console.log(chalk.blue('\nJIRA OAuth 2.0 Setup'));
+    console.log(chalk.gray('Create an OAuth 2.0 app at: https://developer.atlassian.com/console/myapps/\n'));
+    console.log(chalk.gray('Required callback URL to add in Atlassian app settings:'));
+    console.log(chalk.white('  http://localhost:3000/jira/oauth/callback\n'));
+
+    const clientId = await ask(rl, chalk.white('Client ID: '));
+    const clientSecret = await ask(rl, chalk.white('Client Secret: '), true);
+    rl.question(
+      chalk.white(`Redirect URI [http://localhost:3000/jira/oauth/callback]: `),
+      async (redirectUriInput: string) => {
+        rl.close();
+        const redirectUri = redirectUriInput.trim() || 'http://localhost:3000/jira/oauth/callback';
+
+        if (!clientId || !clientSecret) {
+          console.error(chalk.red('\nError: Client ID and Client Secret are required.'));
+          process.exit(1);
+        }
+
+        const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+        let config: any = {};
+        if (fs.existsSync(configPath)) {
+          try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* ignore */ }
+        }
+
+        config.jira = { clientId, clientSecret, redirectUri };
+        const agenfkDir = path.join(os.homedir(), '.agenfk');
+        if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+        console.log(chalk.green('\nJIRA integration configured successfully!'));
+        console.log(chalk.gray(`  Client ID:    ${clientId}`));
+        console.log(chalk.gray(`  Client Secret: ${'*'.repeat(Math.min(clientSecret.length, 8))}...`));
+        console.log(chalk.gray(`  Redirect URI:  ${redirectUri}`));
+        console.log(chalk.blue('\nNext steps:'));
+        console.log(chalk.white('  1. Restart AgenFK services: agenfk restart'));
+        console.log(chalk.white('  2. Open the Kanban UI and click "Connect JIRA" in the toolbar'));
+      }
+    );
+  });
+
+jiraCommand
+  .command('status')
+  .description('Show JIRA configuration and connection status')
+  .action(async () => {
+    console.log(chalk.blue('\nJIRA Integration Status\n'));
+
+    // Config check
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    let jiraConfig: any = null;
+    if (fs.existsSync(configPath)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        jiraConfig = cfg.jira || null;
+      } catch { /* ignore */ }
+    }
+
+    if (jiraConfig?.clientId) {
+      console.log(chalk.green('  Configuration: ✓ Configured'));
+      console.log(chalk.gray(`    Client ID:    ${jiraConfig.clientId}`));
+      console.log(chalk.gray(`    Client Secret: ${'*'.repeat(8)}...`));
+      console.log(chalk.gray(`    Redirect URI:  ${jiraConfig.redirectUri || 'http://localhost:3000/jira/oauth/callback'}`));
+    } else {
+      console.log(chalk.yellow('  Configuration: ✗ Not configured'));
+      console.log(chalk.white('    Run: agenfk jira setup'));
+    }
+
+    // Token check
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'jira-token.json');
+    if (fs.existsSync(tokenPath)) {
+      try {
+        const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+        console.log(chalk.green('\n  OAuth Token:   ✓ Connected'));
+        console.log(chalk.gray(`    Cloud ID:  ${token.cloudId}`));
+        console.log(chalk.gray(`    Account:   ${token.email || 'unknown'}`));
+      } catch {
+        console.log(chalk.yellow('\n  OAuth Token:   ✗ Token file is corrupted'));
+      }
+    } else {
+      console.log(chalk.yellow('\n  OAuth Token:   ✗ Not connected'));
+      if (jiraConfig?.clientId) {
+        console.log(chalk.white('    Open the Kanban UI and click "Connect JIRA" to authenticate'));
+      }
+    }
+
+    // Live server status
+    try {
+      const { data } = await axios.get(`${API_URL}/jira/status`, { timeout: 2000 });
+      console.log(chalk.blue(`\n  Live Server:   ${data.connected ? chalk.green('✓ Connected') : chalk.yellow('✗ Not connected')}`));
+    } catch {
+      console.log(chalk.gray('\n  Live Server:   (server not reachable)'));
+    }
+
+    console.log('');
+  });
+
+jiraCommand
+  .command('disconnect')
+  .description('Remove stored JIRA OAuth token')
+  .action(async () => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'jira-token.json');
+    if (!fs.existsSync(tokenPath)) {
+      console.log(chalk.yellow('No JIRA token found — already disconnected.'));
+      return;
+    }
+
+    fs.unlinkSync(tokenPath);
+    console.log(chalk.green('JIRA token removed. You are now disconnected from JIRA.'));
+
+    // Best-effort: also tell the server
+    try {
+      await axios.post(`${API_URL}/jira/disconnect`, {}, { timeout: 2000 });
+    } catch { /* server may not be running */ }
+  });
+
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
 }
