@@ -87,7 +87,8 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 5.  **Mandatory Automated Testing (Agent Driven)**
     *   **Action**: Moving an item to the `TEST` column (status: `TEST`) is a signal that the Agent (Opencode/Claude) must now perform deep verification.
     *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
-    *   **Coverage Rule**: New code MUST be covered at 80% minimum.
+    *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
+    *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
     *   **Workflow**: 
         *   The `verify_changes` tool automatically moves items from `REVIEW` to `TEST` upon success.
         *   The Agent verifies coverage and regressions in `TEST`.

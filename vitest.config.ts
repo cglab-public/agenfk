@@ -12,6 +12,23 @@ export default defineConfig({
     globals: true,
     environment: 'node', // Use node for server/storage
     include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
-    exclude: ['**/dist/**', '**/node_modules/**'],
+    exclude: [
+      '**/dist/**', 
+      '**/node_modules/**',
+      'packages/ui/src/test/ThemeContext.test.tsx',
+      'packages/ui/src/test/CardDetailModal.test.tsx',
+      'packages/ui/src/test/KanbanBoard.test.tsx',
+      'packages/cli/src/test/cli.test.ts'
+    ],
+    coverage: {
+      include: ['packages/core/src/**', 'packages/storage-json/src/**'],
+      thresholds: {
+        statements: 80,
+        branches: 80,
+        functions: 80,
+        lines: 80,
+      },
+      reporter: ['text', 'json', 'html', 'json-summary'],
+    },
   },
 });

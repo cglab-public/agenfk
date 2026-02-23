@@ -4,6 +4,7 @@
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React, { act } from 'react';
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
