@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -303,8 +303,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const verifyHeaders = { 'x-agenfk-internal': VERIFY_TOKEN };
         await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
         const projectRoot = findProjectRoot(process.cwd());
+
+        const executeCommand = () => new Promise<{output: string, code: number | null}>((resolve, reject) => {
+          const child = spawn(command, { 
+            shell: true, 
+            cwd: projectRoot,
+            env: { ...process.env, FORCE_COLOR: '1' } 
+          });
+          let output = '';
+          child.stdout.on('data', (data) => {
+            output += data.toString();
+          });
+          child.stderr.on('data', (data) => {
+            output += data.toString();
+          });
+          child.on('close', (code) => resolve({ output, code }));
+          child.on('error', (err) => reject(err));
+        });
+
         try {
-          const output = execSync(command, { encoding: 'utf8', stdio: 'pipe', cwd: projectRoot });
+          const { output, code } = await executeCommand();
+          if (code !== 0) {
+            const err: any = new Error(`Command failed with code ${code}`);
+            err.stdout = output;
+            throw err;
+          }
+
           const { data: item } = await api.get(`/items/${itemId}`);
           const reviews = item.reviews || [];
           reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
