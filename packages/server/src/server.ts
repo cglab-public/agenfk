@@ -406,6 +406,82 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(created);
 }));
 
+app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
+  console.log(`[API_DEBUG] POST /items/bulk processing ${req.body?.items?.length} items`);
+  const { items } = req.body;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "Expected items array" });
+  }
+
+  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
+  const results = [];
+  const parentIdsToSync = new Set<string>();
+  const projectIds = new Set<string>();
+
+  for (const { id, updates: bodyUpdates } of items) {
+    const currentItem = await storage.getItem(id);
+    if (!currentItem) continue;
+
+    const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, comments, sortOrder } = bodyUpdates;
+
+    if (!isInternalVerify && status === Status.DONE) continue;
+    if (!isInternalVerify && status === Status.REVIEW) continue;
+
+    if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
+      await archiveRecursively(id);
+      continue;
+    }
+
+    if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
+      await unarchiveRecursively(id);
+      await storage.updateItem(id, { status: status as Status });
+      continue;
+    }
+
+    const updates: any = {};
+    if (title !== undefined) updates.title = title;
+    if (description !== undefined) updates.description = description;
+    if (status !== undefined) updates.status = status;
+    if (parentId !== undefined) updates.parentId = parentId;
+    if (tokenUsage !== undefined) updates.tokenUsage = tokenUsage;
+    if (context !== undefined) updates.context = context;
+    if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
+    if (reviews !== undefined) updates.reviews = reviews;
+    if (comments !== undefined) updates.comments = comments;
+    if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+
+    try {
+      const updated = await storage.updateItem(id, updates);
+      results.push(updated);
+      projectIds.add(updated.projectId);
+
+      if (updated.parentId && updated.status !== Status.ARCHIVED) {
+        parentIdsToSync.add(updated.parentId);
+      }
+
+      if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
+        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+          const projectRoot = findProjectRoot(process.cwd());
+          autoGitCommit(updated, projectRoot);
+        }
+      }
+    } catch (e) {
+      console.error(`[API_BULK] Error updating ${id}:`, e);
+    }
+  }
+
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [API_BULK] Processed ${results.length} items. Broadcasting refresh...`);
+  io.emit('items_updated');
+  projectIds.forEach(projectId => io.emit('project_switched', { projectId }));
+
+  for (const parentId of parentIdsToSync) {
+    await syncParentStatus(parentId);
+  }
+
+  res.json({ results });
+}));
+
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
   const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, comments, sortOrder } = req.body;

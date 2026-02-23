@@ -49,6 +49,7 @@ vi.mock('../api', () => ({
     updateItem: vi.fn(() => Promise.resolve({})),
     deleteItem: vi.fn(() => Promise.resolve({})),
     createProject: vi.fn(() => Promise.resolve({ id: 'p-new', name: 'New' })),
+    bulkUpdateItems: vi.fn(() => Promise.resolve({})),
   }
 }));
 
@@ -178,13 +179,15 @@ describe('KanbanBoard', () => {
       // 3. Drop on the column
       fireEvent.drop(todoColumn, { dataTransfer });
 
-      await waitFor(() => {
-        expect(api.updateItem).toHaveBeenCalledWith('i2', expect.objectContaining({ sortOrder: 0 }));
-      });
-      expect(api.updateItem).toHaveBeenCalledWith('i1', expect.objectContaining({ sortOrder: 1 }));
+    await waitFor(() => {
+      expect(api.bulkUpdateItems).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ id: 'i2', updates: expect.objectContaining({ sortOrder: 0 }) }),
+        expect.objectContaining({ id: 'i1', updates: expect.objectContaining({ sortOrder: 1 }) })
+      ]));
     });
+  });
 
-    it('should correctly reorder items even when a type filter is active', async () => {
+  it('should correctly reorder items even when a type filter is active', async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
       const items = [
         { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, sortOrder: 0, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] },
@@ -223,10 +226,12 @@ describe('KanbanBoard', () => {
       fireEvent.drop(todoColumn, { dataTransfer });
 
       await waitFor(() => {
-        expect(api.updateItem).toHaveBeenCalledWith('i2', expect.objectContaining({ sortOrder: 0 }));
+        expect(api.bulkUpdateItems).toHaveBeenCalledWith(expect.arrayContaining([
+          expect.objectContaining({ id: 'i2', updates: expect.objectContaining({ sortOrder: 0 }) }),
+          expect.objectContaining({ id: 'i1', updates: expect.objectContaining({ sortOrder: 1 }) }),
+          expect.objectContaining({ id: 's1', updates: expect.objectContaining({ sortOrder: 2 }) })
+        ]));
       });
-      expect(api.updateItem).toHaveBeenCalledWith('i1', expect.objectContaining({ sortOrder: 1 }));
-      expect(api.updateItem).toHaveBeenCalledWith('s1', expect.objectContaining({ sortOrder: 2 }));
     });
   });
 });

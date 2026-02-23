@@ -65,6 +65,15 @@ export const api = {
       throw e;
     }
   },
+  bulkUpdateItems: async (items: { id: string; updates: Partial<AgenFKItem> }[]) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/bulk`, { items });
+      return data;
+    } catch (e) {
+      console.error(`API Error bulk updating items:`, e);
+      throw e;
+    }
+  },
   deleteItem: async (id: string) => {
     try {
       await axios.delete(`${API_URL}/items/${id}`);

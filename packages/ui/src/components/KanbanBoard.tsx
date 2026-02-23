@@ -197,11 +197,19 @@ export const KanbanBoard: React.FC = () => {
     };
   }, [queryClient]);
 
+  const bulkUpdateMutation = useMutation({
+    mutationFn: (variables: { items: { id: string, updates: Partial<AgenFKItem> }[] }) => 
+      api.bulkUpdateItems(variables.items),
+    onSuccess: () => {
+      // Don't invalidate immediately, rely on WebSocket to prevent bouncing
+    }
+  });
+
   const updateMutation = useMutation({
     mutationFn: (variables: { id: string, updates: Partial<AgenFKItem> }) => 
       api.updateItem(variables.id, variables.updates),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['items'] });
+      // Don't invalidate immediately, rely on WebSocket
     }
   });
 
@@ -366,8 +374,8 @@ export const KanbanBoard: React.FC = () => {
             });
           });
 
-          // Fire all mutations (server guarantees sequence per record)
-          bulkUpdates.forEach(u => updateMutation.mutate({ id: u.id, updates: u.updates }));
+          // Fire bulk mutation (1 request = 1 refresh cycle)
+          bulkUpdateMutation.mutate({ items: bulkUpdates });
         }
         return;
       }
