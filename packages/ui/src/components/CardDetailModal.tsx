@@ -388,8 +388,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     className="w-full bg-white dark:bg-slate-950 border border-indigo-300 dark:border-indigo-600 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[150px] text-slate-700 dark:text-slate-300"
                   />
                 ) : (
-                  <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-4 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap min-h-[100px] border border-slate-100 dark:border-slate-800 text-sm">
-                    {item.description || <span className="italic text-slate-400 dark:text-slate-600">No description provided.</span>}
+                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800">
+                    {item.description
+                      ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.description}</ReactMarkdown>
+                      : <span className="italic text-slate-400 dark:text-slate-600 not-prose">No description provided.</span>
+                    }
                   </div>
                 )}
               </div>
@@ -477,9 +480,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                             {new Date(comment.timestamp).toLocaleString()}
                           </span>
                         </div>
-                        <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
-                          {comment.content}
-                        </p>
+                        <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{comment.content}</ReactMarkdown>
+                        </div>
                       </div>
                     ))}
                   </div>
