@@ -116,6 +116,20 @@ const unarchiveRecursively = async (id: string) => {
   }
 };
 
+const deleteRecursively = async (id: string): Promise<boolean> => {
+  const item = await storage.getItem(id);
+  if (!item) return false;
+
+  console.log(`[AUTO_DELETE] Deleting ${item.id} (${item.title}) and its children`);
+  
+  const children = await storage.listItems({ parentId: id });
+  for (const child of children) {
+    await deleteRecursively(child.id);
+  }
+
+  return await storage.deleteItem(id);
+};
+
 const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
@@ -464,19 +478,23 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
 app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
   const itemToDelete = await storage.getItem(req.params.id);
-  const success = await storage.deleteItem(req.params.id);
+  if (!itemToDelete) {
+    return res.status(404).json({ error: "Item not found" });
+  }
+
+  const success = await deleteRecursively(req.params.id);
   if (success) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [API_DELETE] Item deleted: ${req.params.id}. Broadcasting refresh...`);
     io.emit('items_updated');
 
-    if (itemToDelete?.parentId) {
+    if (itemToDelete.parentId) {
       await syncParentStatus(itemToDelete.parentId);
     }
 
     res.status(204).send();
   } else {
-    res.status(404).json({ error: "Item not found" });
+    res.status(500).json({ error: "Failed to delete item" });
   }
 }));
 
