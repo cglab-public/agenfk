@@ -14,36 +14,42 @@ interface CardDetailModalProps {
   allItems: AgenFKItem[];
   onClose: () => void;
   onSelectItem: (item: AgenFKItem) => void;
-  onAddItem: (title: string, type: ItemType) => Promise<void>;
+  onAddItem: (title: string, type: ItemType, status?: Status, description?: string) => Promise<void>;
+  onDeleteItem: (id: string) => Promise<void>;
 }
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';
 
-export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, onClose, onSelectItem, onAddItem }) => {
+export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, onClose, onSelectItem, onAddItem, onDeleteItem }) => {
+  const isNew = !item.id;
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
+  const [title, setTitle] = React.useState(item.title || '');
+  const [description, setDescription] = React.useState(item.description || '');
+  const [type, setType] = React.useState<ItemType>(item.type || ItemType.TASK);
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   const handleCopyId = (id: string) => {
+    if (!id) return;
     navigator.clipboard.writeText(id);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
   const totalTokens = item.tokenUsage?.reduce((acc, curr) => acc + curr.input + curr.output, 0) || 0;
-  const subitems = allItems.filter(i => i.parentId === item.id);
+  const subitems = allItems.filter(i => i.parentId === item.id && item.id);
   const parentItem = item.parentId ? allItems.find(i => i.id === item.parentId) : null;
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: <AlignLeft size={14} /> },
-    { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: !item.implementationPlan },
-    { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: item.type === ItemType.TASK || item.type === ItemType.BUG },
-    { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length },
-    { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.reviews?.length },
+    { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: isNew || !item.implementationPlan },
+    { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || item.type === ItemType.TASK || item.type === ItemType.BUG },
+    { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
+    { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.reviews?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
-    { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: !item.tokenUsage?.length },
+    { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
   ].filter(t => !t.hidden);
 
   // Auto-switch tab if current is hidden (e.g. after item change)
@@ -67,13 +73,41 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     setIsSubmitting(true);
     try {
       // Determine default subitem type
-      const type = item.type === ItemType.EPIC ? ItemType.STORY : ItemType.TASK;
-      await onAddItem(newSubitemTitle, type);
+      const subType = item.type === ItemType.EPIC ? ItemType.STORY : ItemType.TASK;
+      await onAddItem(newSubitemTitle, subType, Status.TODO);
       setNewSubitemTitle('');
     } catch (err) {
       console.error("Failed to add subitem:", err);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleCreateItem = async () => {
+    if (!title.trim() || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await onAddItem(title, type, item.status, description);
+      onClose();
+    } catch (err) {
+      console.error("Failed to create item:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (isNew || isSubmitting) return;
+    if (window.confirm(`Are you sure you want to delete this ${item.type.toLowerCase()}?\n\n"${item.title}"`)) {
+      setIsSubmitting(true);
+      try {
+        await onDeleteItem(item.id);
+        onClose();
+      } catch (err) {
+        console.error("Failed to delete item:", err);
+      } finally {
+        setIsSubmitting(false);
+      }
     }
   };
 
@@ -96,30 +130,44 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <span className="hidden sm:inline">Back</span>
               </button>
             )}
-            <span className={clsx(
-              "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5",
-              item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" :
-              item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" :
-              item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" :
-              "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800"
-            )}>
-              {item.type === ItemType.EPIC && <Layout size={12} />}
-              {item.type === ItemType.STORY && <Tag size={12} />}
-              {item.type === ItemType.TASK && <AlignLeft size={12} />}
-              {item.type === ItemType.BUG && <AlertCircle size={12} />}
-              {item.type}
-            </span>
-            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 group">
-              <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-tighter">ID:</span>
-              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{item.id.substring(0, 8)}</span>
-              <button 
-                onClick={() => handleCopyId(item.id)}
-                className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
-                title="Copy full ID"
+            {!isNew ? (
+              <span className={clsx(
+                "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5",
+                item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" :
+                item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" :
+                item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" :
+                "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800"
+              )}>
+                {item.type === ItemType.EPIC && <Layout size={12} />}
+                {item.type === ItemType.STORY && <Tag size={12} />}
+                {item.type === ItemType.TASK && <AlignLeft size={12} />}
+                {item.type === ItemType.BUG && <AlertCircle size={12} />}
+                {item.type}
+              </span>
+            ) : (
+              <select 
+                value={type}
+                onChange={(e) => setType(e.target.value as ItemType)}
+                className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 uppercase tracking-wider"
               >
-                {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
-              </button>
-            </div>
+                {Object.values(ItemType).map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
+            {!isNew && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 group">
+                <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-tighter">ID:</span>
+                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{item.id.substring(0, 8)}</span>
+                <button 
+                  onClick={() => handleCopyId(item.id)}
+                  className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                  title="Copy full ID"
+                >
+                  {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+                </button>
+              </div>
+            )}
           </div>
           <button 
             onClick={onClose}
@@ -161,29 +209,54 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
           {activeTab === 'overview' && (
             <>
               <div>
-                <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
-                  {item.title}
-                </h2>
-                <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
-                  <div className="flex items-center gap-1.5">
-                    <Clock size={14} />
-                    <span>Status: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{item.status}</span></span>
+                {!isNew ? (
+                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
+                    {item.title}
+                  </h2>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Title</label>
+                    <input 
+                      autoFocus
+                      type="text"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      placeholder="Title of your new task..."
+                      className="w-full text-lg font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Calendar size={14} />
-                    <span>Created: {new Date(item.createdAt).toLocaleString()}</span>
+                )}
+                {!isNew && (
+                  <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
+                    <div className="flex items-center gap-1.5">
+                      <Clock size={14} />
+                      <span>Status: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{item.status}</span></span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Calendar size={14} />
+                      <span>Created: {new Date(item.createdAt).toLocaleString()}</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               <div>
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
-                <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-4 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap min-h-[100px] border border-slate-100 dark:border-slate-800 text-sm">
-                  {item.description || <span className="italic text-slate-400 dark:text-slate-600">No description provided.</span>}
-                </div>
+                {!isNew ? (
+                  <div className="bg-slate-50 dark:bg-slate-950 rounded-xl p-4 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap min-h-[100px] border border-slate-100 dark:border-slate-800 text-sm">
+                    {item.description || <span className="italic text-slate-400 dark:text-slate-600">No description provided.</span>}
+                  </div>
+                ) : (
+                  <textarea 
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Describe what needs to be done..."
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[150px]"
+                  />
+                )}
               </div>
 
-              {subitems.length > 0 && (
+              {!isNew && subitems.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Progress</h4>
@@ -486,13 +559,36 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-end bg-slate-50/50 dark:bg-slate-800/50">
-          <button 
-            onClick={onClose}
-            className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
-          >
-            Close
-          </button>
+        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-between bg-slate-50/50 dark:bg-slate-800/50">
+          <div>
+            {!isNew && (
+              <button 
+                onClick={handleDelete}
+                disabled={isSubmitting}
+                className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-900/20 dark:hover:bg-rose-900/40 text-rose-600 dark:text-rose-400 px-4 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 border border-rose-100 dark:border-rose-900/30 flex items-center gap-2"
+              >
+                Delete
+              </button>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <button 
+              onClick={onClose}
+              className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+            >
+              Cancel
+            </button>
+            {isNew && (
+              <button 
+                onClick={handleCreateItem}
+                disabled={!title.trim() || isSubmitting}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 flex items-center gap-2"
+              >
+                {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Create {type.toLowerCase()}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

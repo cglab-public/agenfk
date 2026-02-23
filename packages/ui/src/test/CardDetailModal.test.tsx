@@ -85,6 +85,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );
@@ -116,6 +117,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );
@@ -134,6 +136,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );
@@ -152,6 +155,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={onAddItem}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );
@@ -163,7 +167,7 @@ describe('CardDetailModal', () => {
     fireEvent.change(input, { target: { value: 'New Task' } });
     fireEvent.submit(input.closest('form')!);
 
-    expect(onAddItem).toHaveBeenCalledWith('New Task', ItemType.TASK);
+    expect(onAddItem).toHaveBeenCalledWith('New Task', ItemType.TASK, Status.TODO);
   });
 
   it('should always show the History tab even if empty', () => {
@@ -175,6 +179,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );
@@ -201,6 +206,7 @@ describe('CardDetailModal', () => {
         onClose={() => {}} 
         onSelectItem={() => {}}
         onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
       />, 
       { wrapper }
     );

@@ -7,7 +7,20 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const agenfkDir = path.join(rootDir, '.agenfk');
-const dbPath = process.env.AGENFK_DB_PATH || path.join(agenfkDir, 'db.json');
+
+// Resolve dbPath: env var → ~/.agenfk/config.json → default
+function resolveDbPath() {
+    if (process.env.AGENFK_DB_PATH) return process.env.AGENFK_DB_PATH;
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (fs.existsSync(configPath)) {
+        try {
+            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (cfg.dbPath) return cfg.dbPath;
+        } catch (e) {}
+    }
+    return path.join(agenfkDir, 'db.json');
+}
+const dbPath = resolveDbPath();
 
 if (!fs.existsSync(agenfkDir)) {
     fs.mkdirSync(agenfkDir, { recursive: true });
@@ -26,7 +39,8 @@ apiProcess.unref();
 console.log("Starting UI...");
 const uiLogPath = path.join(agenfkDir, 'ui.log');
 const uiLog = fs.openSync(uiLogPath, 'a');
-const npmCmd = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
+const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
+const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
 const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
     detached: true,

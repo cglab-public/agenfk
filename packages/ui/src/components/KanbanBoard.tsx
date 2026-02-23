@@ -164,6 +164,13 @@ export const KanbanBoard: React.FC = () => {
     }
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.deleteItem(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['items'] });
+    }
+  });
+
   const createProjectMutation = useMutation({
     mutationFn: (name: string) => api.createProject({ name }),
     onSuccess: (newProject) => {
@@ -630,15 +637,18 @@ export const KanbanBoard: React.FC = () => {
           allItems={items || []}
           onClose={() => setSelectedItem(null)} 
           onSelectItem={setSelectedItem}
-          onAddItem={async (title, type) => {
+          onAddItem={async (title, type, status, description) => {
             await createMutation.mutateAsync({ 
               title, 
               type, 
               parentId: selectedItem.id, 
-              status: Status.TODO,
-              description: '',
+              status: status || Status.TODO,
+              description: description || '',
               projectId: selectedProjectId!
             });
+          }}
+          onDeleteItem={async (id) => {
+            await deleteMutation.mutateAsync(id);
           }}
         />
       )}
