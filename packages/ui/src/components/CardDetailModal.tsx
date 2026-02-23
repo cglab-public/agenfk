@@ -9,6 +9,8 @@ import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { stripAnsi } from '../utils';
+
 interface CardDetailModalProps {
   item: AgenFKItem;
   allItems: AgenFKItem[];
@@ -118,7 +120,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm">
       <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50">
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50 relative z-20">
           <div className="flex items-center gap-3">
             {parentItem && (
               <button 
@@ -178,7 +180,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto">
+        <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto relative z-10">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -472,9 +474,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           {new Date(review.executedAt).toLocaleString()}
                         </span>
                       </div>
-                      <div className="p-4 overflow-x-auto bg-slate-900/5 dark:bg-black/20">
-                        <pre className="text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">
-                          {review.output}
+                      <div className="p-4 overflow-auto bg-slate-900/5 dark:bg-black/20 max-h-[400px] rounded-b-xl border-t border-slate-100 dark:border-slate-800">
+                        <pre className="text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+                          {stripAnsi(review.output)}
                         </pre>
                       </div>
                     </div>
