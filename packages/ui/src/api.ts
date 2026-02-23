@@ -89,4 +89,15 @@ export const api = {
       throw e;
     }
   },
+  listJiraProjects: async (): Promise<{ id: string; key: string; name: string }[]> => {
+    const { data } = await axios.get(`${API_URL}/jira/projects`);
+    return data;
+  },
+  listJiraIssues: async (projectKey: string): Promise<{ id: string; key: string; summary: string; issueType: string; status: string; priority?: string }[]> => {
+    const { data } = await axios.get(`${API_URL}/jira/projects/${projectKey}/issues`);
+    return data;
+  },
+  importJiraIssues: async (projectId: string, issueKeys: string[]): Promise<void> => {
+    await axios.post(`${API_URL}/jira/import`, { projectId, items: issueKeys.map(k => ({ issueKey: k })) });
+  },
 };

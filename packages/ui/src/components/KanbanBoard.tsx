@@ -3,16 +3,17 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
-import { 
-  Plus, Loader2, AlertCircle, Layout, Tag, 
+import {
+  Plus, Loader2, AlertCircle, Layout, Tag,
   AlignLeft, Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check
+  Copy, Check, Download
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
 import { JiraConnectionButton } from './JiraConnectionButton';
+import { JiraImportModal } from './JiraImportModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { calculateCost, formatCost } from '../utils';
@@ -69,6 +70,13 @@ export const KanbanBoard: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
+
+  const { data: jiraStatus } = useQuery({
+    queryKey: ['jiraStatus'],
+    queryFn: api.getJiraStatus,
+    staleTime: 30_000,
+  });
 
   const { data: projects, isLoading: isLoadingProjects } = useQuery<Project[]>({
     queryKey: ['projects'],
@@ -425,6 +433,17 @@ export const KanbanBoard: React.FC = () => {
 
             <JiraConnectionButton />
 
+            {jiraStatus?.connected && selectedProjectId && (
+              <button
+                onClick={() => setIsJiraImportOpen(true)}
+                data-testid="jira-import-btn"
+                className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-colors"
+              >
+                <Download size={12} />
+                <span>Import JIRA</span>
+              </button>
+            )}
+
             <button onClick={toggleTheme} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-500 border border-slate-200 dark:border-slate-700 shadow-sm transition-colors">
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
@@ -720,6 +739,14 @@ export const KanbanBoard: React.FC = () => {
           onDeleteItem={async (id) => {
             await deleteMutation.mutateAsync(id);
           }}
+        />
+      )}
+
+      {isJiraImportOpen && selectedProjectId && (
+        <JiraImportModal
+          open={isJiraImportOpen}
+          onClose={() => setIsJiraImportOpen(false)}
+          projectId={selectedProjectId}
         />
       )}
     </div>
