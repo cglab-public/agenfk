@@ -7,6 +7,12 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ---
 
+## Parent-Child Status Propagation Rule
+
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward in the workflow (e.g., TODO → IN_PROGRESS, IN_PROGRESS → REVIEW, TEST → DONE) once **ALL** of its child items have also moved to that same state or further.
+
+---
+
 ## Step 0 — Classify the request
 
 Before creating any item, evaluate the request against these signals:
