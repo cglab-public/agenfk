@@ -31,11 +31,8 @@ async function run() {
     if (!shouldRebuild) {
         console.log(`${GREEN}[1/14] Skipping build (using prebuilt binaries)...${NC}`);
         const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
-        // Still need production dependencies if they aren't in the tarball, 
-        // but typically tarball should have them or we run npm install --production.
-        // Looking at package-dist.mjs, it doesn't include node_modules.
-        // So we still need npm install, but NOT npm run build.
-        spawnSync(npmCmd, ['install', '--production'], { stdio: 'inherit', cwd: rootDir, shell: true });
+        // Need all dependencies including devDependencies to run 'npm run dev' for the UI.
+        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
     } else {
         console.log(`${GREEN}[1/14] Building project...${NC}`);
         const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
