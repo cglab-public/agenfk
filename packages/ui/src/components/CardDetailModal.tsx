@@ -3,7 +3,7 @@ import { AgenFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil
+  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -34,6 +34,25 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const [description, setDescription] = React.useState(item.description || '');
   const [type, setType] = React.useState<ItemType>(item.type || ItemType.TASK);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  // Subitem inline-delete confirmation state
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const confirmDeleteTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSubitemDeleteClick = (e: React.MouseEvent, subId: string) => {
+    e.stopPropagation();
+    if (confirmDeleteId === subId) {
+      // Second click — execute delete
+      if (confirmDeleteTimer.current) clearTimeout(confirmDeleteTimer.current);
+      setConfirmDeleteId(null);
+      onDeleteItem(subId).catch(err => console.error('Failed to delete subitem:', err));
+    } else {
+      // First click — enter confirm state, auto-reset after 3s
+      if (confirmDeleteTimer.current) clearTimeout(confirmDeleteTimer.current);
+      setConfirmDeleteId(subId);
+      confirmDeleteTimer.current = setTimeout(() => setConfirmDeleteId(null), 3000);
+    }
+  };
 
   // Edit mode state
   const [isEditing, setIsEditing] = React.useState(false);
@@ -521,12 +540,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                         <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Type</th>
                         <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Title</th>
                         <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase text-right">Status</th>
+                        <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase w-10"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                       {subitems.map((sub) => (
-                        <tr 
-                          key={sub.id} 
+                        <tr
+                          key={sub.id}
                           className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
                           onClick={() => { onSelectItem(sub); setActiveTab('overview'); }}
                         >
@@ -551,6 +571,23 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                             )}>
                               {sub.status}
                             </span>
+                          </td>
+                          <td className="px-2 py-3 text-right" onClick={e => e.stopPropagation()}>
+                            <button
+                              onClick={e => handleSubitemDeleteClick(e, sub.id)}
+                              title={confirmDeleteId === sub.id ? 'Click again to confirm delete' : 'Delete subitem'}
+                              aria-label={confirmDeleteId === sub.id ? `Confirm delete ${sub.title}` : `Delete ${sub.title}`}
+                              data-testid={`delete-subitem-${sub.id}`}
+                              className={clsx(
+                                "p-1 rounded transition-colors text-xs font-medium flex items-center gap-1",
+                                confirmDeleteId === sub.id
+                                  ? "bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
+                                  : "text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                              )}
+                            >
+                              <Trash2 size={13} />
+                              {confirmDeleteId === sub.id && <span className="text-[10px]">Confirm?</span>}
+                            </button>
                           </td>
                         </tr>
                       ))}
