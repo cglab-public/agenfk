@@ -1,10 +1,11 @@
 import fs from 'fs/promises';
-import { existsSync, chmodSync, writeFileSync } from 'fs';
+import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import readline from 'readline';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -15,16 +16,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const agenfkHome = path.join(os.homedir(), '.agenfk');
 
+function ask(rl, question) {
+    return new Promise(resolve => rl.question(question, resolve));
+}
+
 async function run() {
     console.log(`${BLUE}=== AgenFK Framework Installation ===${NC}`);
 
     // 1. Build the project
-    console.log(`${GREEN}[1/12] Building project...${NC}`);
+    console.log(`${GREEN}[1/14] Building project...${NC}`);
     spawnSync('npm', ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
     spawnSync('npm', ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
 
     // 2. Generate install-time secret verify token
-    console.log(`${GREEN}[2/12] Generating secret verify token...${NC}`);
+    console.log(`${GREEN}[2/14] Generating secret verify token...${NC}`);
     if (!existsSync(agenfkHome)) {
         await fs.mkdir(agenfkHome, { recursive: true });
     }
@@ -38,17 +43,62 @@ async function run() {
         console.log(`  Token already exists: ${tokenPath}`);
     }
 
-    // 3. Ensure configuration exists
-    console.log(`${GREEN}[3/12] Initializing configuration...${NC}`);
+    // 3. Choose database type
+    console.log(`${GREEN}[3/14] Database configuration...${NC}`);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    let dbType = 'json';
+    try {
+        const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: json): `);
+        if (answer.trim().toLowerCase() === 'sqlite') dbType = 'sqlite';
+    } finally {
+        rl.close();
+    }
+
+    const dbExtension = dbType === 'sqlite' ? 'db.sqlite' : 'db.json';
+    const dbPath = path.join(rootDir, '.agenfk', dbExtension);
+    console.log(`  Using: ${dbType.toUpperCase()} (${dbPath})`);
+
+    // 3a. Write ~/.agenfk/config.json
+    const agenfkConfigPath = path.join(agenfkHome, 'config.json');
+    await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath }, null, 2), 'utf8');
+    console.log(`  Config written: ${agenfkConfigPath}`);
+
+    // 3b. Restore from backup (new install only)
+    const backupDir = path.join(agenfkHome, 'backup');
+    const isNewInstall = !existsSync(dbPath);
+    if (isNewInstall && existsSync(backupDir)) {
+        const backups = readdirSync(backupDir)
+            .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
+            .sort()
+            .reverse();
+        if (backups.length > 0) {
+            console.log(`\n${YELLOW}  Found ${backups.length} backup(s) in ${backupDir}.${NC}`);
+            backups.slice(0, 5).forEach((f, i) => console.log(`  [${i + 1}] ${f}`));
+            const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+            try {
+                const ans = await ask(rl2, `  Restore latest backup? [y/N]: `);
+                if (ans.trim().toLowerCase() === 'y') {
+                    const migrationPath = path.join(agenfkHome, 'migration.json');
+                    copyFileSync(path.join(backupDir, backups[0]), migrationPath);
+                    console.log(`  ${GREEN}Backup staged for restore — will be imported on first server start.${NC}`);
+                }
+            } finally {
+                rl2.close();
+            }
+        }
+    }
+
+    // 4. Ensure configuration exists
+    console.log(`${GREEN}[4/14] Initializing configuration...${NC}`);
     const localConfigDir = path.join(rootDir, '.agenfk');
     if (!existsSync(localConfigDir)) {
         spawnSync('node', [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit', shell: true });
     }
 
-    // 4. Create start script for UI/API
-    console.log(`${GREEN}[4/12] Creating background service script (start-services.mjs)...${NC}`);
+    // 5. Create start script for UI/API
+    console.log(`${GREEN}[5/14] Creating background service script (start-services.mjs)...${NC}`);
     const startScriptPath = path.join(rootDir, 'scripts', 'start-services.mjs');
-    const dbPath = path.join(rootDir, '.agenfk', 'db.json');
     const serverPath = path.join(rootDir, 'packages', 'server', 'dist', 'index.js');
     const uiDir = path.join(rootDir, 'packages', 'ui');
     
@@ -62,7 +112,20 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const agenfkDir = path.join(rootDir, '.agenfk');
-const dbPath = process.env.AGENFK_DB_PATH || path.join(agenfkDir, 'db.json');
+
+// Resolve dbPath: env var → ~/.agenfk/config.json → default
+function resolveDbPath() {
+    if (process.env.AGENFK_DB_PATH) return process.env.AGENFK_DB_PATH;
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (fs.existsSync(configPath)) {
+        try {
+            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (cfg.dbPath) return cfg.dbPath;
+        } catch (e) {}
+    }
+    return path.join(agenfkDir, 'db.json');
+}
+const dbPath = resolveDbPath();
 
 if (!fs.existsSync(agenfkDir)) {
     fs.mkdirSync(agenfkDir, { recursive: true });
@@ -120,8 +183,8 @@ process.exit(0);
     await fs.writeFile(startScriptPath, startScriptContent.trim() + '\n', 'utf8');
     console.log(`  Created: ${startScriptPath}`);
 
-    // 5. Configure Opencode MCP
-    console.log(`${GREEN}[5/12] Configuring Opencode MCP...${NC}`);
+    // 6. Configure Opencode MCP
+    console.log(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
     const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
     const opencodeInstalled = spawnSync('opencode', ['--version'], { shell: true }).status === 0;
     if (existsSync(opencodeConfigPath) || opencodeInstalled) {
@@ -154,8 +217,8 @@ process.exit(0);
         console.log(`Opencode not found. Skipping opencode.json configuration.`);
     }
 
-    // 5. Configure Claude Code MCP
-    console.log(`${GREEN}[5/12] Configuring Claude Code MCP...${NC}`);
+    // 7. Configure Claude Code MCP
+    console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
     try {
         const claudeCheck = spawnSync('claude', ['--version'], { shell: true });
         if (claudeCheck.status === 0) {
@@ -168,8 +231,8 @@ process.exit(0);
         console.log("Error checking Claude Code CLI. Skipping.");
     }
 
-    // 6. Install AgenFK Skills
-    console.log(`${GREEN}[6/12] Installing agenfk skills (Opencode)...${NC}`);
+    // 8. Install AgenFK Skills
+    console.log(`${GREEN}[8/14] Installing agenfk skills (Opencode)...${NC}`);
     const skillsDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
     await fs.mkdir(skillsDir, { recursive: true });
     const skillSource = path.join(rootDir, 'SKILL.md');
@@ -180,8 +243,8 @@ process.exit(0);
         console.log(`SKILL.md not found in ${rootDir}. Skipping skills installation.`);
     }
 
-    // 7. Symlink CLI to ~/.local/bin
-    console.log(`${GREEN}[7/12] Installing agenfk command to ~/.local/bin...${NC}`);
+    // 9. Symlink CLI to ~/.local/bin
+    console.log(`${GREEN}[9/14] Installing agenfk command to ~/.local/bin...${NC}`);
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
     await fs.mkdir(localBinDir, { recursive: true });
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');
@@ -201,9 +264,9 @@ process.exit(0);
     }
     console.log(`  Installed: ${cliDest}`);
 
-    // 8 & 9. Global Slash Commands
+    // 10 & 11. Global Slash Commands
     for (const [name, targetBase] of [['Opencode', path.join(os.homedir(), '.config', 'opencode', 'commands')], ['Claude Code', path.join(os.homedir(), '.claude', 'commands')]]) {
-        console.log(`${GREEN}[8-9/12] Installing global slash commands (${name})...${NC}`);
+        console.log(`${GREEN}[10-11/14] Installing global slash commands (${name})...${NC}`);
         await fs.mkdir(targetBase, { recursive: true });
         const commandsDir = path.join(rootDir, 'commands');
         if (existsSync(commandsDir)) {
@@ -217,8 +280,8 @@ process.exit(0);
         }
     }
 
-    // 10. Install gatekeeper hook script
-    console.log(`${GREEN}[10/12] Installing agenfk-gatekeeper hook script...${NC}`);
+    // 12. Install gatekeeper hook script
+    console.log(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const gatekeeperDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk-gatekeeper.cmd' : 'agenfk-gatekeeper');
     
@@ -232,8 +295,8 @@ process.exit(0);
     }
     console.log(`  Installed: ${gatekeeperDest}`);
 
-    // 11. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
-    console.log(`${GREEN}[11/12] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);
+    // 13. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
+    console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
     await fs.mkdir(path.dirname(claudeMdPath), { recursive: true });
     
@@ -270,8 +333,8 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
     await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
     console.log(`  Written: ${claudeMdPath}`);
 
-    // 12. Register PreToolUse hook and MCP server in ~/.claude/settings.json
-    console.log(`${GREEN}[12/12] Configuring ~/.claude/settings.json...${NC}`);
+    // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
+    console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     let settings = {};
     if (existsSync(settingsPath)) {

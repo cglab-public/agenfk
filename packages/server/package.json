@@ -14,6 +14,7 @@
   "dependencies": {
     "@agenfk/core": "*",
     "@agenfk/storage-json": "*",
+    "@agenfk/storage-sqlite": "*",
     "@modelcontextprotocol/sdk": "0.6.0",
     "axios": "^1.13.5",
     "body-parser": "^2.2.2",

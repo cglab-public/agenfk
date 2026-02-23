@@ -1,0 +1,26 @@
+{
+  "name": "@agenfk/storage-sqlite",
+  "version": "0.1.23",
+  "description": "SQLite storage implementation for AgenFK Framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@agenfk/core": "*",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.3.3"
+  },
+  "keywords": [
+    "sqlite",
+    "agenfk",
+    "storage"
+  ],
+  "author": "",
+  "license": "ISC"
+}

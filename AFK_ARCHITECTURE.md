@@ -10,6 +10,7 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
 - `agentic-framework/packages/cli`: A command-line interface that allows developers and agents to interact with the framework (create items, update status, etc.).
 - `agentic-framework/packages/server`: The central API server built with Express. It manages the `db.json` storage and broadcasts updates via WebSockets.
 - `agentic-framework/packages/storage-json`: A storage plugin implementing atomic, file-based JSON persistence.
+- `agentic-framework/packages/storage-sqlite`: A storage plugin implementing SQLite persistence via `better-sqlite3`. Uses WAL mode and an indexed schema for efficient queries.
 - `agentic-framework/packages/ui`: A modern web-based Kanban board built with React, Vite, Tailwind CSS, and TanStack Query.
 
 ## Key Component Interactions
@@ -52,5 +53,5 @@ This automation ensures consistent engineering rigor while minimizing human micr
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io
 - **Frontend**: React, Vite, Tailwind CSS, TanStack Query
-- **Storage**: JSON (local/portable)
+- **Storage**: JSON or SQLite (configurable at install time via `~/.agenfk/config.json`, switchable at runtime with `agenfk db switch`)
 - **Communication**: REST API, WebSockets, MCP
