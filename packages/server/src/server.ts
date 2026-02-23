@@ -837,13 +837,14 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
   if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
 
   const { key } = req.params;
-  const jql = encodeURIComponent(`project = ${key} ORDER BY created DESC`);
-  const fields = 'summary,issuetype,status,priority';
+  
   try {
+    const jql = encodeURIComponent(`project = "${key}" ORDER BY created DESC`);
+    const fields = 'summary,issuetype,status,priority';
     const { data } = await jiraApiRequest(
       tokenData,
       'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search?jql=${jql}&maxResults=50&fields=${fields}`
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=50&fields=${fields}`
     );
     const issues = (data.issues || []).map((issue: any) => ({
       id: issue.id,
@@ -856,7 +857,9 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
     }));
     res.json(issues);
   } catch (err: any) {
-    res.status(502).json({ error: "Failed to fetch JIRA issues", detail: err.message });
+    const detail = err.response?.data?.errorMessages?.[0] || err.message;
+    console.error(`[JIRA] Failed to fetch issues for project ${key}:`, detail);
+    res.status(502).json({ error: "Failed to fetch JIRA issues", detail });
   }
 }));
 
