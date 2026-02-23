@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/core",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "description": "Core logic and interfaces for the AgenFK Engineering Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
