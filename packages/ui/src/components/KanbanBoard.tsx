@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
+import { JiraConnectionButton } from './JiraConnectionButton';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { calculateCost, formatCost } from '../utils';
@@ -421,6 +422,8 @@ export const KanbanBoard: React.FC = () => {
               />
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             </form>
+
+            <JiraConnectionButton />
 
             <button onClick={toggleTheme} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-500 border border-slate-200 dark:border-slate-700 shadow-sm transition-colors">
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}

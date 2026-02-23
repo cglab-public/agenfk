@@ -18,6 +18,7 @@ export default defineConfig({
       'packages/ui/src/test/ThemeContext.test.tsx',
       'packages/ui/src/test/CardDetailModal.test.tsx',
       'packages/ui/src/test/KanbanBoard.test.tsx',
+      'packages/ui/src/test/JiraConnectionButton.test.tsx',
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {

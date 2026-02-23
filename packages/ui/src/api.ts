@@ -72,5 +72,21 @@ export const api = {
       console.error(`API Error deleting item ${id}:`, e);
       throw e;
     }
-  }
+  },
+  getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/jira/status`);
+      return data;
+    } catch {
+      return { configured: false, connected: false };
+    }
+  },
+  disconnectJira: async (): Promise<void> => {
+    try {
+      await axios.post(`${API_URL}/jira/disconnect`);
+    } catch (e) {
+      console.error('API Error disconnecting JIRA:', e);
+      throw e;
+    }
+  },
 };
