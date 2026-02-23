@@ -483,8 +483,12 @@ program
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
         // Configure Claude Code project-level settings to ensure MCP server is available.
-        // Claude Code masks global mcpServers when a project has its own .claude/settings.json
-        // without a mcpServers key. Writing it to settings.local.json at init time fixes this.
+        // When a project has .claude/settings.json, Claude Code masks the global
+        // ~/.claude/settings.json mcpServers. The fix is:
+        //   1. Write server config to .mcp.json at the project root (Claude Code's
+        //      project-scoped MCP config file; mcpServers is not valid in settings.json).
+        //   2. Add enabledMcpjsonServers to .claude/settings.json to auto-approve it.
+        //   3. Write MCP tool permissions to settings.local.json (user/machine-specific).
         const globalSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
         let mcpConfig: any = null;
         if (fs.existsSync(globalSettingsPath)) {
@@ -495,6 +499,40 @@ program
         }
         if (mcpConfig) {
             const claudeDir = path.join(rootDir, '.claude');
+            if (!fs.existsSync(claudeDir)) {
+                fs.mkdirSync(claudeDir, { recursive: true });
+            }
+
+            // Write to .mcp.json at the project root (Claude Code's project-scoped MCP file)
+            const mcpJsonPath = path.join(rootDir, '.mcp.json');
+            let mcpJson: any = { mcpServers: {} };
+            if (fs.existsSync(mcpJsonPath)) {
+                try {
+                    mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+                    if (!mcpJson.mcpServers) mcpJson.mcpServers = {};
+                } catch (e) {}
+            }
+            mcpJson.mcpServers.agenfk = mcpConfig;
+            fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2), 'utf8');
+            console.log(chalk.green(`✓ Configured Claude Code MCP in ${mcpJsonPath}`));
+
+            // Add enabledMcpjsonServers to .claude/settings.json to auto-approve without prompt
+            const projectSettingsPath = path.join(claudeDir, 'settings.json');
+            let projectSettings: any = {};
+            if (fs.existsSync(projectSettingsPath)) {
+                try {
+                    projectSettings = JSON.parse(fs.readFileSync(projectSettingsPath, 'utf8'));
+                } catch (e) {}
+            }
+            if (!projectSettings.enabledMcpjsonServers) projectSettings.enabledMcpjsonServers = [];
+            if (!projectSettings.enabledMcpjsonServers.includes('agenfk')) {
+                projectSettings.enabledMcpjsonServers.push('agenfk');
+            }
+            // Remove mcpServers if previously written there by an older agenfk init
+            delete projectSettings.mcpServers;
+            fs.writeFileSync(projectSettingsPath, JSON.stringify(projectSettings, null, 2), 'utf8');
+
+            // Write MCP tool permissions to settings.local.json (user/machine-specific, not committed)
             const localSettingsPath = path.join(claudeDir, 'settings.local.json');
             let localSettings: any = {};
             if (fs.existsSync(localSettingsPath)) {
@@ -502,8 +540,8 @@ program
                     localSettings = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
                 } catch (e) {}
             }
-            if (!localSettings.mcpServers) localSettings.mcpServers = {};
-            localSettings.mcpServers.agenfk = mcpConfig;
+            // Remove mcpServers if previously written there by an older agenfk init
+            delete localSettings.mcpServers;
             if (!localSettings.permissions) localSettings.permissions = {};
             if (!localSettings.permissions.allow) localSettings.permissions.allow = [];
             const mcpPermissions = [
@@ -519,11 +557,7 @@ program
                     localSettings.permissions.allow.push(perm);
                 }
             }
-            if (!fs.existsSync(claudeDir)) {
-                fs.mkdirSync(claudeDir, { recursive: true });
-            }
             fs.writeFileSync(localSettingsPath, JSON.stringify(localSettings, null, 2), 'utf8');
-            console.log(chalk.green(`✓ Configured Claude Code MCP in ${localSettingsPath}`));
         }
 
     } catch (e: any) {
