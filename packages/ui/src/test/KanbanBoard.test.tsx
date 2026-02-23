@@ -139,4 +139,94 @@ describe('KanbanBoard', () => {
 
     expect(writeTextMock).toHaveBeenCalledWith('i1-abcd-efgh');
   });
+
+  describe('Drag and Drop Reordering', () => {
+    it('should call updateItem with correct sortOrder when reordering within column', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const items = [
+        { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, sortOrder: 0, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] },
+        { id: 'i2', projectId: 'p1', type: ItemType.TASK, title: 'Task 2', status: Status.TODO, sortOrder: 1, createdAt: new Date('2026-01-02'), updatedAt: new Date('2026-01-02'), history: [] },
+      ];
+      
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue(items as any);
+      vi.mocked(api.updateItem).mockImplementation((id, updates) => Promise.resolve({ id, ...updates } as any));
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      const task1Card = (await screen.findByText('Task 1')).closest('[draggable="true"]')!;
+      const task2Card = (await screen.findByText('Task 2')).closest('[draggable="true"]')!;
+      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+
+      // 1. Drag Start on Task 2
+      const dataTransfer = {
+        setData: vi.fn(),
+        getData: vi.fn((key) => key === 'itemId' ? 'i2' : ''),
+      };
+      fireEvent.dragStart(task2Card, { dataTransfer });
+
+      // 2. Drag Over Task 1 (top half to trigger 'above')
+      task1Card.getBoundingClientRect = vi.fn(() => ({
+        top: 100, height: 100, bottom: 200, left: 0, right: 200, width: 200, x: 0, y: 100, toJSON: () => {}
+      } as DOMRect));
+
+      const dragOverEvent = new CustomEvent('dragover', { bubbles: true, cancelable: true }) as any;
+      dragOverEvent.clientY = 120; // Above center (150)
+      fireEvent(task1Card, dragOverEvent);
+
+      // 3. Drop on the column
+      fireEvent.drop(todoColumn, { dataTransfer });
+
+      await waitFor(() => {
+        expect(api.updateItem).toHaveBeenCalledWith('i2', expect.objectContaining({ sortOrder: 0 }));
+      });
+      expect(api.updateItem).toHaveBeenCalledWith('i1', expect.objectContaining({ sortOrder: 1 }));
+    });
+
+    it('should correctly reorder items even when a type filter is active', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const items = [
+        { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, sortOrder: 0, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] },
+        { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Story 1', status: Status.TODO, sortOrder: 1, createdAt: new Date('2026-01-02'), updatedAt: new Date('2026-01-02'), history: [] },
+        { id: 'i2', projectId: 'p1', type: ItemType.TASK, title: 'Task 2', status: Status.TODO, sortOrder: 2, createdAt: new Date('2026-01-03'), updatedAt: new Date('2026-01-03'), history: [] },
+      ];
+      
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue(items as any);
+      vi.mocked(api.updateItem).mockImplementation((id, updates) => Promise.resolve({ id, ...updates } as any));
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      // Set filter to TASK
+      const select = await screen.findByRole('combobox');
+      fireEvent.change(select, { target: { value: ItemType.TASK } });
+
+      const task1Card = (await screen.findByText('Task 1')).closest('[draggable="true"]')!;
+      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+
+      const dataTransfer = {
+        setData: vi.fn(),
+        getData: vi.fn((key) => key === 'itemId' ? 'i2' : ''),
+      };
+      fireEvent.dragStart(screen.getByText('Task 2').closest('[draggable="true"]')!, { dataTransfer });
+
+      task1Card.getBoundingClientRect = vi.fn(() => ({
+        top: 100, height: 100, bottom: 200, left: 0, right: 200, width: 200, x: 0, y: 100, toJSON: () => {}
+      } as DOMRect));
+
+      const dragOverEvent = new CustomEvent('dragover', { bubbles: true, cancelable: true }) as any;
+      dragOverEvent.clientY = 120; 
+      fireEvent(task1Card, dragOverEvent);
+
+      fireEvent.drop(todoColumn, { dataTransfer });
+
+      await waitFor(() => {
+        expect(api.updateItem).toHaveBeenCalledWith('i2', expect.objectContaining({ sortOrder: 0 }));
+      });
+      expect(api.updateItem).toHaveBeenCalledWith('i1', expect.objectContaining({ sortOrder: 1 }));
+      expect(api.updateItem).toHaveBeenCalledWith('s1', expect.objectContaining({ sortOrder: 2 }));
+    });
+  });
 });

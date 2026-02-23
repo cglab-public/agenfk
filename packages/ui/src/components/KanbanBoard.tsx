@@ -136,6 +136,9 @@ export const KanbanBoard: React.FC = () => {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
+  // Refs mirror state so handleDrop always reads current values (avoids stale closure in React 18)
+  const dropTargetIdRef = React.useRef<string | null>(null);
+  const dropPositionRef = React.useRef<'above' | 'below'>('below');
 
   const handleCopyId = (id: string) => {
     navigator.clipboard.writeText(id);
@@ -230,7 +233,7 @@ export const KanbanBoard: React.FC = () => {
     setNavPath([]);
   };
 
-  const getItemsByStatus = (status: Status) => {
+  const getItemsByStatus = (status: Status, ignoreFilter = false) => {
     if (!items) return [];
     
     let filtered = items.filter((i: AgenFKItem) => i.status === status);
@@ -244,7 +247,7 @@ export const KanbanBoard: React.FC = () => {
     }
 
     // Type Filtering
-    if (selectedItemType !== 'ALL') {
+    if (!ignoreFilter && selectedItemType !== 'ALL') {
       filtered = filtered.filter((i: AgenFKItem) => i.type === selectedItemType);
     }
 
@@ -281,15 +284,20 @@ export const KanbanBoard: React.FC = () => {
   const handleDragEnd = () => {
     setDragId(null);
     setDropTargetId(null);
+    dropTargetIdRef.current = null;
   };
 
   const handleCardDragOver = (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const pos = e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
+    dropTargetIdRef.current = targetId;
+    dropPositionRef.current = pos;
     setDropTargetId(targetId);
-    setDropPosition(e.clientY < rect.top + rect.height / 2 ? 'above' : 'below');
+    setDropPosition(pos);
   };
+
 
   const handleCardDragLeave = (e: React.DragEvent) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
@@ -299,32 +307,48 @@ export const KanbanBoard: React.FC = () => {
 
   const handleDrop = (e: React.DragEvent, status: Status) => {
     const id = e.dataTransfer.getData('itemId');
+    // Read from refs — always current, no stale-closure risk in React 18
+    const currentDropTargetId = dropTargetIdRef.current;
+    const currentDropPosition = dropPositionRef.current;
+    
+    // Clear refs and state immediately
+    dropTargetIdRef.current = null;
     setDragId(null);
     setDropTargetId(null);
+    
     if (!id || !items) return;
 
     const draggedItem = items.find((i: AgenFKItem) => i.id === id);
     if (!draggedItem) return;
 
-    // Reorder within same column when dropped on a specific card
-    if (draggedItem.status === status && dropTargetId && dropTargetId !== id) {
-      const columnItems = getItemsByStatus(status).filter((i: AgenFKItem) => i.id !== id);
-      const targetIndex = columnItems.findIndex((i: AgenFKItem) => i.id === dropTargetId);
+    // Reorder within same column or move to specific position in another column
+    if (currentDropTargetId && currentDropTargetId !== id) {
+      const columnItemsBefore = getItemsByStatus(status, true);
+      const columnItems = columnItemsBefore.filter((i: AgenFKItem) => i.id !== id);
+      const targetIndex = columnItems.findIndex((i: AgenFKItem) => i.id === currentDropTargetId);
+      
       if (targetIndex >= 0) {
-        const insertIndex = dropPosition === 'above' ? targetIndex : targetIndex + 1;
+        const insertIndex = currentDropPosition === 'above' ? targetIndex : targetIndex + 1;
         columnItems.splice(insertIndex, 0, draggedItem);
+        
+        // Update all items in the column to have correct sortOrder
         columnItems.forEach((item: AgenFKItem, idx: number) => {
-          if (item.sortOrder !== idx) {
-            updateMutation.mutate({ id: item.id, updates: { sortOrder: idx } });
+          const updates: Partial<AgenFKItem> = { sortOrder: idx };
+          if (item.id === id && item.status !== status) {
+            updates.status = status;
+          }
+          
+          if (item.sortOrder !== idx || (item.id === id && item.status !== status)) {
+            updateMutation.mutate({ id: item.id, updates });
           }
         });
         return;
       }
     }
 
-    // Cross-column: update status (append to end of target column)
+    // Cross-column or drop on empty space: update status (append to end of target column)
     if (draggedItem.status !== status) {
-      const targetColumnItems = getItemsByStatus(status);
+      const targetColumnItems = getItemsByStatus(status, true);
       const newSortOrder = targetColumnItems.length;
       updateMutation.mutate({ id, updates: { status, sortOrder: newSortOrder } });
     }
