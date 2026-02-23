@@ -123,28 +123,35 @@ process.exit(0);
     // 5. Configure Opencode MCP
     console.log(`${GREEN}[5/12] Configuring Opencode MCP...${NC}`);
     const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (existsSync(opencodeConfigPath)) {
+    const opencodeInstalled = spawnSync('opencode', ['--version'], { shell: true }).status === 0;
+    if (existsSync(opencodeConfigPath) || opencodeInstalled) {
         try {
-            const config = JSON.parse(await fs.readFile(opencodeConfigPath, 'utf8'));
+            let config = {};
+            if (existsSync(opencodeConfigPath)) {
+                config = JSON.parse(await fs.readFile(opencodeConfigPath, 'utf8'));
+            } else {
+                await fs.mkdir(path.dirname(opencodeConfigPath), { recursive: true });
+                console.log(`  Opencode detected but opencode.json missing — creating it.`);
+            }
             if (!config.mcp) config.mcp = {};
-            
+
             config.mcp.agenfk = {
                 type: 'local',
                 enabled: true,
                 command: ['node', serverPath],
-                environment: { 
+                environment: {
                     NODE_ENV: 'production',
                     AGENFK_DB_PATH: dbPath
                 }
             };
-            
+
             await fs.writeFile(opencodeConfigPath, JSON.stringify(config, null, 2));
-            console.log('Successfully updated opencode.json with agenfk MCP server.');
+            console.log(`  Written: ${opencodeConfigPath}`);
         } catch (e) {
             console.error('Error updating opencode.json:', e.message);
         }
     } else {
-        console.log(`Opencode config not found at ${opencodeConfigPath}. Skipping.`);
+        console.log(`Opencode not found. Skipping opencode.json configuration.`);
     }
 
     // 5. Configure Claude Code MCP
