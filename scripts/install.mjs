@@ -16,6 +16,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const agenfkHome = path.join(os.homedir(), '.agenfk');
 
+const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX || (os.platform() === 'win32' && process.env.SHELL?.includes('bash')));
+
 function ask(rl, question) {
     return new Promise(resolve => rl.question(question, resolve));
 }
@@ -25,8 +27,9 @@ async function run() {
 
     // 1. Build the project
     console.log(`${GREEN}[1/14] Building project...${NC}`);
-    spawnSync('npm', ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
-    spawnSync('npm', ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
+    const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
+    spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
+    spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
 
     // 2. Generate install-time secret verify token
     console.log(`${GREEN}[2/14] Generating secret verify token...${NC}`);
@@ -144,7 +147,8 @@ apiProcess.unref();
 console.log("Starting UI...");
 const uiLogPath = path.join(agenfkDir, 'ui.log');
 const uiLog = fs.openSync(uiLogPath, 'a');
-const npmCmd = os.platform() === 'win32' ? 'npm.cmd' : 'npm';
+const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
+const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
 const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
     detached: true,
@@ -248,21 +252,27 @@ process.exit(0);
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
     await fs.mkdir(localBinDir, { recursive: true });
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');
-    const cliDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk.cmd' : 'agenfk');
+    const cliDestBase = path.join(localBinDir, 'agenfk');
     
     if (os.platform() === 'win32') {
-        await fs.writeFile(cliDest, `@echo off\nnode "${cliSource}" %*`, 'utf8');
+        // Always write .cmd on Windows
+        await fs.writeFile(`${cliDestBase}.cmd`, `@echo off\nnode "${cliSource}" %*`, 'utf8');
+        // If MinGW, also write extension-less version for bash
+        if (isMinGW) {
+            await fs.writeFile(cliDestBase, `#!/bin/sh\nnode "${cliSource}" "$@"`, 'utf8');
+            chmodSync(cliDestBase, 0o755);
+        }
     } else {
         try {
-            if (existsSync(cliDest)) await fs.unlink(cliDest);
-            await fs.symlink(cliSource, cliDest);
+            if (existsSync(cliDestBase)) await fs.unlink(cliDestBase);
+            await fs.symlink(cliSource, cliDestBase);
             chmodSync(cliSource, 0o755);
         } catch (e) {
-            await fs.copyFile(cliSource, cliDest);
-            chmodSync(cliDest, 0o755);
+            await fs.copyFile(cliSource, cliDestBase);
+            chmodSync(cliDestBase, 0o755);
         }
     }
-    console.log(`  Installed: ${cliDest}`);
+    console.log(`  Installed: ${cliDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
     // 10 & 11. Global Slash Commands
     for (const [name, targetBase] of [['Opencode', path.join(os.homedir(), '.config', 'opencode', 'commands')], ['Claude Code', path.join(os.homedir(), '.claude', 'commands')]]) {
@@ -283,17 +293,26 @@ process.exit(0);
     // 12. Install gatekeeper hook script
     console.log(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
-    const gatekeeperDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk-gatekeeper.cmd' : 'agenfk-gatekeeper');
+    const gatekeeperDestBase = path.join(localBinDir, 'agenfk-gatekeeper');
     
     if (os.platform() === 'win32') {
-        await fs.writeFile(gatekeeperDest, `@echo off\nnode "${gatekeeperSource}" %*`, 'utf8');
+        // Always write .cmd on Windows
+        await fs.writeFile(`${gatekeeperDestBase}.cmd`, `@echo off\nnode "${gatekeeperSource}" %*`, 'utf8');
+        // If MinGW, also write extension-less version for bash
+        if (isMinGW) {
+            await fs.writeFile(gatekeeperDestBase, `#!/bin/sh\nnode "${gatekeeperSource}" "$@"`, 'utf8');
+            chmodSync(gatekeeperDestBase, 0o755);
+        }
     } else {
         if (existsSync(gatekeeperSource)) {
-            await fs.copyFile(gatekeeperSource, gatekeeperDest);
-            chmodSync(gatekeeperDest, 0o755);
+            await fs.copyFile(gatekeeperSource, gatekeeperDestBase);
+            chmodSync(gatekeeperDestBase, 0o755);
         }
     }
-    console.log(`  Installed: ${gatekeeperDest}`);
+    console.log(`  Installed: ${gatekeeperDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+    const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
+    const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
 
     // 13. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
     console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);

@@ -11,12 +11,16 @@ import os from 'os';
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
 
+function isMinGW() {
+  return !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
+}
+
 /**
  * Cross-platform port killing logic
  */
 function killPort(port: number) {
   try {
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && !isMinGW()) {
       const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' });
       const lines = output.split('\n').filter(l => l.includes('LISTENING'));
       for (const line of lines) {
@@ -57,7 +61,7 @@ function killPort(port: number) {
  */
 function killPattern(pattern: string) {
   try {
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && !isMinGW()) {
       // Very basic pattern matching for Windows
       const output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%'" get processid`, { encoding: 'utf8' });
       const pids = output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
@@ -386,7 +390,13 @@ program
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
     
     try {
-      if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
+      if (isMinGW()) {
+        try {
+          execSync(`cygstart "${uiUrl}"`, { stdio: 'ignore' });
+        } catch {
+          execSync(`start "${uiUrl}"`, { stdio: 'ignore' });
+        }
+      } else if (fs.existsSync('/proc/version') && fs.readFileSync('/proc/version', 'utf8').match(/(Microsoft|WSL)/i)) {
         execSync(`cmd.exe /c start "${uiUrl}"`, { stdio: 'ignore' });
       } else if (process.platform === 'linux') {
         execSync(`xdg-open "${uiUrl}"`, { stdio: 'ignore' });

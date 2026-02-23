@@ -33,10 +33,20 @@ async function getToolIntent() {
     });
 }
 
+function normalizePath(p) {
+    if (!p) return p;
+    // Handle MinGW/MSYS2 paths: /c/Users -> C:/Users
+    if (process.platform === 'win32' && /^\/[a-zA-Z]\//.test(p)) {
+        return p[1].toUpperCase() + ':' + p.slice(2);
+    }
+    return p;
+}
+
 // Walk up from filePath looking for .agenfk/project.json
 function isInsideAgenFKProject(filePath) {
     if (!filePath) return false;
-    let dir = path.isAbsolute(filePath) ? path.dirname(filePath) : path.dirname(path.resolve(filePath));
+    const normalized = normalizePath(filePath);
+    let dir = path.isAbsolute(normalized) ? path.dirname(normalized) : path.dirname(path.resolve(normalized));
     const root = path.parse(dir).root;
     while (dir !== root) {
         if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) return true;
