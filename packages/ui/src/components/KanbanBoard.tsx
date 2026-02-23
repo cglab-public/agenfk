@@ -14,6 +14,7 @@ import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
+import { calculateCost, formatCost } from '../utils';
 
 const statuses = [
   Status.TODO,
@@ -94,6 +95,15 @@ export const KanbanBoard: React.FC = () => {
     enabled: !!selectedProjectId
   });
   
+  const { data: pricesData } = useQuery({
+    queryKey: ['prices'],
+    queryFn: async () => {
+      const res = await fetch('https://www.llm-prices.com/current-v1.json');
+      return res.json();
+    },
+    staleTime: 1000 * 60 * 60 * 24
+  });
+
   const [selectedItem, setSelectedItem] = useState<AgenFKItem | null>(null);
   const [navPath, setNavPath] = useState<NavItem[]>([]);
   const [selectedItemType, setSelectedItemType] = useState<ItemType | 'ALL'>('ALL');
@@ -431,13 +441,14 @@ export const KanbanBoard: React.FC = () => {
 
             <div className="text-right hidden sm:block border-l border-slate-200 dark:border-slate-700 pl-4">
               <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight flex items-center gap-2 justify-end">
-                Tokens
+                Tokens / Cost
                 <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-indigo-600 transition-colors">
                   <Loader2 size={12} className={clsx(isLoading && "animate-spin")} />
                 </button>
               </div>
               <div className="font-mono font-bold text-indigo-600 dark:text-indigo-400 transition-colors">
                 {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
+                {pricesData ? ` / ${formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)}` : ''}
               </div>
             </div>
 
@@ -579,6 +590,7 @@ export const KanbanBoard: React.FC = () => {
                         <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
                           <Zap size={10} className="fill-amber-600" />
                           {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
+                          {pricesData ? ` (${formatCost(calculateCost(item.tokenUsage, pricesData))})` : ''}
                         </div>
                       )}
                     </div>
@@ -635,6 +647,7 @@ export const KanbanBoard: React.FC = () => {
         <CardDetailModal 
           item={selectedItem} 
           allItems={items || []}
+          pricesData={pricesData}
           onClose={() => setSelectedItem(null)} 
           onSelectItem={setSelectedItem}
           onAddItem={async (title, type, status, description) => {

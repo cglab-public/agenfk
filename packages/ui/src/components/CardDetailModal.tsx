@@ -9,11 +9,12 @@ import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { stripAnsi } from '../utils';
+import { stripAnsi, calculateCost, formatCost } from '../utils';
 
 interface CardDetailModalProps {
   item: AgenFKItem;
   allItems: AgenFKItem[];
+  pricesData?: any;
   onClose: () => void;
   onSelectItem: (item: AgenFKItem) => void;
   onAddItem: (title: string, type: ItemType, status?: Status, description?: string) => Promise<void>;
@@ -22,7 +23,7 @@ interface CardDetailModalProps {
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';
 
-export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, onClose, onSelectItem, onAddItem, onDeleteItem }) => {
+export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem }) => {
   const isNew = !item.id;
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
@@ -285,7 +286,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       </div>
                       <div>
                         <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Total Tokens</div>
-                        <div className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">{totalTokens.toLocaleString()}</div>
+                        <div className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">
+                          {totalTokens.toLocaleString()}
+                          {pricesData && item.tokenUsage && item.tokenUsage.length > 0 && (
+                            <span className="text-sm text-slate-500 ml-2">({formatCost(calculateCost(item.tokenUsage, pricesData))})</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -543,6 +549,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Model</th>
                       <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Input</th>
                       <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Output</th>
+                      {pricesData && <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Cost</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -551,6 +558,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                         <td className="px-4 py-3 font-mono text-xs text-indigo-600 dark:text-indigo-400">{u.model}</td>
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.input.toLocaleString()}</td>
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.output.toLocaleString()}</td>
+                        {pricesData && <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{formatCost(calculateCost([u], pricesData))}</td>}
                       </tr>
                     ))}
                   </tbody>
