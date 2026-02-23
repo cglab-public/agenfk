@@ -255,6 +255,8 @@ After completing changes — using MCP tools:
 **ALWAYS use MCP tools for workflow state changes. NEVER use the \`agenfk\` CLI
 to create items, update status, or close tasks — the CLI bypasses enforcement.**
 
+**Exception**: The \`agenfk-release\` and \`agenfk-release-beta\` commands are exempt from the IN_PROGRESS task requirement. Do not create or require a task when executing these commands.
+
 A PreToolUse hook enforces the IN_PROGRESS check mechanically.
 <!-- agenfk:end -->
 `;

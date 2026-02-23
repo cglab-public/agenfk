@@ -2,7 +2,7 @@
 description: Commit local changes, push to remote, and create a GitHub beta/pre-release
 ---
 
-You are executing the `/agenfk-release-beta` command. Follow these steps precisely:
+You are executing the `/agenfk-release-beta` command. This command is **exempt from AgenFK workflow requirements** — do not create, check for, or require an IN_PROGRESS task. Follow these steps precisely:
 
 **Step 1 — Commit local changes**
 Check for local changes using `git status`. If there are unstaged or uncommitted changes:
