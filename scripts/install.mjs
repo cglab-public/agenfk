@@ -46,26 +46,40 @@ async function run() {
         console.log(`  Token already exists: ${tokenPath}`);
     }
 
-    // 3. Choose database type
-    console.log(`${GREEN}[3/14] Database configuration...${NC}`);
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    // 3. Database configuration
+    const agenfkConfigPath = path.join(agenfkHome, 'config.json');
+    let dbPath = '';
 
-    let dbType = 'json';
-    try {
-        const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: json): `);
-        if (answer.trim().toLowerCase() === 'sqlite') dbType = 'sqlite';
-    } finally {
-        rl.close();
+    if (existsSync(agenfkConfigPath)) {
+        try {
+            const cfg = JSON.parse(readFileSync(agenfkConfigPath, 'utf8'));
+            if (cfg.dbPath) {
+                dbPath = cfg.dbPath;
+                console.log(`  Using existing database configuration: ${dbPath}`);
+            }
+        } catch (e) {}
     }
 
-    const dbExtension = dbType === 'sqlite' ? 'db.sqlite' : 'db.json';
-    const dbPath = path.join(rootDir, '.agenfk', dbExtension);
-    console.log(`  Using: ${dbType.toUpperCase()} (${dbPath})`);
+    if (!dbPath) {
+        console.log(`${GREEN}[3/14] Choosing database engine...${NC}`);
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-    // 3a. Write ~/.agenfk/config.json
-    const agenfkConfigPath = path.join(agenfkHome, 'config.json');
-    await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath }, null, 2), 'utf8');
-    console.log(`  Config written: ${agenfkConfigPath}`);
+        let dbType = 'json';
+        try {
+            const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: json): `);
+            if (answer.trim().toLowerCase() === 'sqlite') dbType = 'sqlite';
+        } finally {
+            rl.close();
+        }
+
+        const dbExtension = dbType === 'sqlite' ? 'db.sqlite' : 'db.json';
+        dbPath = path.join(rootDir, '.agenfk', dbExtension);
+        console.log(`  Using: ${dbType.toUpperCase()} (${dbPath})`);
+
+        // 3a. Write ~/.agenfk/config.json
+        await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath }, null, 2), 'utf8');
+        console.log(`  Config written: ${agenfkConfigPath}`);
+    }
 
     // 3b. Restore from backup (new install only)
     const backupDir = path.join(agenfkHome, 'backup');
