@@ -35,14 +35,46 @@ if (gitCheck.status !== 0) {
   process.exit(1);
 }
 
+const shouldRebuild = process.argv.includes('--rebuild');
+const REPO_NAME = 'cglab-PRIVATE/agenfk';
+
 if (fs.existsSync(INSTALL_DIR)) {
   console.log(`${GREEN}AgenFK already installed at ${INSTALL_DIR}${RESET}`);
-  console.log('Pulling latest changes...');
-  execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit' });
+  const isGitRepo = fs.existsSync(path.join(INSTALL_DIR, '.git'));
+  
+  if (isGitRepo) {
+    console.log('Pulling latest changes...');
+    execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit' });
+  } else if (!shouldRebuild) {
+    console.log(`${GREEN}Updating pre-built binary from GitHub...${RESET}`);
+    try {
+      const latestTag = execSync(`gh release view --repo ${REPO_NAME} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+      execSync(`gh release download ${latestTag} --repo ${REPO_NAME} --pattern 'agenfk-dist.tar.gz' --output "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+    } catch (e) {
+      console.error(`Failed to update pre-built binary: ${e.message}`);
+    }
+  }
 } else {
-  console.log(`Cloning AgenFK to ${INSTALL_DIR} ...`);
-  execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+  if (!shouldRebuild) {
+    console.log(`Installing pre-built AgenFK to ${INSTALL_DIR} ...`);
+    fs.mkdirSync(INSTALL_DIR, { recursive: true });
+    try {
+      const latestTag = execSync(`gh release view --repo ${REPO_NAME} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+      execSync(`gh release download ${latestTag} --repo ${REPO_NAME} --pattern 'agenfk-dist.tar.gz' --output "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+    } catch (e) {
+      console.error(`Failed to download pre-built binary: ${e.message}`);
+      console.log(`${BLUE}Falling back to git clone...${RESET}`);
+      execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+    }
+  } else {
+    console.log(`Cloning AgenFK to ${INSTALL_DIR} ...`);
+    execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+  }
 }
 
 console.log(`\n${GREEN}Running install...${RESET}\n`);
-execSync('node scripts/install.mjs', { cwd: INSTALL_DIR, stdio: 'inherit' });
+execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, { cwd: INSTALL_DIR, stdio: 'inherit' });

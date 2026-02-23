@@ -25,11 +25,23 @@ function ask(rl, question) {
 async function run() {
     console.log(`${BLUE}=== AgenFK Framework Installation ===${NC}`);
 
+    const shouldRebuild = process.argv.includes('--rebuild');
+
     // 1. Build the project
-    console.log(`${GREEN}[1/14] Building project...${NC}`);
-    const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
-    spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
-    spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
+    if (!shouldRebuild) {
+        console.log(`${GREEN}[1/14] Skipping build (using prebuilt binaries)...${NC}`);
+        const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
+        // Still need production dependencies if they aren't in the tarball, 
+        // but typically tarball should have them or we run npm install --production.
+        // Looking at package-dist.mjs, it doesn't include node_modules.
+        // So we still need npm install, but NOT npm run build.
+        spawnSync(npmCmd, ['install', '--production'], { stdio: 'inherit', cwd: rootDir, shell: true });
+    } else {
+        console.log(`${GREEN}[1/14] Building project...${NC}`);
+        const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
+        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
+        spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
+    }
 
     // 2. Generate install-time secret verify token
     console.log(`${GREEN}[2/14] Generating secret verify token...${NC}`);

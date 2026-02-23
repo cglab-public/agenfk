@@ -177,6 +177,7 @@ program
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')
   .option('-b, --beta', 'Include beta/pre-release versions')
+  .option('--rebuild', 'Force a full build from source after upgrading')
   .action(async (options) => {
     const REPO = 'cglab-PRIVATE/agenfk';
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}...`));
@@ -225,12 +226,27 @@ program
         console.log(chalk.blue('Upgrading...'));
         
         const rootDir = path.resolve(__dirname, '../../..');
-        const installScript = path.join(rootDir, 'scripts', 'install.mjs');
+        const isGitRepo = fs.existsSync(path.join(rootDir, '.git'));
         
-        if (fs.existsSync(installScript)) {
-          console.log(chalk.gray('Running install script...'));
+        if (!isGitRepo) {
+          console.log(chalk.gray(`Downloading pre-built binary for ${latestTag}...`));
           try {
-            execSync('node scripts/install.mjs', { cwd: rootDir, stdio: 'inherit' });
+            const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
+            fs.mkdirSync(tempDir, { recursive: true });
+            
+            // Download the tarball
+            execSync(`gh release download ${latestTag} --repo ${REPO} --pattern 'agenfk-dist.tar.gz' --output "${path.join(tempDir, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+            
+            // Extract the tarball
+            console.log(chalk.gray('Extracting update...'));
+            // Use --strip-components=0 or just extract normally since package-dist.mjs doesn't seem to add a root folder
+            execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: 'inherit' });
+            
+            // Clean up temp dir
+            fs.rmSync(tempDir, { recursive: true, force: true });
+            
+            console.log(chalk.gray(`Running install script${options.rebuild ? ' (rebuild mode)' : ' (pre-built mode)'}...`));
+            execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
             console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
 
             if (servicesRunning) {
@@ -241,11 +257,33 @@ program
                 console.error(chalk.red('Auto-restart failed. Please run "agenfk up" manually.'));
               }
             }
-          } catch (e) {
-            console.error(chalk.red('Upgrade failed during installation.'));
+          } catch (e: any) {
+            console.error(chalk.red(`Upgrade failed: ${e.message}`));
+            return;
           }
         } else {
-          console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
+          const installScript = path.join(rootDir, 'scripts', 'install.mjs');
+          
+          if (fs.existsSync(installScript)) {
+            console.log(chalk.gray(`Running install script${options.rebuild ? ' --rebuild' : ''}...`));
+            try {
+              execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
+              console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
+
+              if (servicesRunning) {
+                console.log(chalk.blue('Restarting services...'));
+                try {
+                  execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
+                } catch (e) {
+                  console.error(chalk.red('Auto-restart failed. Please run "agenfk up" manually.'));
+                }
+              }
+            } catch (e) {
+              console.error(chalk.red('Upgrade failed during installation.'));
+            }
+          } else {
+            console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
+          }
         }
       } else {
         console.log(chalk.green('You are already on the latest version. Use --force to reinstall.'));
@@ -259,7 +297,8 @@ program
 program
   .command('up')
   .description('Bootstrap and start AgenFK Engineering Framework')
-  .action(async () => {
+  .option('--rebuild', 'Force a full build from source during bootstrap')
+  .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
 
@@ -274,10 +313,10 @@ program
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
     const serverDist = path.join(rootDir, 'packages/server/dist/server.js');
 
-    if (!fs.existsSync(startScript) || !fs.existsSync(serverDist)) {
-        console.log(chalk.yellow('📦 Initial bootstrap required...'));
+    if (!fs.existsSync(startScript) || !fs.existsSync(serverDist) || options.rebuild) {
+        console.log(chalk.yellow(options.rebuild ? '📦 Rebuild requested...' : '📦 Initial bootstrap required...'));
         try {
-            execSync('node scripts/install.mjs', { cwd: rootDir, stdio: 'inherit' });
+            execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
             return;
