@@ -80,4 +80,5 @@ export interface AgenFKItem {
   severity?: string;
   previousStatus?: Status;
   implementationPlan?: string;
+  sortOrder?: number;
 }

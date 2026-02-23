@@ -133,6 +133,9 @@ export const KanbanBoard: React.FC = () => {
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
   const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
 
   const handleCopyId = (id: string) => {
     navigator.clipboard.writeText(id);
@@ -245,6 +248,16 @@ export const KanbanBoard: React.FC = () => {
       filtered = filtered.filter((i: AgenFKItem) => i.type === selectedItemType);
     }
 
+    // Sort by sortOrder, then by createdAt for stable ordering
+    filtered.sort((a: AgenFKItem, b: AgenFKItem) => {
+      const aOrder = a.sortOrder;
+      const bOrder = b.sortOrder;
+      if (aOrder !== undefined && bOrder !== undefined) return aOrder - bOrder;
+      if (aOrder !== undefined) return -1;
+      if (bOrder !== undefined) return 1;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
     return filtered;
   };
 
@@ -262,12 +275,58 @@ export const KanbanBoard: React.FC = () => {
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
     e.dataTransfer.setData('itemId', id);
+    setDragId(id);
+  };
+
+  const handleDragEnd = () => {
+    setDragId(null);
+    setDropTargetId(null);
+  };
+
+  const handleCardDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setDropTargetId(targetId);
+    setDropPosition(e.clientY < rect.top + rect.height / 2 ? 'above' : 'below');
+  };
+
+  const handleCardDragLeave = (e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDropTargetId(null);
+    }
   };
 
   const handleDrop = (e: React.DragEvent, status: Status) => {
     const id = e.dataTransfer.getData('itemId');
-    if (id) {
-      updateMutation.mutate({ id, updates: { status } });
+    setDragId(null);
+    setDropTargetId(null);
+    if (!id || !items) return;
+
+    const draggedItem = items.find((i: AgenFKItem) => i.id === id);
+    if (!draggedItem) return;
+
+    // Reorder within same column when dropped on a specific card
+    if (draggedItem.status === status && dropTargetId && dropTargetId !== id) {
+      const columnItems = getItemsByStatus(status).filter((i: AgenFKItem) => i.id !== id);
+      const targetIndex = columnItems.findIndex((i: AgenFKItem) => i.id === dropTargetId);
+      if (targetIndex >= 0) {
+        const insertIndex = dropPosition === 'above' ? targetIndex : targetIndex + 1;
+        columnItems.splice(insertIndex, 0, draggedItem);
+        columnItems.forEach((item: AgenFKItem, idx: number) => {
+          if (item.sortOrder !== idx) {
+            updateMutation.mutate({ id: item.id, updates: { sortOrder: idx } });
+          }
+        });
+        return;
+      }
+    }
+
+    // Cross-column: update status (append to end of target column)
+    if (draggedItem.status !== status) {
+      const targetColumnItems = getItemsByStatus(status);
+      const newSortOrder = targetColumnItems.length;
+      updateMutation.mutate({ id, updates: { status, sortOrder: newSortOrder } });
     }
   };
 
@@ -580,15 +639,21 @@ export const KanbanBoard: React.FC = () => {
               
               <div className="flex-1 overflow-y-auto px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
                 {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
-                  <div 
-                    key={item.id} 
-                    id={`card-${item.id}`} 
+                  <div
+                    key={item.id}
+                    id={`card-${item.id}`}
                     className={clsx(
-                      "group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative", 
-                      highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30"
-                    )} 
-                    draggable 
-                    onDragStart={(e) => handleDragStart(e, item.id)} 
+                      "group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative",
+                      highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
+                      dragId === item.id && "opacity-40",
+                      dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
+                      dropTargetId === item.id && dropPosition === 'below' && "border-b-2 border-b-indigo-500",
+                    )}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, item.id)}
+                    onDragEnd={handleDragEnd}
+                    onDragOver={(e) => handleCardDragOver(e, item.id)}
+                    onDragLeave={handleCardDragLeave}
                     onDoubleClick={() => setSelectedItem(item)}
                   >
                     <div className="flex justify-between items-start mb-3">

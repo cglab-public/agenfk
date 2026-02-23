@@ -78,6 +78,7 @@ export interface BaseItem {
   parentId?: string; // For hierarchy (Story -> Epic, Task -> Story)
   previousStatus?: Status; // To restore status after unarchiving
   implementationPlan?: string; // Markdown implementation plan
+  sortOrder?: number; // Position within column for prioritization
 }
 
 export interface Epic extends BaseItem {
