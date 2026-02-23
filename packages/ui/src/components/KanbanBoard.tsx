@@ -4,8 +4,8 @@ import { api } from '../api';
 import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
 import {
-  Plus, Loader2, AlertCircle, Layout, Tag,
-  AlignLeft, Zap, ChevronRight, Home, ArrowRight,
+  Plus, Loader2, AlertCircle, Tag,
+  Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff
@@ -101,16 +101,18 @@ export const KanbanBoard: React.FC = () => {
     if (isLoadingProjects || !projects) return;
     if (selectedProjectId && !projects.find(p => p.id === selectedProjectId)) {
       const fallback = projects.length === 1 ? projects[0].id : null;
-      setSelectedProjectId(fallback);
+      if (fallback !== selectedProjectId) {
+        setSelectedProjectId(fallback);
+      }
       if (fallback) {
         localStorage.setItem('agenfk_project_id', fallback);
       } else {
         localStorage.removeItem('agenfk_project_id');
       }
     }
-  }, [projects, isLoadingProjects]);
+  }, [projects, isLoadingProjects, selectedProjectId]);
 
-  const { data: items, isLoading, error } = useQuery({ 
+  const { data: items, isLoading } = useQuery({ 
     queryKey: ['items', selectedProjectId], 
     queryFn: () => api.listItems({ includeArchived: true, projectId: selectedProjectId || undefined }),
     enabled: !!selectedProjectId
@@ -151,7 +153,8 @@ export const KanbanBoard: React.FC = () => {
     if (selectedItem && items) {
       const updated = items.find((i: AgenFKItem) => i.id === selectedItem.id);
       if (updated && JSON.stringify(updated) !== JSON.stringify(selectedItem)) {
-        setSelectedItem(updated);
+        // Need to update asynchronously to avoid set-state-in-effect warning during render phase
+        queueMicrotask(() => setSelectedItem(updated));
       }
     }
   }, [items, selectedItem]);
@@ -255,7 +258,11 @@ export const KanbanBoard: React.FC = () => {
     filtered.sort((a: AgenFKItem, b: AgenFKItem) => {
       const aOrder = a.sortOrder;
       const bOrder = b.sortOrder;
-      if (aOrder !== undefined && bOrder !== undefined) return aOrder - bOrder;
+      if (aOrder !== undefined && bOrder !== undefined) {
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        // If sort orders are equal (e.g. during a mid-update collision), fall through to createdAt
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
       if (aOrder !== undefined) return -1;
       if (bOrder !== undefined) return 1;
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
@@ -277,7 +284,9 @@ export const KanbanBoard: React.FC = () => {
   };
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
+    e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('itemId', id);
+    e.dataTransfer.setData('text/plain', id); // Fallback for wider browser support
     setDragId(id);
   };
 
@@ -306,7 +315,9 @@ export const KanbanBoard: React.FC = () => {
   };
 
   const handleDrop = (e: React.DragEvent, status: Status) => {
-    const id = e.dataTransfer.getData('itemId');
+    e.preventDefault();
+    e.stopPropagation();
+    const id = e.dataTransfer.getData('itemId') || e.dataTransfer.getData('text/plain') || dragId;
     // Read from refs — always current, no stale-closure risk in React 18
     const currentDropTargetId = dropTargetIdRef.current;
     const currentDropPosition = dropPositionRef.current;
@@ -332,6 +343,7 @@ export const KanbanBoard: React.FC = () => {
         columnItems.splice(insertIndex, 0, draggedItem);
         
         // Update all items in the column to have correct sortOrder
+        const bulkUpdates: {id: string, updates: Partial<AgenFKItem>}[] = [];
         columnItems.forEach((item: AgenFKItem, idx: number) => {
           const updates: Partial<AgenFKItem> = { sortOrder: idx };
           if (item.id === id && item.status !== status) {
@@ -339,9 +351,24 @@ export const KanbanBoard: React.FC = () => {
           }
           
           if (item.sortOrder !== idx || (item.id === id && item.status !== status)) {
-            updateMutation.mutate({ id: item.id, updates });
+            bulkUpdates.push({ id: item.id, updates });
           }
         });
+
+        if (bulkUpdates.length > 0) {
+          // Optimistic local UI update to prevent race conditions during sequential API calls
+          queryClient.setQueryData(['items', selectedProjectId], (old: AgenFKItem[] | undefined) => {
+            if (!old) return old;
+            return old.map(item => {
+              const update = bulkUpdates.find(u => u.id === item.id);
+              if (update) return { ...item, ...update.updates };
+              return item;
+            });
+          });
+
+          // Fire all mutations (server guarantees sequence per record)
+          bulkUpdates.forEach(u => updateMutation.mutate({ id: u.id, updates: u.updates }));
+        }
         return;
       }
     }
@@ -350,12 +377,27 @@ export const KanbanBoard: React.FC = () => {
     if (draggedItem.status !== status) {
       const targetColumnItems = getItemsByStatus(status, true);
       const newSortOrder = targetColumnItems.length;
+
+      // Optimistic local UI update
+      queryClient.setQueryData(['items', selectedProjectId], (old: AgenFKItem[] | undefined) => {
+        if (!old) return old;
+        return old.map(item => item.id === id ? { ...item, status, sortOrder: newSortOrder } : item);
+      });
+
       updateMutation.mutate({ id, updates: { status, sortOrder: newSortOrder } });
     }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleColumnDragEnter = (e: React.DragEvent) => {
+    if (e.currentTarget === e.target) {
+      dropTargetIdRef.current = null;
+      setDropTargetId(null);
+    }
   };
 
   const handleArchiveColumn = (status: Status) => {
@@ -637,7 +679,7 @@ export const KanbanBoard: React.FC = () => {
       <main className="flex-1 overflow-x-auto p-4 md:p-6">
         <div className="flex flex-col md:flex-row gap-6 h-full">
           {statuses.map(status => (
-            <div key={status} className="flex flex-col w-full md:w-80 h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver}>
+            <div key={status} className="flex flex-col w-full md:w-80 h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
                 <div className="flex items-center gap-2">
                   <div className={clsx(
