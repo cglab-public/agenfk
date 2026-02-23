@@ -69,6 +69,16 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     }
   }, [item.id]);
 
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const handleQuickAdd = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newSubitemTitle.trim() || isSubmitting) return;
