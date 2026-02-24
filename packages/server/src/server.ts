@@ -1032,12 +1032,8 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   updateJobs.set(jobId, job);
   res.status(202).json({ jobId });
 
-  const projectRoot = findProjectRoot(process.cwd());
-  const isGitClone = fs.existsSync(path.join(projectRoot, '.git'));
-  const command = isGitClone
-    ? `node ${JSON.stringify(path.join(projectRoot, 'scripts/install.mjs'))}`
-    : 'npx @agenfk/create@latest';
-  const cwd = isGitClone ? projectRoot : os.homedir();
+  const command = 'npx @agenfk/create@latest';
+  const cwd = os.homedir();
 
   const child = exec(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
   child.stdout?.on('data', (d) => job.output.push(d.toString()));
