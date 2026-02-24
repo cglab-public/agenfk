@@ -191,8 +191,6 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         "group bg-white dark:bg-slate-900 rounded-xl p-3 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
         highlightedId === item.id && "ring-2 ring-indigo-500 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
         dragId === item.id && "opacity-40",
-        dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
-        dropTargetId === item.id && dropPosition === 'below' && "border-b-2 border-b-indigo-500",
         isFlying ? "!z-[9999] isolate" : (highlightedId === item.id ? "z-20 relative" : "z-0 relative")
       )}
       style={{
@@ -208,6 +206,12 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       onDragLeave={onCardDragLeave}
       onDoubleClick={onDoubleClick}
     >
+      {dropTargetId === item.id && dropPosition === 'above' && (
+        <div className="absolute -top-[1px] left-0 right-0 h-[2px] bg-indigo-500 rounded-t-xl z-50 pointer-events-none" />
+      )}
+      {dropTargetId === item.id && dropPosition === 'below' && (
+        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-indigo-500 rounded-b-xl z-50 pointer-events-none" />
+      )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
           <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
@@ -381,21 +385,9 @@ export const KanbanBoard: React.FC = () => {
     userActionTimerRef.current = setTimeout(() => setIsUserAction(false), 5000);
   };
 
-  const [isBoardAnimating, setIsBoardAnimating] = useState(false);
   const previousItemsRef = React.useRef(items);
 
   useEffect(() => {
-    if (items && previousItemsRef.current) {
-      const hasStatusChange = items.some((item: any) => {
-        const prev = previousItemsRef.current?.find((i: any) => i.id === item.id);
-        return prev && prev.status !== item.status;
-      });
-      if (hasStatusChange) {
-        setIsBoardAnimating(true);
-        const timer = setTimeout(() => setIsBoardAnimating(false), 600);
-        return () => clearTimeout(timer);
-      }
-    }
     previousItemsRef.current = items;
   }, [items]);
 
@@ -1014,7 +1006,7 @@ export const KanbanBoard: React.FC = () => {
                 </span>
               </div>
               
-              <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+              <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                 <LayoutGroup id={status}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
@@ -1067,7 +1059,7 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                   </div>
-                <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <LayoutGroup id="blocked">
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
@@ -1133,7 +1125,7 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                   </div>
-                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                       <LayoutGroup id="archived">
                         <AnimatePresence mode="popLayout" initial={false}>
                           {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
