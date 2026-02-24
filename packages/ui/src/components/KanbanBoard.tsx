@@ -721,9 +721,9 @@ export const KanbanBoard: React.FC = () => {
       </header>
 
       <main className="flex-1 overflow-x-auto p-4 md:p-6">
-        <div className="flex flex-col md:flex-row gap-6 h-full">
+        <div className="flex flex-col md:flex-row gap-6 h-full w-full">
           {statuses.map(status => (
-            <div key={status} className="flex flex-col w-full md:w-80 h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
+            <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[320px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
                 <div className="flex items-center gap-2">
                   <div className={clsx(
