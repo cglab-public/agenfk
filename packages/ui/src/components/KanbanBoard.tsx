@@ -554,9 +554,9 @@ export const KanbanBoard: React.FC = () => {
 
   return (
     <div className="h-full min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col font-sans text-slate-900 dark:text-slate-100 transition-colors duration-300">
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex flex-col gap-4 sticky top-0 z-10 shadow-sm dark:shadow-none">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 shrink-0">
             <Logo size={32} />
             <div>
               <div className="flex items-center gap-2">
@@ -592,98 +592,114 @@ export const KanbanBoard: React.FC = () => {
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <form onSubmit={handleSearch} className="relative hidden md:block">
-              <input 
-                type="text"
-                placeholder="Search Item ID or Name..."
-                value={searchQuery}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-9 pr-3 py-1.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all w-64 dark:text-slate-200"
-              />
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            </form>
 
-            <JiraConnectionButton />
+          <form onSubmit={handleSearch} className="relative flex-1 max-w-md hidden lg:block">
+            <input 
+              type="text"
+              placeholder="Search Item ID or Name..."
+              value={searchQuery}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all dark:text-slate-200 shadow-inner"
+            />
+            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          </form>
 
-            {jiraStatus?.connected && selectedProjectId && (
-              <button
-                onClick={() => setIsJiraImportOpen(true)}
-                data-testid="jira-import-btn"
-                className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-colors"
-              >
-                <Download size={12} />
-                <span>Import JIRA</span>
-              </button>
-            )}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-xl border border-slate-200/50 dark:border-slate-700/50">
+              <JiraConnectionButton />
 
-            <ReleaseReminder />
-
-            <button onClick={toggleTheme} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-500 border border-slate-200 dark:border-slate-700 shadow-sm transition-colors">
-              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
-            
-            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
-              <div className="pl-2 pr-1 border-r border-slate-200 dark:border-slate-700">
-                <Tag size={12} className="text-slate-400" />
-              </div>
-              <select 
-                value={selectedItemType} 
-                onChange={(e) => setSelectedItemType(e.target.value as ItemType | 'ALL')}
-                className="bg-transparent text-xs font-bold text-slate-600 dark:text-slate-300 focus:outline-none px-2 py-1 cursor-pointer"
-              >
-                <option value="ALL">All Types</option>
-                {Object.values(ItemType).map(type => (
-                  <option key={type} value={type}>{type}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="text-right hidden sm:block border-l border-slate-200 dark:border-slate-700 pl-4">
-              <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight flex items-center gap-2 justify-end">
-                Tokens / Cost
-                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-indigo-600 transition-colors">
-                  <Loader2 size={12} className={clsx(isLoading && "animate-spin")} />
+              {jiraStatus?.connected && selectedProjectId && (
+                <button
+                  onClick={() => setIsJiraImportOpen(true)}
+                  data-testid="jira-import-btn"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                >
+                  <Download size={14} />
+                  <span className="hidden xl:inline">Import</span>
                 </button>
-              </div>
-              <div className="font-mono font-bold text-indigo-600 dark:text-indigo-400 transition-colors">
-                {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
-                {pricesData ? ` / ${formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)}` : ''}
+              )}
+
+              <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1 hidden md:block" />
+
+              <ReleaseReminder />
+
+              <button 
+                onClick={toggleTheme} 
+                className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-indigo-500 transition-all"
+                title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              >
+                {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+              
+              <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1 hidden md:block" />
+
+              <div className="flex items-center gap-1 px-1">
+                <Tag size={14} className="text-slate-400" />
+                <select 
+                  value={selectedItemType} 
+                  onChange={(e) => setSelectedItemType(e.target.value as ItemType | 'ALL')}
+                  className="bg-transparent text-xs font-bold text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer hover:text-indigo-600 transition-colors py-1"
+                >
+                  <option value="ALL">All Types</option>
+                  {Object.values(ItemType).map(type => (
+                    <option key={type} value={type}>{type}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
-            <div className="text-right hidden sm:block border-l border-slate-200 dark:border-slate-700 pl-4">
-              <div className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-tight flex items-center gap-2 justify-end">
-                Cycle Total / Avg
-              </div>
-              <div className="font-mono font-bold text-emerald-600 dark:text-emerald-400 transition-colors">
-                {formatDuration(totalCycleMs)} / {formatDuration(avgCycleMs)}
-              </div>
-            </div>
             <button 
               onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: selectedProjectId! } as any)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 shadow-sm transition-all active:scale-95"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-indigo-500/20 transition-all active:scale-95 whitespace-nowrap"
             >
-              <Plus size={16} />
+              <Plus size={18} />
               <span>New Item</span>
             </button>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 text-sm overflow-x-auto py-1 border-t border-slate-50 dark:border-slate-800 pt-3 scrollbar-hide">
-          <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors whitespace-nowrap", navPath.length === 0 ? "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-            <Home size={14} />
-            <span>Top Level</span>
-          </button>
-          {navPath.map((nav, index) => (
-            <React.Fragment key={nav.id}>
-              <ChevronRight size={14} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
-              <button onClick={() => navigateTo(index)} className={clsx("flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors whitespace-nowrap", index === navPath.length - 1 ? "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-                <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-purple-400" : "bg-blue-400")}></span>
-                <span>{nav.title}</span>
-              </button>
-            </React.Fragment>
-          ))}
+        <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/50 pt-2 px-1">
+          <div className="flex items-center gap-1.5 text-xs overflow-x-auto scrollbar-hide py-1">
+            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/20" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+              <Home size={14} />
+              <span className={clsx(navPath.length === 0 ? "inline" : "hidden sm:inline")}>Top Level</span>
+            </button>
+            {navPath.map((nav, index) => (
+              <React.Fragment key={nav.id}>
+                <ChevronRight size={14} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
+                <button onClick={() => navigateTo(index)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/20" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+                  <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-purple-300" : "bg-blue-300")}></span>
+                  <span>{nav.title}</span>
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-4 shrink-0 pl-4 border-l border-slate-100 dark:border-slate-800/50 ml-2">
+            <div className="flex flex-col items-end">
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
+                <Zap size={10} className="text-amber-500" />
+                Tokens / Cost
+                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-indigo-600 transition-colors">
+                  <Loader2 size={10} className={clsx(isLoading && "animate-spin")} />
+                </button>
+              </div>
+              <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
+                {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
+                {pricesData ? <span className="text-indigo-600 dark:text-indigo-400 ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
+              </div>
+            </div>
+
+            <div className="flex flex-col items-end">
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
+                <Clock size={10} className="text-emerald-500" />
+                Cycle Total / Avg
+              </div>
+              <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
+                {formatDuration(totalCycleMs)} <span className="text-emerald-600 dark:text-emerald-400 ml-1">/ {formatDuration(avgCycleMs)}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
