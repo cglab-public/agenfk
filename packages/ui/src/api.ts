@@ -82,6 +82,15 @@ export const api = {
       throw e;
     }
   },
+  trashArchivedItems: async (projectId: string) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/trash-archived`, { projectId });
+      return data;
+    } catch (e) {
+      console.error(`API Error trashing archived items for project ${projectId}:`, e);
+      throw e;
+    }
+  },
   getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string }> => {
     try {
       const { data } = await axios.get(`${API_URL}/jira/status`);

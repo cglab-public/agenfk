@@ -117,18 +117,20 @@ const unarchiveRecursively = async (id: string) => {
   }
 };
 
-const deleteRecursively = async (id: string): Promise<boolean> => {
+const trashRecursively = async (id: string): Promise<boolean> => {
   const item = await storage.getItem(id);
-  if (!item) return false;
+  if (!item || item.status === Status.TRASHED) return false;
 
-  console.log(`[AUTO_DELETE] Deleting ${item.id} (${item.title}) and its children`);
+  console.log(`[AUTO_TRASH] Trashing ${item.id} (${item.title}) and its children`);
   
+  await storage.updateItem(id, { status: Status.TRASHED });
+
   const children = await storage.listItems({ parentId: id });
   for (const child of children) {
-    await deleteRecursively(child.id);
+    await trashRecursively(child.id);
   }
 
-  return await storage.deleteItem(id);
+  return true;
 };
 
 const syncParentStatus = async (parentId: string) => {
@@ -354,10 +356,23 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
   let items = await storage.listItems(query);
 
   if (includeArchived !== 'true' && !status) {
-    items = items.filter(i => i.status !== Status.ARCHIVED);
+    items = items.filter(i => i.status !== Status.ARCHIVED && i.status !== Status.TRASHED);
   }
 
   res.json(items);
+}));
+
+app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
+  const { projectId } = req.body;
+  if (!projectId) return res.status(400).json({ error: "ProjectId is required" });
+
+  const archivedItems = await storage.listItems({ projectId, status: Status.ARCHIVED });
+  for (const item of archivedItems) {
+    await trashRecursively(item.id);
+  }
+
+  io.emit('items_updated');
+  res.json({ count: archivedItems.length });
 }));
 
 app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
@@ -564,10 +579,10 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "Item not found" });
   }
 
-  const success = await deleteRecursively(req.params.id);
+  const success = await trashRecursively(req.params.id);
   if (success) {
     const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [API_DELETE] Item deleted: ${req.params.id}. Broadcasting refresh...`);
+    console.log(`[${timestamp}] [API_TRASH] Item trashed: ${req.params.id}. Broadcasting refresh...`);
     io.emit('items_updated');
 
     if (itemToDelete.parentId) {

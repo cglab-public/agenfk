@@ -8,7 +8,7 @@ import {
   Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download, Pin, PinOff, ExternalLink
+  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -235,6 +235,13 @@ export const KanbanBoard: React.FC = () => {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteItem(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['items'] });
+    }
+  });
+
+  const trashArchivedMutation = useMutation({
+    mutationFn: (projectId: string) => api.trashArchivedItems(projectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
     }
@@ -916,6 +923,19 @@ export const KanbanBoard: React.FC = () => {
                       <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
                       <Archive size={14} className="text-slate-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
+                      {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
+                        <button 
+                          onClick={() => {
+                            if (window.confirm('Move all archived items to trash?')) {
+                              trashArchivedMutation.mutate(selectedProjectId!);
+                            }
+                          }} 
+                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
+                          title="Trash All Archived"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                   </div>

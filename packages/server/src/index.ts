@@ -194,7 +194,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "delete_item",
-        description: "Permanently delete an item by ID. Use with caution.",
+        description: "Move an item and its children to the trash (TRASHED status). Use with caution.",
         inputSchema: {
           type: "object",
           properties: { id: { type: "string" } },
@@ -482,7 +482,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "delete_item": {
         const { id } = z.object({ id: z.string() }).parse(request.params.arguments);
         await api.delete(`/items/${id}`);
-        return { content: [{ type: "text", text: `Item ${id} deleted.` }] };
+        return { content: [{ type: "text", text: `Item ${id} and its children moved to trash.` }] };
       }
       case "log_token_usage": {
         const args = LogTokenUsageSchema.parse(request.params.arguments);

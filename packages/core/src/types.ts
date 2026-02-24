@@ -5,7 +5,8 @@ export enum Status {
   REVIEW = "REVIEW",
   DONE = "DONE",
   BLOCKED = "BLOCKED",
-  ARCHIVED = "ARCHIVED"
+  ARCHIVED = "ARCHIVED",
+  TRASHED = "TRASHED"
 }
 
 export enum ItemType {

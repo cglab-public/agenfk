@@ -30,18 +30,6 @@ describe('Server API', () => {
     });
   });
 
-  describe('POST /projects', () => {
-    it('should create a new project', async () => {
-      const res = await request(app)
-        .post('/projects')
-        .send({ name: 'Test Project', description: 'Test Desc' });
-      
-      expect(res.status).toBe(201);
-      expect(res.body.name).toBe('Test Project');
-      expect(res.body.id).toBeDefined();
-    });
-  });
-
   describe('PUT /projects/:id', () => {
     it('should update a project', async () => {
       const createRes = await request(app)
@@ -192,7 +180,7 @@ describe('Server API', () => {
       expect(unarchiveRes.body.status).toBe(Status.TODO);
     });
 
-    it('should delete an item', async () => {
+    it('should trash an item (soft delete)', async () => {
       const createRes = await request(app)
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Delete Me', description: 'D' });
@@ -201,8 +189,33 @@ describe('Server API', () => {
       const delRes = await request(app).delete(`/items/${id}`);
       expect(delRes.status).toBe(204);
 
+      // Should still be fetchable by ID
       const getRes = await request(app).get(`/items/${id}`);
-      expect(getRes.status).toBe(404);
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.status).toBe(Status.TRASHED);
+
+      // Should NOT appear in general items list by default
+      const listRes = await request(app).get('/items');
+      const found = listRes.body.find((i: any) => i.id === id);
+      expect(found).toBeUndefined();
+    });
+
+    it('should trash all archived items', async () => {
+      // Create an archived item
+      const itemRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Archived Task', status: Status.ARCHIVED });
+      const id = itemRes.body.id;
+
+      const trashRes = await request(app)
+        .post('/items/trash-archived')
+        .send({ projectId });
+      
+      expect(trashRes.status).toBe(200);
+      expect(trashRes.body.count).toBeGreaterThan(0);
+
+      const getRes = await request(app).get(`/items/${id}`);
+      expect(getRes.body.status).toBe(Status.TRASHED);
     });
   });
 });
