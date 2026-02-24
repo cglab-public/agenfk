@@ -14,6 +14,7 @@ import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
+import { ReleaseReminder } from './ReleaseReminder';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { calculateCost, formatCost } from '../utils';
@@ -615,6 +616,8 @@ export const KanbanBoard: React.FC = () => {
                 <span>Import JIRA</span>
               </button>
             )}
+
+            <ReleaseReminder />
 
             <button onClick={toggleTheme} className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-500 border border-slate-200 dark:border-slate-700 shadow-sm transition-colors">
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}

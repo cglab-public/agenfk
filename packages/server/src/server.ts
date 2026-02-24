@@ -23,7 +23,7 @@ const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec } from "child_process";
+import { exec, execSync } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
@@ -956,6 +956,70 @@ app.post("/jira/disconnect", (req: any, res: any) => {
   deleteJiraToken();
   res.json({ disconnected: true });
 });
+
+// ── Release Check ─────────────────────────────────────────────────────────────
+
+let releaseCache: { data: any; fetchedAt: number } | null = null;
+const RELEASE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+
+const getCurrentVersion = (): string => {
+  try {
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(findProjectRoot(process.cwd()), 'package.json'), 'utf8'));
+    return rootPkg.version;
+  } catch { return '0.0.0'; }
+};
+
+const getGitHubRepo = (): string | null => {
+  try {
+    const remote = execSync('git remote get-url origin', { encoding: 'utf8', cwd: findProjectRoot(process.cwd()) }).trim();
+    const sshMatch = remote.match(/git@github\.com:(.+?)\.git$/);
+    if (sshMatch) return sshMatch[1];
+    const httpsMatch = remote.match(/github\.com\/(.+?)(?:\.git)?$/);
+    if (httpsMatch) return httpsMatch[1];
+  } catch {}
+  return null;
+};
+
+const getGitHubToken = (): string | null => {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  try {
+    return execSync('gh auth token 2>/dev/null', { encoding: 'utf8' }).trim() || null;
+  } catch { return null; }
+};
+
+app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
+  const currentVersion = getCurrentVersion();
+
+  if (releaseCache && (Date.now() - releaseCache.fetchedAt) < RELEASE_CACHE_TTL) {
+    return res.json({ ...releaseCache.data, currentVersion });
+  }
+
+  const repo = getGitHubRepo();
+  if (!repo) {
+    return res.status(404).json({ error: 'Could not detect GitHub repository', currentVersion });
+  }
+
+  const token = getGitHubToken();
+  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
+    const releaseData = {
+      version: data.tag_name.replace(/^v/, ''),
+      tagName: data.tag_name,
+      name: data.name,
+      body: data.body || '',
+      publishedAt: data.published_at,
+      url: data.html_url,
+    };
+    releaseCache = { data: releaseData, fetchedAt: Date.now() };
+    res.json({ ...releaseData, currentVersion });
+  } catch (err: any) {
+    console.error('[RELEASE] Failed to fetch latest release:', err.message);
+    res.status(502).json({ error: 'Failed to fetch release info', currentVersion });
+  }
+}));
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
