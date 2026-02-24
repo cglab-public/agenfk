@@ -1158,62 +1158,78 @@ const scrapeOpencodeSessions = async () => {
   for (const session of sessions) {
     if (!isAgenFKDir(session.directory)) continue;
 
-    // Extract task IDs
-    const taskIds = new Set<string>();
-
-    const updateParts = sqlite3Query(OPENCODE_DB, `
-      SELECT json_extract(data, '$.state.input') as input_data
+    // Build task switch timeline from tool call parts, ordered by time
+    const allParts = sqlite3Query(OPENCODE_DB, `
+      SELECT json_extract(data, '$.tool') as tool,
+             json_extract(data, '$.state.input') as input_data,
+             json_extract(data, '$.state.output') as output_data,
+             time_created
       FROM part WHERE session_id = '${session.id}'
-        AND json_extract(data, '$.tool') = 'agenfk_update_item'
+        AND json_extract(data, '$.tool') IN ('agenfk_update_item', 'agenfk_workflow_gatekeeper')
+      ORDER BY time_created ASC
     `);
-    for (const row of updateParts) {
-      try {
-        const inp = JSON.parse(row.input_data || '{}');
-        if (inp.id && inp.status === 'IN_PROGRESS') taskIds.add(inp.id);
-      } catch { /* skip */ }
+
+    const taskSwitches: { time: number; taskId: string }[] = [];
+    for (const part of allParts) {
+      let taskId: string | null = null;
+      if (part.tool === 'agenfk_update_item') {
+        try {
+          const inp = JSON.parse(part.input_data || '{}');
+          if (inp.id && inp.status === 'IN_PROGRESS') taskId = inp.id;
+        } catch { /* skip */ }
+      }
+      if (part.tool === 'agenfk_workflow_gatekeeper') {
+        try {
+          const inp = JSON.parse(part.input_data || '{}');
+          if (inp.itemId) taskId = inp.itemId;
+        } catch { /* skip */ }
+        if (!taskId) {
+          const matches = (part.output_data || '').match(UUID_RE);
+          if (matches && matches.length > 0) taskId = matches[0];
+        }
+      }
+      if (taskId) taskSwitches.push({ time: part.time_created, taskId });
     }
 
-    const gkParts = sqlite3Query(OPENCODE_DB, `
-      SELECT json_extract(data, '$.state.input') as input_data,
-             json_extract(data, '$.state.output') as output_data
-      FROM part WHERE session_id = '${session.id}'
-        AND json_extract(data, '$.tool') = 'agenfk_workflow_gatekeeper'
-    `);
-    for (const row of gkParts) {
-      try {
-        const inp = JSON.parse(row.input_data || '{}');
-        if (inp.itemId) { taskIds.add(inp.itemId); continue; }
-      } catch { /* skip */ }
-      const matches = (row.output_data || '').match(UUID_RE);
-      if (matches) matches.forEach((id: string) => taskIds.add(id));
-    }
+    if (taskSwitches.length === 0) continue;
 
-    if (taskIds.size === 0) continue;
-
-    // Aggregate tokens by model
-    const tokensByModel: Record<string, { input: number; output: number; cacheRead: number; cost: number }> = {};
+    // Get all assistant messages ordered by time
     const messages = sqlite3Query(OPENCODE_DB, `
       SELECT json_extract(data, '$.modelID') as model,
              json_extract(data, '$.tokens.input') as inp,
              json_extract(data, '$.tokens.output') as outp,
              json_extract(data, '$.tokens.cache.read') as cr,
-             json_extract(data, '$.cost') as cost
-      FROM message WHERE session_id = '${session.id}' AND json_extract(data, '$.role') = 'assistant'
+             json_extract(data, '$.cost') as cost,
+             time_created
+      FROM message WHERE session_id = '${session.id}'
+        AND json_extract(data, '$.role') = 'assistant'
+      ORDER BY time_created ASC
     `);
+
+    // Attribute each message to the most recent task switch before it
+    const perTask: Record<string, Record<string, { input: number; output: number; cacheRead: number; cost: number }>> = {};
     for (const m of messages) {
+      let activeTask: string | null = null;
+      for (const sw of taskSwitches) {
+        if (sw.time <= m.time_created) activeTask = sw.taskId;
+        else break;
+      }
+      if (!activeTask) activeTask = taskSwitches[0].taskId;
+
       const model = m.model || 'unknown';
-      if (!tokensByModel[model]) tokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cost: 0 };
-      tokensByModel[model].input += m.inp || 0;
-      tokensByModel[model].output += m.outp || 0;
-      tokensByModel[model].cacheRead += m.cr || 0;
-      tokensByModel[model].cost += m.cost || 0;
+      if (!perTask[activeTask]) perTask[activeTask] = {};
+      if (!perTask[activeTask][model]) perTask[activeTask][model] = { input: 0, output: 0, cacheRead: 0, cost: 0 };
+      perTask[activeTask][model].input += m.inp || 0;
+      perTask[activeTask][model].output += m.outp || 0;
+      perTask[activeTask][model].cacheRead += m.cr || 0;
+      perTask[activeTask][model].cost += m.cost || 0;
     }
 
-    if (Object.keys(tokensByModel).length === 0) continue;
+    if (Object.keys(perTask).length === 0) continue;
 
     const now = new Date().toISOString();
 
-    for (const taskId of taskIds) {
+    for (const [taskId, tokensByModel] of Object.entries(perTask)) {
       try {
         const item = await storage.getItem(taskId);
         if (!item) continue;
