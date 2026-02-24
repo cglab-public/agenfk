@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { api } from '../api';
 import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
@@ -61,6 +62,168 @@ const statusIcons: Record<Status, React.ReactNode> = {
   [Status.DONE]: <ChevronRight size={14} />,
   [Status.BLOCKED]: <AlertCircle size={14} />,
   [Status.ARCHIVED]: <Archive size={14} />,
+};
+
+interface KanbanCardProps {
+  item: AgenFKItem;
+  items?: AgenFKItem[];
+  highlightedId: string | null;
+  dragId: string | null;
+  dropTargetId: string | null;
+  dropPosition: 'above' | 'below';
+  copiedId: string | null;
+  pricesData: any;
+  onCardDragStart: (e: React.DragEvent, id: string) => void;
+  onCardDragEnd: () => void;
+  onCardDragOver: (e: React.DragEvent, targetId: string) => void;
+  onCardDragLeave: (e: React.DragEvent) => void;
+  onDoubleClick: () => void;
+  onDrillDown: (item: AgenFKItem) => void;
+  onArchive: (id: string) => void;
+  onCopyId: (id: string) => void;
+}
+
+const KanbanCard: React.FC<KanbanCardProps> = ({
+  item, items, highlightedId, dragId, dropTargetId, dropPosition,
+  copiedId, pricesData, onCardDragStart, onCardDragEnd, onCardDragOver,
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onCopyId
+}) => {
+  const [lastUpdate, setLastUpdate] = useState(item.updatedAt);
+  const [shouldFlash, setShouldFlash] = useState(false);
+
+  useEffect(() => {
+    if (new Date(item.updatedAt).getTime() > new Date(lastUpdate).getTime()) {
+      setShouldFlash(true);
+      setLastUpdate(item.updatedAt);
+      const timer = setTimeout(() => setShouldFlash(false), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [item.updatedAt, lastUpdate]);
+
+  return (
+    <motion.div
+      layout
+      layoutId={item.id}
+      id={`card-${item.id}`}
+      initial={{ opacity: 0, scale: 0.95, y: 10 }}
+      animate={{ 
+        opacity: 1, 
+        scale: shouldFlash ? 0.96 : 1,
+        y: 0,
+      }}
+      exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.1 } }}
+      transition={{ 
+        layout: { 
+          type: "spring", 
+          stiffness: 250, 
+          damping: 25,
+          mass: 1
+        },
+        scale: { 
+          type: "spring", 
+          stiffness: 500, 
+          damping: 15 
+        },
+      }}
+      className={clsx(
+        "group bg-white dark:bg-slate-900 rounded-xl p-4 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all duration-200 relative",
+        highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_20px_rgba(99,102,241,0.5)] z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
+        dragId === item.id && "opacity-40",
+        dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
+        dropTargetId === item.id && dropPosition === 'below' && "border-b-2 border-b-indigo-500",
+        (shouldFlash || highlightedId === item.id) ? "z-20" : "z-0"
+      )}
+      style={{
+        transformOrigin: 'center center',
+      }}
+      draggable
+      onDragStart={(e: any) => onCardDragStart(e, item.id)}
+      onDragEnd={onCardDragEnd}
+      onDragOver={(e: any) => onCardDragOver(e, item.id)}
+      onDragLeave={onCardDragLeave}
+      onDoubleClick={onDoubleClick}
+    >
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex items-center gap-2">
+          <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
+            {item.type}
+          </span>
+          {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 transition-colors">
+              Drill down <ArrowRight size={10} />
+            </button>
+          )}
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          <Archive size={12} />
+        </button>
+      </div>
+      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-snug mb-2 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
+      {item.description && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">{item.description}</p>}
+      
+      {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
+        <div className="mb-3">
+          {(() => {
+            const subitems = items?.filter((i: AgenFKItem) => i.parentId === item.id) || [];
+            if (subitems.length === 0) return null;
+            const progress = Math.round((subitems.filter((i: AgenFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
+            return (
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
+                  <span>Progress</span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-50 dark:border-slate-800">
+                  <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+        <div className="flex items-center gap-2">
+          {item.externalUrl && (
+            <a 
+              href={item.externalUrl} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              onClick={(e) => e.stopPropagation()}
+              className="text-indigo-500 hover:text-indigo-700 transition-colors"
+              title={`Open JIRA: ${item.externalId}`}
+            >
+              <ExternalLink size={10} />
+            </a>
+          )}
+          <div 
+            className="flex items-center gap-1.5 group/id cursor-pointer" 
+            onClick={(e) => { e.stopPropagation(); onCopyId(item.id); }}
+            title="Copy Full ID"
+          >
+            <span className="group-hover/id:text-indigo-500 transition-colors">#{item.id.substring(0, 4)}</span>
+            <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
+              {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
+            <Clock size={10} />
+            {item.status === Status.DONE 
+              ? formatDuration(new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime())
+              : formatDuration(Date.now() - new Date(item.createdAt).getTime())
+            }
+          </div>
+        </div>
+        {item.tokenUsage && item.tokenUsage.length > 0 && (
+          <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
+            <Zap size={10} className="fill-amber-600" />
+            {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
+            {pricesData ? ` (${formatCost(calculateCost(item.tokenUsage, pricesData))})` : ''}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
 };
 
 export const KanbanBoard: React.FC = () => {
@@ -728,241 +891,181 @@ export const KanbanBoard: React.FC = () => {
       </header>
 
       <main className="flex-1 overflow-x-auto p-4 md:p-6">
-        <div className="flex flex-col md:flex-row gap-6 h-full w-full">
-          {statuses.map(status => (
-            <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[320px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
-              <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
-                <div className="flex items-center gap-2">
-                  <div className={clsx(
-                    "p-1 rounded-md",
-                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
-                    status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
-                    status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
-                    status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
-                    status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
-                    "text-slate-500 bg-slate-50 dark:bg-slate-800"
-                  )}>
-                    {statusIcons[status as Status]}
+        <LayoutGroup>
+          <div className="flex flex-col md:flex-row gap-6 h-full w-full">
+            {statuses.map(status => (
+              <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[320px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
+                <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
+                  <div className="flex items-center gap-2">
+                    <div className={clsx(
+                      "p-1 rounded-md",
+                      status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
+                      status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
+                      status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
+                      status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
+                      status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
+                      "text-slate-500 bg-slate-50 dark:bg-slate-800"
+                    )}>
+                      {statusIcons[status as Status]}
+                    </div>
+                    <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
+                    <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
+                      <Archive size={12} />
+                    </button>
                   </div>
-                  <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
-                    <Archive size={12} />
+                  <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">
+                    {getItemsByStatus(status as Status).length}
+                  </span>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800" style={{ perspective: '1000px' }}>
+                  <AnimatePresence>
+                    {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
+                      <KanbanCard
+                        key={item.id}
+                        item={item}
+                        items={items}
+                        highlightedId={highlightedId}
+                        dragId={dragId}
+                        dropTargetId={dropTargetId}
+                        dropPosition={dropPosition}
+                        copiedId={copiedId}
+                        pricesData={pricesData}
+                        onCardDragStart={handleDragStart}
+                        onCardDragEnd={handleDragEnd}
+                        onCardDragOver={handleCardDragOver}
+                        onCardDragLeave={handleCardDragLeave}
+                        onDoubleClick={() => setSelectedItem(item)}
+                        onDrillDown={handleDrillDown}
+                        onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                        onCopyId={handleCopyId}
+                      />
+                    ))}
+                  </AnimatePresence>
+                  <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
+                    <Plus size={16} /> Add {status.toLowerCase()}
                   </button>
                 </div>
-                <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">
-                  {getItemsByStatus(status as Status).length}
-                </span>
               </div>
-              
-              <div className="flex-1 overflow-y-auto px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
-                {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
-                  <div
-                    key={item.id}
-                    id={`card-${item.id}`}
-                    className={clsx(
-                      "group bg-white dark:bg-slate-900 rounded-xl p-4 shadow-sm border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-md dark:hover:shadow-indigo-900/10 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all duration-200 relative",
-                      highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
-                      dragId === item.id && "opacity-40",
-                      dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
-                      dropTargetId === item.id && dropPosition === 'below' && "border-b-2 border-b-indigo-500",
-                    )}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, item.id)}
-                    onDragEnd={handleDragEnd}
-                    onDragOver={(e) => handleCardDragOver(e, item.id)}
-                    onDragLeave={handleCardDragLeave}
-                    onDoubleClick={() => setSelectedItem(item)}
-                  >
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
-                          {item.type}
-                        </span>
-                        {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
-                          <button onClick={(e) => { e.stopPropagation(); handleDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 transition-colors">
-                            Drill down <ArrowRight size={10} />
-                          </button>
-                        )}
-                      </div>
-                      <button onClick={(e) => { e.stopPropagation(); updateMutation.mutate({ id: item.id, updates: { status: Status.ARCHIVED } }); }} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
-                        <Archive size={12} />
-                      </button>
-                    </div>
-                    <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-snug mb-2 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
-                    {item.description && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">{item.description}</p>}
-                    
-                    {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
-                      <div className="mb-3">
-                        {(() => {
-                          const subitems = items?.filter((i: AgenFKItem) => i.parentId === item.id) || [];
-                          if (subitems.length === 0) return null;
-                          const progress = Math.round((subitems.filter((i: AgenFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
-                          return (
-                            <div className="space-y-1.5">
-                              <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
-                                <span>Progress</span>
-                                <span>{progress}%</span>
-                              </div>
-                              <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-50 dark:border-slate-800">
-                                <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    )}
+            ))}
 
-                    <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+            <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
+              {/* Blocked Section */}
+              <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
+                {isBlockedCollapsed ? (
+                  <button onClick={() => setIsBlockedCollapsed(false)} className="h-full w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30">
+                    <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
+                    {isArchiveCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>}
+                    <span className={clsx("bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30", isArchiveCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                  </button>
+                ) : (
+                  <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
+                    <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
                       <div className="flex items-center gap-2">
-                        {item.externalUrl && (
-                          <a 
-                            href={item.externalUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer" 
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-indigo-500 hover:text-indigo-700 transition-colors"
-                            title={`Open JIRA: ${item.externalId}`}
-                          >
-                            <ExternalLink size={10} />
-                          </a>
-                        )}
-                        <div 
-                          className="flex items-center gap-1.5 group/id cursor-pointer" 
-                          onClick={(e) => { e.stopPropagation(); handleCopyId(item.id); }}
-                          title="Copy Full ID"
-                        >
-                          <span className="group-hover/id:text-indigo-500 transition-colors">#{item.id.substring(0, 4)}</span>
-                          <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
-                            {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
-                          <Clock size={10} />
-                          {item.status === Status.DONE 
-                            ? formatDuration(new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime())
-                            : formatDuration(Date.now() - new Date(item.createdAt).getTime())
-                          }
-                        </div>
+                        <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                        <AlertCircle size={14} className="text-red-500" />
+                        <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Blocked</h2>
                       </div>
-                      {item.tokenUsage && item.tokenUsage.length > 0 && (
-                        <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
-                          <Zap size={10} className="fill-amber-600" />
-                          {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
-                          {pricesData ? ` (${formatCost(calculateCost(item.tokenUsage, pricesData))})` : ''}
-                        </div>
-                      )}
+                      <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                     </div>
-                  </div>
-                ))}
-                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
-                  <Plus size={16} /> Add {status.toLowerCase()}
-                </button>
-              </div>
-            </div>
-          ))}
-
-          <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
-            {/* Blocked Section */}
-            <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
-              {isBlockedCollapsed ? (
-                <button onClick={() => setIsBlockedCollapsed(false)} className="h-full w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30">
-                  <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
-                  {isArchiveCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>}
-                  <span className={clsx("bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30", isArchiveCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
-                </button>
-              ) : (
-                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
-                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                      <AlertCircle size={14} className="text-red-500" />
-                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Blocked</h2>
-                    </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200">
-                    {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
-                      <div 
-                        key={item.id} 
-                        id={`card-${item.id}`}
-                        className={clsx(
-                          "bg-white/90 dark:bg-slate-900/90 rounded-xl p-3 shadow-sm border border-red-100 dark:border-red-900/30 cursor-move relative",
-                          highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500"
-                        )}
-                        draggable 
-                        onDragStart={(e) => handleDragStart(e, item.id)}
-                        onDoubleClick={() => setSelectedItem(item)}
-                      >
-                         <div className="flex justify-between items-start mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase text-slate-400 border-slate-200 dark:border-slate-700">{item.type}</span>
-                            <button onClick={() => updateMutation.mutate({ id: item.id, updates: { status: Status.ARCHIVED } })} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 hover:text-rose-500 transition-colors"><Archive size={12} /></button>
-                         </div>
-                         <h3 className="font-medium text-slate-700 dark:text-slate-200 text-xs leading-snug">{item.title}</h3>
-                      </div>
-                    ))}
+                  <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px' }}>
+                    <LayoutGroup>
+                      <AnimatePresence>
+                        {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
+                          <KanbanCard
+                            key={item.id}
+                            item={item}
+                            items={items}
+                            highlightedId={highlightedId}
+                            dragId={dragId}
+                            dropTargetId={dropTargetId}
+                            dropPosition={dropPosition}
+                            copiedId={copiedId}
+                            pricesData={pricesData}
+                            onCardDragStart={handleDragStart}
+                            onCardDragEnd={handleDragEnd}
+                            onCardDragOver={handleCardDragOver}
+                            onCardDragLeave={handleCardDragLeave}
+                            onDoubleClick={() => setSelectedItem(item)}
+                            onDrillDown={handleDrillDown}
+                            onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                            onCopyId={handleCopyId}
+                          />
+                        ))}
+                      </AnimatePresence>
+                    </LayoutGroup>
                     <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add blocked
                     </button>
                   </div>
-                </div>
-              )}
-            </div>
+                  </div>
+                )}
+              </div>
 
-            {/* Archived Section */}
-            <div className={clsx("flex flex-col transition-all duration-300", isArchiveCollapsed ? (isBlockedCollapsed ? "flex-1" : "h-12 shrink-0") : (isBlockedCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
-              {isArchiveCollapsed ? (
-                <button onClick={() => setIsArchiveCollapsed(false)} className="h-full w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
-                  <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
-                  {isBlockedCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>}
-                  <span className={clsx("bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700", isBlockedCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
-                </button>
-              ) : (
-                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800">
-                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                      <Archive size={14} className="text-slate-500" />
-                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
-                      {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
-                        <button 
-                          onClick={() => {
-                            if (window.confirm('Move all archived items to trash?')) {
-                              trashArchivedMutation.mutate(selectedProjectId!);
-                            }
-                          }} 
-                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
-                          title="Trash All Archived"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      )}
-                    </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
-                  </div>
-                  <div className="flex-1 overflow-y-auto pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200">
-                    {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
-                      <div 
-                        key={item.id} 
-                        id={`card-${item.id}`}
-                        className={clsx(
-                          "bg-white/60 dark:bg-slate-900/60 rounded-xl p-3 shadow-sm border border-slate-200 dark:border-slate-800 relative",
-                          highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.4)] z-10 border-indigo-500"
+              {/* Archived Section */}
+              <div className={clsx("flex flex-col transition-all duration-300", isArchiveCollapsed ? (isBlockedCollapsed ? "flex-1" : "h-12 shrink-0") : (isBlockedCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
+                {isArchiveCollapsed ? (
+                  <button onClick={() => setIsArchiveCollapsed(false)} className="h-full w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
+                    <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
+                    {isBlockedCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>}
+                    <span className={clsx("bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700", isBlockedCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                  </button>
+                ) : (
+                  <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                        <Archive size={14} className="text-slate-500" />
+                        <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
+                        {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
+                          <button 
+                            onClick={() => {
+                              if (window.confirm('Move all archived items to trash?')) {
+                                trashArchivedMutation.mutate(selectedProjectId!);
+                              }
+                            }} 
+                            className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
+                            title="Trash All Archived"
+                          >
+                            <Trash2 size={12} />
+                          </button>
                         )}
-                        onDoubleClick={() => setSelectedItem(item)}
-                      >
-                         <div className="flex justify-between items-start mb-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase text-slate-400 border-slate-200 dark:border-slate-700">{item.type}</span>
-                            <button onClick={() => updateMutation.mutate({ id: item.id, updates: { status: item.previousStatus || Status.TODO } })} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded text-indigo-500 transition-colors" title="Restore"><ArchiveRestore size={12} /></button>
-                         </div>
-                         <h3 className="font-medium text-slate-500 dark:text-slate-400 text-xs leading-snug">{item.title}</h3>
                       </div>
-                    ))}
+                      <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px' }}>
+                      <LayoutGroup>
+                        <AnimatePresence>
+                          {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
+                          <KanbanCard
+                            key={item.id}
+                            item={item}
+                            items={items}
+                            highlightedId={highlightedId}
+                            dragId={dragId}
+                            dropTargetId={dropTargetId}
+                            dropPosition={dropPosition}
+                            copiedId={copiedId}
+                            pricesData={pricesData}
+                            onCardDragStart={handleDragStart}
+                            onCardDragEnd={handleDragEnd}
+                            onCardDragOver={handleCardDragOver}
+                            onCardDragLeave={handleCardDragLeave}
+                            onDoubleClick={() => setSelectedItem(item)}
+                            onDrillDown={handleDrillDown}
+                            onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
+                            onCopyId={handleCopyId}
+                          />
+                        ))}
+                      </AnimatePresence>
+                    </LayoutGroup>
                   </div>
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        </LayoutGroup>
       </main>
 
       {selectedItem && (
