@@ -365,14 +365,14 @@ export const KanbanBoard: React.FC = () => {
         const prev = previousItemsRef.current?.find((i: any) => i.id === item.id);
         return prev && prev.status !== item.status;
       });
-      if (hasStatusChange && !isUserAction) {
+      if (hasStatusChange) {
         setIsBoardAnimating(true);
         const timer = setTimeout(() => setIsBoardAnimating(false), 600);
         return () => clearTimeout(timer);
       }
     }
     previousItemsRef.current = items;
-  }, [items, isUserAction]);
+  }, [items]);
 
   // Refs mirror state so handleDrop always reads current values (avoids stale closure in React 18)
   const dropTargetIdRef = React.useRef<string | null>(null);
