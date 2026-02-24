@@ -19,7 +19,10 @@ export interface TokenUsage {
   input: number;
   output: number;
   model: string;
-  cost?: number; // Optional cost estimation
+  cost?: number;
+  sessionId?: string;   // Deduplication key
+  source?: string;      // "claude-code" | "opencode" | "manual"
+  timestamp?: string;   // ISO date when logged
 }
 
 export interface ContextItem {
