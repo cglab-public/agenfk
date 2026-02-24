@@ -841,7 +841,7 @@ export const KanbanBoard: React.FC = () => {
                 <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgenFK Dashboard</h1>
                 <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
                   <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400 leading-none">
-                    v{versionData?.version || '0.1.29'}
+                    v{versionData?.version || '0.1.31'}
                   </span>
                   {isLoading && <Loader2 size={8} className="animate-spin text-slate-400" />}
                 </div>
@@ -988,35 +988,35 @@ export const KanbanBoard: React.FC = () => {
       </header>
 
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
-        <LayoutGroup>
-          <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
-            {statuses.map(status => (
-              <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
-                <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
-                  <div className="flex items-center gap-2">
-                    <div className={clsx(
-                      "p-1 rounded-md",
-                      status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
-                      status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
-                      status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
-                      status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
-                      status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
-                      "text-slate-500 bg-slate-50 dark:bg-slate-800"
-                    )}>
-                      {statusIcons[status as Status]}
-                    </div>
-                    <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
-                    <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
-                      <Archive size={12} />
-                    </button>
+        <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
+          {statuses.map(status => (
+            <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
+              <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
+                <div className="flex items-center gap-2">
+                  <div className={clsx(
+                    "p-1 rounded-md",
+                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
+                    status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
+                    status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
+                    status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
+                    status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
+                    "text-slate-500 bg-slate-50 dark:bg-slate-800"
+                  )}>
+                    {statusIcons[status as Status]}
                   </div>
-                  <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">
-                    {getItemsByStatus(status as Status).length}
-                  </span>
+                  <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
+                    <Archive size={12} />
+                  </button>
                 </div>
-                
-                <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                  <AnimatePresence mode="popLayout">
+                <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">
+                  {getItemsByStatus(status as Status).length}
+                </span>
+              </div>
+              
+              <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                <LayoutGroup id={status}>
+                  <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
                       <KanbanCard
                         key={item.id}
@@ -1040,34 +1040,36 @@ export const KanbanBoard: React.FC = () => {
                       />
                     ))}
                   </AnimatePresence>
-                  <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
-                    <Plus size={16} /> Add {status.toLowerCase()}
-                  </button>
-                </div>
+                </LayoutGroup>
+                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
+                  <Plus size={16} /> Add {status.toLowerCase()}
+                </button>
               </div>
-            ))}
+            </div>
+          ))}
 
-            <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
-              {/* Blocked Section */}
-              <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
-                {isBlockedCollapsed ? (
-                  <button onClick={() => setIsBlockedCollapsed(false)} className="h-full w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30">
-                    <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
-                    {isArchiveCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>}
-                    <span className={clsx("bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30", isArchiveCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
-                  </button>
-                ) : (
-                  <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
-                    <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                        <AlertCircle size={14} className="text-red-500" />
-                        <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Blocked</h2>
-                      </div>
-                      <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+          <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
+            {/* Blocked Section */}
+            <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
+              {isBlockedCollapsed ? (
+                <button onClick={() => setIsBlockedCollapsed(false)} className="h-full w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30">
+                  <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
+                  {isArchiveCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>}
+                  <span className={clsx("bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30", isArchiveCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                </button>
+              ) : (
+                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                      <AlertCircle size={14} className="text-red-500" />
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Blocked</h2>
                     </div>
-                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                    <AnimatePresence mode="popLayout">
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                  </div>
+                <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                  <LayoutGroup id="blocked">
+                    <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
                           <KanbanCard
                             key={item.id}
@@ -1080,7 +1082,7 @@ export const KanbanBoard: React.FC = () => {
                             copiedId={copiedId}
                             pricesData={pricesData}
                             isUserAction={isUserAction}
-                        onCardDragStart={handleDragStart}
+                            onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
                             onCardDragOver={handleCardDragOver}
                             onCardDragLeave={handleCardDragLeave}
@@ -1091,47 +1093,49 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
-                      <Plus size={14} /> Add blocked
-                    </button>
-                  </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Archived Section */}
-              <div className={clsx("flex flex-col transition-all duration-300", isArchiveCollapsed ? (isBlockedCollapsed ? "flex-1" : "h-12 shrink-0") : (isBlockedCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
-                {isArchiveCollapsed ? (
-                  <button onClick={() => setIsArchiveCollapsed(false)} className="h-full w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
-                    <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
-                    {isBlockedCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>}
-                    <span className={clsx("bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700", isBlockedCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    </LayoutGroup>
+                  <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
+                    <Plus size={14} /> Add blocked
                   </button>
-                ) : (
-                  <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800">
-                    <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                        <Archive size={14} className="text-slate-500" />
-                        <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
-                        {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
-                          <button 
-                            onClick={() => {
-                              if (window.confirm('Move all archived items to trash?')) {
-                                trashArchivedMutation.mutate(selectedProjectId!);
-                              }
-                            }} 
-                            className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
-                            title="Trash All Archived"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                      <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                </div>
+                </div>
+              )}
+            </div>
+
+            {/* Archived Section */}
+            <div className={clsx("flex flex-col transition-all duration-300", isArchiveCollapsed ? (isBlockedCollapsed ? "flex-1" : "h-12 shrink-0") : (isBlockedCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
+              {isArchiveCollapsed ? (
+                <button onClick={() => setIsArchiveCollapsed(false)} className="h-full w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
+                  <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
+                  {isBlockedCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>}
+                  <span className={clsx("bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700", isBlockedCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                </button>
+              ) : (
+                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                      <Archive size={14} className="text-slate-500" />
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
+                      {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
+                        <button 
+                          onClick={() => {
+                            if (window.confirm('Move all archived items to trash?')) {
+                              trashArchivedMutation.mutate(selectedProjectId!);
+                            }
+                          }} 
+                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
+                          title="Trash All Archived"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
                     </div>
-                    <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                        <AnimatePresence mode="popLayout">
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                  </div>
+                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                      <LayoutGroup id="archived">
+                        <AnimatePresence mode="popLayout" initial={false}>
                           {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
                           <KanbanCard
                             key={item.id}
@@ -1144,7 +1148,7 @@ export const KanbanBoard: React.FC = () => {
                             copiedId={copiedId}
                             pricesData={pricesData}
                             isUserAction={isUserAction}
-                        onCardDragStart={handleDragStart}
+                            onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
                             onCardDragOver={handleCardDragOver}
                             onCardDragLeave={handleCardDragLeave}
@@ -1155,13 +1159,13 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                  </div>
-                  </div>
-                )}
-              </div>
+                    </LayoutGroup>
+                </div>
+                </div>
+              )}
             </div>
           </div>
-        </LayoutGroup>
+        </div>
       </main>
 
       {selectedItem && (
