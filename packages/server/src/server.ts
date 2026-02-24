@@ -860,22 +860,31 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
   try {
     let jqlParts = [`project = "${key}"`];
     
-    if (summary) {
+    if (summary && summary !== 'undefined') {
       jqlParts.push(`summary ~ "${summary}*"`);
     }
     
-    if (statusCategory) {
-      const categories = statusCategory.split(',').map((s: string) => `"${s.trim()}"`).join(',');
+    if (statusCategory && statusCategory !== 'undefined') {
+      // Map UI category names to JQL statusCategory names or IDs
+      const mapping: Record<string, string> = {
+        'To Do': '"To Do"',
+        'In Progress': '"In Progress"',
+        'Done': '"Done"'
+      };
+      const categories = String(statusCategory).split(',').map((s: string) => mapping[s.trim()] || `"${s.trim()}"`).join(',');
       jqlParts.push(`statusCategory in (${categories})`);
     }
     
     const jql = encodeURIComponent(jqlParts.join(' AND ') + ' ORDER BY created DESC');
     const fields = 'summary,issuetype,status,priority';
+    const apiUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=50&fields=${fields}`;
+    
+    console.log(`[JIRA] Requesting: ${apiUrl}`);
     
     const { data } = await jiraApiRequest(
       tokenData,
       'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=50&fields=${fields}`
+      apiUrl
     );
     const issues = (data.issues || []).map((issue: any) => ({
       id: issue.id,
@@ -884,6 +893,7 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
       type: issue.fields.issuetype?.name || 'Task',
       mappedType: mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task'),
       status: issue.fields.status?.name,
+      statusCategory: issue.fields.status?.statusCategory?.name,
       priority: issue.fields.priority?.name,
     }));
     res.json(issues);
@@ -915,6 +925,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       );
       const type = mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
+      const externalUrl = `${tokenData.cloudUrl}/browse/${issueKey}`;
 
       const newItem: any = {
         id: uuidv4(),
@@ -924,6 +935,8 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
         description: description || `Imported from JIRA: ${issueKey}`,
         status: 'TODO',
         implementationPlan: '',
+        externalId: issueKey,
+        externalUrl,
         createdAt: new Date(),
         updatedAt: new Date(),
       };

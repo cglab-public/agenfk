@@ -81,4 +81,6 @@ export interface AgenFKItem {
   previousStatus?: Status;
   implementationPlan?: string;
   sortOrder?: number;
+  externalId?: string;
+  externalUrl?: string;
 }

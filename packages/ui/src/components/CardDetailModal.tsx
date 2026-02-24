@@ -3,7 +3,7 @@ import { AgenFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2
+  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -242,6 +242,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
                 </button>
               </div>
+            )}
+            {item.externalUrl && (
+              <a 
+                href={item.externalUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all text-[10px] font-bold uppercase tracking-wider"
+                title={`Open JIRA: ${item.externalId}`}
+              >
+                <ExternalLink size={12} />
+                <span>{item.externalId || 'JIRA'}</span>
+              </a>
             )}
           </div>
           <div className="flex items-center gap-1">

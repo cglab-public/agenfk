@@ -291,7 +291,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                             <span className="font-mono text-xs text-slate-400 w-20 shrink-0">{issue.key}</span>
                             <span className="flex-1 text-sm text-slate-700 dark:text-slate-200 truncate">{issue.summary}</span>
                             <div className="flex items-center gap-1.5 shrink-0">
-                              <span className="text-xs text-slate-400">{issue.issueType}</span>
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{issue.statusCategory || issue.status}</span>
                               <span className="text-xs text-slate-300 dark:text-slate-600">→</span>
                               <span className={clsx('text-xs font-medium px-1.5 py-0.5 rounded', TYPE_COLORS[afkType])} data-testid={`type-badge-${issue.key}`}>
                                 {afkType}

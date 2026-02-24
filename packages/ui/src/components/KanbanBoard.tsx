@@ -8,7 +8,7 @@ import {
   Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download, Pin, PinOff
+  Copy, Check, Download, Pin, PinOff, ExternalLink
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -737,7 +737,7 @@ export const KanbanBoard: React.FC = () => {
                         </span>
                         {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
                           <button onClick={(e) => { e.stopPropagation(); handleDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 transition-colors">
-                            Drill <ArrowRight size={10} />
+                            Drill down <ArrowRight size={10} />
                           </button>
                         )}
                       </div>
@@ -771,6 +771,18 @@ export const KanbanBoard: React.FC = () => {
 
                     <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
                       <div className="flex items-center gap-2">
+                        {item.externalUrl && (
+                          <a 
+                            href={item.externalUrl} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-indigo-500 hover:text-indigo-700 transition-colors"
+                            title={`Open JIRA: ${item.externalId}`}
+                          >
+                            <ExternalLink size={10} />
+                          </a>
+                        )}
                         <div 
                           className="flex items-center gap-1.5 group/id cursor-pointer" 
                           onClick={(e) => { e.stopPropagation(); handleCopyId(item.id); }}

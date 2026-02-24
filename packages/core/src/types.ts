@@ -79,6 +79,8 @@ export interface BaseItem {
   previousStatus?: Status; // To restore status after unarchiving
   implementationPlan?: string; // Markdown implementation plan
   sortOrder?: number; // Position within column for prioritization
+  externalId?: string; // Reference to external systems (e.g. JIRA key)
+  externalUrl?: string; // Link to external system
 }
 
 export interface Epic extends BaseItem {

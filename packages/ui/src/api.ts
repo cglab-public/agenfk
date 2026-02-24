@@ -102,7 +102,7 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/jira/projects`);
     return data;
   },
-  listJiraIssues: async (projectKey: string, params?: { summary?: string; statusCategory?: string }): Promise<{ id: string; key: string; summary: string; issueType: string; status: string; priority?: string }[]> => {
+  listJiraIssues: async (projectKey: string, params?: { summary?: string; statusCategory?: string }): Promise<{ id: string; key: string; summary: string; issueType: string; status: string; statusCategory?: string; priority?: string }[]> => {
     const { data } = await axios.get(`${API_URL}/jira/projects/${projectKey}/issues`, { params });
     return data;
   },
