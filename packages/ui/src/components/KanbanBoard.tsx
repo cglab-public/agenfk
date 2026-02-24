@@ -93,21 +93,44 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   const cardRef = React.useRef<HTMLDivElement>(null);
   const lastStatus = React.useRef(item.status);
   const lastUpdate = React.useRef(item.updatedAt);
+  const lastSortOrder = React.useRef(item.sortOrder);
+  const lastContentKey = React.useRef(JSON.stringify({
+    t: item.title,
+    d: item.description,
+    tu: item.tokenUsage?.length,
+    r: item.reviews?.length,
+    c: item.comments?.length
+  }));
   const controls = useAnimation();
 
   useEffect(() => {
     if (item.updatedAt !== lastUpdate.current) {
+      const contentKey = JSON.stringify({
+        t: item.title,
+        d: item.description,
+        tu: item.tokenUsage?.length,
+        r: item.reviews?.length,
+        c: item.comments?.length
+      });
+
       const wasManual = isUserAction;
-      lastUpdate.current = item.updatedAt;
+      const statusChanged = item.status !== lastStatus.current;
+      const sortOrderChanged = item.sortOrder !== lastSortOrder.current;
+      const contentChanged = contentKey !== lastContentKey.current;
       
-      if (!isFlying && !wasManual) {
+      lastUpdate.current = item.updatedAt;
+      lastStatus.current = item.status;
+      lastSortOrder.current = item.sortOrder;
+      lastContentKey.current = contentKey;
+      
+      if (!isFlying && !wasManual && !statusChanged && !sortOrderChanged && contentChanged) {
         controls.start({
           scale: [1, 0.92, 1],
           transition: { duration: 0.5, ease: "easeInOut" }
         });
       }
     }
-  }, [item.updatedAt, isFlying, controls, isUserAction]);
+  }, [item.updatedAt, item.status, item.sortOrder, item.title, item.description, item.tokenUsage, item.reviews, item.comments, isFlying, controls, isUserAction]);
 
   useEffect(() => {
     if (item.status !== lastStatus.current) {
@@ -136,7 +159,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   return (
     <motion.div
       ref={cardRef}
-      layout
+      layout="position"
       layoutId={item.id}
       id={`card-${item.id}`}
       initial={false}
@@ -174,6 +197,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       style={{
         transformOrigin: 'center center',
+        willChange: 'transform',
+        backfaceVisibility: 'hidden',
+        WebkitFontSmoothing: 'antialiased',
       }}
       draggable
       onDragStart={(e: any) => onCardDragStart(e, item.id)}
@@ -353,7 +379,7 @@ export const KanbanBoard: React.FC = () => {
   const triggerUserAction = () => {
     setIsUserAction(true);
     if (userActionTimerRef.current) clearTimeout(userActionTimerRef.current);
-    userActionTimerRef.current = setTimeout(() => setIsUserAction(false), 2000);
+    userActionTimerRef.current = setTimeout(() => setIsUserAction(false), 5000);
   };
 
   const [isBoardAnimating, setIsBoardAnimating] = useState(false);
