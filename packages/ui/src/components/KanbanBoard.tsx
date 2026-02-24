@@ -90,6 +90,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
 }) => {
   const [lastUpdate, setLastUpdate] = useState(item.updatedAt);
   const [shouldFlash, setShouldFlash] = useState(false);
+  const cardRef = React.useRef<HTMLDivElement>(null);
+  const lastStatus = React.useRef(item.status);
 
   useEffect(() => {
     if (new Date(item.updatedAt).getTime() > new Date(lastUpdate).getTime()) {
@@ -100,24 +102,35 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
     }
   }, [item.updatedAt, lastUpdate]);
 
+  useEffect(() => {
+    if (item.status !== lastStatus.current) {
+      lastStatus.current = item.status;
+      // Brief delay to allow the animation to start and position to stabilize in the new column
+      const timer = setTimeout(() => {
+        cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 500); // Wait for the 500ms layout animation to nearly finish
+      return () => clearTimeout(timer);
+    }
+  }, [item.status]);
+
   return (
     <motion.div
+      ref={cardRef}
       layout
       layoutId={item.id}
       id={`card-${item.id}`}
-      initial={{ opacity: 0, scale: 0.95, y: 10 }}
+      initial={false}
       animate={{ 
         opacity: 1, 
         scale: shouldFlash ? 0.96 : 1,
         y: 0,
       }}
-      exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.1 } }}
+      exit={{ opacity: 0, scale: 1, transition: { duration: 0.2 } }}
       transition={{ 
         layout: { 
-          type: "spring", 
-          stiffness: 250, 
-          damping: 25,
-          mass: 1
+          type: "tween", 
+          ease: "circOut",
+          duration: 0.5
         },
         scale: { 
           type: "spring", 
@@ -918,8 +931,8 @@ export const KanbanBoard: React.FC = () => {
                   </span>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800" style={{ perspective: '1000px' }}>
-                  <AnimatePresence>
+                <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
+                  <AnimatePresence mode="popLayout">
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
                       <KanbanCard
                         key={item.id}
@@ -968,9 +981,9 @@ export const KanbanBoard: React.FC = () => {
                       </div>
                       <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                     </div>
-                  <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px' }}>
+                  <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
                     <LayoutGroup>
-                      <AnimatePresence>
+                      <AnimatePresence mode="popLayout">
                         {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
                           <KanbanCard
                             key={item.id}
@@ -1033,9 +1046,9 @@ export const KanbanBoard: React.FC = () => {
                       </div>
                       <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                     </div>
-                    <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px' }}>
+                    <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
                       <LayoutGroup>
-                        <AnimatePresence>
+                        <AnimatePresence mode="popLayout">
                           {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
                           <KanbanCard
                             key={item.id}
