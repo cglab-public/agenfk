@@ -837,10 +837,23 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
   if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
 
   const { key } = req.params;
+  const { summary, statusCategory } = req.query;
   
   try {
-    const jql = encodeURIComponent(`project = "${key}" ORDER BY created DESC`);
+    let jqlParts = [`project = "${key}"`];
+    
+    if (summary) {
+      jqlParts.push(`summary ~ "${summary}*"`);
+    }
+    
+    if (statusCategory) {
+      const categories = statusCategory.split(',').map((s: string) => `"${s.trim()}"`).join(',');
+      jqlParts.push(`statusCategory in (${categories})`);
+    }
+    
+    const jql = encodeURIComponent(jqlParts.join(' AND ') + ' ORDER BY created DESC');
     const fields = 'summary,issuetype,status,priority';
+    
     const { data } = await jiraApiRequest(
       tokenData,
       'get',

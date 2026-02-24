@@ -38,6 +38,8 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   const [selectedProjectName, setSelectedProjectName] = useState<string>('');
   const [selectedIssueKeys, setSelectedIssueKeys] = useState<Set<string>>(new Set());
   const [projectSearch, setProjectSearch] = useState('');
+  const [issueSearch, setIssueSearch] = useState('');
+  const [statusCategories, setStatusCategories] = useState<Set<string>>(new Set(['To Do', 'In Progress']));
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
 
@@ -49,8 +51,11 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   });
 
   const { data: issues, isLoading: loadingIssues, error: issuesError, refetch: refetchIssues } = useQuery({
-    queryKey: ['jiraIssues', selectedProjectKey],
-    queryFn: () => api.listJiraIssues(selectedProjectKey!),
+    queryKey: ['jiraIssues', selectedProjectKey, issueSearch, Array.from(statusCategories).sort()],
+    queryFn: () => api.listJiraIssues(selectedProjectKey!, { 
+      summary: issueSearch || undefined,
+      statusCategory: statusCategories.size > 0 ? Array.from(statusCategories).join(',') : undefined
+    }),
     enabled: open && step === 'issues' && !!selectedProjectKey,
     staleTime: 30_000,
   });
@@ -85,7 +90,18 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     setSelectedProjectKey(key);
     setSelectedProjectName(name);
     setSelectedIssueKeys(new Set());
+    setIssueSearch('');
+    setStatusCategories(new Set(['To Do', 'In Progress']));
     setStep('issues');
+  };
+
+  const toggleStatusCategory = (cat: string) => {
+    setStatusCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
   };
 
   const toggleIssue = (key: string) => {
@@ -191,7 +207,36 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
 
           {/* Step 2: Issue Selection */}
           {step === 'issues' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
+              <div className="space-y-3">
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search by summary..."
+                    value={issueSearch}
+                    onChange={e => setIssueSearch(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-slate-200"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  {['To Do', 'In Progress', 'Done'].map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => toggleStatusCategory(cat)}
+                      className={clsx(
+                        'text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-full border transition-all',
+                        statusCategories.has(cat)
+                          ? 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-800'
+                          : 'bg-slate-50 text-slate-400 border-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:border-slate-700'
+                      )}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {loadingIssues && (
                 <div className="flex justify-center py-8" data-testid="issues-loading">
                   <Loader2 className="animate-spin text-slate-400" size={24} />
