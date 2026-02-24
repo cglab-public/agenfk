@@ -188,7 +188,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         },
       }}
       className={clsx(
-        "group bg-white dark:bg-slate-900 rounded-xl p-4 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
+        "group bg-white dark:bg-slate-900 rounded-xl p-3 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
         highlightedId === item.id && "ring-2 ring-indigo-500 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
         dragId === item.id && "opacity-40",
         dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
@@ -208,33 +208,33 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       onDragLeave={onCardDragLeave}
       onDoubleClick={onDoubleClick}
     >
-      <div className="flex justify-between items-start mb-3">
-        <div className="flex items-center gap-2">
-          <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
+      <div className="flex justify-between items-start mb-2">
+        <div className="flex items-center gap-1.5">
+          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
             {item.type}
           </span>
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 transition-colors">
-              Drill down <ArrowRight size={10} />
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase flex items-center gap-1 transition-colors">
+              Drill <ArrowRight size={9} />
             </button>
           )}
         </div>
-        <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
-          <Archive size={12} />
+        <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          <Archive size={11} />
         </button>
       </div>
-      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-snug mb-2 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
-      {item.description && <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-3">{item.description}</p>}
+      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
+      {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
-        <div className="mb-3">
+        <div className="mb-2">
           {(() => {
             const subitems = items?.filter((i: AgenFKItem) => i.parentId === item.id) || [];
             if (subitems.length === 0) return null;
             const progress = Math.round((subitems.filter((i: AgenFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
             return (
-              <div className="space-y-1.5">
-                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
+              <div className="space-y-1">
+                <div className="flex justify-between items-center text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
                   <span>Progress</span>
                   <span>{progress}%</span>
                 </div>
@@ -247,8 +247,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
       )}
 
-      <div className="flex items-center justify-between pt-3 border-t border-slate-50 dark:border-slate-800 mt-auto text-[10px] text-slate-400 dark:text-slate-500 font-mono">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between pt-2 border-t border-slate-50 dark:border-slate-800 mt-auto text-[9px] text-slate-400 dark:text-slate-500 font-mono">
+        <div className="flex items-center gap-1.5">
           {item.externalUrl && (
             <a 
               href={item.externalUrl} 
@@ -258,21 +258,21 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               className="text-indigo-500 hover:text-indigo-700 transition-colors"
               title={`Open JIRA: ${item.externalId}`}
             >
-              <ExternalLink size={10} />
+              <ExternalLink size={9} />
             </a>
           )}
           <div 
-            className="flex items-center gap-1.5 group/id cursor-pointer" 
+            className="flex items-center gap-1 group/id cursor-pointer" 
             onClick={(e) => { e.stopPropagation(); onCopyId(item.id); }}
             title="Copy Full ID"
           >
             <span className="group-hover/id:text-indigo-500 transition-colors">#{item.id.substring(0, 4)}</span>
             <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
-              {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+              {copiedId === item.id ? <Check size={9} className="text-emerald-500" /> : <Copy size={9} />}
             </div>
           </div>
           <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
-            <Clock size={10} />
+            <Clock size={9} />
             {item.status === Status.DONE 
               ? formatDuration(new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime())
               : formatDuration(Date.now() - new Date(item.createdAt).getTime())
@@ -280,10 +280,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           </div>
         </div>
         {item.tokenUsage && item.tokenUsage.length > 0 && (
-          <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-full">
-            <Zap size={10} className="fill-amber-600" />
+          <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded-full">
+            <Zap size={9} className="fill-amber-600" />
             {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
-            {pricesData ? ` (${formatCost(calculateCost(item.tokenUsage, pricesData))})` : ''}
           </div>
         )}
       </div>
@@ -990,9 +989,9 @@ export const KanbanBoard: React.FC = () => {
 
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup>
-          <div className="flex flex-col md:flex-row gap-4 h-full w-full relative z-0">
+          <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
             {statuses.map(status => (
-              <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[220px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
+              <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
                 <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
                   <div className="flex items-center gap-2">
                     <div className={clsx(
