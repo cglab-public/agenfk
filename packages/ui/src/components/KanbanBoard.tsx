@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
+import { motion, AnimatePresence, LayoutGroup, useAnimation } from 'framer-motion';
 import { api } from '../api';
 import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
@@ -73,6 +73,7 @@ interface KanbanCardProps {
   dropPosition: 'above' | 'below';
   copiedId: string | null;
   pricesData: any;
+  isUserAction: boolean;
   onCardDragStart: (e: React.DragEvent, id: string) => void;
   onCardDragEnd: () => void;
   onCardDragOver: (e: React.DragEvent, targetId: string) => void;
@@ -85,33 +86,52 @@ interface KanbanCardProps {
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, highlightedId, dragId, dropTargetId, dropPosition,
-  copiedId, pricesData, onCardDragStart, onCardDragEnd, onCardDragOver,
+  copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
   onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onCopyId
 }) => {
-  const [lastUpdate, setLastUpdate] = useState(item.updatedAt);
-  const [shouldFlash, setShouldFlash] = useState(false);
+  const [isFlying, setIsFlying] = useState(false);
   const cardRef = React.useRef<HTMLDivElement>(null);
   const lastStatus = React.useRef(item.status);
+  const lastUpdate = React.useRef(item.updatedAt);
+  const controls = useAnimation();
 
   useEffect(() => {
-    if (new Date(item.updatedAt).getTime() > new Date(lastUpdate).getTime()) {
-      setShouldFlash(true);
-      setLastUpdate(item.updatedAt);
-      const timer = setTimeout(() => setShouldFlash(false), 400);
-      return () => clearTimeout(timer);
+    if (item.updatedAt !== lastUpdate.current) {
+      const wasManual = isUserAction;
+      lastUpdate.current = item.updatedAt;
+      
+      if (!isFlying && !wasManual) {
+        controls.start({
+          scale: [1, 0.92, 1],
+          transition: { duration: 0.5, ease: "easeInOut" }
+        });
+      }
     }
-  }, [item.updatedAt, lastUpdate]);
+  }, [item.updatedAt, isFlying, controls, isUserAction]);
 
   useEffect(() => {
     if (item.status !== lastStatus.current) {
+      const wasManual = isUserAction;
       lastStatus.current = item.status;
-      // Brief delay to allow the animation to start and position to stabilize in the new column
-      const timer = setTimeout(() => {
-        cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }, 500); // Wait for the 500ms layout animation to nearly finish
-      return () => clearTimeout(timer);
+      
+      if (!wasManual) {
+        setIsFlying(true);
+        const timer = setTimeout(() => {
+          setIsFlying(false);
+          cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 600); 
+        return () => clearTimeout(timer);
+      }
     }
-  }, [item.status]);
+  }, [item.status, isUserAction]);
+
+  useEffect(() => {
+    if (isFlying) {
+      controls.start("flying");
+    } else {
+      controls.start("idle");
+    }
+  }, [isFlying, controls]);
 
   return (
     <motion.div
@@ -120,31 +140,37 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       layoutId={item.id}
       id={`card-${item.id}`}
       initial={false}
-      animate={{ 
-        opacity: 1, 
-        scale: shouldFlash ? [1, 0.96, 1] : 1,
-        y: 0,
+      animate={controls}
+      variants={{
+        flying: {
+          scale: 1.05,
+          zIndex: 9999,
+          y: -5,
+          boxShadow: "0 25px 50px -12px rgba(99, 102, 241, 0.25)",
+        },
+        idle: {
+          scale: 1,
+          zIndex: 1,
+          y: 0,
+          boxShadow: "0 1px 3px 0 rgb(0 0 0 / 0.1)",
+          transition: { type: "spring", stiffness: 300, damping: 30 }
+        }
       }}
-      exit={{ opacity: 0, scale: 1, transition: { duration: 0.2 } }}
       transition={{ 
         layout: { 
-          type: "tween", 
-          ease: "circOut",
-          duration: 0.5
-        },
-        scale: { 
-          duration: 0.4,
-          times: [0, 0.5, 1],
-          ease: "easeInOut"
+          type: "spring", 
+          stiffness: 260, 
+          damping: 30,
+          mass: 1
         },
       }}
       className={clsx(
-        "group bg-white dark:bg-slate-900 rounded-xl p-4 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all duration-200 relative",
-        highlightedId === item.id && "ring-2 ring-indigo-500 shadow-[0_0_20px_rgba(99,102,241,0.5)] z-30 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
+        "group bg-white dark:bg-slate-900 rounded-xl p-4 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
+        highlightedId === item.id && "ring-2 ring-indigo-500 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
         dragId === item.id && "opacity-40",
         dropTargetId === item.id && dropPosition === 'above' && "border-t-2 border-t-indigo-500",
         dropTargetId === item.id && dropPosition === 'below' && "border-b-2 border-b-indigo-500",
-        (shouldFlash || highlightedId === item.id) ? "z-20" : "z-0"
+        isFlying ? "!z-[9999] isolate" : (highlightedId === item.id ? "z-20 relative" : "z-0 relative")
       )}
       style={{
         transformOrigin: 'center center',
@@ -321,6 +347,33 @@ export const KanbanBoard: React.FC = () => {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<'above' | 'below'>('below');
+  const [isUserAction, setIsUserAction] = useState(false);
+  const userActionTimerRef = React.useRef<any>(null);
+
+  const triggerUserAction = () => {
+    setIsUserAction(true);
+    if (userActionTimerRef.current) clearTimeout(userActionTimerRef.current);
+    userActionTimerRef.current = setTimeout(() => setIsUserAction(false), 2000);
+  };
+
+  const [isBoardAnimating, setIsBoardAnimating] = useState(false);
+  const previousItemsRef = React.useRef(items);
+
+  useEffect(() => {
+    if (items && previousItemsRef.current) {
+      const hasStatusChange = items.some((item: any) => {
+        const prev = previousItemsRef.current?.find((i: any) => i.id === item.id);
+        return prev && prev.status !== item.status;
+      });
+      if (hasStatusChange && !isUserAction) {
+        setIsBoardAnimating(true);
+        const timer = setTimeout(() => setIsBoardAnimating(false), 600);
+        return () => clearTimeout(timer);
+      }
+    }
+    previousItemsRef.current = items;
+  }, [items, isUserAction]);
+
   // Refs mirror state so handleDrop always reads current values (avoids stale closure in React 18)
   const dropTargetIdRef = React.useRef<string | null>(null);
   const dropPositionRef = React.useRef<'above' | 'below'>('below');
@@ -388,6 +441,9 @@ export const KanbanBoard: React.FC = () => {
   const bulkUpdateMutation = useMutation({
     mutationFn: (variables: { items: { id: string, updates: Partial<AgenFKItem> }[] }) => 
       api.bulkUpdateItems(variables.items),
+    onMutate: () => {
+      triggerUserAction();
+    },
     onSuccess: () => {
       // Don't invalidate immediately, rely on WebSocket to prevent bouncing
     }
@@ -396,6 +452,9 @@ export const KanbanBoard: React.FC = () => {
   const updateMutation = useMutation({
     mutationFn: (variables: { id: string, updates: Partial<AgenFKItem> }) => 
       api.updateItem(variables.id, variables.updates),
+    onMutate: () => {
+      triggerUserAction();
+    },
     onSuccess: () => {
       // Don't invalidate immediately, rely on WebSocket
     }
@@ -903,9 +962,9 @@ export const KanbanBoard: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-1 overflow-x-auto p-4 md:p-6">
+      <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 md:p-6 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup>
-          <div className="flex flex-col md:flex-row gap-6 h-full w-full">
+          <div className="flex flex-col md:flex-row gap-6 h-full w-full relative z-0">
             {statuses.map(status => (
               <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[320px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
                 <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
@@ -931,7 +990,7 @@ export const KanbanBoard: React.FC = () => {
                   </span>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
+                <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout">
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
                       <KanbanCard
@@ -944,6 +1003,7 @@ export const KanbanBoard: React.FC = () => {
                         dropPosition={dropPosition}
                         copiedId={copiedId}
                         pricesData={pricesData}
+                        isUserAction={isUserAction}
                         onCardDragStart={handleDragStart}
                         onCardDragEnd={handleDragEnd}
                         onCardDragOver={handleCardDragOver}
@@ -981,10 +1041,9 @@ export const KanbanBoard: React.FC = () => {
                       </div>
                       <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                     </div>
-                  <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
-                    <LayoutGroup>
-                      <AnimatePresence mode="popLayout">
-                        {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
+                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                    <AnimatePresence mode="popLayout">
+                      {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
                           <KanbanCard
                             key={item.id}
                             item={item}
@@ -995,7 +1054,8 @@ export const KanbanBoard: React.FC = () => {
                             dropPosition={dropPosition}
                             copiedId={copiedId}
                             pricesData={pricesData}
-                            onCardDragStart={handleDragStart}
+                            isUserAction={isUserAction}
+                        onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
                             onCardDragOver={handleCardDragOver}
                             onCardDragLeave={handleCardDragLeave}
@@ -1006,7 +1066,6 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    </LayoutGroup>
                     <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add blocked
                     </button>
@@ -1046,8 +1105,7 @@ export const KanbanBoard: React.FC = () => {
                       </div>
                       <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                     </div>
-                    <div className="flex-1 overflow-y-auto overflow-x-hidden pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200" style={{ perspective: '1000px', scrollbarGutter: 'stable' }}>
-                      <LayoutGroup>
+                    <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200", isBoardAnimating ? "overflow-y-visible" : "overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                         <AnimatePresence mode="popLayout">
                           {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
                           <KanbanCard
@@ -1060,7 +1118,8 @@ export const KanbanBoard: React.FC = () => {
                             dropPosition={dropPosition}
                             copiedId={copiedId}
                             pricesData={pricesData}
-                            onCardDragStart={handleDragStart}
+                            isUserAction={isUserAction}
+                        onCardDragStart={handleDragStart}
                             onCardDragEnd={handleDragEnd}
                             onCardDragOver={handleCardDragOver}
                             onCardDragLeave={handleCardDragLeave}
@@ -1071,7 +1130,6 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    </LayoutGroup>
                   </div>
                   </div>
                 )}
