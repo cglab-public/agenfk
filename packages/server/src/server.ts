@@ -642,24 +642,39 @@ const deleteJiraToken = (): void => {
   if (fs.existsSync(JIRA_TOKEN_PATH)) fs.unlinkSync(JIRA_TOKEN_PATH);
 };
 
+let refreshPromise: Promise<JiraTokenData | null> | null = null;
+
 const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData | null> => {
-  const { clientId, clientSecret } = loadJiraConfig();
-  if (!clientId || !clientSecret) return null;
-  try {
-    const { data } = await axios.post('https://auth.atlassian.com/oauth/token', {
-      grant_type: 'refresh_token',
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: tokenData.refresh_token,
-    });
-    const updated: JiraTokenData = {
-      ...tokenData,
-      access_token: data.access_token,
-      refresh_token: data.refresh_token || tokenData.refresh_token,
-    };
-    saveJiraToken(updated);
-    return updated;
-  } catch { return null; }
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    const { clientId, clientSecret } = loadJiraConfig();
+    if (!clientId || !clientSecret) return null;
+    try {
+      console.log(`[JIRA] Refreshing access token...`);
+      const { data } = await axios.post('https://auth.atlassian.com/oauth/token', {
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: tokenData.refresh_token,
+      });
+      const updated: JiraTokenData = {
+        ...tokenData,
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || tokenData.refresh_token,
+      };
+      saveJiraToken(updated);
+      console.log(`[JIRA] Token refreshed successfully.`);
+      return updated;
+    } catch (err: any) {
+      console.error(`[JIRA] Token refresh failed:`, err.response?.data || err.message);
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 };
 
 const jiraApiRequest = async (
@@ -676,7 +691,10 @@ const jiraApiRequest = async (
     return { data: res.data, tokenData };
   } catch (err: any) {
     if (err.response?.status === 401) {
-      const refreshed = await refreshJiraToken(tokenData);
+      // If a refresh is already in progress, wait for it
+      // Otherwise start a new one using the LATEST token from disk (in case another request already refreshed it)
+      const latestToken = loadJiraToken() || tokenData;
+      const refreshed = await refreshJiraToken(latestToken);
       if (!refreshed) throw err;
       const res = await makeRequest(refreshed.access_token);
       return { data: res.data, tokenData: refreshed };

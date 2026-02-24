@@ -50,8 +50,8 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     staleTime: 60_000,
   });
 
-  const { data: issues, isLoading: loadingIssues, error: issuesError, refetch: refetchIssues } = useQuery({
-    queryKey: ['jiraIssues', selectedProjectKey, issueSearch, Array.from(statusCategories).sort()],
+  const { data: issues, isLoading: loadingIssues, isFetching: fetchingIssues, error: issuesError, refetch: refetchIssues } = useQuery({
+    queryKey: ['jiraIssues', selectedProjectKey, issueSearch, Array.from(statusCategories).sort().join(',')],
     queryFn: () => api.listJiraIssues(selectedProjectKey!, { 
       summary: issueSearch || undefined,
       statusCategory: statusCategories.size > 0 ? Array.from(statusCategories).join(',') : undefined
@@ -219,21 +219,26 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                     className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-slate-200"
                   />
                 </div>
-                <div className="flex items-center gap-2">
-                  {['To Do', 'In Progress', 'Done'].map(cat => (
-                    <button
-                      key={cat}
-                      onClick={() => toggleStatusCategory(cat)}
-                      className={clsx(
-                        'text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-full border transition-all',
-                        statusCategories.has(cat)
-                          ? 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-800'
-                          : 'bg-slate-50 text-slate-400 border-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:border-slate-700'
-                      )}
-                    >
-                      {cat}
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {['To Do', 'In Progress', 'Done'].map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => toggleStatusCategory(cat)}
+                        className={clsx(
+                          'text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-full border transition-all',
+                          statusCategories.has(cat)
+                            ? 'bg-indigo-100 text-indigo-700 border-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300 dark:border-indigo-800'
+                            : 'bg-slate-50 text-slate-400 border-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:border-slate-700'
+                        )}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                  {fetchingIssues && (
+                    <Loader2 className="animate-spin text-indigo-500" size={14} />
+                  )}
                 </div>
               </div>
 
