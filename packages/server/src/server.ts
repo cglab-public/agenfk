@@ -987,6 +987,43 @@ const getGitHubToken = (): string | null => {
   } catch { return null; }
 };
 
+// In-memory update job store
+interface UpdateJob {
+  status: 'running' | 'success' | 'error';
+  output: string[];
+  exitCode?: number;
+}
+const updateJobs = new Map<string, UpdateJob>();
+
+app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
+  const jobId = uuidv4();
+  const job: UpdateJob = { status: 'running', output: [] };
+  updateJobs.set(jobId, job);
+  res.status(202).json({ jobId });
+
+  const projectRoot = findProjectRoot(process.cwd());
+  const isGitClone = fs.existsSync(path.join(projectRoot, '.git'));
+  const command = isGitClone
+    ? `node ${JSON.stringify(path.join(projectRoot, 'scripts/install.mjs'))}`
+    : 'npx @agenfk/create@latest';
+  const cwd = isGitClone ? projectRoot : os.homedir();
+
+  const child = exec(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
+  child.stdout?.on('data', (d) => job.output.push(d.toString()));
+  child.stderr?.on('data', (d) => job.output.push(d.toString()));
+  child.on('close', (code) => {
+    job.status = code === 0 ? 'success' : 'error';
+    job.exitCode = code ?? 1;
+    setTimeout(() => updateJobs.delete(jobId), 5 * 60 * 1000);
+  });
+}));
+
+app.get("/releases/update/:jobId", (req: any, res: any) => {
+  const job = updateJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ status: job.status, output: job.output.join(''), exitCode: job.exitCode });
+});
+
 app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   const currentVersion = getCurrentVersion();
 

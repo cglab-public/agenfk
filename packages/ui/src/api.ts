@@ -113,4 +113,12 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
     return data;
   },
+  triggerUpdate: async (): Promise<{ jobId: string }> => {
+    const { data } = await axios.post(`${API_URL}/releases/update`);
+    return data;
+  },
+  getUpdateStatus: async (jobId: string): Promise<{ status: 'running' | 'success' | 'error'; output: string; exitCode?: number }> => {
+    const { data } = await axios.get(`${API_URL}/releases/update/${jobId}`);
+    return data;
+  },
 };

@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
-import { Rocket, X, ExternalLink, ArrowUpCircle } from 'lucide-react';
+import { Rocket, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -14,6 +14,12 @@ interface ReleaseInfo {
   url: string;
   currentVersion: string;
 }
+
+type UpdateState =
+  | { phase: 'idle' }
+  | { phase: 'running'; jobId: string; output: string }
+  | { phase: 'success'; output: string }
+  | { phase: 'error'; output: string };
 
 const isNewerVersion = (latest: string, current: string): boolean => {
   const l = latest.split('.').map(Number);
@@ -32,6 +38,9 @@ export const ReleaseReminder: React.FC = () => {
   const [isDismissed, setIsDismissed] = useState<string | null>(
     () => localStorage.getItem('agenfk_dismissed_release')
   );
+  const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' });
+  const outputRef = useRef<HTMLPreElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: release } = useQuery<ReleaseInfo>({
     queryKey: ['latestRelease'],
@@ -40,6 +49,18 @@ export const ReleaseReminder: React.FC = () => {
     refetchInterval: 15 * 60 * 1000,
     retry: false,
   });
+
+  // Auto-scroll terminal output to bottom
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [updateState]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
 
   if (!release || !isNewerVersion(release.version, release.currentVersion)) {
     return null;
@@ -53,7 +74,49 @@ export const ReleaseReminder: React.FC = () => {
     setIsDismissed(release.version);
     localStorage.setItem('agenfk_dismissed_release', release.version);
     setIsModalOpen(false);
+    setUpdateState({ phase: 'idle' });
   };
+
+  const handleClose = () => {
+    setIsModalOpen(false);
+    if (updateState.phase !== 'running') {
+      setUpdateState({ phase: 'idle' });
+    }
+  };
+
+  const handleUpdateNow = async () => {
+    try {
+      const { jobId } = await api.triggerUpdate();
+      setUpdateState({ phase: 'running', jobId, output: '' });
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const result = await api.getUpdateStatus(jobId);
+          setUpdateState(prev =>
+            prev.phase === 'running'
+              ? result.status === 'running'
+                ? { phase: 'running', jobId, output: result.output }
+                : result.status === 'success'
+                ? { phase: 'success', output: result.output }
+                : { phase: 'error', output: result.output }
+              : prev
+          );
+          if (result.status !== 'running' && pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+        } catch {
+          // keep polling
+        }
+      }, 1500);
+    } catch {
+      setUpdateState({ phase: 'error', output: 'Failed to start update. Is the server running?' });
+    }
+  };
+
+  const isUpdating = updateState.phase === 'running';
+  const showTerminal = updateState.phase !== 'idle';
+  const terminalOutput = updateState.phase !== 'idle' ? updateState.output : '';
 
   return (
     <>
@@ -72,20 +135,25 @@ export const ReleaseReminder: React.FC = () => {
       {isModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-          onClick={() => setIsModalOpen(false)}
+          onClick={!isUpdating ? handleClose : undefined}
         >
           <div
-            className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[80vh] flex flex-col overflow-hidden"
+            className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg">
                   <Rocket size={20} className="text-emerald-600 dark:text-emerald-400" />
                 </div>
                 <div>
-                  <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">New Release Available</h2>
+                  <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">
+                    {updateState.phase === 'success' ? 'Update Complete' :
+                     updateState.phase === 'error' ? 'Update Failed' :
+                     updateState.phase === 'running' ? 'Updating AgenFK...' :
+                     'New Release Available'}
+                  </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
                     <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">v{release.currentVersion}</span>
                     <span className="mx-2">&rarr;</span>
@@ -93,61 +161,132 @@ export const ReleaseReminder: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition-colors"
-              >
-                <X size={18} />
-              </button>
+              {!isUpdating && (
+                <button
+                  onClick={handleClose}
+                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              )}
             </div>
 
-            {/* Release Name & Date */}
-            {release.name && (
-              <div className="px-6 pt-4">
-                <h3 className="font-semibold text-slate-700 dark:text-slate-200">{release.name}</h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  Released {new Date(release.publishedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
-                </p>
+            {/* Body */}
+            {showTerminal ? (
+              /* Terminal output view */
+              <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  {updateState.phase === 'running' && <Loader2 size={14} className="animate-spin text-blue-500" />}
+                  {updateState.phase === 'success' && <CheckCircle size={14} className="text-emerald-500" />}
+                  {updateState.phase === 'error' && <XCircle size={14} className="text-red-500" />}
+                  <span className={
+                    updateState.phase === 'running' ? 'text-blue-600 dark:text-blue-400' :
+                    updateState.phase === 'success' ? 'text-emerald-600 dark:text-emerald-400' :
+                    'text-red-600 dark:text-red-400'
+                  }>
+                    {updateState.phase === 'running' ? 'Running update...' :
+                     updateState.phase === 'success' ? 'Update successful' :
+                     'Update failed'}
+                  </span>
+                </div>
+                <pre
+                  ref={outputRef}
+                  className="flex-1 bg-slate-950 text-slate-300 rounded-lg p-3 text-xs font-mono leading-relaxed overflow-y-auto min-h-0 whitespace-pre-wrap break-words"
+                >
+                  {terminalOutput || (isUpdating ? 'Starting...' : '')}
+                </pre>
+                {updateState.phase === 'success' && (
+                  <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300">
+                    <RefreshCw size={14} className="shrink-0 mt-0.5" />
+                    <span><strong>Restart required.</strong> Restart your AI editor and AgenFK services to apply the update.</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Release notes view */
+              <div className="flex flex-col overflow-hidden">
+                {release.name && (
+                  <div className="px-6 pt-4 shrink-0">
+                    <h3 className="font-semibold text-slate-700 dark:text-slate-200">{release.name}</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Released {new Date(release.publishedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                    </p>
+                  </div>
+                )}
+                <div className="flex-1 overflow-y-auto px-6 py-4">
+                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {release.body || 'No release notes available.'}
+                    </ReactMarkdown>
+                  </div>
+                </div>
               </div>
             )}
 
-            {/* Release Notes */}
-            <div className="flex-1 overflow-y-auto px-6 py-4">
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {release.body || 'No release notes available.'}
-                </ReactMarkdown>
-              </div>
-            </div>
-
             {/* Footer */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
-              <button
-                onClick={handleDismiss}
-                className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium transition-colors"
-              >
-                Dismiss
-              </button>
-              <div className="flex items-center gap-3">
-                <a
-                  href={release.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 font-medium transition-colors"
-                >
-                  <ExternalLink size={14} />
-                  View on GitHub
-                </a>
-                <a
-                  href={release.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
-                >
-                  <ArrowUpCircle size={16} />
-                  Update Now
-                </a>
-              </div>
+            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 shrink-0">
+              {updateState.phase === 'success' ? (
+                <>
+                  <span />
+                  <button
+                    onClick={handleDismiss}
+                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
+                  >
+                    <CheckCircle size={16} />
+                    Done
+                  </button>
+                </>
+              ) : updateState.phase === 'error' ? (
+                <>
+                  <button
+                    onClick={() => setUpdateState({ phase: 'idle' })}
+                    className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium transition-colors"
+                  >
+                    Back
+                  </button>
+                  <a
+                    href={release.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 font-medium transition-colors"
+                  >
+                    <ExternalLink size={14} />
+                    Manual install
+                  </a>
+                </>
+              ) : updateState.phase === 'running' ? (
+                <>
+                  <span className="text-xs text-slate-400 animate-pulse">Please wait, do not close...</span>
+                  <span />
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={handleDismiss}
+                    className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                  <div className="flex items-center gap-3">
+                    <a
+                      href={release.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 font-medium transition-colors"
+                    >
+                      <ExternalLink size={14} />
+                      View on GitHub
+                    </a>
+                    <button
+                      onClick={handleUpdateNow}
+                      className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
+                    >
+                      <ArrowUpCircle size={16} />
+                      Update Now
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
