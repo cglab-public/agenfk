@@ -64,13 +64,14 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 2.  **Request Analysis & Clarification**
     *   **Context**: Take into account `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` for informed reasoning.
     *   **Action**: Call `analyze_request(request: string)` for every new user requirement.
-    *   **Mode Selection**: 
+    *   **Mode Selection**:
         - If the user invoked `/agenfk`, use **Standard Mode**.
         - If the user invoked `/agenfk-deep`, use **Deep Mode**.
-    *   **Reasoning Step**: Before creating ANY item or initializing a project, you MUST reason about the implementation details. 
+    *   **Reasoning Step**: Before creating ANY item or initializing a project, you MUST reason about the implementation details.
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
     *   **Requirement**: All items created must be associated with the active `projectId`.
+    *   **Hierarchy Rule — MANDATORY**: Before creating any new item, call `list_items(projectId)` and check if an existing EPIC or STORY already covers the work. If one exists, create your items **under it** using `parentId`. NEVER create orphan tasks when a parent hierarchy exists. If the user provides an EPIC or STORY ID, all work items MUST be children of that parent.
     *   **Transparency**: If you're opencode, display every MCP call parameter and return value.
     *   **Conventional Commits**: Use standard prefixes for all commits: `fix:`, `feat:`, `chore:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`. NEVER use `close:`, `update:`, or other non-standard prefixes. Append the item ID in brackets if relevant, e.g., `fix: resolve crash [id]`.
 
@@ -107,7 +108,11 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
     *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `verify_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
-    *   **Completion**: Update parent Story/Epic status automatically.
+    *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up:
+        1. Close all child TASKs first (verify → REVIEW → TEST → DONE).
+        2. Then close parent STORYs.
+        3. Then close the EPIC.
+        NEVER leave cards stuck in REVIEW. If `verify_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
 
 ## When to use me
 

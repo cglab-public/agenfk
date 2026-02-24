@@ -23,7 +23,7 @@ const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec, execSync, spawn } from "child_process";
+import { exec, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
@@ -1108,6 +1108,149 @@ io.on('connection', (socket) => {
   });
 });
 
+// ── Opencode Token Scraper ────────────────────────────────────────────────────
+
+const OPENCODE_DB = path.join(os.homedir(), '.local/share/opencode/opencode.db');
+const OPENCODE_SCRAPE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+const PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
+  'claude-opus-4-6':            { input: 15.0,  output: 75.0,  cacheRead: 1.5  },
+  'claude-sonnet-4-6':          { input: 3.0,   output: 15.0,  cacheRead: 0.3  },
+  'claude-sonnet-4-5-20250929': { input: 3.0,   output: 15.0,  cacheRead: 0.3  },
+  'claude-haiku-4-5-20251001':  { input: 0.8,   output: 4.0,   cacheRead: 0.08 },
+  'gemini-3-flash-preview':     { input: 0.15,  output: 0.60,  cacheRead: 0.02 },
+  'gemini-3-pro-preview':       { input: 1.25,  output: 5.0,   cacheRead: 0.31 },
+  'gemini-3.1-pro-preview':     { input: 1.25,  output: 5.0,   cacheRead: 0.31 },
+};
+const DEFAULT_RATES = PRICING['claude-sonnet-4-6'];
+
+const calcTokenCost = (model: string, input: number, output: number, cacheRead: number): number => {
+  const rates = PRICING[model] || DEFAULT_RATES;
+  return Math.round((input / 1e6 * rates.input + cacheRead / 1e6 * rates.cacheRead + output / 1e6 * rates.output) * 1e6) / 1e6;
+};
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+const sqlite3Query = (db: string, query: string): any[] => {
+  try {
+    const result = execFileSync('sqlite3', ['-json', db, query], { encoding: 'utf8', timeout: 5000 });
+    return JSON.parse(result || '[]');
+  } catch { return []; }
+};
+
+const isAgenFKDir = (dir: string): boolean => {
+  if (!dir) return false;
+  let d = path.isAbsolute(dir) ? dir : path.resolve(dir);
+  const root = path.parse(d).root;
+  while (d !== root) {
+    if (fs.existsSync(path.join(d, '.agenfk', 'project.json'))) return true;
+    d = path.dirname(d);
+  }
+  return false;
+};
+
+const scrapeOpencodeSessions = async () => {
+  if (!fs.existsSync(OPENCODE_DB)) return;
+
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const sessions = sqlite3Query(OPENCODE_DB, `SELECT id, directory FROM session WHERE time_created > ${cutoff}`);
+
+  for (const session of sessions) {
+    if (!isAgenFKDir(session.directory)) continue;
+
+    // Extract task IDs
+    const taskIds = new Set<string>();
+
+    const updateParts = sqlite3Query(OPENCODE_DB, `
+      SELECT json_extract(data, '$.state.input') as input_data
+      FROM part WHERE session_id = '${session.id}'
+        AND json_extract(data, '$.tool') = 'agenfk_update_item'
+    `);
+    for (const row of updateParts) {
+      try {
+        const inp = JSON.parse(row.input_data || '{}');
+        if (inp.id && inp.status === 'IN_PROGRESS') taskIds.add(inp.id);
+      } catch { /* skip */ }
+    }
+
+    const gkParts = sqlite3Query(OPENCODE_DB, `
+      SELECT json_extract(data, '$.state.input') as input_data,
+             json_extract(data, '$.state.output') as output_data
+      FROM part WHERE session_id = '${session.id}'
+        AND json_extract(data, '$.tool') = 'agenfk_workflow_gatekeeper'
+    `);
+    for (const row of gkParts) {
+      try {
+        const inp = JSON.parse(row.input_data || '{}');
+        if (inp.itemId) { taskIds.add(inp.itemId); continue; }
+      } catch { /* skip */ }
+      const matches = (row.output_data || '').match(UUID_RE);
+      if (matches) matches.forEach((id: string) => taskIds.add(id));
+    }
+
+    if (taskIds.size === 0) continue;
+
+    // Aggregate tokens by model
+    const tokensByModel: Record<string, { input: number; output: number; cacheRead: number; cost: number }> = {};
+    const messages = sqlite3Query(OPENCODE_DB, `
+      SELECT json_extract(data, '$.modelID') as model,
+             json_extract(data, '$.tokens.input') as inp,
+             json_extract(data, '$.tokens.output') as outp,
+             json_extract(data, '$.tokens.cache.read') as cr,
+             json_extract(data, '$.cost') as cost
+      FROM message WHERE session_id = '${session.id}' AND json_extract(data, '$.role') = 'assistant'
+    `);
+    for (const m of messages) {
+      const model = m.model || 'unknown';
+      if (!tokensByModel[model]) tokensByModel[model] = { input: 0, output: 0, cacheRead: 0, cost: 0 };
+      tokensByModel[model].input += m.inp || 0;
+      tokensByModel[model].output += m.outp || 0;
+      tokensByModel[model].cacheRead += m.cr || 0;
+      tokensByModel[model].cost += m.cost || 0;
+    }
+
+    if (Object.keys(tokensByModel).length === 0) continue;
+
+    const now = new Date().toISOString();
+
+    for (const taskId of taskIds) {
+      try {
+        const item = await storage.getItem(taskId);
+        if (!item) continue;
+
+        const existing = item.tokenUsage || [];
+        let added = 0;
+
+        for (const [model, tokens] of Object.entries(tokensByModel)) {
+          const isDup = existing.some((u: any) => u.sessionId === session.id && u.source === 'opencode' && u.model === model);
+          if (isDup) continue;
+
+          const cost = tokens.cost > 0
+            ? Math.round(tokens.cost * 1e6) / 1e6
+            : calcTokenCost(model, tokens.input, tokens.output, tokens.cacheRead);
+
+          existing.push({
+            input: tokens.input + tokens.cacheRead,
+            output: tokens.output,
+            model,
+            cost,
+            sessionId: session.id,
+            source: 'opencode',
+            timestamp: now,
+          });
+          added++;
+        }
+
+        if (added > 0) {
+          await storage.updateItem(taskId, { tokenUsage: existing });
+          console.log(`[OPENCODE_SCRAPER] Logged ${added} record(s) for task ${taskId} from session ${session.id}`);
+          io.emit('items_updated');
+        }
+      } catch { /* skip unreachable items */ }
+    }
+  }
+};
+
 // ── Init and Listen ──────────────────────────────────────────────────────────
 
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
@@ -1116,6 +1259,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     setInterval(() => {
       performBackup().catch(e => console.error('[BACKUP] Periodic backup failed:', e.message));
     }, 30 * 60 * 1000);
+
+    // Periodic Opencode token scraping every 5 minutes
+    scrapeOpencodeSessions().catch(e => console.error('[OPENCODE_SCRAPER] Initial scrape failed:', e.message));
+    setInterval(() => {
+      scrapeOpencodeSessions().catch(e => console.error('[OPENCODE_SCRAPER] Periodic scrape failed:', e.message));
+    }, OPENCODE_SCRAPE_INTERVAL);
 
     // Backup on clean shutdown
     const shutdown = async () => {

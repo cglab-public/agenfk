@@ -20,6 +20,13 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 **Step 3 — Log Final Comment**
 - Use `add_comment(id, "### FINAL SUMMARY\n\n" + summary)` to log the closing statement.
 
-**Step 4 — Move to DONE**
+**Step 4 — Close Children First (Bottom-Up)**
+- If the item has children (EPIC with STORYs, STORY with TASKs), use `list_items(parentId=id)` to check their status.
+- Any child still in REVIEW or TEST must be progressed to DONE first: move through TEST → DONE using `update_item`.
+- Any child still in IN_PROGRESS should be flagged to the user before proceeding.
+- Only proceed to Step 5 once ALL children are DONE.
+
+**Step 5 — Move to DONE**
 - Call `add_comment(id, "Phase Close complete: Final summary prepared.")` to log the phase completion.
+- Move the item through TEST → DONE using `update_item`. If it is in REVIEW, move to TEST first, then DONE.
 - PAUSE and ask the user: "I have prepared the final summary for item <id>. Should I mark it as DONE?"
