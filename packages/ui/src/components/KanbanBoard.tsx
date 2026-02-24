@@ -86,6 +86,12 @@ export const KanbanBoard: React.FC = () => {
   };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
 
+  const { data: versionData } = useQuery({
+    queryKey: ['version'],
+    queryFn: api.getVersion,
+    staleTime: Infinity,
+  });
+
   const { data: jiraStatus } = useQuery({
     queryKey: ['jiraStatus'],
     queryFn: api.getJiraStatus,
@@ -176,6 +182,11 @@ export const KanbanBoard: React.FC = () => {
       console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+    });
+
+    socket.on('server_restarting', () => {
+      console.log('%c[WS_RESTART] %cServer restarting after update — reloading in 4s...', 'color: #10b981; font-weight: bold', 'color: inherit');
+      setTimeout(() => window.location.reload(), 4000);
     });
 
     socket.on('project_switched', ({ projectId }: { projectId: string }) => {
@@ -561,6 +572,12 @@ export const KanbanBoard: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgenFK Dashboard</h1>
+                <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
+                  <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400 leading-none">
+                    v{versionData?.version || '0.1.29'}
+                  </span>
+                  {isLoading && <Loader2 size={8} className="animate-spin text-slate-400" />}
+                </div>
                 <button 
                   onClick={() => setSelectedProjectId(null)}
                   className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-indigo-600 transition-colors"

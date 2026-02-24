@@ -23,7 +23,7 @@ const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec, execSync } from "child_process";
+import { exec, execSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
@@ -265,6 +265,10 @@ app.get("/", (req, res) => {
       ui: "http://localhost:5173"
     }
   });
+});
+
+app.get("/version", (_req: any, res: any) => {
+  res.json({ version: getCurrentVersion() });
 });
 
 // DB status & backup endpoints
@@ -964,9 +968,36 @@ const RELEASE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 
 const getCurrentVersion = (): string => {
   try {
-    const rootPkg = JSON.parse(fs.readFileSync(path.join(findProjectRoot(process.cwd()), 'package.json'), 'utf8'));
-    return rootPkg.version;
-  } catch { return '0.0.0'; }
+    // Try multiple possible locations for package.json
+    const paths = [
+      path.join(__dirname, '../package.json'),      // Relative to dist/
+      path.join(__dirname, '../../package.json'),   // Relative to dist/src/
+      path.join(process.cwd(), 'package.json'),     // CWD
+      path.join(process.cwd(), 'packages/server/package.json'),
+    ];
+
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (pkg.version && pkg.name === '@agenfk/server') {
+          return pkg.version;
+        }
+      }
+    }
+    
+    // Fallback to searching up from __dirname
+    let currentDir = __dirname;
+    while (currentDir !== path.parse(currentDir).root) {
+      const p = path.join(currentDir, 'package.json');
+      if (fs.existsSync(p)) {
+        const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (pkg.name === '@agenfk/server') return pkg.version;
+      }
+      currentDir = path.dirname(currentDir);
+    }
+
+    return '0.1.29'; // Hardcoded fallback matching current known version if detection fails
+  } catch { return '0.1.29'; }
 };
 
 const getGitHubRepo = (): string | null => {
@@ -1015,6 +1046,20 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
     job.status = code === 0 ? 'success' : 'error';
     job.exitCode = code ?? 1;
     setTimeout(() => updateJobs.delete(jobId), 5 * 60 * 1000);
+
+    if (code === 0) {
+      releaseCache = null; // Force fresh version read after update
+      // Notify browser then restart server
+      io.emit('server_restarting');
+      const serverBin = path.join(findProjectRoot(process.cwd()), 'packages/server/dist/server.js');
+      // Spawn a detached shell that waits for current process to exit, then starts new server
+      const restarter = spawn('sh', ['-c', `sleep 2 && node ${JSON.stringify(serverBin)}`], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      restarter.unref();
+      setTimeout(() => process.exit(0), 500);
+    }
   });
 }));
 

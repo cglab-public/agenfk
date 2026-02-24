@@ -5,6 +5,9 @@ import { Rocket, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+const stripAnsi = (str: string) =>
+  str.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1B[()][AB012]/g, '');
+
 interface ReleaseInfo {
   version: string;
   tagName: string;
@@ -22,8 +25,12 @@ type UpdateState =
   | { phase: 'error'; output: string };
 
 const isNewerVersion = (latest: string, current: string): boolean => {
-  const l = latest.split('.').map(Number);
-  const c = current.split('.').map(Number);
+  if (!latest || !current) return false;
+  
+  const clean = (v: string) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
+  const l = clean(latest);
+  const c = clean(current);
+  
   for (let i = 0; i < Math.max(l.length, c.length); i++) {
     const lv = l[i] || 0;
     const cv = c[i] || 0;
@@ -39,6 +46,7 @@ export const ReleaseReminder: React.FC = () => {
     () => localStorage.getItem('agenfk_dismissed_release')
   );
   const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' });
+  const [countdown, setCountdown] = useState<number | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -61,6 +69,23 @@ export const ReleaseReminder: React.FC = () => {
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  // Start countdown when update succeeds
+  useEffect(() => {
+    if (updateState.phase !== 'success') return;
+    setCountdown(5);
+    const id = setInterval(() => {
+      setCountdown(prev => {
+        if (prev === null || prev <= 1) {
+          clearInterval(id);
+          window.location.reload();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [updateState.phase]);
 
   if (!release || !isNewerVersion(release.version, release.currentVersion)) {
     return null;
@@ -116,7 +141,7 @@ export const ReleaseReminder: React.FC = () => {
 
   const isUpdating = updateState.phase === 'running';
   const showTerminal = updateState.phase !== 'idle';
-  const terminalOutput = updateState.phase !== 'idle' ? updateState.output : '';
+  const terminalOutput = updateState.phase !== 'idle' ? stripAnsi(updateState.output) : '';
 
   return (
     <>
@@ -196,9 +221,9 @@ export const ReleaseReminder: React.FC = () => {
                   {terminalOutput || (isUpdating ? 'Starting...' : '')}
                 </pre>
                 {updateState.phase === 'success' && (
-                  <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300">
-                    <RefreshCw size={14} className="shrink-0 mt-0.5" />
-                    <span><strong>Restart required.</strong> Restart your AI editor and AgenFK services to apply the update.</span>
+                  <div className="flex items-center gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs text-emerald-700 dark:text-emerald-300">
+                    <RefreshCw size={14} className="shrink-0 animate-spin" />
+                    <span>Restarting server and reloading in <strong>{countdown}s</strong>...</span>
                   </div>
                 )}
               </div>
@@ -227,13 +252,13 @@ export const ReleaseReminder: React.FC = () => {
             <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 shrink-0">
               {updateState.phase === 'success' ? (
                 <>
-                  <span />
+                  <span className="text-xs text-slate-400">Reloading automatically...</span>
                   <button
-                    onClick={handleDismiss}
+                    onClick={() => window.location.reload()}
                     className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
                   >
-                    <CheckCircle size={16} />
-                    Done
+                    <RefreshCw size={16} />
+                    Reload now
                   </button>
                 </>
               ) : updateState.phase === 'error' ? (

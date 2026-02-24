@@ -109,6 +109,10 @@ export const api = {
   importJiraIssues: async (projectId: string, items: { issueKey: string; type: string }[]): Promise<void> => {
     await axios.post(`${API_URL}/jira/import`, { projectId, items });
   },
+  getVersion: async (): Promise<{ version: string }> => {
+    const { data } = await axios.get(`${API_URL}/version`);
+    return data;
+  },
   getLatestRelease: async () => {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
     return data;
