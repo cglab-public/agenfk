@@ -106,7 +106,7 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/jira/projects/${projectKey}/issues`, { params });
     return data;
   },
-  importJiraIssues: async (projectId: string, issueKeys: string[]): Promise<void> => {
-    await axios.post(`${API_URL}/jira/import`, { projectId, items: issueKeys.map(k => ({ issueKey: k })) });
+  importJiraIssues: async (projectId: string, items: { issueKey: string; type: string }[]): Promise<void> => {
+    await axios.post(`${API_URL}/jira/import`, { projectId, items });
   },
 };

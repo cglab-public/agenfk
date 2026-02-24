@@ -36,7 +36,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   const [step, setStep] = useState<Step>('projects');
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   const [selectedProjectName, setSelectedProjectName] = useState<string>('');
-  const [selectedIssueKeys, setSelectedIssueKeys] = useState<Set<string>>(new Set());
+  const [selectedIssues, setSelectedIssues] = useState<Map<string, string>>(new Map());
   const [projectSearch, setProjectSearch] = useState('');
   const [issueSearch, setIssueSearch] = useState('');
   const [statusCategories, setStatusCategories] = useState<Set<string>>(new Set(['To Do', 'In Progress']));
@@ -61,7 +61,13 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   });
 
   const importMutation = useMutation({
-    mutationFn: () => api.importJiraIssues(projectId, Array.from(selectedIssueKeys)),
+    mutationFn: () => {
+      const items = Array.from(selectedIssues.entries()).map(([issueKey, type]) => ({
+        issueKey,
+        type
+      }));
+      return api.importJiraIssues(projectId, items);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
       setImportSuccess(true);
@@ -79,7 +85,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     setStep('projects');
     setSelectedProjectKey(null);
     setSelectedProjectName('');
-    setSelectedIssueKeys(new Set());
+    setSelectedIssues(new Map());
     setProjectSearch('');
     setImportError(null);
     setImportSuccess(false);
@@ -89,7 +95,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   const handleSelectProject = (key: string, name: string) => {
     setSelectedProjectKey(key);
     setSelectedProjectName(name);
-    setSelectedIssueKeys(new Set());
+    setSelectedIssues(new Map());
     setIssueSearch('');
     setStatusCategories(new Set(['To Do', 'In Progress']));
     setStep('issues');
@@ -104,21 +110,36 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     });
   };
 
-  const toggleIssue = (key: string) => {
-    setSelectedIssueKeys(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  const toggleIssue = (key: string, issueType: string) => {
+    setSelectedIssues(prev => {
+      const next = new Map(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.set(key, mapToAgenFKType(issueType));
+      }
+      return next;
+    });
+  };
+
+  const updateIssueType = (key: string, type: string) => {
+    setSelectedIssues(prev => {
+      const next = new Map(prev);
+      if (next.has(key)) {
+        next.set(key, type);
+      }
       return next;
     });
   };
 
   const toggleAll = () => {
     if (!issues) return;
-    if (selectedIssueKeys.size === issues.length) {
-      setSelectedIssueKeys(new Set());
+    if (selectedIssues.size === issues.length) {
+      setSelectedIssues(new Map());
     } else {
-      setSelectedIssueKeys(new Set(issues.map(i => i.key)));
+      const next = new Map();
+      issues.forEach(i => next.set(i.key, mapToAgenFKType(i.issueType)));
+      setSelectedIssues(next);
     }
   };
 
@@ -260,16 +281,16 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                     <label className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 cursor-pointer select-none">
                       <input
                         type="checkbox"
-                        checked={selectedIssueKeys.size === issues.length && issues.length > 0}
+                        checked={selectedIssues.size === issues.length && issues.length > 0}
                         onChange={toggleAll}
                         className="rounded"
                         data-testid="select-all-issues"
                       />
                       Select all ({issues.length})
                     </label>
-                    {selectedIssueKeys.size > 0 && (
+                    {selectedIssues.size > 0 && (
                       <span className="text-xs font-medium text-indigo-600 dark:text-indigo-400">
-                        {selectedIssueKeys.size} selected
+                        {selectedIssues.size} selected
                       </span>
                     )}
                   </div>
@@ -279,13 +300,14 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                     )}
                     {issues.map(issue => {
                       const afkType = mapToAgenFKType(issue.issueType);
+                      const currentType = selectedIssues.get(issue.key) || afkType;
                       return (
                         <li key={issue.key}>
-                          <label className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer" data-testid={`issue-item-${issue.key}`}>
+                          <div className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800" data-testid={`issue-item-${issue.key}`}>
                             <input
                               type="checkbox"
-                              checked={selectedIssueKeys.has(issue.key)}
-                              onChange={() => toggleIssue(issue.key)}
+                              checked={selectedIssues.has(issue.key)}
+                              onChange={() => toggleIssue(issue.key, issue.issueType)}
                               className="rounded shrink-0"
                             />
                             <span className="font-mono text-xs text-slate-400 w-20 shrink-0">{issue.key}</span>
@@ -293,11 +315,23 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                             <div className="flex items-center gap-1.5 shrink-0">
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{issue.statusCategory || issue.status}</span>
                               <span className="text-xs text-slate-300 dark:text-slate-600">→</span>
-                              <span className={clsx('text-xs font-medium px-1.5 py-0.5 rounded', TYPE_COLORS[afkType])} data-testid={`type-badge-${issue.key}`}>
-                                {afkType}
-                              </span>
+                              <select
+                                value={currentType}
+                                onChange={(e) => updateIssueType(issue.key, e.target.value)}
+                                className={clsx(
+                                  'text-[10px] font-bold px-1.5 py-0.5 rounded border border-transparent focus:border-indigo-500 focus:ring-0 bg-transparent cursor-pointer appearance-none text-center min-w-[60px]',
+                                  TYPE_COLORS[currentType]
+                                )}
+                                data-testid={`type-select-${issue.key}`}
+                              >
+                                {Object.keys(TYPE_COLORS).map(t => (
+                                  <option key={t} value={t} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans text-xs">
+                                    {t}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
-                          </label>
+                          </div>
                         </li>
                       );
                     })}
@@ -311,11 +345,14 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
           {step === 'confirm' && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-slate-300" data-testid="confirm-summary">
-                You are about to import <strong>{selectedIssueKeys.size}</strong> issue{selectedIssueKeys.size !== 1 ? 's' : ''} from <strong>{selectedProjectName}</strong> into the current AgenFK project.
+                You are about to import <strong>{selectedIssues.size}</strong> issue{selectedIssues.size !== 1 ? 's' : ''} from <strong>{selectedProjectName}</strong> into the current AgenFK project.
               </p>
-              <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-1 max-h-40 overflow-y-auto">
-                {Array.from(selectedIssueKeys).map(key => (
-                  <li key={key} className="font-mono">{key}</li>
+              <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-2 max-h-40 overflow-y-auto pr-2">
+                {Array.from(selectedIssues.entries()).map(([key, type]) => (
+                  <li key={key} className="flex items-center justify-between font-mono bg-slate-50 dark:bg-slate-800/50 px-2 py-1 rounded">
+                    <span>{key}</span>
+                    <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', TYPE_COLORS[type])}>{type}</span>
+                  </li>
                 ))}
               </ul>
               {importError && (
@@ -341,11 +378,11 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
           {step === 'issues' && (
             <button
               onClick={() => setStep('confirm')}
-              disabled={selectedIssueKeys.size === 0}
+              disabled={selectedIssues.size === 0}
               className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors"
               data-testid="next-to-confirm"
             >
-              Next ({selectedIssueKeys.size} selected)
+              Next ({selectedIssues.size} selected)
             </button>
           )}
           {step === 'confirm' && (
@@ -358,7 +395,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
               {importMutation.isPending ? (
                 <><Loader2 size={14} className="animate-spin" /> Importing...</>
               ) : (
-                <><Download size={14} /> Import {selectedIssueKeys.size} item{selectedIssueKeys.size !== 1 ? 's' : ''}</>
+                <><Download size={14} /> Import {selectedIssues.size} item{selectedIssues.size !== 1 ? 's' : ''}</>
               )}
             </button>
           )}

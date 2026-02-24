@@ -92,10 +92,12 @@ describe('JiraImportModal', () => {
 
     const issueList = await screen.findByTestId('issue-list');
     expect(issueList).toBeDefined();
-    expect(api.listJiraIssues).toHaveBeenCalledWith('PROJ');
+    expect(api.listJiraIssues).toHaveBeenCalledWith('PROJ', expect.objectContaining({
+      statusCategory: 'To Do,In Progress'
+    }));
   });
 
-  it('renders issue list with correct AgenFK type badges', async () => {
+  it('renders issue list with correct AgenFK type selects', async () => {
     vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
     vi.mocked(api.listJiraIssues).mockResolvedValue(ISSUES);
     render(
@@ -106,10 +108,36 @@ describe('JiraImportModal', () => {
     fireEvent.click(await screen.findByTestId('project-item-PROJ'));
     await screen.findByTestId('issue-list');
 
-    expect(screen.getByTestId('type-badge-PROJ-1').textContent).toBe('EPIC');
-    expect(screen.getByTestId('type-badge-PROJ-2').textContent).toBe('STORY');
-    expect(screen.getByTestId('type-badge-PROJ-3').textContent).toBe('BUG');
-    expect(screen.getByTestId('type-badge-PROJ-4').textContent).toBe('TASK');
+    expect((screen.getByTestId('type-select-PROJ-1') as HTMLSelectElement).value).toBe('EPIC');
+    expect((screen.getByTestId('type-select-PROJ-2') as HTMLSelectElement).value).toBe('STORY');
+    expect((screen.getByTestId('type-select-PROJ-3') as HTMLSelectElement).value).toBe('BUG');
+    expect((screen.getByTestId('type-select-PROJ-4') as HTMLSelectElement).value).toBe('TASK');
+  });
+
+  it('allows changing issue type before import', async () => {
+    vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
+    vi.mocked(api.listJiraIssues).mockResolvedValue(ISSUES);
+    render(
+      <JiraImportModal open={true} onClose={() => {}} projectId="proj-1" />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    fireEvent.click(await screen.findByTestId('project-item-PROJ'));
+    await screen.findByTestId('issue-list');
+
+    const checkbox = screen.getByTestId('issue-item-PROJ-4').querySelector('input[type="checkbox"]')!;
+    fireEvent.click(checkbox);
+
+    const select = screen.getByTestId('type-select-PROJ-4') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'BUG' } });
+    expect(select.value).toBe('BUG');
+
+    fireEvent.click(screen.getByTestId('next-to-confirm'));
+    await screen.findByTestId('confirm-import');
+
+    expect(screen.getByTestId('confirm-summary').textContent).toContain('1');
+    expect(screen.getByText('PROJ-4')).toBeDefined();
+    expect(screen.getByText('BUG')).toBeDefined();
   });
 
   it('selects issues and advances to confirm step', async () => {
@@ -157,7 +185,7 @@ describe('JiraImportModal', () => {
     fireEvent.click(screen.getByTestId('confirm-import'));
 
     await waitFor(() =>
-      expect(api.importJiraIssues).toHaveBeenCalledWith('proj-1', ['PROJ-3'])
+      expect(api.importJiraIssues).toHaveBeenCalledWith('proj-1', [{ issueKey: 'PROJ-3', type: 'BUG' }])
     );
     await waitFor(() => expect(screen.getByTestId('import-success')).toBeDefined());
   });

@@ -916,14 +916,14 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   const imported: any[] = [];
   const errors: any[] = [];
 
-  for (const { issueKey } of items) {
+  for (const { issueKey, type: requestedType } of items) {
     try {
       const { data: issue } = await jiraApiRequest(
         tokenData,
         'get',
         `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype`
       );
-      const type = mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task');
+      const type = requestedType || mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
       const externalUrl = `${tokenData.cloudUrl}/browse/${issueKey}`;
 
