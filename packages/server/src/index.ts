@@ -103,6 +103,9 @@ const LogTokenUsageSchema = z.object({
   output: z.number(),
   model: z.string(),
   cost: z.number().optional(),
+  sessionId: z.string().optional(),
+  source: z.string().optional(),
+  timestamp: z.string().optional(),
 });
 
 const AddContextSchema = z.object({
@@ -203,7 +206,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "log_token_usage",
-        description: "Log token usage for an item.",
+        description: "Log token usage for an item. Use this for manual/proactive reporting. Note: Automated hooks will also capture session totals using 'sessionId' for deduplication.",
         inputSchema: {
           type: "object",
           properties: {
@@ -212,6 +215,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             output: { type: "number" },
             model: { type: "string" },
             cost: { type: "number" },
+            sessionId: { type: "string", description: "Optional: session ID for deduplication with automated hooks." },
+            source: { type: "string", description: "Optional: source of report (e.g. 'agent', 'manual')." },
+            timestamp: { type: "string", description: "Optional: ISO timestamp." },
           },
           required: ["itemId", "input", "output", "model"],
         },
