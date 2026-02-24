@@ -97,7 +97,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
     if (new Date(item.updatedAt).getTime() > new Date(lastUpdate).getTime()) {
       setShouldFlash(true);
       setLastUpdate(item.updatedAt);
-      const timer = setTimeout(() => setShouldFlash(false), 300);
+      const timer = setTimeout(() => setShouldFlash(false), 400);
       return () => clearTimeout(timer);
     }
   }, [item.updatedAt, lastUpdate]);
@@ -122,7 +122,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       initial={false}
       animate={{ 
         opacity: 1, 
-        scale: shouldFlash ? 0.96 : 1,
+        scale: shouldFlash ? [1, 0.96, 1] : 1,
         y: 0,
       }}
       exit={{ opacity: 0, scale: 1, transition: { duration: 0.2 } }}
@@ -133,9 +133,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           duration: 0.5
         },
         scale: { 
-          type: "spring", 
-          stiffness: 500, 
-          damping: 15 
+          duration: 0.4,
+          times: [0, 0.5, 1],
+          ease: "easeInOut"
         },
       }}
       className={clsx(
