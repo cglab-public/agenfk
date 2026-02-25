@@ -141,14 +141,19 @@ const syncParentStatus = async (parentId: string) => {
   if (children.length === 0) return;
 
   const allDone = children.every(c => c.status === Status.DONE);
-  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.TEST || c.status === Status.REVIEW);
-  const anyDone = children.some(c => c.status === Status.DONE);
+  const allTestOrFurther = children.every(c => c.status === Status.TEST || c.status === Status.DONE);
+  const allReviewOrFurther = children.every(c => c.status === Status.REVIEW || c.status === Status.TEST || c.status === Status.DONE);
+  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.TEST || c.status === Status.REVIEW || c.status === Status.DONE);
 
   let newStatus: Status | null = null;
 
   if (allDone) {
     if (parent.status !== Status.DONE) newStatus = Status.DONE;
-  } else if (anyInProgress || anyDone) {
+  } else if (allTestOrFurther) {
+    if (parent.status !== Status.TEST) newStatus = Status.TEST;
+  } else if (allReviewOrFurther) {
+    if (parent.status !== Status.REVIEW) newStatus = Status.REVIEW;
+  } else if (anyInProgress) {
     if (parent.status !== Status.IN_PROGRESS) newStatus = Status.IN_PROGRESS;
   }
 

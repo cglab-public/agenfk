@@ -406,7 +406,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         
         // Find items that are not in terminal states
         const activeItems = items.filter((i: any) => 
-          i.status !== 'DONE' && i.status !== 'ARCHIVED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY')
+          i.status !== 'DONE' && i.status !== 'ARCHIVED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY' || i.type === 'EPIC')
         );
 
         const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
@@ -414,6 +414,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const testItems = activeItems.filter((i: any) => i.status === 'TEST');
 
         // Enforcement Logic
+        if (role === 'planning') {
+          // Planning is allowed on TODO items of type EPIC or STORY
+          const { data: item } = await api.get(`/items/${itemId}`);
+          if (item.type !== 'EPIC' && item.type !== 'STORY') {
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Planning role is only valid for EPIC or STORY items.` }] };
+          }
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (PLANNING).\n\nItem: [${item.id.substring(0,8)}] ${item.title}\nIntent: "${intent}"` }] };
+        }
+
         if (role === 'coding') {
           if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status.` }] };
           
@@ -424,6 +433,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           } else {
             if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS. Please provide 'itemId' to disambiguate.` }] };
             task = inProgressItems[0];
+          }
+
+          if (task.type === 'EPIC' || task.type === 'STORY') {
+             return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role is not allowed on ${task.type} items. Please decompose into TASKS and work on those instead.` }] };
           }
           
           return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
