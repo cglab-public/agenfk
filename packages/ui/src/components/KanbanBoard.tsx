@@ -18,7 +18,7 @@ import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
-import { calculateCost, formatCost } from '../utils';
+import { calculateCost, formatCost, calculateCycleTimeMs } from '../utils';
 
 const statuses = [
   Status.TODO,
@@ -277,9 +277,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           </div>
           <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
             <Clock size={9} />
-            {item.status === Status.DONE 
-              ? formatDuration(new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime())
-              : formatDuration(Date.now() - new Date(item.createdAt).getTime())
+            {calculateCycleTimeMs(item) > 0 || (item.status !== Status.TODO && item.status !== Status.BLOCKED)
+              ? formatDuration(calculateCycleTimeMs(item))
+              : 'Not started'
             }
           </div>
         </div>
@@ -819,7 +819,7 @@ export const KanbanBoard: React.FC = () => {
   const activeProject = projects?.find(p => p.id === selectedProjectId);
 
   const doneItems = items?.filter((i: AgenFKItem) => i.status === Status.DONE) || [];
-  const totalCycleMs = doneItems.reduce((acc: number, i: AgenFKItem) => acc + (new Date(i.updatedAt).getTime() - new Date(i.createdAt).getTime()), 0);
+  const totalCycleMs = doneItems.reduce((acc: number, i: AgenFKItem) => acc + calculateCycleTimeMs(i), 0);
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
   return (
@@ -980,7 +980,8 @@ export const KanbanBoard: React.FC = () => {
       </header>
 
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
-        <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
+        <LayoutGroup id="board">
+          <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
           {statuses.map(status => (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
@@ -1006,8 +1007,7 @@ export const KanbanBoard: React.FC = () => {
                 </span>
               </div>
               
-              <div className={clsx("flex-1 px-3 pb-10 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                <LayoutGroup id={status}>
+              <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
                       <KanbanCard
@@ -1032,7 +1032,6 @@ export const KanbanBoard: React.FC = () => {
                       />
                     ))}
                   </AnimatePresence>
-                </LayoutGroup>
                 <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
                   <Plus size={16} /> Add {status.toLowerCase()}
                 </button>
@@ -1059,8 +1058,7 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                   </div>
-                <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                  <LayoutGroup id="blocked">
+                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
                           <KanbanCard
@@ -1085,7 +1083,6 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    </LayoutGroup>
                   <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
                     <Plus size={14} /> Add blocked
                   </button>
@@ -1125,8 +1122,7 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                   </div>
-                  <div className={clsx("flex-1 pr-2 pb-2 space-y-3 scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                      <LayoutGroup id="archived">
+                <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                         <AnimatePresence mode="popLayout" initial={false}>
                           {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
                           <KanbanCard
@@ -1151,13 +1147,13 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    </LayoutGroup>
                 </div>
                 </div>
               )}
             </div>
+            </div>
           </div>
-        </div>
+        </LayoutGroup>
       </main>
 
       {selectedItem && (

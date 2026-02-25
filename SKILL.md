@@ -52,7 +52,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
         7. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. BE THOROUGH AND COMPLETE. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
         8. Fetch all items via `list_items(projectId)` and render the **Board Report** as described below.
     *   **Board Report Format**:
-        *   **Cycle Time Calculation**: For each item, compute cycle time as `updatedAt - createdAt`. Format durations as `HH:MM:SS`. For DONE/ARCHIVED items this represents total elapsed time. For active items (TODO, IN_PROGRESS, BLOCKED) it represents age.
+        *   **Cycle Time Calculation**: For each item, compute cycle time by finding the time it first entered `IN_PROGRESS` (or similar active state) to the time it entered `DONE`/`ARCHIVED`. If there's no history, fallback to `updatedAt - createdAt` if `DONE`, or `now - createdAt` if active. For items that never started (e.g. `TODO`), cycle time is N/A or 0. Format durations as `HH:MM:SS`.
         *   **Per-card display**: Include a `Cycle Time` column in every status group table.
         *   **Summary Header**: Show a metrics line with:
             - Total token usage (sum of all `tokenUsage[].input + tokenUsage[].output` across all items)

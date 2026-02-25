@@ -50,3 +50,38 @@ export const formatCost = (cost: number): string => {
   if (cost < 0.01) return '$' + cost.toFixed(4);
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cost);
 };
+
+export const calculateCycleTimeMs = (item: any): number => {
+  // If the item hasn't started yet, cycle time is 0
+  if (!item.history || item.history.length === 0) {
+    if (item.status === 'TODO' || item.status === 'BLOCKED') return 0;
+    return item.status === 'DONE' || item.status === 'ARCHIVED' 
+      ? new Date(item.updatedAt).getTime() - new Date(item.createdAt).getTime()
+      : Date.now() - new Date(item.createdAt).getTime();
+  }
+
+  // Find the first time it entered an active state (not TODO, not BLOCKED)
+  let startedAt: Date | null = null;
+  for (const record of item.history) {
+    if (record.toStatus !== 'TODO' && record.toStatus !== 'BLOCKED') {
+      startedAt = new Date(record.timestamp);
+      break;
+    }
+  }
+
+  if (!startedAt) return 0;
+
+  // Find the first time it entered a DONE or ARCHIVED state after starting
+  let completedAt: Date | null = null;
+  if (item.status === 'DONE' || item.status === 'ARCHIVED') {
+    for (const record of item.history) {
+      if (record.toStatus === 'DONE' || record.toStatus === 'ARCHIVED') {
+        completedAt = new Date(record.timestamp);
+        break;
+      }
+    }
+    if (!completedAt) completedAt = new Date(item.updatedAt);
+  }
+
+  return (completedAt ? completedAt.getTime() : Date.now()) - startedAt.getTime();
+};
