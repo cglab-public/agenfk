@@ -37,5 +37,47 @@ describe('UI Utils', () => {
       };
       expect(calculateCycleTimeMs(item)).toBe(5000);
     });
+
+    it('should sum multiple active intervals', () => {
+      const t1 = 1000000000000;
+      const item = {
+        status: 'DONE',
+        history: [
+          { toStatus: 'IN_PROGRESS', timestamp: new Date(t1).toISOString() }, // Start 1
+          { toStatus: 'TODO', timestamp: new Date(t1 + 1000).toISOString() }, // Stop 1 (dur: 1000)
+          { toStatus: 'IN_PROGRESS', timestamp: new Date(t1 + 5000).toISOString() }, // Start 2
+          { toStatus: 'DONE', timestamp: new Date(t1 + 8000).toISOString() } // Stop 2 (dur: 3000)
+        ]
+      };
+      expect(calculateCycleTimeMs(item)).toBe(4000);
+    });
+
+    it('should include time spent in REVIEW and TEST', () => {
+      const t1 = 1000000000000;
+      const item = {
+        status: 'DONE',
+        history: [
+          { toStatus: 'IN_PROGRESS', timestamp: new Date(t1).toISOString() },
+          { toStatus: 'REVIEW', timestamp: new Date(t1 + 1000).toISOString() },
+          { toStatus: 'TEST', timestamp: new Date(t1 + 2000).toISOString() },
+          { toStatus: 'DONE', timestamp: new Date(t1 + 3000).toISOString() }
+        ]
+      };
+      expect(calculateCycleTimeMs(item)).toBe(3000);
+    });
+
+    it('should pause clock when BLOCKED', () => {
+      const t1 = 1000000000000;
+      const item = {
+        status: 'DONE',
+        history: [
+          { toStatus: 'IN_PROGRESS', timestamp: new Date(t1).toISOString() },
+          { toStatus: 'BLOCKED', timestamp: new Date(t1 + 1000).toISOString() },
+          { toStatus: 'IN_PROGRESS', timestamp: new Date(t1 + 5000).toISOString() },
+          { toStatus: 'DONE', timestamp: new Date(t1 + 6000).toISOString() }
+        ]
+      };
+      expect(calculateCycleTimeMs(item)).toBe(2000);
+    });
   });
 });

@@ -52,7 +52,7 @@ export const formatCost = (cost: number): string => {
 };
 
 export const calculateCycleTimeMs = (item: any): number => {
-  // If the item hasn't started yet, cycle time is 0
+  // If the item has no history (newly created), fallback to timestamps
   if (!item.history || item.history.length === 0) {
     if (item.status === 'TODO' || item.status === 'BLOCKED') return 0;
     return item.status === 'DONE' || item.status === 'ARCHIVED' 
@@ -60,28 +60,35 @@ export const calculateCycleTimeMs = (item: any): number => {
       : Date.now() - new Date(item.createdAt).getTime();
   }
 
-  // Find the first time it entered an active state (not TODO, not BLOCKED)
-  let startedAt: Date | null = null;
+  let totalMs = 0;
+  let currentIntervalStartMs: number | null = null;
+
+  // States that "start" or "continue" the clock
+  const ACTIVE_STATES = ['IN_PROGRESS', 'REVIEW', 'TEST'];
+  // States that "stop" the clock
+  const INACTIVE_STATES = ['TODO', 'BLOCKED', 'DONE', 'ARCHIVED'];
+
   for (const record of item.history) {
-    if (record.toStatus !== 'TODO' && record.toStatus !== 'BLOCKED') {
-      startedAt = new Date(record.timestamp);
-      break;
-    }
-  }
-
-  if (!startedAt) return 0;
-
-  // Find the first time it entered a DONE or ARCHIVED state after starting
-  let completedAt: Date | null = null;
-  if (item.status === 'DONE' || item.status === 'ARCHIVED') {
-    for (const record of item.history) {
-      if (record.toStatus === 'DONE' || record.toStatus === 'ARCHIVED') {
-        completedAt = new Date(record.timestamp);
-        break;
+    const timestampMs = new Date(record.timestamp).getTime();
+    
+    if (currentIntervalStartMs === null) {
+      // Clock is currently stopped. Check if we should start it.
+      if (ACTIVE_STATES.includes(record.toStatus)) {
+        currentIntervalStartMs = timestampMs;
+      }
+    } else {
+      // Clock is currently running. Check if we should stop it.
+      if (INACTIVE_STATES.includes(record.toStatus)) {
+        totalMs += (timestampMs - currentIntervalStartMs);
+        currentIntervalStartMs = null;
       }
     }
-    if (!completedAt) completedAt = new Date(item.updatedAt);
   }
 
-  return (completedAt ? completedAt.getTime() : Date.now()) - startedAt.getTime();
+  // If item is currently in an active state, add the elapsed time of the current interval
+  if (currentIntervalStartMs !== null) {
+    totalMs += (Date.now() - currentIntervalStartMs);
+  }
+
+  return totalMs;
 };
