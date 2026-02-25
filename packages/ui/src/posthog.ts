@@ -11,7 +11,7 @@ export function initPosthog(installationId: string): void {
     api_host: 'https://app.posthog.com',
     autocapture: false,
     capture_pageview: false, // We fire board_viewed manually
-    person_profiles: 'never', // Anonymous IDs only — no user profiles
+    person_profiles: 'identified_only',
   });
   posthog.identify(installationId);
   initialized = true;

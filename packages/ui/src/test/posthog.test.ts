@@ -36,6 +36,7 @@ describe('posthog singleton', () => {
       expect.objectContaining({
         autocapture: false,
         capture_pageview: false,
+        person_profiles: 'identified_only',
       })
     );
     expect(mockIdentify).toHaveBeenCalledWith('install-id-abc');
