@@ -148,6 +148,34 @@ Designed for complex architectural changes. The primary agent acts as a **Superv
 3.  **Autonomous Handover**: Once approved, automatically spawns specialized sub-agents for Coding, Review (Security/Logic), and Testing (80% Coverage).
 4.  **Final Summary**: A Closing Agent collates all work logs into a final report before completion.
 
+## Telemetry
+
+AgenFK collects **anonymous usage telemetry** to help us understand how the tool is used and prioritise improvements. No personally identifiable information is ever collected.
+
+### What is collected
+
+| Surface | Event | When |
+|---|---|---|
+| Server | `server_started` | API server starts listening |
+| Server | `project_created` | A new project is created |
+| Server | `item_created` | A new item (Epic/Story/Task/Bug) is created |
+| Server | `item_status_changed` | An item moves to a new workflow status |
+| CLI | `cli_command` | Any `agenfk` command is invoked |
+| CLI | `cli_db_switch` | The active database is switched |
+| UI | `board_viewed` | The Kanban dashboard is opened |
+| UI | `project_switched` | The user switches to a different project |
+| UI | `card_opened` | A card detail modal is opened |
+
+All events include a random, anonymous **installation ID** generated on first run and stored at `~/.agenfk/installation-id`. This ID cannot be linked to a person or machine.
+
+### Opting out
+
+```bash
+agenfk config set telemetry false
+```
+
+This writes `"telemetry": false` to `~/.agenfk/config.json` and permanently disables all event collection.
+
 ---
 
 ![AgenFK Dashboard](./docs/dashboard-screenshot.png)
