@@ -18,7 +18,7 @@ import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
-import { calculateCost, formatCost, calculateCycleTimeMs } from '../utils';
+import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 
 const statuses = [
   Status.TODO,
@@ -42,16 +42,6 @@ const statusBorderColors: Record<Status, string> = {
   [Status.DONE]: "border-t-emerald-500",
   [Status.BLOCKED]: "border-t-red-500",
   [Status.ARCHIVED]: "border-t-gray-300",
-};
-
-export const formatDuration = (ms: number) => {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 };
 
 const statusIcons: Record<Status, React.ReactNode> = {

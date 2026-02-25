@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDuration } from '../components/KanbanBoard';
-import { calculateCycleTimeMs } from '../utils';
+import { formatDuration, calculateCycleTimeMs } from '../utils';
 
 describe('UI Utils', () => {
   describe('formatDuration', () => {

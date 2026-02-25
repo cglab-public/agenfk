@@ -51,6 +51,16 @@ export const formatCost = (cost: number): string => {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cost);
 };
 
+export const formatDuration = (ms: number) => {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+};
+
 export const calculateCycleTimeMs = (item: any): number => {
   // If the item has no history (newly created), fallback to timestamps
   if (!item.history || item.history.length === 0) {

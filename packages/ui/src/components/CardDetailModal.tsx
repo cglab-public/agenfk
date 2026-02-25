@@ -9,7 +9,7 @@ import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { stripAnsi, calculateCost, formatCost } from '../utils';
+import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 
 interface CardDetailModalProps {
   item: AgenFKItem;
@@ -432,15 +432,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <div className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 flex items-center justify-center bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-400 shrink-0">
-                        <Zap size={18} />
+                        <Clock size={18} />
                       </div>
                       <div>
-                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Total Tokens</div>
+                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Cycle Time</div>
                         <div className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">
-                          {totalTokens.toLocaleString()}
-                          {pricesData && item.tokenUsage && item.tokenUsage.length > 0 && (
-                            <span className="text-sm text-slate-500 ml-2">({formatCost(calculateCost(item.tokenUsage, pricesData))})</span>
-                          )}
+                          {formatDuration(calculateCycleTimeMs(item))}
                         </div>
                       </div>
                     </div>
