@@ -507,4 +507,24 @@ describe('JIRA Integration', () => {
       expect(res.body.disconnected).toBe(true);
     });
   });
+
+  // ── GET /api/telemetry/config ────────────────────────────────────────────
+  describe('GET /api/telemetry/config', () => {
+    it('returns installationId and telemetryEnabled', async () => {
+      const res = await request(app).get('/api/telemetry/config');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('installationId');
+      expect(res.body).toHaveProperty('telemetryEnabled');
+      expect(typeof res.body.telemetryEnabled).toBe('boolean');
+    });
+
+    it('installationId is a non-empty string or null', async () => {
+      const res = await request(app).get('/api/telemetry/config');
+      const { installationId } = res.body;
+      expect(installationId === null || typeof installationId === 'string').toBe(true);
+      if (typeof installationId === 'string') {
+        expect(installationId.length).toBeGreaterThan(0);
+      }
+    });
+  });
 });

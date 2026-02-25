@@ -4,6 +4,7 @@ import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
+import { getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -276,6 +277,18 @@ app.get("/", (req, res) => {
 
 app.get("/version", (_req: any, res: any) => {
   res.json({ version: getCurrentVersion() });
+});
+
+app.get("/api/telemetry/config", (_req: any, res: any) => {
+  try {
+    res.json({
+      installationId: getInstallationId(),
+      telemetryEnabled: isTelemetryEnabled(),
+    });
+  } catch {
+    // Never fail — UI treats errors as telemetry disabled
+    res.json({ installationId: null, telemetryEnabled: false });
+  }
 });
 
 // DB status & backup endpoints
