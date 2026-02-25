@@ -818,7 +818,9 @@ export const KanbanBoard: React.FC = () => {
 
   const activeProject = projects?.find(p => p.id === selectedProjectId);
 
-  const doneItems = items?.filter((i: AgenFKItem) => i.status === Status.DONE) || [];
+  // By using getItemsByStatus, we ensure the cycle time metrics exactly match 
+  // the cards currently visible in the DONE column (respecting the navPath and type filters)
+  const doneItems = getItemsByStatus(Status.DONE);
   const totalCycleMs = doneItems.reduce((acc: number, i: AgenFKItem) => acc + calculateCycleTimeMs(i), 0);
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
