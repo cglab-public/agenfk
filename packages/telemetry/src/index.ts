@@ -44,8 +44,8 @@ export class TelemetryClient {
     this.enabled = config.telemetry !== false;
     this.installationId = getOrCreateInstallationId();
 
-    const apiKey = process.env.AGENFK_POSTHOG_KEY;
-    if (apiKey && this.enabled) {
+    const apiKey = 'phc_QSEOhekLjn1ZAmwa2Gd43qr6WwaAK8dEhzgoS9XpuXW';
+    if (this.enabled) {
       this.client = new PostHog(apiKey, {
         host: 'https://app.posthog.com',
         // Flush immediately so short-lived processes (CLI) don't lose events

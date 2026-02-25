@@ -2,11 +2,12 @@ import posthog from 'posthog-js';
 
 let initialized = false;
 
-export function initPosthog(installationId: string): void {
-  const key = import.meta.env.VITE_POSTHOG_KEY as string | undefined;
-  if (!key || initialized) return;
+const POSTHOG_KEY = 'phc_QSEOhekLjn1ZAmwa2Gd43qr6WwaAK8dEhzgoS9XpuXW';
 
-  posthog.init(key, {
+export function initPosthog(installationId: string): void {
+  if (initialized) return;
+
+  posthog.init(POSTHOG_KEY, {
     api_host: 'https://app.posthog.com',
     autocapture: false,
     capture_pageview: false, // We fire board_viewed manually

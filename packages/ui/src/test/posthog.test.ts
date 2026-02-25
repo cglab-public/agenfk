@@ -20,7 +20,6 @@ describe('posthog singleton', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules(); // ensures `initialized` resets between tests
-    delete (import.meta.env as any).VITE_POSTHOG_KEY;
   });
 
   it('capture() is a no-op when not initialized', async () => {
@@ -29,27 +28,20 @@ describe('posthog singleton', () => {
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
-  it('initPosthog() is a no-op when VITE_POSTHOG_KEY is not set', async () => {
-    const { initPosthog, capture } = await import('../posthog');
-    initPosthog('install-id-123');
-    capture('test_event');
-    expect(mockInit).not.toHaveBeenCalled();
-    expect(mockCapture).not.toHaveBeenCalled();
-  });
-
-  it('initPosthog() initializes posthog and identifies when key is set', async () => {
-    (import.meta.env as any).VITE_POSTHOG_KEY = 'phc_testkey';
+  it('initPosthog() initializes posthog and identifies', async () => {
     const { initPosthog } = await import('../posthog');
     initPosthog('install-id-abc');
-    expect(mockInit).toHaveBeenCalledWith('phc_testkey', expect.objectContaining({
-      autocapture: false,
-      capture_pageview: false,
-    }));
+    expect(mockInit).toHaveBeenCalledWith(
+      'phc_QSEOhekLjn1ZAmwa2Gd43qr6WwaAK8dEhzgoS9XpuXW',
+      expect.objectContaining({
+        autocapture: false,
+        capture_pageview: false,
+      })
+    );
     expect(mockIdentify).toHaveBeenCalledWith('install-id-abc');
   });
 
   it('capture() fires posthog.capture after initialization', async () => {
-    (import.meta.env as any).VITE_POSTHOG_KEY = 'phc_testkey';
     const { initPosthog, capture } = await import('../posthog');
     initPosthog('install-id-abc');
     capture('board_viewed', { extra: 'value' });
@@ -57,7 +49,6 @@ describe('posthog singleton', () => {
   });
 
   it('capture() does not throw if posthog.capture throws', async () => {
-    (import.meta.env as any).VITE_POSTHOG_KEY = 'phc_testkey';
     mockCapture.mockImplementationOnce(() => { throw new Error('network'); });
     const { initPosthog, capture } = await import('../posthog');
     initPosthog('install-id-abc');
@@ -65,7 +56,6 @@ describe('posthog singleton', () => {
   });
 
   it('initPosthog() only initializes once even if called twice', async () => {
-    (import.meta.env as any).VITE_POSTHOG_KEY = 'phc_testkey';
     const { initPosthog } = await import('../posthog');
     initPosthog('id-1');
     initPosthog('id-2');

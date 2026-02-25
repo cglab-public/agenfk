@@ -52,44 +52,13 @@ function setupFs(config: object | null, installationId: string | null) {
 }
 
 describe('TelemetryClient', () => {
-  const originalKey = process.env.AGENFK_POSTHOG_KEY;
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockPostHogShutdown.mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    if (originalKey === undefined) delete process.env.AGENFK_POSTHOG_KEY;
-    else process.env.AGENFK_POSTHOG_KEY = originalKey;
-  });
-
-  describe('when AGENFK_POSTHOG_KEY is not set', () => {
+  describe('when telemetry is enabled (default)', () => {
     beforeEach(() => {
-      delete process.env.AGENFK_POSTHOG_KEY;
-      setupFs({}, 'test-id-no-key');
-    });
-
-    it('does not initialize PostHog and isEnabled is false', () => {
-      const client = new TelemetryClient();
-      expect(client.isEnabled).toBe(false);
-    });
-
-    it('capture() is a no-op', () => {
-      const client = new TelemetryClient();
-      expect(() => client.capture('test_event')).not.toThrow();
-      expect(mockPostHogCapture).not.toHaveBeenCalled();
-    });
-
-    it('shutdown() resolves without error', async () => {
-      const client = new TelemetryClient();
-      await expect(client.shutdown()).resolves.toBeUndefined();
-    });
-  });
-
-  describe('when AGENFK_POSTHOG_KEY is set and telemetry is enabled', () => {
-    beforeEach(() => {
-      process.env.AGENFK_POSTHOG_KEY = 'phc_testkey123';
       setupFs({}, 'install-abc-123');
     });
 
@@ -144,7 +113,6 @@ describe('TelemetryClient', () => {
 
   describe('when telemetry is opted out via config', () => {
     beforeEach(() => {
-      process.env.AGENFK_POSTHOG_KEY = 'phc_testkey123';
       setupFs({ telemetry: false }, 'install-abc-123');
     });
 
