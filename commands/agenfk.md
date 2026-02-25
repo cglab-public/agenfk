@@ -87,5 +87,5 @@ Since there is no separate review agent in Standard Mode, perform the review you
 2. Call `add_comment(itemId, "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>")`.
 3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     - **Release**: Run `/agenfk-release` to create a new release.
-    - **New Task**: Start a new session for a new task, epic, or bug.
+    - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
     - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).

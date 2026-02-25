@@ -45,7 +45,7 @@ AgenFK features an automated orchestration layer where the primary agent acts as
     - **Protocol**: Generates tests and verifies 80% coverage. Success moves item to `DONE`.
 5.  **Closing Agent (DONE Phase)**:
     - **Trigger**: Automatic spawn after successful testing.
-    - **Protocol**: Collates progress logs, writes the final summary comment, and prompts the user for the next action (Release, New Task, or Continue Current).
+    - **Protocol**: Collates progress logs, writes the final summary comment, and prompts the user for the next action: Release, New Task (calls `/clear` and `/agenfk`), or Continue Current.
 
 This automation ensures consistent engineering rigor while minimizing human micro-management.
 
