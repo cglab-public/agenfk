@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
-import { getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -49,6 +49,9 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 // Initialised dynamically in initStorage() based on dbPath file extension.
 let storage: StorageProvider;
 let dbPath: string = "";
+
+// Anonymous usage telemetry — no-op when AGENFK_POSTHOG_KEY is unset or opted out.
+const telemetry = new TelemetryClient();
 
 // ── Backup ───────────────────────────────────────────────────────────────────
 
@@ -336,6 +339,7 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
 
   const created = await storage.createProject(project);
   io.emit('items_updated');
+  telemetry.capture('project_created', { storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json' });
   res.status(201).json(created);
 }));
 
@@ -435,6 +439,7 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
   io.emit('items_updated');
   io.emit('project_switched', { projectId: created.projectId });
+  telemetry.capture('item_created', { itemType: created.type });
 
   if (created.parentId) {
     await syncParentStatus(created.parentId);
@@ -575,6 +580,14 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.parentId && updated.status !== Status.ARCHIVED) {
       await syncParentStatus(updated.parentId);
+    }
+
+    if (status !== undefined && status !== currentItem.status) {
+      telemetry.capture('item_status_changed', {
+        fromStatus: currentItem.status,
+        toStatus: status,
+        itemType: updated.type,
+      });
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
@@ -1320,6 +1333,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
+      await telemetry.shutdown();
       process.exit(0);
     };
     process.on('SIGTERM', shutdown);
@@ -1327,6 +1341,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 
     httpServer.listen(PORT, () => {
       console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+      telemetry.capture('server_started', {
+        version: getCurrentVersion(),
+        storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json',
+        nodeVersion: process.version,
+      });
     });
   });
 }
