@@ -69,7 +69,7 @@ export class TelemetryClient {
       this.client.capture({
         distinctId: this.installationId,
         event,
-        properties: { ...properties, $lib: 'agenfk' },
+        properties: { ...properties, $lib: 'agenfk', $geoip_disable: false },
       });
     } catch {
       // Telemetry must never throw or crash calling code
