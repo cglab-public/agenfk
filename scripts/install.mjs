@@ -86,7 +86,7 @@ async function run() {
         console.log(`  Using: ${dbType.toUpperCase()} (${dbPath})`);
 
         // 3a. Write ~/.agenfk/config.json
-        await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath }, null, 2), 'utf8');
+        await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath, telemetry: true }, null, 2), 'utf8');
         console.log(`  Config written: ${agenfkConfigPath}`);
     }
 
@@ -412,6 +412,11 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
     console.log(`  Registered PreToolUse hook and MCP server in ${settingsPath}`);
 
     console.log(`${GREEN}Installation Complete.${NC}`);
+    console.log("");
+    console.log(`${YELLOW}=== Telemetry Notice ===${NC}`);
+    console.log("AgenFK collects anonymous usage data (install count, commands used, feature adoption).");
+    console.log("No personal data, file paths, or project content is ever collected.");
+    console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
     console.log("");
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
     console.log("1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP).");

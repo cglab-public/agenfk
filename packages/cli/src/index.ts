@@ -1154,6 +1154,47 @@ jiraCommand
     } catch { /* server may not be running */ }
   });
 
+// ── agenfk config ─────────────────────────────────────────────────────────────
+
+const configCommand = program
+  .command('config')
+  .description('Manage AgenFK configuration');
+
+const configSetCommand = configCommand
+  .command('set')
+  .description('Set a configuration value');
+
+configSetCommand
+  .command('telemetry <value>')
+  .description('Enable or disable anonymous usage telemetry (true/false)')
+  .action((value: string) => {
+    const normalised = value.trim().toLowerCase();
+    if (normalised !== 'true' && normalised !== 'false') {
+      console.error(chalk.red('Error: value must be "true" or "false"'));
+      process.exit(1);
+    }
+    const enabled = normalised === 'true';
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      config.telemetry = enabled;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      if (enabled) {
+        console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgenFK.');
+        console.log(chalk.gray('  To opt out at any time: agenfk config set telemetry false'));
+      } else {
+        console.log(chalk.green('Telemetry disabled.') + ' No usage data will be sent.');
+        console.log(chalk.gray('  To re-enable at any time: agenfk config set telemetry true'));
+      }
+    } catch (err: any) {
+      console.error(chalk.red('Error updating config:'), err.message);
+      process.exit(1);
+    }
+  });
+
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
 }
