@@ -1,10 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Hoist fs mock vars so they're available inside vi.mock factory
+// Hoist mock vars so they're available inside vi.mock factories
 const { mockExistsSync, mockReadFileSync, mockWriteFileSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
+}));
+
+const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }));
+vi.mock('@agenfk/telemetry', () => ({
+  TelemetryClient: vi.fn(function (this: any) {
+    this.capture = mockCapture;
+    this.shutdown = vi.fn().mockResolvedValue(undefined);
+    this.isEnabled = true;
+    this.id = 'test-install-id';
+  }),
+  getInstallationId: vi.fn().mockReturnValue('test-install-id'),
+  isTelemetryEnabled: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock('fs', () => ({
@@ -86,5 +98,21 @@ describe('agenfk config set telemetry', () => {
   it('the config command is registered on program', () => {
     const names = program.commands.map(c => c.name());
     expect(names).toContain('config');
+  });
+});
+
+describe('CLI preAction telemetry hook', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{}');
+    mockWriteFileSync.mockReturnValue(undefined);
+  });
+
+  it('fires cli_command event with the command name on every invocation', async () => {
+    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'telemetry', 'true']);
+    expect(mockCapture).toHaveBeenCalledWith('cli_command', expect.objectContaining({
+      command: 'telemetry',
+    }));
   });
 });

@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status } from '@agenfk/core';
+import { TelemetryClient } from '@agenfk/telemetry';
 import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -10,6 +11,8 @@ import os from 'os';
 
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
+
+const telemetry = new TelemetryClient();
 
 function isMinGW() {
   return !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
@@ -118,6 +121,14 @@ try {
 program
   .version(CURRENT_VERSION)
   .description('AgenFK Engineering CLI');
+
+// Fire-and-forget telemetry for every command invocation (command name only — no args).
+program.hook('preAction', (thisCommand, actionCommand) => {
+  telemetry.capture('cli_command', {
+    command: actionCommand.name(),
+    version: CURRENT_VERSION,
+  });
+});
 
 program
   .action(async () => {
@@ -914,6 +925,7 @@ dbCommand
       return;
     }
 
+    telemetry.capture('cli_db_switch', { to: targetType });
     console.log(chalk.blue(`Switching from ${currentType.toUpperCase()} → ${targetType.toUpperCase()}...`));
 
     // 2. Export all data
