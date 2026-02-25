@@ -1,0 +1,20 @@
+{
+  "name": "@agenfk/telemetry",
+  "version": "0.1.33",
+  "description": "Anonymous telemetry client for AgenFK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "posthog-node": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16",
+    "typescript": "^5.3.3"
+  },
+  "keywords": ["agenfk", "telemetry"],
+  "author": "",
+  "license": "ISC"
+}

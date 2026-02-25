@@ -10,7 +10,7 @@
     "agenfk": "bin/agenfk.js"
   },
   "scripts": {
-    "build": "npm run build -w packages/core -w packages/storage-json -w packages/storage-sqlite && npm run build -w packages/cli -w packages/server -w packages/ui",
+    "build": "npm run build -w packages/core -w packages/storage-json -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "install:framework": "node scripts/install.mjs",

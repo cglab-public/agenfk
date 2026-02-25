@@ -6,6 +6,7 @@ export default defineConfig({
     alias: {
       '@agenfk/core': path.resolve(__dirname, './packages/core/src/index.ts'),
       '@agenfk/storage-json': path.resolve(__dirname, './packages/storage-json/src/index.ts'),
+      '@agenfk/telemetry': path.resolve(__dirname, './packages/telemetry/src/index.ts'),
     },
   },
   test: {
