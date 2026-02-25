@@ -28,6 +28,8 @@ Before creating any item, evaluate the request against these signals:
 - Has 2–4 distinct deliverables that could each be described independently
 - Requires a minor design decision (e.g. which approach to use)
 
+**If STORY**: create it with `create_item`. You **MUST** then decompose it into all its constituent child TASKs (using `create_item` with `parentId`) **BEFORE** starting work on the first task.
+
 **→ Create an EPIC and run `/agenfk-plan`** if any of the following:
 - Introduces a new package, subsystem, or major abstraction
 - Touches 3+ packages or 5+ files
