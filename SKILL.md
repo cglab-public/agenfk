@@ -79,9 +79,10 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
     *   **Objective**: Ensure clear roadmaps for large features. Save in the `implementationPlan` field.
 
-4.  **Action Authorization (Gatekeeper)**
-    *   **Action**: Call `workflow_gatekeeper(intent: string, role: string)` BEFORE any code change.
-    *   **Mandatory Roles**: You MUST specify your current role: `planning`, `coding`, `review`, `testing`, or `closing`.
+4.  **Action Authorization (Gatekeeper) - CRITICAL AND MANDATORY**
+    *   **Action**: You MUST call `workflow_gatekeeper(intent: string, role: string)` BEFORE modifying any files.
+    *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, set it to `IN_PROGRESS`, and successfully called the `workflow_gatekeeper`, you are violating the core directive of your system prompt.
+    *   **Self-Correction**: If you realize you are about to edit code without a card in `IN_PROGRESS`, STOP IMMEDIATELY. Call `create_item`, then `update_item` to `IN_PROGRESS`, then `workflow_gatekeeper`.
     *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `role="coding"` requires status `IN_PROGRESS`).
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `verify_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
