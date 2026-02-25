@@ -283,12 +283,14 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             }
           </div>
         </div>
+        {/* Hiding tokens for now due to algorithm enhancements
         {item.tokenUsage && item.tokenUsage.length > 0 && (
           <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded-full">
             <Zap size={9} className="fill-amber-600" />
             {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
           </div>
         )}
+        */}
       </div>
     </motion.div>
   );
@@ -954,6 +956,7 @@ export const KanbanBoard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4 shrink-0 pl-4 border-l border-slate-100 dark:border-slate-800/50 ml-2">
+            {/* Tokens/Cost section hidden temporarily for algorithm enhancements
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
                 <Zap size={10} className="text-amber-500" />
@@ -967,6 +970,7 @@ export const KanbanBoard: React.FC = () => {
                 {pricesData ? <span className="text-indigo-600 dark:text-indigo-400 ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
               </div>
             </div>
+            */}
 
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
