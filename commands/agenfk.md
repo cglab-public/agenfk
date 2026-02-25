@@ -85,4 +85,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
 
 1. Call `log_token_usage(itemId, input, output, model)` with approximate token counts for this session.
 2. Call `add_comment(itemId, "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>")`.
-3. Confirm with the user that the task is complete.
+3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
+    - **Release**: Run `/agenfk-release` to create a new release.
+    - **New Task**: Start a new session for a new task, epic, or bug.
+    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).

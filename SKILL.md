@@ -114,6 +114,10 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
         2. Then close parent STORYs.
         3. Then close the EPIC.
         NEVER leave cards stuck in REVIEW. If `verify_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
+    *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
+        1. **Release**: Run `/agenfk-release` to create a new release.
+        2. **New Task**: Start a new session for a new task, epic, or bug.
+        3. **Continue Current**: Keep working on the current item (the Agent MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
 
 ## When to use me
 

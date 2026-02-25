@@ -29,4 +29,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 **Step 5 — Move to DONE**
 - Call `add_comment(id, "Phase Close complete: Final summary prepared.")` to log the phase completion.
 - Move the item through TEST → DONE using `update_item`. If it is in REVIEW, move to TEST first, then DONE.
-- PAUSE and ask the user: "I have prepared the final summary for item <id>. Should I mark it as DONE?"
+- After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
+    1. **Release**: Run `/agenfk-release` to create a new release.
+    2. **New Task**: Start a new session for a new task, epic, or bug.
+    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
