@@ -18,6 +18,7 @@ import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
+import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 
 const statuses = [
@@ -358,6 +359,14 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const [selectedItem, setSelectedItem] = useState<AgenFKItem | null>(null);
+
+  // Fire card_opened when an existing item's modal is opened (id present = existing, not new)
+  useEffect(() => {
+    if (selectedItem?.id) {
+      capture('card_opened', { itemType: selectedItem.type });
+    }
+  }, [selectedItem?.id]);
+
   const [navPath, setNavPath] = useState<NavItem[]>([]);
   const [selectedItemType, setSelectedItemType] = useState<ItemType | 'ALL'>('ALL');
   const [searchQuery, setSearchTerm] = useState('');
@@ -505,6 +514,7 @@ export const KanbanBoard: React.FC = () => {
     setSelectedProjectId(id);
     localStorage.setItem('agenfk_project_id', id);
     setNavPath([]);
+    capture('project_switched');
   };
 
   const getItemsByStatus = (status: Status, ignoreFilter = false) => {
