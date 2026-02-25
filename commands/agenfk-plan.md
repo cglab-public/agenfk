@@ -13,6 +13,7 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 **Step 2 — Decompose**
 - Break down the request into small, actionable units of work.
 - Each unit should be a **TASK** (for Stories) or a **STORY** (for Epics).
+- **MANDATORY**: If you are planning for a **STORY**, you **MUST** create all child TASKs **BEFORE** starting work on the first task.
 - Ensure each sub-item has a clear, descriptive title and a brief implementation objective.
 
 **Step 3 — Propose**

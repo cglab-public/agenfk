@@ -5,6 +5,7 @@ description: Run a task using full Multi-Agent Orchestration (Deep Mode)
 Load the `agenfk` skill. Run its Initialization protocol if needed.
 Identify the user's request and follow the **Deep Mode** protocol in the skill:
 1. Decompose the request into sub-items.
+   - **MANDATORY**: If the request is a **STORY**, you **MUST** decompose it into all its constituent child TASKs (using `create_item` with `parentId`) **BEFORE** starting work on the first task.
 2. Identify independent tasks that can be performed in parallel.
 3. PAUSE for human approval of the plan.
 4. Upon approval, begin the automated lifecycle (Code -> Review -> Test -> Close) by spawning specialized sub-agents.
