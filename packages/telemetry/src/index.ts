@@ -51,6 +51,8 @@ export class TelemetryClient {
         // Flush immediately so short-lived processes (CLI) don't lose events
         flushAt: 1,
         flushInterval: 0,
+        // AgenFK runs on the user's machine, so their IP is valid for geolocation
+        disableGeoip: false,
       });
     }
   }
@@ -69,7 +71,7 @@ export class TelemetryClient {
       this.client.capture({
         distinctId: this.installationId,
         event,
-        properties: { ...properties, $lib: 'agenfk', $geoip_disable: false },
+        properties: { ...properties, $lib: 'agenfk' },
       });
     } catch {
       // Telemetry must never throw or crash calling code
