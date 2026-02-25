@@ -33,6 +33,14 @@ export interface ContextItem {
   content?: string; // Optional full content, mostly for context window management
 }
 
+export interface TestRecord {
+  id: string;
+  command: string;
+  output: string;
+  status: "PASSED" | "FAILED";
+  executedAt: Date;
+}
+
 export interface ReviewRecord {
   id: string;
   command: string;
@@ -75,6 +83,7 @@ export interface BaseItem {
   tokenUsage?: TokenUsage[]; // Array to track usage over time/sessions
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  tests?: TestRecord[];
   history?: HistoryRecord[];
   comments?: CommentRecord[];
   createdAt: Date;

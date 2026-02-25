@@ -288,6 +288,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["itemId", "command"],
         },
       },
+      {
+        name: "log_test_result",
+        description: "Logs the result of a test execution for an item.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            command: { type: "string" },
+            output: { type: "string" },
+            status: { type: "string", enum: ["PASSED", "FAILED"] },
+          },
+          required: ["itemId", "command", "output", "status"],
+        },
+      },
     ],
   };
 });
@@ -303,6 +317,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const args = CreateProjectSchema.parse(request.params.arguments);
         const { data } = await api.post(`/projects`, args);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+      case "log_test_result": {
+        const { itemId, command, output, status } = z.object({ 
+          itemId: z.string(), 
+          command: z.string(), 
+          output: z.string(), 
+          status: z.enum(["PASSED", "FAILED"]) 
+        }).parse(request.params.arguments);
+        
+        try {
+          const { data: item } = await api.get(`/items/${itemId}`);
+          const tests = item.tests || [];
+          tests.push({ id: uuidv4(), command, output, status, executedAt: new Date() });
+          await api.put(`/items/${itemId}`, { tests });
+          return { content: [{ type: "text", text: `✅ Test result logged for item [${itemId}].` }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to log test result: ${error.message}` }] };
+        }
       }
       case "verify_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
@@ -336,18 +368,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           }
 
           const { data: item } = await api.get(`/items/${itemId}`);
-          const reviews = item.reviews || [];
-          reviews.push({ id: uuidv4(), command, output, status: "PASSED", executedAt: new Date() });
+          const comments = item.comments || [];
+          comments.push({ 
+            id: uuidv4(), 
+            author: "VerifyTool", 
+            content: `### Initial Verification PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``, 
+            timestamp: new Date() 
+          });
           // Move to REVIEW. The Review Agent will perform an audit before moving to TEST.
-          await api.put(`/items/${itemId}`, { status: "REVIEW", reviews }, { headers: verifyHeaders });
+          await api.put(`/items/${itemId}`, { status: "REVIEW", comments }, { headers: verifyHeaders });
           return { content: [{ type: "text", text: `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nREMINDER: A Review Agent will now be spawned to audit your changes before testing begins.` }] };
         } catch (error: any) {
           const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
           try {
             const { data: item } = await api.get(`/items/${itemId}`);
-            const reviews = item.reviews || [];
-            reviews.push({ id: uuidv4(), command, output: errorOutput, status: "FAILED", executedAt: new Date() });
-            await api.put(`/items/${itemId}`, { status: "IN_PROGRESS", reviews });
+            const comments = item.comments || [];
+            comments.push({ 
+              id: uuidv4(), 
+              author: "VerifyTool", 
+              content: `### Initial Verification FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${errorOutput.substring(0, 2000)}${errorOutput.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``, 
+              timestamp: new Date() 
+            });
+            await api.put(`/items/${itemId}`, { status: "IN_PROGRESS", comments });
           } catch (e) {}
           return { isError: true, content: [{ type: "text", text: `❌ Verification Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nErrors:\n${errorOutput}` }] };
         }

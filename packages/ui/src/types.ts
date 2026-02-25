@@ -38,6 +38,14 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface TestRecord {
+  id: string;
+  command: string;
+  output: string;
+  status: "PASSED" | "FAILED";
+  executedAt: string;
+}
+
 export interface ReviewRecord {
   id: string;
   command: string;
@@ -72,6 +80,7 @@ export interface AgenFKItem {
   tokenUsage?: TokenUsage[];
   context?: ContextItem[];
   reviews?: ReviewRecord[];
+  tests?: TestRecord[];
   history?: HistoryRecord[];
   comments?: CommentRecord[];
   createdAt: string; // Date comes as string from JSON
