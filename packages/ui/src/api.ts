@@ -142,4 +142,8 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/releases/update/${jobId}`);
     return data;
   },
+  getReadme: async (): Promise<{ content: string }> => {
+    const { data } = await axios.get(`${API_URL}/api/readme`);
+    return data;
+  },
 };

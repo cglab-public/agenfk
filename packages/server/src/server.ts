@@ -278,6 +278,16 @@ app.get("/", (req, res) => {
   });
 });
 
+app.get("/api/readme", asyncHandler(async (_req: any, res: any) => {
+  const root = findProjectRoot(process.cwd());
+  const readmePath = path.join(root, "README.md");
+  if (!fs.existsSync(readmePath)) {
+    return res.status(404).json({ error: "README.md not found" });
+  }
+  const content = fs.readFileSync(readmePath, "utf8");
+  res.json({ content });
+}));
+
 app.get("/version", (_req: any, res: any) => {
   res.json({ version: getCurrentVersion() });
 });
