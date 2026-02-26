@@ -98,18 +98,21 @@ graph TD
     E -->|No Active Task| F[Pause: Select/Create Task]
     F --> E
     E -->|Authorized| G[Execute Code Changes <br/>Coding Agent]
-    G --> H[Verify Changes <br/>Runs actual tests]
-    H -->|Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
+    G --> H[verify_changes<br/>Build/Compile only]
+    H -->|Build Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
     I --> G
-    H -->|Success| J[Auto-move to REVIEW <br/>Review Agent]
-    J --> K[Auto-move to TEST <br/>Testing Agent]
-    K --> L[Auto-move to DONE <br/>Closing Agent]
+    H -->|Build OK| J[REVIEW Agent<br/>Compile check · Security · Requirements]
+    J -->|Issues Found| I
+    J -->|Approved| K[TEST Agent<br/>Write missing tests · Run with coverage<br/>log_test_result populates Test Results tab]
+    K -->|Tests Fail| I
+    K -->|Tests Pass| L[DONE <br/>Closing Agent]
     L --> M[Log Token Usage]
     M --> N[Auto-sync Parent Status]
-    
+
     style A fill:#f8fafc,stroke:#94a3b8,color:#334155
     style E fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#3730a3
-    style H fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e
+    style J fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e
+    style K fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
     style L fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46
 ```
 
@@ -118,8 +121,10 @@ graph TD
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
 4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
 5.  **Implementation Logging**: Agents log every significant step as a **Comment** on the card, providing a real-time audit trail in the UI.
-6.  **Verify**: The `verify_changes` tool executes stack-appropriate tests (e.g., `npm test`, `pytest`) and automatically manages the transition through `REVIEW` and `TEST` statuses. The full output of these checks is permanently logged in the item's **Test Results**.
-7.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
+6.  **Build Verify**: The `verify_changes` tool runs a **build/compile command only** to gate the transition to `REVIEW`. Tests are never run at this stage.
+7.  **Review**: The Review Agent checks compilation, security vulnerabilities, and requirements traceability. If issues are found, the item returns to `IN_PROGRESS`.
+8.  **Test**: The Testing Agent writes any missing tests, runs the full suite with coverage, and records results with `log_test_result` — populating the **Test Results** tab on the card. Coverage must meet the 80% threshold.
+9.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
 
 ## Quick Start (Opencode & Claude Code)
 
