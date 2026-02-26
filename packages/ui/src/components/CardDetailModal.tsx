@@ -400,9 +400,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     className="w-full bg-white dark:bg-slate-950 border border-indigo-300 dark:border-indigo-600 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[150px] text-slate-700 dark:text-slate-300"
                   />
                 ) : (
-                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800">
+                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
                     {item.description
-                      ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.description}</ReactMarkdown>
+                      ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripAnsi(item.description)}</ReactMarkdown>
                       : <span className="italic text-slate-400 dark:text-slate-600 not-prose">No description provided.</span>
                     }
                   </div>
@@ -489,8 +489,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                             {new Date(comment.timestamp).toLocaleString()}
                           </span>
                         </div>
-                        <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{comment.content}</ReactMarkdown>
+                        <div className="prose prose-slate dark:prose-invert prose-sm max-w-none overflow-x-auto break-words">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripAnsi(comment.content)}</ReactMarkdown>
                         </div>
                       </div>
                     ))}
@@ -510,9 +510,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <FileText size={14} />
                 Implementation Plan
               </h4>
-              <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-6 border border-slate-100 dark:border-slate-800">
+              <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-6 border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {item.implementationPlan}
+                  {stripAnsi(item.implementationPlan)}
                 </ReactMarkdown>
               </div>
             </div>
