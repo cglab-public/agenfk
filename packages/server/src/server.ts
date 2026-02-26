@@ -631,6 +631,79 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
+// ── Verify Endpoint ──────────────────────────────────────────────────────────
+
+app.post("/items/:id/verify", asyncHandler(async (req: any, res: any) => {
+  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
+  if (!isInternalVerify) {
+    return res.status(403).json({ error: "Forbidden: verify endpoint requires internal token." });
+  }
+
+  const { command } = req.body;
+  if (!command || typeof command !== 'string') {
+    return res.status(400).json({ error: "Missing required field: command" });
+  }
+
+  const item = await storage.getItem(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: "Item not found" });
+  }
+
+  const isTestPhase = item.status === Status.TEST;
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
+    const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    child.on('close', (c) => resolve({ output: out, code: c }));
+    child.on('error', (err) => resolve({ output: err.message, code: 1 }));
+  });
+
+  const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
+  const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
+  const passed = code === 0;
+
+  const comments = [...(item.comments || []), {
+    id: uuidv4(),
+    author: 'VerifyTool',
+    content: `### ${verifyLabel} ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
+    timestamp: new Date(),
+  }];
+
+  if (passed) {
+    const targetStatus = isTestPhase ? Status.DONE : Status.REVIEW;
+    const updates: any = { status: targetStatus, comments };
+    if (isTestPhase) {
+      updates.tests = [...(item.tests || []), {
+        id: uuidv4(), command, output: truncated, status: 'PASSED', executedAt: new Date(),
+      }];
+    }
+    const updated = await storage.updateItem(req.params.id, updates);
+    io.emit('items_updated');
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST && isTestPhase) {
+      autoGitCommit(updated, projectRoot);
+    }
+    const message = isTestPhase
+      ? `✅ Final Verification Successful!\n\nCommand: \`${command}\`\nItem moved to DONE.`
+      : `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nREMINDER: A Review Agent will now be spawned to audit your changes before testing begins.`;
+    return res.json({ status: targetStatus, message, output: truncated });
+  } else {
+    const updates: any = { status: Status.IN_PROGRESS, comments };
+    if (isTestPhase) {
+      updates.tests = [...(item.tests || []), {
+        id: uuidv4(), command, output: truncated, status: 'FAILED', executedAt: new Date(),
+      }];
+    }
+    await storage.updateItem(req.params.id, updates);
+    io.emit('items_updated');
+    const message = `❌ Verification Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`;
+    return res.status(422).json({ status: Status.IN_PROGRESS, message, output: truncated });
+  }
+}));
+
 // ── JIRA Integration ─────────────────────────────────────────────────────────
 
 const JIRA_TOKEN_PATH = path.join(os.homedir(), '.agenfk', 'jira-token.json');

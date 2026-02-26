@@ -292,7 +292,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "verify_changes",
-        description: "Executes a verification command and automatically updates the task status.",
+        description: "Executes a verification command and automatically updates the task status. Moves to REVIEW if the item is IN_PROGRESS, or DONE if the item is in TEST status.",
         inputSchema: {
           type: "object",
           properties: {
@@ -352,60 +352,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       }
       case "verify_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
-        const verifyHeaders = { 'x-agenfk-internal': VERIFY_TOKEN };
-        await api.put(`/items/${itemId}`, { status: "REVIEW" }, { headers: verifyHeaders });
-        const projectRoot = findProjectRoot(process.cwd());
-
-        const executeCommand = () => new Promise<{output: string, code: number | null}>((resolve, reject) => {
-          const child = spawn(command, { 
-            shell: true, 
-            cwd: projectRoot,
-            env: { ...process.env, FORCE_COLOR: '1' } 
-          });
-          let output = '';
-          child.stdout.on('data', (data) => {
-            output += data.toString();
-          });
-          child.stderr.on('data', (data) => {
-            output += data.toString();
-          });
-          child.on('close', (code) => resolve({ output, code }));
-          child.on('error', (err) => reject(err));
-        });
-
         try {
-          const { output, code } = await executeCommand();
-          if (code !== 0) {
-            const err: any = new Error(`Command failed with code ${code}`);
-            err.stdout = output;
-            throw err;
-          }
-
-          const { data: item } = await api.get(`/items/${itemId}`);
-          const comments = item.comments || [];
-          comments.push({ 
-            id: uuidv4(), 
-            author: "VerifyTool", 
-            content: `### Initial Verification PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``, 
-            timestamp: new Date() 
-          });
-          // Move to REVIEW. The Review Agent will perform an audit before moving to TEST.
-          await api.put(`/items/${itemId}`, { status: "REVIEW", comments }, { headers: verifyHeaders });
-          return { content: [{ type: "text", text: `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nREMINDER: A Review Agent will now be spawned to audit your changes before testing begins.` }] };
+          const { data } = await api.post(`/items/${itemId}/verify`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
-          const errorOutput = (error.stdout || '') + (error.stderr || '') + (error.message || '');
-          try {
-            const { data: item } = await api.get(`/items/${itemId}`);
-            const comments = item.comments || [];
-            comments.push({ 
-              id: uuidv4(), 
-              author: "VerifyTool", 
-              content: `### Initial Verification FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${errorOutput.substring(0, 2000)}${errorOutput.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``, 
-              timestamp: new Date() 
-            });
-            await api.put(`/items/${itemId}`, { status: "IN_PROGRESS", comments });
-          } catch (e) {}
-          return { isError: true, content: [{ type: "text", text: `❌ Verification Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nErrors:\n${errorOutput}` }] };
+          const msg = error.response?.data?.message || error.message;
+          return { isError: true, content: [{ type: "text", text: msg }] };
         }
       }
       case "workflow_gatekeeper": {
@@ -542,7 +494,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (currentItem.status !== "TEST") {
             return {
               isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. You MUST move through TEST column first. Use 'verify_changes(itemId, command)' to reach TEST.` }],
+              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call 'verify_changes(itemId, command)' — the server will route TEST → DONE automatically.` }],
             };
           }
           // Allow TEST -> DONE, using verify token to bypass server guard

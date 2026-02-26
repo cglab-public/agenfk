@@ -1502,7 +1502,6 @@ program
       process.exit(1);
     }
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
-    const verifyHeaders = { 'x-agenfk-internal': verifyToken };
 
     let targetId = id;
     if (id.length < 36) {
@@ -1519,60 +1518,18 @@ program
     }
 
     console.log(chalk.blue(`Running verification: ${command}`));
-    const projectRoot = process.cwd();
-
-    const { status: exitCode, output } = await new Promise<{ status: number | null; output: string }>((resolve) => {
-      const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
-      let out = '';
-      child.stdout.on('data', (d: Buffer) => { process.stdout.write(d); out += d.toString(); });
-      child.stderr.on('data', (d: Buffer) => { process.stderr.write(d); out += d.toString(); });
-      child.on('close', (code) => resolve({ status: code, output: out }));
-    });
-
     try {
-      const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
-      const comments = item.comments || [];
-
-      const isTestPhase = item.status === 'TEST';
-      const truncatedOutput = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
-
-      if (exitCode === 0) {
-        const targetStatus = isTestPhase ? 'DONE' : 'REVIEW';
-        const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
-        comments.push({
-          id: randomUUID(),
-          author: 'VerifyTool',
-          content: `### ${verifyLabel} PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncatedOutput}\n\`\`\``,
-          timestamp: new Date()
-        });
-        const updates: Record<string, any> = { status: targetStatus, comments };
-        if (isTestPhase) {
-          const tests = item.tests || [];
-          tests.push({ id: randomUUID(), command, output: truncatedOutput, status: 'PASSED', executedAt: new Date() });
-          updates.tests = tests;
-        }
-        await axios.put(`${API_URL}/items/${targetId}`, updates, { headers: verifyHeaders });
-        console.log(chalk.green(`\n✅ Verification passed. Item moved to ${targetStatus}.`));
-      } else {
-        const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
-        comments.push({
-          id: randomUUID(),
-          author: 'VerifyTool',
-          content: `### ${verifyLabel} FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncatedOutput}\n\`\`\``,
-          timestamp: new Date()
-        });
-        const updates: Record<string, any> = { status: 'IN_PROGRESS', comments };
-        if (isTestPhase) {
-          const tests = item.tests || [];
-          tests.push({ id: randomUUID(), command, output: truncatedOutput, status: 'FAILED', executedAt: new Date() });
-          updates.tests = tests;
-        }
-        await axios.put(`${API_URL}/items/${targetId}`, updates);
-        console.error(chalk.red('\n❌ Verification failed. Item returned to IN_PROGRESS.'));
-        process.exit(1);
-      }
+      const { data } = await axios.post(
+        `${API_URL}/items/${targetId}/verify`,
+        { command },
+        { headers: { 'x-agenfk-internal': verifyToken } }
+      );
+      if (data.output) console.log(data.output);
+      console.log(chalk.green(`\n✅ Verification passed. Item moved to ${data.status}.`));
     } catch (error: any) {
-      console.error(chalk.red('Error updating item:'), error.response?.data?.error || error.message);
+      const errData = error.response?.data;
+      if (errData?.output) console.error(errData.output);
+      console.error(chalk.red(`\n❌ ${errData?.message || error.message}`));
       process.exit(1);
     }
   });
