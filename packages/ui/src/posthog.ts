@@ -1,5 +1,7 @@
 import posthog from 'posthog-js';
 
+declare const __AGENFK_VERSION__: string;
+
 let initialized = false;
 
 const POSTHOG_KEY = 'phc_QSEOhekLjn1ZAmwa2Gd43qr6WwaAK8dEhzgoS9XpuXW';
@@ -14,6 +16,7 @@ export function initPosthog(installationId: string): void {
     person_profiles: 'identified_only',
   });
   posthog.identify(installationId);
+  posthog.register({ agenfk_version: __AGENFK_VERSION__ });
   initialized = true;
 }
 

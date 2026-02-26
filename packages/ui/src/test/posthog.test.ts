@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockInit, mockIdentify, mockCapture } = vi.hoisted(() => ({
+const { mockInit, mockIdentify, mockCapture, mockRegister } = vi.hoisted(() => ({
   mockInit: vi.fn(),
   mockIdentify: vi.fn(),
   mockCapture: vi.fn(),
+  mockRegister: vi.fn(),
 }));
 
 vi.mock('posthog-js', () => ({
@@ -11,6 +12,7 @@ vi.mock('posthog-js', () => ({
     init: mockInit,
     identify: mockIdentify,
     capture: mockCapture,
+    register: mockRegister,
   },
 }));
 
@@ -40,6 +42,7 @@ describe('posthog singleton', () => {
       })
     );
     expect(mockIdentify).toHaveBeenCalledWith('install-id-abc');
+    expect(mockRegister).toHaveBeenCalledWith({ agenfk_version: expect.any(String) });
   });
 
   it('capture() fires posthog.capture after initialization', async () => {

@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 import path from 'path';
 
 export default defineConfig({
+  define: {
+    __AGENFK_VERSION__: JSON.stringify('test'),
+  },
   resolve: {
     alias: {
       '@agenfk/core': path.resolve(__dirname, './packages/core/src/index.ts'),
