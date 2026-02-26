@@ -1494,7 +1494,7 @@ program
 
 program
   .command('verify <id> <command>')
-  .description('Run verification command and transition item to REVIEW (MCP fallback: verify_changes)')
+  .description('Run verification command and transition item to REVIEW (or DONE if status is TEST). MCP fallback: verify_changes')
   .action(async (id, command) => {
     const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
     if (!fs.existsSync(tokenPath)) {
@@ -1534,14 +1534,16 @@ program
       const comments = item.comments || [];
 
       if (exitCode === 0) {
+        const targetStatus = item.status === 'TEST' ? 'DONE' : 'REVIEW';
+        const verifyLabel = item.status === 'TEST' ? 'Final Verification' : 'Initial Verification';
         comments.push({
           id: randomUUID(),
           author: 'VerifyTool',
-          content: `### Initial Verification PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
+          content: `### ${verifyLabel} PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
           timestamp: new Date()
         });
-        await axios.put(`${API_URL}/items/${targetId}`, { status: 'REVIEW', comments }, { headers: verifyHeaders });
-        console.log(chalk.green('\n✅ Verification passed. Item moved to REVIEW.'));
+        await axios.put(`${API_URL}/items/${targetId}`, { status: targetStatus, comments }, { headers: verifyHeaders });
+        console.log(chalk.green(`\n✅ Verification passed. Item moved to ${targetStatus}.`));
       } else {
         comments.push({
           id: randomUUID(),

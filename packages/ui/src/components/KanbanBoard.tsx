@@ -296,6 +296,7 @@ export const KanbanBoard: React.FC = () => {
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
+  const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
 
   const togglePin = () => {
     setIsPinned(prev => {
@@ -507,6 +508,18 @@ export const KanbanBoard: React.FC = () => {
       handleSelectProject(newProject.id);
       setIsCreatingProject(false);
       setNewProjectName('');
+    }
+  });
+
+  const deleteProjectMutation = useMutation({
+    mutationFn: (id: string) => api.deleteProject(id),
+    onSuccess: (_, deletedId) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      if (selectedProjectId === deletedId) {
+        setSelectedProjectId(null);
+        localStorage.removeItem('agenfk_project_id');
+      }
+      setConfirmDeleteProjectId(null);
     }
   });
 
@@ -760,14 +773,47 @@ export const KanbanBoard: React.FC = () => {
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block text-left mb-2">Recent Projects</label>
                 <div className="grid gap-2">
                   {projects.map(p => (
-                    <button 
+                    <div
                       key={p.id}
-                      onClick={() => handleSelectProject(p.id)}
-                      className="flex items-center gap-3 p-4 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all text-left group"
+                      className="flex items-center gap-3 p-4 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all group"
                     >
-                      <Briefcase className="text-slate-400 group-hover:text-indigo-500" size={20} />
-                      <span className="font-semibold text-slate-700 dark:text-slate-200">{p.name}</span>
-                    </button>
+                      {confirmDeleteProjectId === p.id ? (
+                        <>
+                          <Trash2 className="text-red-500 shrink-0" size={20} />
+                          <span className="flex-1 text-sm font-semibold text-red-600 dark:text-red-400">Delete "{p.name}"?</span>
+                          <button
+                            onClick={() => deleteProjectMutation.mutate(p.id)}
+                            disabled={deleteProjectMutation.isPending}
+                            className="text-xs font-bold px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all disabled:opacity-50"
+                          >
+                            {deleteProjectMutation.isPending ? <Loader2 className="animate-spin" size={12} /> : 'Delete'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteProjectId(null)}
+                            className="text-xs font-bold px-3 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => handleSelectProject(p.id)}
+                            className="flex flex-1 items-center gap-3 text-left"
+                          >
+                            <Briefcase className="text-slate-400 group-hover:text-indigo-500 shrink-0" size={20} />
+                            <span className="font-semibold text-slate-700 dark:text-slate-200">{p.name}</span>
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteProjectId(p.id); }}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
+                            title="Delete project"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>

@@ -24,6 +24,14 @@ export const api = {
       throw e;
     }
   },
+  deleteProject: async (id: string) => {
+    try {
+      await axios.delete(`${API_URL}/projects/${id}`);
+    } catch (e) {
+      console.error(`API Error deleting project ${id}:`, e);
+      throw e;
+    }
+  },
   listItems: async (params?: { type?: string; status?: string; parentId?: string; includeArchived?: boolean; projectId?: string }) => {
     try {
       const { data } = await axios.get(`${API_URL}/items`, { 
