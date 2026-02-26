@@ -18,6 +18,7 @@
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
     "lucide-react": "^0.574.0",
+    "mermaid": "^11.12.3",
     "posthog-js": "^1.354.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

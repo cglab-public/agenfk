@@ -9,7 +9,7 @@ import {
   Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb
+  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -17,6 +17,7 @@ import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
+import { ReadmeModal } from './ReadmeModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
@@ -314,6 +315,7 @@ export const KanbanBoard: React.FC = () => {
   };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
+  const [isReadmeOpen, setIsReadmeOpen] = useState(false);
 
   const { data: versionData } = useQuery({
     queryKey: ['version'],
@@ -899,6 +901,16 @@ export const KanbanBoard: React.FC = () => {
                   </span>
                   {isLoading && <Loader2 size={8} className="animate-spin text-slate-400" />}
                 </button>
+                <button
+                  onClick={() => setIsReadmeOpen(true)}
+                  title="View project README"
+                  className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                >
+                  <Book size={10} className="text-slate-500 dark:text-slate-400" />
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 leading-none">
+                    README
+                  </span>
+                </button>
                 <button 
                   onClick={() => setSelectedProjectId(null)}
                   className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-indigo-600 transition-colors"
@@ -1306,6 +1318,7 @@ export const KanbanBoard: React.FC = () => {
       )}
 
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
+      <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
     </div>
   );
 };
