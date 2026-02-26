@@ -374,6 +374,7 @@ export const KanbanBoard: React.FC = () => {
   const [selectedItemType, setSelectedItemType] = useState<ItemType | 'ALL'>('ALL');
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
   const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -714,6 +715,9 @@ export const KanbanBoard: React.FC = () => {
     );
 
     if (found) {
+      if (found.status === Status.IDEAS) {
+        setIsIdeasCollapsed(false);
+      }
       if (found.status === Status.ARCHIVED) {
         setIsArchiveCollapsed(false);
       }
@@ -1036,6 +1040,57 @@ export const KanbanBoard: React.FC = () => {
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup id="board">
           <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
+            {/* Ideas Section */}
+            <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
+              {isIdeasCollapsed ? (
+                <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
+                  <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
+                  <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-indigo-400 shrink-0 mt-2">Ideas</span>
+                  <span className="bg-white dark:bg-slate-800 text-indigo-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                </button>
+              ) : (
+                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.IDEAS)} onDragOver={handleDragOver}>
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-indigo-400 pt-2">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setIsIdeasCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                      <Lightbulb size={14} className="text-indigo-500" />
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
+                    </div>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                  </div>
+                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {getItemsByStatus(Status.IDEAS).map((item: AgenFKItem) => (
+                          <KanbanCard
+                            key={item.id}
+                            item={item}
+                            items={items}
+                            highlightedId={highlightedId}
+                            dragId={dragId}
+                            dropTargetId={dropTargetId}
+                            dropPosition={dropPosition}
+                            copiedId={copiedId}
+                            pricesData={pricesData}
+                            isUserAction={isUserAction}
+                            onCardDragStart={handleDragStart}
+                            onCardDragEnd={handleDragEnd}
+                            onCardDragOver={handleCardDragOver}
+                            onCardDragLeave={handleCardDragLeave}
+                            onDoubleClick={() => setSelectedItem(item)}
+                            onDrillDown={handleDrillDown}
+                            onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                            onCopyId={handleCopyId}
+                          />
+                        ))}
+                      </AnimatePresence>
+                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.IDEAS, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-500 dark:hover:text-indigo-400 transition-all flex items-center justify-center gap-1.5">
+                      <Plus size={14} /> Add idea
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            
           {statuses.map(status => (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
