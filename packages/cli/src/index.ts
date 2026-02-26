@@ -1533,25 +1533,41 @@ program
       const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
       const comments = item.comments || [];
 
+      const isTestPhase = item.status === 'TEST';
+      const truncatedOutput = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
+
       if (exitCode === 0) {
-        const targetStatus = item.status === 'TEST' ? 'DONE' : 'REVIEW';
-        const verifyLabel = item.status === 'TEST' ? 'Final Verification' : 'Initial Verification';
+        const targetStatus = isTestPhase ? 'DONE' : 'REVIEW';
+        const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
         comments.push({
           id: randomUUID(),
           author: 'VerifyTool',
-          content: `### ${verifyLabel} PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
+          content: `### ${verifyLabel} PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncatedOutput}\n\`\`\``,
           timestamp: new Date()
         });
-        await axios.put(`${API_URL}/items/${targetId}`, { status: targetStatus, comments }, { headers: verifyHeaders });
+        const updates: Record<string, any> = { status: targetStatus, comments };
+        if (isTestPhase) {
+          const tests = item.tests || [];
+          tests.push({ id: randomUUID(), command, output: truncatedOutput, status: 'PASSED', executedAt: new Date() });
+          updates.tests = tests;
+        }
+        await axios.put(`${API_URL}/items/${targetId}`, updates, { headers: verifyHeaders });
         console.log(chalk.green(`\n✅ Verification passed. Item moved to ${targetStatus}.`));
       } else {
+        const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
         comments.push({
           id: randomUUID(),
           author: 'VerifyTool',
-          content: `### Initial Verification FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
+          content: `### ${verifyLabel} FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncatedOutput}\n\`\`\``,
           timestamp: new Date()
         });
-        await axios.put(`${API_URL}/items/${targetId}`, { status: 'IN_PROGRESS', comments });
+        const updates: Record<string, any> = { status: 'IN_PROGRESS', comments };
+        if (isTestPhase) {
+          const tests = item.tests || [];
+          tests.push({ id: randomUUID(), command, output: truncatedOutput, status: 'FAILED', executedAt: new Date() });
+          updates.tests = tests;
+        }
+        await axios.put(`${API_URL}/items/${targetId}`, updates);
         console.error(chalk.red('\n❌ Verification failed. Item returned to IN_PROGRESS.'));
         process.exit(1);
       }
