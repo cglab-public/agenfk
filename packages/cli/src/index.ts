@@ -4,7 +4,8 @@ import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status } from '@agenfk/core';
 import { TelemetryClient } from '@agenfk/telemetry';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -97,7 +98,7 @@ function killPattern(pattern: string) {
   } catch (e) {}
 }
 
-if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp')) {
+if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
   console.log(
     chalk.cyan(
       figlet.textSync('agenfk', { horizontalLayout: 'full' })
@@ -461,9 +462,14 @@ program
 program
   .command('list-projects')
   .description('List all projects')
-  .action(async () => {
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
     try {
       const { data: projects } = await axios.get(`${API_URL}/projects`);
+      if (options.json) {
+        console.log(JSON.stringify(projects, null, 2));
+        return;
+      }
       console.table(projects.map((p: any) => ({
         ID: p.id,
         Name: p.name,
@@ -486,6 +492,157 @@ program
       console.error(chalk.red('Error creating project:'), error.message);
     }
   });
+
+/**
+ * Configure Claude Code IDE integration for an AgenFK project directory.
+ * Registers the agenfk MCP server via `claude mcp add --scope user` (the official
+ * Claude Code CLI approach) and updates permissions in settings.local.json.
+ * Safe to re-run — removes any existing registration before adding.
+ *
+ * Returns true on success, false if claude CLI is unavailable or dbPath cannot
+ * be determined.
+ */
+function configureClaudeCodeIde(rootDir: string): boolean {
+    // Require the claude CLI
+    try {
+        execSync('claude --version', { stdio: 'ignore' });
+    } catch {
+        console.error(chalk.red('Error: claude CLI not found in PATH.'));
+        console.error(chalk.gray('Install Claude Code from https://claude.ai/download and try again.'));
+        return false;
+    }
+
+    // Resolve dbPath: ~/.agenfk/config.json → legacy mcpServers in settings.json
+    let dbPath = '';
+    const agenfkConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (fs.existsSync(agenfkConfigPath)) {
+        try {
+            const cfg = JSON.parse(fs.readFileSync(agenfkConfigPath, 'utf8'));
+            dbPath = cfg.dbPath || '';
+        } catch {}
+    }
+    if (!dbPath) {
+        // Fall back to legacy mcpServers entry
+        const globalSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        if (fs.existsSync(globalSettingsPath)) {
+            try {
+                const s = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf8'));
+                dbPath = s.mcpServers?.agenfk?.env?.AGENFK_DB_PATH || '';
+            } catch {}
+        }
+    }
+    if (!dbPath) {
+        console.error(chalk.red('Could not determine AGENFK_DB_PATH.'));
+        console.error(chalk.gray('Run "agenfk up" first to complete the installation.'));
+        return false;
+    }
+
+    // The agenfk bin installed by the framework (symlink in ~/.local/bin)
+    const agenfkBin = path.join(os.homedir(), '.local', 'bin', 'agenfk');
+
+    // Remove any existing registration (idempotent)
+    try {
+        execSync('claude mcp remove agenfk', { stdio: 'ignore' });
+    } catch {}
+
+    // Register via the official claude mcp add CLI (user scope = available in all projects)
+    const result = spawnSync('claude', [
+        'mcp', 'add',
+        '--transport', 'stdio',
+        '--scope', 'user',
+        '-e', `AGENFK_DB_PATH=${dbPath}`,
+        '--',
+        'agenfk',
+        agenfkBin, 'mcp'
+    ], { stdio: 'inherit' });
+
+    if (result.status !== 0) {
+        console.error(chalk.red('claude mcp add failed. Run "claude mcp get agenfk" to check the current state.'));
+        return false;
+    }
+    console.log(chalk.green('✓ Registered agenfk MCP server (user scope) via claude mcp add'));
+
+    // Clean up legacy mcpServers key from ~/.claude/settings.json if present
+    const globalSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (fs.existsSync(globalSettingsPath)) {
+        try {
+            const s = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf8'));
+            if (s.mcpServers) {
+                delete s.mcpServers;
+                fs.writeFileSync(globalSettingsPath, JSON.stringify(s, null, 2), 'utf8');
+                console.log(chalk.gray('  Removed legacy mcpServers from ~/.claude/settings.json'));
+            }
+        } catch {}
+    }
+
+    // Clean up legacy .mcp.json and enabledMcpjsonServers from .claude/settings.json
+    const mcpJsonPath = path.join(rootDir, '.mcp.json');
+    if (fs.existsSync(mcpJsonPath)) {
+        try {
+            const mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+            if (mcpJson.mcpServers?.agenfk) {
+                delete mcpJson.mcpServers.agenfk;
+                if (Object.keys(mcpJson.mcpServers).length === 0) {
+                    fs.unlinkSync(mcpJsonPath);
+                    console.log(chalk.gray('  Removed legacy .mcp.json'));
+                } else {
+                    fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2), 'utf8');
+                }
+            }
+        } catch {}
+    }
+    const claudeDir = path.join(rootDir, '.claude');
+    const projectSettingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(projectSettingsPath)) {
+        try {
+            const ps = JSON.parse(fs.readFileSync(projectSettingsPath, 'utf8'));
+            if (ps.enabledMcpjsonServers || ps.mcpServers) {
+                delete ps.enabledMcpjsonServers;
+                delete ps.mcpServers;
+                if (Object.keys(ps).length === 0) {
+                    fs.unlinkSync(projectSettingsPath);
+                    console.log(chalk.gray('  Removed empty .claude/settings.json'));
+                } else {
+                    fs.writeFileSync(projectSettingsPath, JSON.stringify(ps, null, 2), 'utf8');
+                    console.log(chalk.gray('  Cleaned up .claude/settings.json'));
+                }
+            }
+        } catch {}
+    }
+
+    // Write MCP tool permissions to settings.local.json (machine-specific, not committed)
+    if (!fs.existsSync(claudeDir)) {
+        fs.mkdirSync(claudeDir, { recursive: true });
+    }
+    const localSettingsPath = path.join(claudeDir, 'settings.local.json');
+    let localSettings: any = {};
+    if (fs.existsSync(localSettingsPath)) {
+        try {
+            localSettings = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
+        } catch {}
+    }
+    delete localSettings.mcpServers;
+    if (!localSettings.permissions) localSettings.permissions = {};
+    if (!localSettings.permissions.allow) localSettings.permissions.allow = [];
+    const mcpPermissions = [
+        'mcp__agenfk__list_projects', 'mcp__agenfk__list_items',
+        'mcp__agenfk__get_item', 'mcp__agenfk__create_item',
+        'mcp__agenfk__update_item', 'mcp__agenfk__add_comment',
+        'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__verify_changes',
+        'mcp__agenfk__log_token_usage', 'mcp__agenfk__analyze_request',
+        'mcp__agenfk__get_server_info', 'mcp__agenfk__add_context',
+        'mcp__agenfk__delete_item', 'mcp__agenfk__log_test_result',
+    ];
+    for (const perm of mcpPermissions) {
+        if (!localSettings.permissions.allow.includes(perm)) {
+            localSettings.permissions.allow.push(perm);
+        }
+    }
+    fs.writeFileSync(localSettingsPath, JSON.stringify(localSettings, null, 2), 'utf8');
+    console.log(chalk.green(`✓ Updated MCP tool permissions in ${localSettingsPath}`));
+
+    return true;
+}
 
 program
   .command('init [name]')
@@ -511,9 +668,9 @@ program
 
         if (name) {
             console.log(chalk.blue(`Creating new project: ${name}...`));
-            const { data: newProj } = await axios.post(`${API_URL}/projects`, { 
-                name, 
-                description: options.description 
+            const { data: newProj } = await axios.post(`${API_URL}/projects`, {
+                name,
+                description: options.description
             });
             projectId = newProj.id;
             projectName = newProj.name;
@@ -526,7 +683,7 @@ program
               Name: p.name,
               Created: new Date(p.createdAt).toLocaleDateString()
             })));
-            
+
             console.log(chalk.yellow('\nTo initialize this directory, use:'));
             console.log(chalk.white('  agenfk init <project-name>'));
             console.log(chalk.white('\nOr to link to an existing project, create .agenfk/project.json manually:'));
@@ -542,83 +699,7 @@ program
         console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
-        // Configure Claude Code project-level settings to ensure MCP server is available.
-        // When a project has .claude/settings.json, Claude Code masks the global
-        // ~/.claude/settings.json mcpServers. The fix is:
-        //   1. Write server config to .mcp.json at the project root (Claude Code's
-        //      project-scoped MCP config file; mcpServers is not valid in settings.json).
-        //   2. Add enabledMcpjsonServers to .claude/settings.json to auto-approve it.
-        //   3. Write MCP tool permissions to settings.local.json (user/machine-specific).
-        const globalSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-        let mcpConfig: any = null;
-        if (fs.existsSync(globalSettingsPath)) {
-            try {
-                const globalSettings = JSON.parse(fs.readFileSync(globalSettingsPath, 'utf8'));
-                mcpConfig = (globalSettings.mcpServers && globalSettings.mcpServers.agenfk) || null;
-            } catch (e) {}
-        }
-        if (mcpConfig) {
-            const claudeDir = path.join(rootDir, '.claude');
-            if (!fs.existsSync(claudeDir)) {
-                fs.mkdirSync(claudeDir, { recursive: true });
-            }
-
-            // Write to .mcp.json at the project root (Claude Code's project-scoped MCP file)
-            const mcpJsonPath = path.join(rootDir, '.mcp.json');
-            let mcpJson: any = { mcpServers: {} };
-            if (fs.existsSync(mcpJsonPath)) {
-                try {
-                    mcpJson = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
-                    if (!mcpJson.mcpServers) mcpJson.mcpServers = {};
-                } catch (e) {}
-            }
-            mcpJson.mcpServers.agenfk = mcpConfig;
-            fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpJson, null, 2), 'utf8');
-            console.log(chalk.green(`✓ Configured Claude Code MCP in ${mcpJsonPath}`));
-
-            // Add enabledMcpjsonServers to .claude/settings.json to auto-approve without prompt
-            const projectSettingsPath = path.join(claudeDir, 'settings.json');
-            let projectSettings: any = {};
-            if (fs.existsSync(projectSettingsPath)) {
-                try {
-                    projectSettings = JSON.parse(fs.readFileSync(projectSettingsPath, 'utf8'));
-                } catch (e) {}
-            }
-            if (!projectSettings.enabledMcpjsonServers) projectSettings.enabledMcpjsonServers = [];
-            if (!projectSettings.enabledMcpjsonServers.includes('agenfk')) {
-                projectSettings.enabledMcpjsonServers.push('agenfk');
-            }
-            // Remove mcpServers if previously written there by an older agenfk init
-            delete projectSettings.mcpServers;
-            fs.writeFileSync(projectSettingsPath, JSON.stringify(projectSettings, null, 2), 'utf8');
-
-            // Write MCP tool permissions to settings.local.json (user/machine-specific, not committed)
-            const localSettingsPath = path.join(claudeDir, 'settings.local.json');
-            let localSettings: any = {};
-            if (fs.existsSync(localSettingsPath)) {
-                try {
-                    localSettings = JSON.parse(fs.readFileSync(localSettingsPath, 'utf8'));
-                } catch (e) {}
-            }
-            // Remove mcpServers if previously written there by an older agenfk init
-            delete localSettings.mcpServers;
-            if (!localSettings.permissions) localSettings.permissions = {};
-            if (!localSettings.permissions.allow) localSettings.permissions.allow = [];
-            const mcpPermissions = [
-                'mcp__agenfk__list_projects', 'mcp__agenfk__list_items',
-                'mcp__agenfk__get_item', 'mcp__agenfk__create_item',
-                'mcp__agenfk__update_item', 'mcp__agenfk__add_comment',
-                'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__verify_changes',
-                'mcp__agenfk__log_token_usage', 'mcp__agenfk__analyze_request',
-                'mcp__agenfk__get_server_info', 'mcp__agenfk__add_context',
-            ];
-            for (const perm of mcpPermissions) {
-                if (!localSettings.permissions.allow.includes(perm)) {
-                    localSettings.permissions.allow.push(perm);
-                }
-            }
-            fs.writeFileSync(localSettingsPath, JSON.stringify(localSettings, null, 2), 'utf8');
-        }
+        configureClaudeCodeIde(rootDir);
 
     } catch (e: any) {
         console.error(chalk.red('Could not connect to API server. Is it running on port 3000?'));
@@ -626,6 +707,32 @@ program
             console.error(chalk.red(`Server Error: ${e.response.data.error || e.message}`));
         }
     }
+  });
+
+program
+  .command('configure-ide')
+  .description('Fix Claude Code MCP integration for an already-initialized project. Creates .mcp.json and updates .claude/settings.json. Safe to re-run.')
+  .action(() => {
+    const rootDir = process.cwd();
+    const projFile = path.join(rootDir, '.agenfk', 'project.json');
+
+    if (!fs.existsSync(projFile)) {
+        console.error(chalk.red('Error: No AgenFK project found in the current directory.'));
+        console.error(chalk.gray('Run "agenfk init" first to initialize a project here.'));
+        process.exit(1);
+    }
+
+    console.log(chalk.blue('Configuring Claude Code IDE integration...'));
+    const ok = configureClaudeCodeIde(rootDir);
+
+    if (!ok) {
+        console.error(chalk.red('Could not find agenfk MCP config in ~/.claude/settings.json.'));
+        console.error(chalk.gray('The agenfk MCP server must be registered in ~/.claude/settings.json under mcpServers.'));
+        process.exit(1);
+    }
+
+    console.log(chalk.green('\n✓ IDE configuration complete.'));
+    console.log(chalk.gray('Restart Claude Code for the changes to take effect.'));
   });
 
 /**
@@ -687,17 +794,23 @@ program
   .option('-s, --status <status>', 'Filter by status')
   .option('--project <id>', 'Filter by project ID')
   .option('--all', 'Show all projects (bypass local project filter)')
+  .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
       const query: any = {};
       if (options.type) query.type = options.type.toUpperCase();
       if (options.status) query.status = options.status.toUpperCase();
-      
+
       let projectId = options.project || (options.all ? undefined : findProjectId(process.cwd()));
       if (projectId) query.projectId = projectId;
 
       const { data: items } = await axios.get(`${API_URL}/items`, { params: query });
-      
+
+      if (options.json) {
+        console.log(JSON.stringify(items, null, 2));
+        return;
+      }
+
       if (items.length === 0) {
         console.log(chalk.yellow('No items found.'));
         return;
@@ -1203,6 +1316,245 @@ configSetCommand
       }
     } catch (err: any) {
       console.error(chalk.red('Error updating config:'), err.message);
+      process.exit(1);
+    }
+  });
+
+// ── MCP FALLBACK COMMANDS ─────────────────────────────────────────────────────
+// These commands provide CLI parity with MCP tools for use when MCP is unavailable.
+
+program
+  .command('get <id>')
+  .description('Get details of a specific item (MCP fallback: get_item)')
+  .option('--json', 'Output as JSON')
+  .action(async (id, options) => {
+    try {
+      let targetId = id;
+      if (id.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const found = allItems.filter((i: any) => i.id.startsWith(id));
+        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); }
+        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}, matches multiple items`)); process.exit(1); }
+        targetId = found[0].id;
+      }
+      const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
+      if (options.json) {
+        console.log(JSON.stringify(item, null, 2));
+      } else {
+        console.log(chalk.blue(`[${item.id.substring(0,8)}] ${item.title}`));
+        console.log(`  Type:        ${item.type}`);
+        console.log(`  Status:      ${item.status}`);
+        console.log(`  Project:     ${item.projectId}`);
+        if (item.parentId) console.log(`  Parent:      ${item.parentId}`);
+        if (item.description) console.log(`  Description: ${item.description}`);
+        if (item.comments?.length) console.log(`  Comments:    ${item.comments.length}`);
+        if (item.tokenUsage?.length) console.log(`  Token logs:  ${item.tokenUsage.length}`);
+      }
+    } catch (error: any) {
+      console.error(chalk.red('Error fetching item:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('comment <id> <content>')
+  .description('Add a comment to an item (MCP fallback: add_comment)')
+  .option('--author <author>', 'Comment author', 'agent')
+  .action(async (id, content, options) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      const comments = item.comments || [];
+      comments.push({ id: randomUUID(), content, author: options.author, timestamp: new Date() });
+      await axios.put(`${API_URL}/items/${id}`, { comments });
+      console.log(chalk.green('Comment added.'));
+    } catch (error: any) {
+      console.error(chalk.red('Error adding comment:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('log-tokens <id>')
+  .description('Log token usage for an item (MCP fallback: log_token_usage)')
+  .requiredOption('--input <n>', 'Input tokens', parseInt)
+  .requiredOption('--output <n>', 'Output tokens', parseInt)
+  .requiredOption('--model <model>', 'Model name')
+  .option('--cost <c>', 'Cost in USD', parseFloat)
+  .option('--session <id>', 'Session ID for deduplication')
+  .action(async (id, options) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      const tokenUsage = item.tokenUsage || [];
+      const entry: any = {
+        input: options.input,
+        output: options.output,
+        model: options.model,
+        timestamp: new Date().toISOString(),
+      };
+      if (options.cost !== undefined) entry.cost = options.cost;
+      if (options.session) entry.sessionId = options.session;
+      tokenUsage.push(entry);
+      await axios.put(`${API_URL}/items/${id}`, { tokenUsage });
+      console.log(chalk.green('Token usage logged.'));
+    } catch (error: any) {
+      console.error(chalk.red('Error logging tokens:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('log-test <id>')
+  .description('Log a test result for an item (MCP fallback: log_test_result)')
+  .requiredOption('--command <cmd>', 'Test command that was run')
+  .requiredOption('--output <text>', 'Test output')
+  .requiredOption('--status <status>', 'Result status: PASSED or FAILED')
+  .action(async (id, options) => {
+    const status = options.status.toUpperCase();
+    if (status !== 'PASSED' && status !== 'FAILED') {
+      console.error(chalk.red('--status must be PASSED or FAILED'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      const tests = item.tests || [];
+      tests.push({ id: randomUUID(), command: options.command, output: options.output, status, executedAt: new Date() });
+      await axios.put(`${API_URL}/items/${id}`, { tests });
+      console.log(chalk.green(`Test result logged: ${status}`));
+    } catch (error: any) {
+      console.error(chalk.red('Error logging test result:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('gatekeeper')
+  .description('Check workflow authorization before making changes (MCP fallback: workflow_gatekeeper)')
+  .option('--intent <text>', 'Description of what you intend to do')
+  .option('--role <role>', 'Role: planning|coding|review|testing|closing', 'coding')
+  .option('--item-id <id>', 'Specific item ID to check against')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { data: items } = await axios.get(`${API_URL}/items`);
+      const projectId = findProjectId(process.cwd());
+      const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
+
+      const activeItems = projectItems.filter((i: any) =>
+        i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED'
+      );
+      const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
+      const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
+      const testItems = activeItems.filter((i: any) => i.status === 'TEST');
+
+      const role = (options.role || 'coding').toLowerCase();
+      const intent = options.intent || '(no intent provided)';
+      let authorized = false;
+      let message = '';
+      let task: any = null;
+
+      if (role === 'coding') {
+        if (inProgressItems.length === 0) {
+          message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS. Create a task and set it to IN_PROGRESS first.`;
+        } else if (options.itemId) {
+          task = inProgressItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId));
+          if (!task) { message = `❌ WORKFLOW BREACH: Item [${options.itemId}] is not IN_PROGRESS.`; }
+          else { authorized = true; message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
+        } else if (inProgressItems.length > 1) {
+          message = `⚠️ AMBIGUOUS: Multiple tasks are IN_PROGRESS. Provide --item-id to disambiguate.\n${inProgressItems.map((i: any) => `  [${i.id.substring(0,8)}] ${i.title}`).join('\n')}`;
+        } else {
+          task = inProgressItems[0];
+          authorized = true;
+          message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`;
+        }
+      } else if (role === 'review') {
+        const target = options.itemId ? reviewItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : reviewItems[0];
+        if (!target) { message = `❌ WORKFLOW BREACH: No task is in REVIEW status.`; }
+        else { authorized = true; task = target; message = `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
+      } else if (role === 'testing') {
+        const target = options.itemId ? testItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : testItems[0];
+        if (!target) { message = `❌ WORKFLOW BREACH: No task is in TEST status.`; }
+        else { authorized = true; task = target; message = `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
+      } else {
+        // Generic: just check for IN_PROGRESS
+        if (inProgressItems.length === 0) { message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS.`; }
+        else { authorized = true; task = inProgressItems[0]; message = `✅ WORKFLOW VALIDATED.\n\nActive Item: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify({ authorized, message, task: task ? { id: task.id, title: task.title, status: task.status } : null }));
+      } else {
+        console.log(authorized ? chalk.green(message) : chalk.red(message));
+      }
+      process.exit(authorized ? 0 : 1);
+    } catch (error: any) {
+      console.error(chalk.red('Error checking workflow:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('verify <id> <command>')
+  .description('Run verification command and transition item to REVIEW (MCP fallback: verify_changes)')
+  .action(async (id, command) => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
+      process.exit(1);
+    }
+    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
+    const verifyHeaders = { 'x-agenfk-internal': verifyToken };
+
+    let targetId = id;
+    if (id.length < 36) {
+      try {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const found = allItems.filter((i: any) => i.id.startsWith(id));
+        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); }
+        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}`)); process.exit(1); }
+        targetId = found[0].id;
+      } catch (e: any) {
+        console.error(chalk.red('Error resolving item:'), e.response?.data?.error || e.message);
+        process.exit(1);
+      }
+    }
+
+    console.log(chalk.blue(`Running verification: ${command}`));
+    const projectRoot = process.cwd();
+
+    const { status: exitCode, output } = await new Promise<{ status: number | null; output: string }>((resolve) => {
+      const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+      let out = '';
+      child.stdout.on('data', (d: Buffer) => { process.stdout.write(d); out += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { process.stderr.write(d); out += d.toString(); });
+      child.on('close', (code) => resolve({ status: code, output: out }));
+    });
+
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
+      const comments = item.comments || [];
+
+      if (exitCode === 0) {
+        comments.push({
+          id: randomUUID(),
+          author: 'VerifyTool',
+          content: `### Initial Verification PASSED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
+          timestamp: new Date()
+        });
+        await axios.put(`${API_URL}/items/${targetId}`, { status: 'REVIEW', comments }, { headers: verifyHeaders });
+        console.log(chalk.green('\n✅ Verification passed. Item moved to REVIEW.'));
+      } else {
+        comments.push({
+          id: randomUUID(),
+          author: 'VerifyTool',
+          content: `### Initial Verification FAILED\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${output.substring(0, 2000)}${output.length > 2000 ? '\n... (truncated)' : ''}\n\`\`\``,
+          timestamp: new Date()
+        });
+        await axios.put(`${API_URL}/items/${targetId}`, { status: 'IN_PROGRESS', comments });
+        console.error(chalk.red('\n❌ Verification failed. Item returned to IN_PROGRESS.'));
+        process.exit(1);
+      }
+    } catch (error: any) {
+      console.error(chalk.red('Error updating item:'), error.response?.data?.error || error.message);
       process.exit(1);
     }
   });

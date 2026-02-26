@@ -11,6 +11,26 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+
+function isMcpAvailable() {
+    try {
+        const homeDir = os.homedir();
+        const claudeJsonPath = path.join(homeDir, '.claude.json');
+        if (!fs.existsSync(claudeJsonPath)) return false;
+        const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
+        if (!claudeJson?.mcpServers?.agenfk) return false;
+        const remoteSettingsPath = path.join(homeDir, '.claude', 'remote-settings.json');
+        if (fs.existsSync(remoteSettingsPath)) {
+            const remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf8'));
+            const allowed = remoteSettings?.allowedMcpServers;
+            if (Array.isArray(allowed) && allowed.length === 0) return false;
+        }
+        return true;
+    } catch {
+        return true;
+    }
+}
 
 const FALLBACK_FLAG = path.join(
     process.env.HOME || process.env.USERPROFILE || '',
@@ -81,11 +101,12 @@ export default async function agenfkMcpEnforcer(context) {
                     }
                 }
 
-                // 3. Block agenfk CLI state query commands
-                if (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
-                    /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command)) {
+                // 3. Block agenfk CLI state query commands (only when MCP is available).
+                if (isMcpAvailable() &&
+                    (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
+                     /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command))) {
                     throw new Error(
-                        'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden.\n' +
+                        'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden while MCP is available.\n' +
                         'Do NOT use: agenfk list, agenfk status, agenfk get, npx agenfk ...\n' +
                         'Use MCP tool invocations: list_items() • get_item() • list_projects()' +
                         FALLBACK_INSTRUCTIONS

@@ -244,19 +244,7 @@ process.exit(0);
         console.log(`Opencode not found. Skipping opencode.json configuration.`);
     }
 
-    // 7. Configure Claude Code MCP
-    console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
-    try {
-        const claudeCheck = spawnSync('claude', ['--version'], { shell: true });
-        if (claudeCheck.status === 0) {
-            console.log("Adding AgenFK MCP Server to Claude Code...");
-            spawnSync('claude', ['mcp', 'add', 'agenfk', 'env', `AGENFK_DB_PATH=${dbPath}`, 'node', serverPath], { stdio: 'inherit', shell: true });
-        } else {
-            console.log("Claude Code CLI not found. Skipping Claude MCP configuration.");
-        }
-    } catch (e) {
-        console.log("Error checking Claude Code CLI. Skipping.");
-    }
+    // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
     console.log(`${GREEN}[8/14] Installing agenfk skills (Opencode)...${NC}`);
@@ -369,6 +357,36 @@ process.exit(0);
     const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
     const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
 
+    // 7 (deferred). Configure Claude Code MCP via official CLI
+    console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
+    try {
+        const claudeCheck = spawnSync('claude', ['--version'], { shell: true, stdio: 'ignore' });
+        if (claudeCheck.status === 0) {
+            console.log("  Registering AgenFK MCP server with Claude Code...");
+            // Remove any existing registration first (ignore errors if not registered)
+            spawnSync('claude', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            // Register with correct syntax: options, then -- to end variadic -e, then name + command
+            const result = spawnSync('claude', [
+                'mcp', 'add',
+                '--transport', 'stdio',
+                '--scope', 'user',
+                '-e', `AGENFK_DB_PATH=${dbPath}`,
+                '--',
+                'agenfk',
+                cliDest, 'mcp'
+            ], { stdio: 'inherit', shell: true });
+            if (result.status === 0) {
+                console.log(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: claude mcp add returned non-zero. Verify with: claude mcp get agenfk${NC}`);
+            }
+        } else {
+            console.log("  Claude Code CLI not found. Skipping Claude MCP configuration.");
+        }
+    } catch (e) {
+        console.log("  Error checking Claude Code CLI. Skipping.");
+    }
+
     // 13. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
     console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
@@ -448,18 +466,11 @@ Two PreToolUse hooks enforce the above:
         hooks: [{ type: 'command', command: enforcerDest }]
     });
 
-    // 12b. MCP Server (Visible to Claude Agent)
-    if (!settings.mcpServers) settings.mcpServers = {};
-    settings.mcpServers.agenfk = {
-        command: cliDest,
-        args: ["mcp"],
-        env: {
-            "AGENFK_DB_PATH": dbPath
-        }
-    };
-    
+    // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)
+    delete settings.mcpServers;
+
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log(`  Registered PreToolUse hook and MCP server in ${settingsPath}`);
+    console.log(`  Registered PreToolUse hooks in ${settingsPath}`);
 
     console.log(`${GREEN}Installation Complete.${NC}`);
     console.log("");

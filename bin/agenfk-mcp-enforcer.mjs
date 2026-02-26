@@ -12,6 +12,33 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+
+/**
+ * Check if the agenfk MCP server is both registered AND allowed by enterprise policy.
+ * Returns false if the server is registered but blocked by allowedMcpServers policy,
+ * which means CLI fallback commands should be allowed.
+ */
+function isMcpAvailable() {
+    try {
+        const homeDir = os.homedir();
+        // Check if agenfk is registered in ~/.claude.json (user scope)
+        const claudeJsonPath = path.join(homeDir, '.claude.json');
+        if (!fs.existsSync(claudeJsonPath)) return false;
+        const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
+        if (!claudeJson?.mcpServers?.agenfk) return false;
+        // Check if enterprise policy blocks it (allowedMcpServers: [] means block all)
+        const remoteSettingsPath = path.join(homeDir, '.claude', 'remote-settings.json');
+        if (fs.existsSync(remoteSettingsPath)) {
+            const remoteSettings = JSON.parse(fs.readFileSync(remoteSettingsPath, 'utf8'));
+            const allowed = remoteSettings?.allowedMcpServers;
+            if (Array.isArray(allowed) && allowed.length === 0) return false;
+        }
+        return true;
+    } catch {
+        return true; // Fail open: assume MCP is available if we can't determine
+    }
+}
 
 async function getToolIntent() {
     return new Promise((resolve) => {
@@ -65,10 +92,15 @@ function isFallbackApproved() {
 
 const FALLBACK_INSTRUCTIONS =
     '\n\nIf MCP tools are genuinely unavailable in this session:\n' +
-    '  1. Tell the user: "MCP tools are not reachable — can I use the REST API as a temporary fallback?"\n' +
-    '  2. If they approve, they (or you) can run:\n' +
-    '       touch ~/.agenfk/mcp-fallback-approved\n' +
-    '  3. The flag expires automatically after 5 minutes.';
+    '  Use the agenfk CLI fallback commands instead:\n' +
+    '    agenfk gatekeeper --intent "<intent>"   (replaces workflow_gatekeeper)\n' +
+    '    agenfk list --json                       (replaces list_items)\n' +
+    '    agenfk get <id> --json                   (replaces get_item)\n' +
+    '    agenfk comment <id> "<text>"             (replaces add_comment)\n' +
+    '    agenfk verify <id> "<command>"           (replaces verify_changes)\n' +
+    '    agenfk log-tokens <id> --input N --output N --model M\n' +
+    '  Or approve a temporary REST API fallback window:\n' +
+    '    touch ~/.agenfk/mcp-fallback-approved    (expires after 5 minutes)';
 
 function block(reason) {
     process.stdout.write(JSON.stringify({ decision: 'block', reason: reason + FALLBACK_INSTRUCTIONS }));
@@ -111,11 +143,13 @@ if (tool === 'Bash') {
         }
     }
 
-    // 3. Block agenfk CLI state query commands
-    if (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
-        /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command)) {
+    // 3. Block agenfk CLI state query commands (only when MCP is available).
+    // When MCP is policy-blocked, the CLI commands are the intended fallback.
+    if (isMcpAvailable() &&
+        (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
+         /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command))) {
         block(
-            'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden.\n\n' +
+            'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden while MCP is available.\n\n' +
             'Do NOT use: agenfk list, agenfk status, agenfk get, npx agenfk ...\n' +
             'Use MCP tool invocations instead:\n' +
             '  list_items(projectId)  •  get_item(id)  •  list_projects()'
