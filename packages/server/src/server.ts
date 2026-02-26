@@ -1051,18 +1051,7 @@ const getCurrentVersion = (): string => {
   } catch { return '0.1.29'; }
 };
 
-const HARDCODED_GITHUB_REPO = 'cglab-PRIVATE/agenfk';
-
-const getGitHubRepo = (): string | null => {
-  try {
-    const remote = execSync('git remote get-url origin', { encoding: 'utf8', cwd: findProjectRoot(process.cwd()) }).trim();
-    const sshMatch = remote.match(/git@github\.com:(.+?)\.git$/);
-    if (sshMatch) return sshMatch[1];
-    const httpsMatch = remote.match(/github\.com\/(.+?)(?:\.git)?$/);
-    if (httpsMatch) return httpsMatch[1];
-  } catch {}
-  return HARDCODED_GITHUB_REPO;
-};
+const getGitHubRepo = (): string => 'cglab-PRIVATE/agenfk';
 
 const getGitHubToken = (): string | null => {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
@@ -1126,10 +1115,6 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   }
 
   const repo = getGitHubRepo();
-  if (!repo) {
-    return res.status(404).json({ error: 'Could not detect GitHub repository', currentVersion });
-  }
-
   const token = getGitHubToken();
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
   if (token) headers.Authorization = `Bearer ${token}`;
