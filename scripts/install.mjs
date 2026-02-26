@@ -519,9 +519,9 @@ CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allow
 | \`list_items(projectId)\` | \`agenfk list --project <id> --json\` |
 | \`get_item(id)\` | \`agenfk get <id> --json\` |
 | \`create_item(projectId, type, title)\` | \`agenfk create <type> "<title>" --project <id>\` |
-| \`update_item(id, {status, ...})\` | \`agenfk update <id> --status <status>\` |
+| \`update_item(id, {status, ...})\` | \`agenfk update <id> --status <status>\` (not for DONE — use \`verify_changes\` instead) |
 | \`add_comment(id, text)\` | \`agenfk comment <id> "<text>"\` |
-| \`verify_changes(id, command)\` | \`agenfk verify <id> "<command>"\` |
+| \`verify_changes(id, command)\` | \`agenfk verify <id> "<command>"\` (from TEST: moves to DONE; from IN_PROGRESS: moves to REVIEW) |
 | \`log_token_usage(id, in, out, model)\` | \`agenfk log-tokens <id> --input N --output N --model M\` |
 | \`log_test_result(id, cmd, out, status)\` | \`agenfk log-test <id> --command "..." --output "..." --status PASSED\` |
 
@@ -594,7 +594,7 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
     console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
     console.log("");
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-    console.log("1. Restart your AI editor/agent (Opencode needs a restart to pick up the new MCP).");
+    console.log("1. Restart your AI editor/agent (Opencode and Cursor need a restart to pick up the new MCP server).");
     console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
     console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
     console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");

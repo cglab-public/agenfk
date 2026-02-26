@@ -14,13 +14,36 @@ const NC = '\x1b[0m';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 
+function getCursorMcpPath() {
+    if (os.platform() === 'win32') {
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Cursor', 'mcp.json');
+    } else if (os.platform() === 'darwin') {
+        return path.join(os.homedir(), '.cursor', 'mcp.json');
+    } else {
+        return path.join(os.homedir(), '.config', 'cursor', 'mcp.json');
+    }
+}
+
+function getCursorRulesDir() {
+    if (os.platform() === 'win32') {
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Cursor', 'rules');
+    } else if (os.platform() === 'darwin') {
+        return path.join(os.homedir(), '.cursor', 'rules');
+    } else {
+        return path.join(os.homedir(), '.config', 'cursor', 'rules');
+    }
+}
+
 async function run() {
     console.log(`${BLUE}=== AgenFK Uninstaller ===${NC}`);
     console.log("");
     console.log(`${YELLOW}This will remove:${NC}`);
     console.log("  - Slash commands from Claude Code and Opencode");
     console.log("  - Opencode skill");
-    console.log("  - MCP server config from Claude Code and Opencode");
+    console.log("  - MCP server config from Claude Code, Opencode, and Cursor");
+    console.log("  - Cursor workflow rules (agenfk.mdc)");
     console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
     console.log("  - AgenFK PreToolUse hook from ~/.claude/settings.json");
     console.log("  - ~/.agenfk-system (the framework files)");
@@ -107,6 +130,36 @@ async function run() {
         } catch (e) {
             console.error('  Error updating opencode.json:', e.message);
         }
+    }
+
+    // 6b. MCP config — Cursor
+    console.log(`${GREEN}[6b/10] Removing Cursor MCP config...${NC}`);
+    const cursorMcpPath = getCursorMcpPath();
+    if (existsSync(cursorMcpPath)) {
+        try {
+            const cursorMcp = JSON.parse(await fs.readFile(cursorMcpPath, 'utf8'));
+            if (cursorMcp.mcpServers && cursorMcp.mcpServers.agenfk) {
+                delete cursorMcp.mcpServers.agenfk;
+                await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
+                console.log(`  Removed: agenfk MCP from ${cursorMcpPath}`);
+            } else {
+                console.log(`  Not found in ${cursorMcpPath} (skipping)`);
+            }
+        } catch (e) {
+            console.error('  Error updating Cursor mcp.json:', e.message);
+        }
+    } else {
+        console.log(`  ${cursorMcpPath} not found (skipping)`);
+    }
+
+    // 6c. Cursor workflow rules (.mdc)
+    console.log(`${GREEN}[6c/10] Removing Cursor workflow rules...${NC}`);
+    const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
+    if (existsSync(cursorMdcPath)) {
+        await fs.unlink(cursorMdcPath);
+        console.log(`  Removed: ${cursorMdcPath}`);
+    } else {
+        console.log(`  ${cursorMdcPath} not found (skipping)`);
     }
 
     // 7. Gatekeeper hook script

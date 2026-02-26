@@ -110,7 +110,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Workflow**: 
         *   The `verify_changes` tool automatically moves items from `REVIEW` to `TEST` upon success.
         *   The Agent verifies coverage and regressions in `TEST`.
-        *   Success: Agent moves item to `DONE`.
+        *   Success: Agent calls `verify_changes(itemId, "<test-command>")` again from `TEST` status — this moves the item to `DONE` using the internal verify token. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
         *   Failure: Agent moves item back to `IN_PROGRESS`.
 
 6.  **Final Verification (Review Tool)**
@@ -126,10 +126,11 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up:
-        1. Close all child TASKs first (verify → REVIEW → TEST → DONE).
-        2. Then close parent STORYs.
-        3. Then close the EPIC.
+        1. Close all child TASKs first: `verify_changes` (IN_PROGRESS→REVIEW), self-review (REVIEW→TEST), then `verify_changes` again from TEST (TEST→DONE).
+        2. Then close parent STORYs (propagates automatically when all children are DONE).
+        3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in REVIEW. If `verify_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
+        NEVER use `update_item({status: "DONE"})` — the server rejects direct DONE transitions. Always use `verify_changes` from TEST status to close an item.
     *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
         1. **Release**: Run `/agenfk-release` to create a new release.
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).

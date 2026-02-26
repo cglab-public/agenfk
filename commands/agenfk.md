@@ -80,7 +80,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
 2. Run the test suite with coverage if available. Capture the full output.
 3. Call `log_test_result(itemId, "<test-command>", "<full captured output>", "PASSED"|"FAILED")` — this populates the Test Results tab.
 4. Call `add_comment(itemId, "Tests passed: <summary>")`.
-5. Call `update_item(itemId, {status: "DONE"})` — this is only permitted from TEST status.
+5. Call `verify_changes(itemId, "<test-command>")` from TEST status — this re-runs the test command, and on success moves the item to DONE using the internal verify token. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
 
 ---
 
