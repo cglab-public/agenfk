@@ -111,9 +111,9 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 </div>
               )}
               <div className="flex-1 overflow-y-auto px-6 py-4">
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200 prose-p:text-slate-600 dark:prose-p:text-slate-400 prose-li:text-slate-600 dark:prose-li:text-slate-400 prose-code:text-indigo-600 dark:prose-code:text-indigo-400 prose-code:bg-slate-100 dark:prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs">
+                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-slate-800 dark:prose-headings:text-slate-200">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {release.body || 'No release notes available.'}
+                    {(release.body || 'No release notes available.').replace(/\\n/g, '\n')}
                   </ReactMarkdown>
                 </div>
               </div>
