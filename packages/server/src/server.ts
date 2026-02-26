@@ -329,6 +329,8 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   const { name, description } = req.body;
   if (!name) return res.status(400).json({ error: "Name is required" });
 
+  const existing = (await storage.listProjects()).find((p: Project) => p.name === name);
+
   const project: Project = {
     id: uuidv4(),
     name,
@@ -339,7 +341,9 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
 
   const created = await storage.createProject(project);
   io.emit('items_updated');
-  telemetry.capture('project_created', { storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json' });
+  if (!existing) {
+    telemetry.capture('project_created', { storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json' });
+  }
   res.status(201).json(created);
 }));
 
