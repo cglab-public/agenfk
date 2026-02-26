@@ -1051,6 +1051,8 @@ const getCurrentVersion = (): string => {
   } catch { return '0.1.29'; }
 };
 
+const HARDCODED_GITHUB_REPO = 'cglab-PRIVATE/agenfk';
+
 const getGitHubRepo = (): string | null => {
   try {
     const remote = execSync('git remote get-url origin', { encoding: 'utf8', cwd: findProjectRoot(process.cwd()) }).trim();
@@ -1059,7 +1061,7 @@ const getGitHubRepo = (): string | null => {
     const httpsMatch = remote.match(/github\.com\/(.+?)(?:\.git)?$/);
     if (httpsMatch) return httpsMatch[1];
   } catch {}
-  return null;
+  return HARDCODED_GITHUB_REPO;
 };
 
 const getGitHubToken = (): string | null => {
