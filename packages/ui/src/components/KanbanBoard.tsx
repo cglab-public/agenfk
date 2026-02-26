@@ -16,6 +16,7 @@ import { CardDetailModal } from './CardDetailModal';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
+import { WhatsNewModal } from './WhatsNewModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
@@ -312,6 +313,7 @@ export const KanbanBoard: React.FC = () => {
     });
   };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
+  const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
 
   const { data: versionData } = useQuery({
     queryKey: ['version'],
@@ -887,12 +889,16 @@ export const KanbanBoard: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgenFK Dashboard</h1>
-                <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm">
+                <button
+                  onClick={() => setIsWhatsNewOpen(true)}
+                  title="What's new"
+                  className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-700 shadow-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                >
                   <span className="text-[10px] font-mono font-bold text-slate-500 dark:text-slate-400 leading-none">
                     v{versionData?.version || '0.1.31'}
                   </span>
                   {isLoading && <Loader2 size={8} className="animate-spin text-slate-400" />}
-                </div>
+                </button>
                 <button 
                   onClick={() => setSelectedProjectId(null)}
                   className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-indigo-600 transition-colors"
@@ -1298,6 +1304,8 @@ export const KanbanBoard: React.FC = () => {
           projectId={selectedProjectId}
         />
       )}
+
+      <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
     </div>
   );
 };
