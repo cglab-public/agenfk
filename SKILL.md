@@ -39,6 +39,22 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 
 ---
 
+## MCP Access Rules — MANDATORY
+
+**ALWAYS** use MCP tool invocations (`list_items`, `create_item`, `update_item`, `get_item`, etc.) for all workflow state operations.
+
+**NEVER** use any of the following shortcuts — PreToolUse hooks will block them mechanically:
+
+| Forbidden | Use instead |
+|-----------|-------------|
+| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (via Bash or Read tool) | `list_items(projectId)` · `get_item(id)` |
+| `curl` / `wget` to `http://localhost:3000` (direct REST API) | `list_items()` · `create_item()` · `update_item()` |
+| `agenfk list`, `agenfk status`, `agenfk get`, `npx agenfk ...` (CLI state queries) | `list_items()` · `get_item()` · `list_projects()` |
+
+If MCP tools are not available in your context, surface the connectivity problem clearly rather than falling back to a bypass route.
+
+---
+
 ## What I do
 
 1.  **Initialization**

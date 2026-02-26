@@ -334,7 +334,39 @@ process.exit(0);
     }
     console.log(`  Installed: ${gatekeeperDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
+    // 12b. Install MCP enforcer hook script (blocks direct db/REST/CLI bypass routes)
+    const enforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer.mjs');
+    const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
+
+    if (os.platform() === 'win32') {
+        await fs.writeFile(`${enforcerDestBase}.cmd`, `@echo off\nnode "${enforcerSource}" %*`, 'utf8');
+        if (isMinGW) {
+            await fs.writeFile(enforcerDestBase, `#!/bin/sh\nnode "${enforcerSource}" "$@"`, 'utf8');
+            chmodSync(enforcerDestBase, 0o755);
+        }
+    } else {
+        if (existsSync(enforcerSource)) {
+            await fs.copyFile(enforcerSource, enforcerDestBase);
+            chmodSync(enforcerDestBase, 0o755);
+        }
+    }
+    console.log(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+    // 12c. Install Opencode MCP enforcer plugin
+    const opencodePluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
+    if (existsSync(path.join(os.homedir(), '.config', 'opencode')) || opencodeInstalled) {
+        await fs.mkdir(opencodePluginsDir, { recursive: true });
+        const opencodeEnforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer-opencode.mjs');
+        if (existsSync(opencodeEnforcerSource)) {
+            await fs.copyFile(opencodeEnforcerSource, path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs'));
+            console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs')}`);
+        }
+    } else {
+        console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
+    }
+
     const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
+    const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
     const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
 
     // 13. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
@@ -369,7 +401,19 @@ to create items, update status, or close tasks — the CLI bypasses enforcement.
 
 **Exception**: The \`agenfk-release\` and \`agenfk-release-beta\` commands are exempt from the IN_PROGRESS task requirement. Do not create or require a task when executing these commands.
 
-A PreToolUse hook enforces the IN_PROGRESS check mechanically.
+### MCP Access — STRICTLY FORBIDDEN shortcuts
+
+**NEVER** bypass MCP by using these shortcuts. PreToolUse hooks enforce this mechanically:
+
+| Forbidden | Use instead |
+|-----------|-------------|
+| Reading \`.agenfk/db.sqlite\` or \`.agenfk/db.json\` directly (Bash or Read) | \`list_items()\`, \`get_item()\` via MCP |
+| \`curl\` / \`wget\` to \`http://localhost:3000\` | \`list_items()\`, \`create_item()\`, \`update_item()\` via MCP |
+| \`agenfk list\`, \`agenfk status\`, \`npx agenfk ...\` CLI state queries | \`list_items()\`, \`get_item()\`, \`list_projects()\` via MCP |
+
+Two PreToolUse hooks enforce the above:
+- \`agenfk-gatekeeper\` — blocks Edit/Write/NotebookEdit when no IN_PROGRESS task.
+- \`agenfk-mcp-enforcer\` — blocks Bash/Read bypass routes listed above.
 <!-- agenfk:end -->
 `;
     await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
@@ -389,13 +433,19 @@ A PreToolUse hook enforces the IN_PROGRESS check mechanically.
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
     
-    settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry => 
-        !JSON.stringify(entry).includes('agenfk-gatekeeper')
+    settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
+        !JSON.stringify(entry).includes('agenfk-gatekeeper') &&
+        !JSON.stringify(entry).includes('agenfk-mcp-enforcer')
     );
-    
+
     settings.hooks.PreToolUse.push({
         matcher: 'Edit|Write|NotebookEdit',
         hooks: [{ type: 'command', command: gatekeeperDest }]
+    });
+
+    settings.hooks.PreToolUse.push({
+        matcher: 'Bash|Read',
+        hooks: [{ type: 'command', command: enforcerDest }]
     });
 
     // 12b. MCP Server (Visible to Claude Agent)
