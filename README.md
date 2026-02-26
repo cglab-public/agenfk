@@ -94,20 +94,18 @@ graph TD
     B -->|Epic| C[Generate Implementation Plan]
     B -->|Story/Task/Bug| D[Create Item]
     C --> D
-    D --> E[Gatekeeper: Authorize Code Change]
+    D --> E["workflow_gatekeeper · /agenfk<br/>Authorize Code Change"]
     E -->|No Active Task| F[Pause: Select/Create Task]
     F --> E
-    E -->|Authorized| G[Execute Code Changes <br/>Coding Agent]
-    G --> H[verify_changes<br/>Build/Compile only]
+    E -->|Authorized| G["Execute Code Changes<br/>/agenfk-code · Coding Agent"]
+    G --> H["verify_changes · /agenfk-code<br/>Build/Compile only"]
     H -->|Build Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
     I --> G
-    H -->|Build OK| J[REVIEW Agent<br/>Compile check · Security · Requirements]
+    H -->|Build OK| J["/agenfk-review · REVIEW Agent<br/>Compile check · Security · Requirements"]
     J -->|Issues Found| I
-    J -->|Approved| K[TEST Agent<br/>Write missing tests · Run with coverage<br/>log_test_result populates Test Results tab]
+    J -->|Approved| K["/agenfk-test · TEST Agent<br/>Write missing tests · Run with coverage<br/>log_test_result populates Test Results tab"]
     K -->|Tests Fail| I
-    K -->|Tests Pass| L[DONE <br/>Closing Agent]
-    L --> M[Log Token Usage]
-    M --> N[Auto-sync Parent Status]
+    K -->|Tests Pass| L["/agenfk-close · Closing Agent<br/>Log tokens · Sync parent status"]
 
     style A fill:#f8fafc,stroke:#94a3b8,color:#334155
     style E fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#3730a3
