@@ -4,6 +4,15 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { PostHog } from 'posthog-node';
 
+const AGENFK_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
 const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
 const INSTALLATION_ID_PATH = path.join(AGENFK_DIR, 'installation-id');
@@ -71,7 +80,7 @@ export class TelemetryClient {
       this.client.capture({
         distinctId: this.installationId,
         event,
-        properties: { ...properties, $lib: 'agenfk' },
+        properties: { ...properties, $lib: 'agenfk', agenfk_version: AGENFK_VERSION },
       });
     } catch {
       // Telemetry must never throw or crash calling code

@@ -78,7 +78,7 @@ describe('TelemetryClient', () => {
       expect(mockPostHogCapture).toHaveBeenCalledWith({
         distinctId: 'install-abc-123',
         event: 'item_created',
-        properties: { itemType: 'TASK', $lib: 'agenfk' },
+        properties: { itemType: 'TASK', $lib: 'agenfk', agenfk_version: expect.any(String) },
       });
     });
 
@@ -94,7 +94,7 @@ describe('TelemetryClient', () => {
       expect(mockPostHogCapture).toHaveBeenCalledWith({
         distinctId: 'install-abc-123',
         event: 'server_started',
-        properties: { $lib: 'agenfk' },
+        properties: { $lib: 'agenfk', agenfk_version: expect.any(String) },
       });
     });
 
