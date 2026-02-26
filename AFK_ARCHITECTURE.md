@@ -49,6 +49,24 @@ AgenFK features an automated orchestration layer where the primary agent acts as
 
 This automation ensures consistent engineering rigor while minimizing human micro-management.
 
+## Supported AI Clients
+
+AgenFK supports three AI coding assistants. Each integrates with the same MCP server but uses a different mechanism for workflow enforcement:
+
+| Client | MCP Registration | Workflow Rules | Enforcement Model |
+|--------|-----------------|----------------|-------------------|
+| **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | **Mechanical** — two PreToolUse hooks: `agenfk-gatekeeper` (blocks edits without IN_PROGRESS task) and `agenfk-mcp-enforcer` (blocks db/REST/CLI bypass routes) |
+| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | **Mechanical** — `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) intercepting tool calls before execution |
+| **Cursor** | `~/.cursor/mcp.json` (Linux/macOS) or `%APPDATA%\Cursor\mcp.json` (Windows) | `~/.cursor/rules/agenfk.mdc` (Linux/macOS) or `%APPDATA%\Cursor\rules\agenfk.mdc` (Windows) | **Instructional** — Cursor has no PreToolUse hook or plugin system. Enforcement relies on the `workflow_gatekeeper` MCP tool called per instruction in `agenfk.mdc`. The model is expected to follow rules; no mechanical trip-wire exists. |
+
+### Enforcement Gap (Cursor)
+
+Claude Code and OpenCode provide *mechanical* enforcement: a hook fires before every tool call and can hard-block it regardless of model intent. Cursor provides no equivalent interception point. AgenFK's Cursor integration compensates with:
+
+1. **`alwaysApply: true` in `agenfk.mdc`** — the rule is auto-attached to every conversation, maximising the chance the model sees it.
+2. **Explicit breach-handling instructions** — `agenfk.mdc` instructs the model to stop and resolve a gatekeeper rejection before proceeding, not to silently skip it.
+3. **`workflow_gatekeeper` MCP tool** — the server-side check still verifies that a valid IN_PROGRESS task exists and logs the authorization intent, providing an audit trail even without a mechanical block.
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io

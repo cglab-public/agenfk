@@ -18,6 +18,39 @@ const agenfkHome = path.join(os.homedir(), '.agenfk');
 
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX || (os.platform() === 'win32' && process.env.SHELL?.includes('bash')));
 
+// Returns the platform-appropriate path for Cursor's global mcp.json.
+function getCursorMcpPath() {
+    if (os.platform() === 'win32') {
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Cursor', 'mcp.json');
+    } else if (os.platform() === 'darwin') {
+        return path.join(os.homedir(), '.cursor', 'mcp.json');
+    } else {
+        return path.join(os.homedir(), '.config', 'cursor', 'mcp.json');
+    }
+}
+
+// Converts a MinGW POSIX path (/c/Users/...) to a Win32 path (C:\Users\...)
+// so that native Windows apps (like Cursor) can resolve it correctly.
+function toWindowsPath(p) {
+    if (isMinGW && /^\/[a-zA-Z]\//.test(p)) {
+        return p[1].toUpperCase() + ':' + p.slice(2).replace(/\//g, '\\');
+    }
+    return p;
+}
+
+// Returns the platform-appropriate directory for Cursor's global rules (.mdc files).
+function getCursorRulesDir() {
+    if (os.platform() === 'win32') {
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Cursor', 'rules');
+    } else if (os.platform() === 'darwin') {
+        return path.join(os.homedir(), '.cursor', 'rules');
+    } else {
+        return path.join(os.homedir(), '.config', 'cursor', 'rules');
+    }
+}
+
 function ask(rl, question) {
     return new Promise(resolve => rl.question(question, resolve));
 }
@@ -244,6 +277,47 @@ process.exit(0);
         console.log(`Opencode not found. Skipping opencode.json configuration.`);
     }
 
+    // 6b. Configure Cursor MCP
+    console.log(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
+    const cursorMcpPath = getCursorMcpPath();
+    const cursorConfigDir = path.dirname(cursorMcpPath);
+    const cursorCmd = os.platform() === 'win32' && !isMinGW ? 'cursor.cmd' : 'cursor';
+    const cursorInstalled = existsSync(cursorConfigDir) ||
+        spawnSync(cursorCmd, ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    if (cursorInstalled) {
+        try {
+            let cursorMcp = {};
+            if (existsSync(cursorMcpPath)) {
+                cursorMcp = JSON.parse(await fs.readFile(cursorMcpPath, 'utf8'));
+            } else {
+                await fs.mkdir(cursorConfigDir, { recursive: true });
+                console.log(`  Cursor config dir not found — creating it.`);
+            }
+            if (!cursorMcp.mcpServers) cursorMcp.mcpServers = {};
+
+            // Normalize paths written into the config file: Cursor is a native Windows
+            // Electron app and cannot resolve MinGW POSIX paths (/c/Users/...).
+            const cursorServerPath = isMinGW ? toWindowsPath(serverPath) : serverPath;
+            const cursorDbPath = isMinGW ? toWindowsPath(dbPath) : dbPath;
+
+            cursorMcp.mcpServers.agenfk = {
+                command: 'node',
+                args: [cursorServerPath],
+                env: {
+                    NODE_ENV: 'production',
+                    AGENFK_DB_PATH: cursorDbPath
+                }
+            };
+
+            await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
+            console.log(`  Written: ${cursorMcpPath}`);
+        } catch (e) {
+            console.error('Error updating Cursor mcp.json:', e.message);
+        }
+    } else {
+        console.log(`  Cursor not found. Skipping Cursor MCP configuration.`);
+    }
+
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -456,6 +530,26 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
 `;
     await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
     console.log(`  Written: ${claudeMdPath}`);
+
+    // 13b. Install Cursor workflow rules (.mdc)
+    console.log(`${GREEN}[13b/14] Installing Cursor workflow rules (agenfk.mdc)...${NC}`);
+    if (cursorInstalled) {
+        try {
+            const cursorRulesDir = getCursorRulesDir();
+            await fs.mkdir(cursorRulesDir, { recursive: true });
+            const mdcSource = path.join(rootDir, 'cursorrules', 'agenfk.mdc');
+            if (existsSync(mdcSource)) {
+                await fs.copyFile(mdcSource, path.join(cursorRulesDir, 'agenfk.mdc'));
+                console.log(`  Written: ${path.join(cursorRulesDir, 'agenfk.mdc')}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: cursorrules/agenfk.mdc not found in framework root. Skipping.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error installing Cursor rules:', e.message);
+        }
+    } else {
+        console.log(`  Cursor not found. Skipping Cursor rules installation.`);
+    }
 
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
     console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
