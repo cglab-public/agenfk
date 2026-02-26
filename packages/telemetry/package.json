@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/telemetry",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "description": "Anonymous telemetry client for AgenFK",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,10 @@
     "@types/node": "^20.11.16",
     "typescript": "^5.3.3"
   },
-  "keywords": ["agenfk", "telemetry"],
+  "keywords": [
+    "agenfk",
+    "telemetry"
+  ],
   "author": "",
   "license": "ISC"
 }
