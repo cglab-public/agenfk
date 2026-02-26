@@ -432,6 +432,26 @@ to create items, update status, or close tasks — the CLI bypasses enforcement.
 Two PreToolUse hooks enforce the above:
 - \`agenfk-gatekeeper\` — blocks Edit/Write/NotebookEdit when no IN_PROGRESS task.
 - \`agenfk-mcp-enforcer\` — blocks Bash/Read bypass routes listed above.
+
+### MCP Unavailable — CLI Fallback
+
+If MCP tools are not available (no \`mcp__agenfk__*\` tools in your tool list), use these
+CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allows them.
+
+| Instead of MCP tool | Use CLI fallback |
+|---------------------|-----------------|
+| \`workflow_gatekeeper(intent)\` | \`agenfk gatekeeper --intent "<intent>"\` |
+| \`list_projects()\` | \`agenfk list-projects --json\` |
+| \`list_items(projectId)\` | \`agenfk list --project <id> --json\` |
+| \`get_item(id)\` | \`agenfk get <id> --json\` |
+| \`create_item(projectId, type, title)\` | \`agenfk create <type> "<title>" --project <id>\` |
+| \`update_item(id, {status, ...})\` | \`agenfk update <id> --status <status>\` |
+| \`add_comment(id, text)\` | \`agenfk comment <id> "<text>"\` |
+| \`verify_changes(id, command)\` | \`agenfk verify <id> "<command>"\` |
+| \`log_token_usage(id, in, out, model)\` | \`agenfk log-tokens <id> --input N --output N --model M\` |
+| \`log_test_result(id, cmd, out, status)\` | \`agenfk log-test <id> --command "..." --output "..." --status PASSED\` |
+
+The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
 <!-- agenfk:end -->
 `;
     await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
