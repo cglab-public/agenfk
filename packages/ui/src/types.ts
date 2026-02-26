@@ -1,5 +1,6 @@
 // Copied from core for simplicity in MVP UI
 export enum Status {
+  IDEAS = "IDEAS",
   TODO = "TODO",
   IN_PROGRESS = "IN_PROGRESS",
   TEST = "TEST",

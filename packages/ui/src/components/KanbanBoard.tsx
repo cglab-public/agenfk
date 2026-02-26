@@ -9,7 +9,7 @@ import {
   Zap, ChevronRight, Home, ArrowRight,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2
+  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -36,6 +36,7 @@ interface NavItem {
 }
 
 const statusBorderColors: Record<Status, string> = {
+  [Status.IDEAS]: "border-t-indigo-400",
   [Status.TODO]: "border-t-slate-400",
   [Status.IN_PROGRESS]: "border-t-blue-500",
   [Status.TEST]: "border-t-purple-500",
@@ -46,6 +47,7 @@ const statusBorderColors: Record<Status, string> = {
 };
 
 const statusIcons: Record<Status, React.ReactNode> = {
+  [Status.IDEAS]: <Lightbulb size={14} />,
   [Status.TODO]: <Plus size={14} />,
   [Status.IN_PROGRESS]: <Zap size={14} />,
   [Status.TEST]: <FlaskConical size={14} />,
