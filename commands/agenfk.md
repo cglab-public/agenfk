@@ -57,7 +57,8 @@ Before creating any item, evaluate the request against these signals:
 
 ## Phase 2 — Verify (triggers REVIEW)
 
-- Call `verify_changes(itemId, command)` with a suitable check command (build, typecheck, lint, etc.).
+- Call `verify_changes(itemId, command)` with a **build/compile command only** (e.g., `npm run build`, `tsc --noEmit`).
+- **NEVER pass a test command here** — tests belong exclusively to Phase 4.
 - This always moves the task to `REVIEW`. **Do not stop here** — continue immediately to Phase 3.
 
 ---
@@ -76,8 +77,10 @@ Since there is no separate review agent in Standard Mode, perform the review you
 ## Phase 4 — Test (TEST → DONE)
 
 1. Identify the appropriate test command for the project stack (check `CLAUDE.md`, `package.json`, `pyproject.toml`, `Makefile`, etc.).
-2. Run the test suite. Call `add_comment(itemId, "Tests passed: <summary>")`.
-3. Call `update_item(itemId, {status: "DONE"})` — this is only permitted from TEST status.
+2. Run the test suite with coverage if available. Capture the full output.
+3. Call `log_test_result(itemId, "<test-command>", "<full captured output>", "PASSED"|"FAILED")` — this populates the Test Results tab.
+4. Call `add_comment(itemId, "Tests passed: <summary>")`.
+5. Call `update_item(itemId, {status: "DONE"})` — this is only permitted from TEST status.
 
 ---
 

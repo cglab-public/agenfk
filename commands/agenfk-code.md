@@ -18,11 +18,12 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Ensure all code adheres to project conventions and architectural mandates.
 
 **Step 3 — Self-Verify**
-- Run local builds or linting to ensure no immediate syntax errors.
-- Do NOT run the full test suite yet (that is for the Testing Agent).
+- Run a **build/compile command only** (e.g., `npm run build`, `tsc`, `cargo build`).
+- **NEVER run the test suite here** — tests are exclusively the Testing Agent's responsibility.
+- Fix any compilation or lint errors before proceeding.
 
 **Step 4 — Handover**
 - Call `add_comment(id, "IMPLEMENTATION COMPLETE: ...")` to log the final summary of code changes.
 - Call `add_comment(id, "Phase Code complete: Implementation and self-verification finished.")` to log the phase completion.
-- Call `verify_changes(id, "<build_command>")` to move the item to **REVIEW**.
+- Call `verify_changes(id, "<build_command_only>")` — pass a **compile/build command only**, never a test command. This moves the item to **REVIEW**.
 - **STOP IMMEDIATELY** after calling `verify_changes`. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
