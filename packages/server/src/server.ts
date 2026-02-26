@@ -1074,7 +1074,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   updateJobs.set(jobId, job);
   res.status(202).json({ jobId });
 
-  const command = 'npx @agenfk/create@latest';
+  const command = 'npx -y github:cglab-PRIVATE/agenfk';
   const cwd = os.homedir();
 
   const child = exec(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
