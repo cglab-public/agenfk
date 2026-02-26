@@ -12,6 +12,28 @@
 import fs from 'fs';
 import path from 'path';
 
+const FALLBACK_FLAG = path.join(
+    process.env.HOME || process.env.USERPROFILE || '',
+    '.agenfk', 'mcp-fallback-approved'
+);
+const FALLBACK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function isFallbackApproved() {
+    try {
+        if (!fs.existsSync(FALLBACK_FLAG)) return false;
+        const ageMs = Date.now() - fs.statSync(FALLBACK_FLAG).mtimeMs;
+        if (ageMs < FALLBACK_TTL_MS) return true;
+        fs.unlinkSync(FALLBACK_FLAG); // expired — clean up
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+const FALLBACK_INSTRUCTIONS =
+    '\nIf MCP tools are genuinely unavailable: tell the user and ask permission. ' +
+    'Once approved, run: touch ~/.agenfk/mcp-fallback-approved (expires in 5 min).';
+
 function isInsideAgenFKProjectDir(dirPath) {
     if (!dirPath) return false;
     let dir = dirPath;
@@ -26,6 +48,9 @@ function isInsideAgenFKProjectDir(dirPath) {
 export default async function agenfkMcpEnforcer(context) {
     return {
         'tool.execute.before': async (input) => {
+            // If user has approved fallback, allow bypass for this window
+            if (isFallbackApproved()) return;
+
             const tool = (input.tool || '').toLowerCase();
             const args = input.args || {};
             const cwd = context?.directory || process.cwd();
@@ -39,7 +64,8 @@ export default async function agenfkMcpEnforcer(context) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: Direct database access is forbidden.\n' +
                         'Do NOT read .agenfk/db.sqlite or .agenfk/db.json via Bash.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()'
+                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
+                        FALLBACK_INSTRUCTIONS
                     );
                 }
 
@@ -49,7 +75,8 @@ export default async function agenfkMcpEnforcer(context) {
                         throw new Error(
                             'AgenFK MCP ENFORCER: Direct REST API calls to the AgenFK server are forbidden.\n' +
                             'Do NOT use curl/wget to http://localhost:3000.\n' +
-                            'Use MCP tool invocations: list_items() • create_item() • update_item() • verify_changes()'
+                            'Use MCP tool invocations: list_items() • create_item() • update_item() • verify_changes()' +
+                            FALLBACK_INSTRUCTIONS
                         );
                     }
                 }
@@ -60,7 +87,8 @@ export default async function agenfkMcpEnforcer(context) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: agenfk CLI state queries are forbidden.\n' +
                         'Do NOT use: agenfk list, agenfk status, agenfk get, npx agenfk ...\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • list_projects()'
+                        'Use MCP tool invocations: list_items() • get_item() • list_projects()' +
+                        FALLBACK_INSTRUCTIONS
                     );
                 }
             }
@@ -73,7 +101,8 @@ export default async function agenfkMcpEnforcer(context) {
                     throw new Error(
                         'AgenFK MCP ENFORCER: Direct reads of AgenFK database files are forbidden.\n' +
                         'Do NOT read .agenfk/db.sqlite or .agenfk/db.json.\n' +
-                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()'
+                        'Use MCP tool invocations: list_items() • get_item() • create_item() • update_item()' +
+                        FALLBACK_INSTRUCTIONS
                     );
                 }
             }

@@ -45,13 +45,41 @@ function isInsideAgenFKProjectDir(dirPath) {
     return false;
 }
 
+const FALLBACK_FLAG = path.join(
+    process.env.HOME || process.env.USERPROFILE || '',
+    '.agenfk', 'mcp-fallback-approved'
+);
+const FALLBACK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function isFallbackApproved() {
+    try {
+        if (!fs.existsSync(FALLBACK_FLAG)) return false;
+        const ageMs = Date.now() - fs.statSync(FALLBACK_FLAG).mtimeMs;
+        if (ageMs < FALLBACK_TTL_MS) return true;
+        fs.unlinkSync(FALLBACK_FLAG); // expired — clean up
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+const FALLBACK_INSTRUCTIONS =
+    '\n\nIf MCP tools are genuinely unavailable in this session:\n' +
+    '  1. Tell the user: "MCP tools are not reachable — can I use the REST API as a temporary fallback?"\n' +
+    '  2. If they approve, they (or you) can run:\n' +
+    '       touch ~/.agenfk/mcp-fallback-approved\n' +
+    '  3. The flag expires automatically after 5 minutes.';
+
 function block(reason) {
-    process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: reason + FALLBACK_INSTRUCTIONS }));
     process.exit(0);
 }
 
 const toolIntent = await getToolIntent();
 if (!toolIntent) process.exit(0);
+
+// If user has explicitly approved fallback, allow bypass for this window
+if (isFallbackApproved()) process.exit(0);
 
 const tool = toolIntent.tool || '';
 const input = toolIntent.tool_input || {};
