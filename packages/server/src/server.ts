@@ -1082,6 +1082,42 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       const created = await storage.createItem(newItem);
       io.emit('items_updated');
       imported.push({ issueKey, itemId: created.id });
+
+      // If this is an Epic, also import its child stories
+      if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
+        try {
+          const jql = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
+          const childUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=100&fields=summary,description,issuetype`;
+          const { data: childData } = await jiraApiRequest(tokenData, 'get', childUrl);
+
+          for (const childIssue of (childData.issues || [])) {
+            const childKey = childIssue.key;
+            const childType = mapJiraTypeToAgenFK(childIssue.fields.issuetype?.name || 'Task');
+            const childDescription = adfToText(childIssue.fields.description);
+
+            const childItem: any = {
+              id: uuidv4(),
+              projectId,
+              parentId: created.id,
+              type: childType,
+              title: `[${childKey}] ${childIssue.fields.summary}`,
+              description: childDescription || `Imported from JIRA: ${childKey}`,
+              status: 'TODO',
+              implementationPlan: '',
+              externalId: childKey,
+              externalUrl: `${tokenData.cloudUrl}/browse/${childKey}`,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+
+            const createdChild = await storage.createItem(childItem);
+            io.emit('items_updated');
+            imported.push({ issueKey: childKey, itemId: createdChild.id, parentItemId: created.id });
+          }
+        } catch (childErr: any) {
+          console.error(`[JIRA] Failed to fetch child issues for Epic ${issueKey}:`, childErr.message);
+        }
+      }
     } catch (err: any) {
       errors.push({ issueKey, error: err.message });
     }
