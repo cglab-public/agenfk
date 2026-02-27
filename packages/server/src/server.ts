@@ -36,7 +36,7 @@ export const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   }
 });
-const PORT = 3000;
+const PORT = process.env.AGENFK_PORT || process.env.PORT || 3000;
 
 app.use(cors({
   origin: "*",
@@ -273,7 +273,7 @@ app.get("/", (req, res) => {
     endpoints: {
       projects: "/projects",
       items: "/items",
-      ui: "http://localhost:5173"
+      ui: `http://localhost:${process.env.VITE_PORT || 5173}`
     }
   });
 });

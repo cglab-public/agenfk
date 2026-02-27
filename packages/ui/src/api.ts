@@ -3,7 +3,7 @@ import { AgenFKItem, ItemType, Status } from './types'; // We need to copy types
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
-const API_URL = 'http://localhost:3000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const api = {
   listProjects: async () => {

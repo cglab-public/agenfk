@@ -22,27 +22,31 @@ function resolveDbPath() {
 }
 const dbPath = resolveDbPath();
 
+const API_PORT = process.env.AGENFK_PORT || '3000';
+const UI_PORT = process.env.VITE_PORT || '5173';
+
 if (!fs.existsSync(agenfkDir)) {
     fs.mkdirSync(agenfkDir, { recursive: true });
 }
 
-console.log("Starting API Server on port 3000...");
+console.log(`Starting API Server on port ${API_PORT}...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
 const apiLog = fs.openSync(apiLogPath, 'a');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
-    env: { ...process.env, AGENFK_DB_PATH: dbPath },
+    env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: API_PORT, VITE_PORT: UI_PORT },
     detached: true,
     stdio: ['ignore', apiLog, apiLog]
 });
 apiProcess.unref();
 
-console.log("Starting UI...");
+console.log(`Starting UI on port ${UI_PORT}...`);
 const uiLogPath = path.join(agenfkDir, 'ui.log');
 const uiLog = fs.openSync(uiLogPath, 'a');
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
 const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
 const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
+    env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
     detached: true,
     stdio: ['ignore', uiLog, uiLog],
     shell: true
@@ -50,13 +54,13 @@ const uiProcess = spawn(npmCmd, ['run', 'dev'], {
 uiProcess.unref();
 
 console.log("Services started in background.");
-console.log("API: http://localhost:3000");
+console.log(`API: http://localhost:${API_PORT}`);
 console.log("Database: " + dbPath);
 console.log("Logs: " + path.join(agenfkDir, '*.log'));
 
 // Simple wait for UI
 console.log("Waiting for UI to be ready...");
-let uiUrl = 'http://localhost:5173';
+let uiUrl = `http://localhost:${UI_PORT}`;
 for (let i = 0; i < 15; i++) {
     if (fs.existsSync(uiLogPath)) {
         const content = fs.readFileSync(uiLogPath, 'utf8');

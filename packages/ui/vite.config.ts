@@ -11,4 +11,7 @@ export default defineConfig({
   define: {
     __AGENFK_VERSION__: JSON.stringify(pkg.version),
   },
+  server: {
+    port: parseInt(process.env.VITE_PORT || '5173'),
+  },
 })
