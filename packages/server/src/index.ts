@@ -101,9 +101,9 @@ const UpdateItemSchema = z.object({
 });
 
 const ListItemsSchema = z.object({
-  projectId: z.string().optional(),
+  projectId: z.string(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]),
   parentId: z.string().optional(),
   full: z.boolean().optional(), // Return full item objects if true
 });
@@ -190,15 +190,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "list_items",
-        description: "List items, optionally filtering by project, type, status, or parent.",
+        description: "List items, filtering by project and status (required), plus optional type or parent.",
         inputSchema: {
           type: "object",
           properties: {
-            projectId: { type: "string" },
+            projectId: { type: "string", description: "The ID of the project." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
             parentId: { type: "string" },
           },
+          required: ["projectId", "status"],
         },
       },
       {
@@ -538,8 +539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           type: item.type,
           title: item.title,
           status: item.status,
-          parentId: item.parentId,
-          updatedAt: item.updatedAt
+          parentId: item.parentId
         }));
 
         return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
