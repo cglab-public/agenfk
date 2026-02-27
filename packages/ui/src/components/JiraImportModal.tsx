@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Loader2, AlertCircle, Search, X, ArrowLeft, Download } from 'lucide-react';
@@ -43,7 +43,20 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
 
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleClose();
+    };
+    if (open) {
+      window.addEventListener('keydown', handleEsc);
+    }
+    return () => {
+      window.removeEventListener('keydown', handleEsc);
+    };
+  }, [open]);
+
   const { data: projects, isLoading: loadingProjects, error: projectsError, refetch: refetchProjects } = useQuery({
+
     queryKey: ['jiraProjects'],
     queryFn: api.listJiraProjects,
     enabled: open && step === 'projects',
