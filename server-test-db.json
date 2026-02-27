@@ -1,12 +1,55 @@
 {
   "projects": [
     {
-      "id": "6952b7b1-13cc-49c3-937a-db221d7e3877",
+      "id": "9ddb5c5e-988b-48de-acaf-5905692d31b8",
+      "name": "JIRA Import Test",
+      "description": "",
+      "createdAt": "2026-02-27T20:43:00.730Z",
+      "updatedAt": "2026-02-27T20:43:00.730Z"
+    },
+    {
+      "id": "dd691c53-d497-451d-bb77-7cd20f6b6d45",
       "name": "P1 Updated",
       "description": "",
-      "createdAt": "2026-02-27T20:43:00.545Z",
-      "updatedAt": "2026-02-27T20:43:00.567Z"
+      "createdAt": "2026-02-27T20:43:00.731Z",
+      "updatedAt": "2026-02-27T20:43:00.747Z"
+    },
+    {
+      "id": "1034a682-f7a2-490a-8dd5-588fa345c1ef",
+      "name": "JIRA Err Test",
+      "description": "",
+      "createdAt": "2026-02-27T20:43:00.735Z",
+      "updatedAt": "2026-02-27T20:43:00.735Z"
+    },
+    {
+      "id": "bd8f6e49-a18e-4e22-95f1-421de5851715",
+      "name": "Item Test",
+      "description": "",
+      "createdAt": "2026-02-27T20:43:00.775Z",
+      "updatedAt": "2026-02-27T20:43:00.775Z"
     }
   ],
-  "items": []
+  "items": [
+    {
+      "id": "353d7a64-b2c3-49a0-8330-6186f7bde2f2",
+      "projectId": "9ddb5c5e-988b-48de-acaf-5905692d31b8",
+      "type": "BUG",
+      "title": "[PROJ-1] Fix login bug",
+      "description": "Imported from JIRA: PROJ-1",
+      "status": "TODO",
+      "implementationPlan": "",
+      "externalId": "PROJ-1",
+      "externalUrl": "https://test.atlassian.net/browse/PROJ-1",
+      "createdAt": "2026-02-27T20:43:00.732Z",
+      "updatedAt": "2026-02-27T20:43:00.732Z",
+      "history": [
+        {
+          "id": "dd8fde74-e65f-417e-9602-1baf8f7b11e0",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-02-27T20:43:00.732Z"
+        }
+      ]
+    }
+  ]
 }
