@@ -367,21 +367,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           itemId: z.string().optional()
         }).parse(request.params.arguments);
 
-        // Project Validation: Ensure the current directory is linked to a valid project
-        const localProjectId = findProjectId(process.cwd());
-        if (!localProjectId) {
-          return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgenFK project found in the current directory. Run 'agenfk init' first.` }] };
+        // Resolve the effective Project ID
+        let effectiveProjectId: string | undefined | null;
+        let providedItem: any;
+
+        if (itemId) {
+          try {
+            const { data: item } = await api.get(`/items/${itemId}`);
+            providedItem = item;
+            effectiveProjectId = item.projectId;
+          } catch (error: any) {
+             return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Item [${itemId}] not found in database.` }] };
+          }
+        } else {
+          effectiveProjectId = findProjectId(process.cwd());
         }
 
-        // Validate that the local project exists in the database
+        if (!effectiveProjectId) {
+           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgenFK project found in the current directory, and no itemId was provided.` }] };
+        }
+
+        // Validate that the project exists in the database
         try {
-          await api.get(`/projects/${localProjectId}`);
+          await api.get(`/projects/${effectiveProjectId}`);
         } catch (error: any) {
-          return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Local Project ID [${localProjectId}] does not exist in the database. Please re-link or re-initialize.` }] };
+          return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
 
         // Fetch items and filter by project ID
-        const { data: allItems } = await api.get(`/items`, { params: { projectId: localProjectId } });
+        const { data: allItems } = await api.get(`/items`, { params: { projectId: effectiveProjectId } });
         
         // Find items that are not in terminal states
         const activeItems = allItems.filter((i: any) => 
@@ -395,10 +409,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         // Enforcement Logic
         if (role === 'planning') {
           if (!itemId) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: itemId is required for the planning role.` }] };
-          const { data: item } = await api.get(`/items/${itemId}`);
-          if (item.projectId !== localProjectId) {
-            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] does not belong to the current project [${localProjectId}].` }] };
-          }
+          const item = providedItem; // Already fetched
           if (item.type !== 'EPIC' && item.type !== 'STORY') {
             return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Planning role is only valid for EPIC or STORY items.` }] };
           }
@@ -406,14 +417,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
 
         if (role === 'coding') {
-          if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status in project [${localProjectId}].` }] };
+          if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status in project [${effectiveProjectId}].` }] };
           
           let task;
           if (itemId) {
             task = inProgressItems.find((i: any) => i.id === itemId);
-            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not IN_PROGRESS or does not belong to project [${localProjectId}].` }] };
+            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not IN_PROGRESS or does not belong to project [${effectiveProjectId}].` }] };
           } else {
-            if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS in project [${localProjectId}]. Please provide 'itemId' to disambiguate.` }] };
+            if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS in project [${effectiveProjectId}]. Please provide 'itemId' to disambiguate.` }] };
             task = inProgressItems[0];
           }
 
@@ -426,27 +437,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
         if (role === 'review') {
           const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
-          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${localProjectId}].` }] };
+          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${effectiveProjectId}].` }] };
           const task = activeReviewItems[0];
           return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         if (role === 'testing') {
           const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
-          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${localProjectId}].` }] };
+          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${effectiveProjectId}].` }] };
           const task = activeTestItems[0];
           return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized
         if (inProgressItems.length === 0) {
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS in project [${localProjectId}].` }] };
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS in project [${effectiveProjectId}].` }] };
         }
         
         const defaultTask = itemId ? inProgressItems.find((i: any) => i.id === itemId) : inProgressItems[0];
-        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not IN_PROGRESS or does not belong to project [${localProjectId}].` }] };
+        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not IN_PROGRESS or does not belong to project [${effectiveProjectId}].` }] };
 
-        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${localProjectId}]\nIntent: "${intent}"` }] };
+        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${effectiveProjectId}]\nIntent: "${intent}"` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
