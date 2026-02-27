@@ -21,6 +21,8 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
     - For items identified as EPIC or STORY, the system enforces a decomposition step.
     - All sub-items (Stories/Tasks) are created in `TODO` status first.
     - The Agent MUST obtain explicit user approval of the decomposition before transitioning any child item to `IN_PROGRESS`.
+    - **Minimum Decomposition Rule**: After exiting plan mode, the type of card that needs to be created is minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
+    - **Backlog Inspection Rule**: When starting new work, only items in **TODO** status should be inspected. Items labeled or in a state suggesting they are **IDEAs** (draft ideas or speculative plans) MUST be ignored until they are promoted to TODO.
     - **Item Type Selection Rule**: An agent receiving a new request MUST classify it before creating any item. Use TASK only for single-file, immediately-obvious changes. Use STORY for multi-file, single-package work. Use EPIC whenever the request spans multiple packages, introduces new architecture, or requires a plan to decompose — and always run `/agenfk-plan` before coding. Key signals for EPIC: new package/subsystem, 3+ packages touched, multiple distinct user-facing capabilities, or needing Plan Mode to understand scope.
 5.  **Verification Loop**:
     - **REVIEW Status**: Triggered via `verify_changes` tool. MUST run the project's primary test suite (not just builds).
