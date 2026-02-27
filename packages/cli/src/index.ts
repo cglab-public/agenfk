@@ -321,11 +321,17 @@ program
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
-    // 1. Only bootstrap if start-services.mjs or server dist is missing
+    // 1. Only bootstrap if start-services.mjs or any required dist is missing
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
-    const serverDist = path.join(rootDir, 'packages/server/dist/server.js');
+    const requiredDists = [
+        path.join(rootDir, 'packages/server/dist/server.js'),
+        path.join(rootDir, 'packages/storage-sqlite/dist/index.js'),
+        path.join(rootDir, 'packages/storage-json/dist/index.js'),
+        path.join(rootDir, 'packages/core/dist/index.js'),
+    ];
+    const missingDist = requiredDists.some(d => !fs.existsSync(d));
 
-    if (!fs.existsSync(startScript) || !fs.existsSync(serverDist) || options.rebuild) {
+    if (!fs.existsSync(startScript) || missingDist || options.rebuild) {
         console.log(chalk.yellow(options.rebuild ? '📦 Rebuild requested...' : '📦 Initial bootstrap required...'));
         try {
             execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
