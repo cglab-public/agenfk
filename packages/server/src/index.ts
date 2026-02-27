@@ -105,6 +105,7 @@ const ListItemsSchema = z.object({
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
   parentId: z.string().optional(),
+  full: z.boolean().optional(), // Return full item objects if true
 });
 
 const GetItemSchema = z.object({
@@ -524,9 +525,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "list_items": {
-        const args = ListItemsSchema.parse(request.params.arguments || {});
+        const { full, ...args } = ListItemsSchema.parse(request.params.arguments || {});
         const { data } = await api.get(`/items`, { params: args });
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        
+        if (full) {
+          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        }
+
+        // Return a summarized version to save tokens/avoid truncation
+        const summary = (data as any[]).map(item => ({
+          id: item.id,
+          type: item.type,
+          title: item.title,
+          status: item.status,
+          parentId: item.parentId,
+          updatedAt: item.updatedAt
+        }));
+
+        return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
       }
       case "get_item": {
         const args = GetItemSchema.parse(request.params.arguments);
