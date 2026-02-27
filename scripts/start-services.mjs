@@ -31,7 +31,7 @@ if (!fs.existsSync(agenfkDir)) {
 
 console.log(`Starting API Server on port ${API_PORT}...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
-const apiLog = fs.openSync(apiLogPath, 'a');
+const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
     env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: API_PORT, VITE_PORT: UI_PORT },
     detached: true,
@@ -41,7 +41,7 @@ apiProcess.unref();
 
 console.log(`Starting UI on port ${UI_PORT}...`);
 const uiLogPath = path.join(agenfkDir, 'ui.log');
-const uiLog = fs.openSync(uiLogPath, 'a');
+const uiLog = fs.openSync(uiLogPath, 'w');
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
 const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
 const uiProcess = spawn(npmCmd, ['run', 'dev'], {
@@ -64,9 +64,9 @@ let uiUrl = `http://localhost:${UI_PORT}`;
 for (let i = 0; i < 15; i++) {
     if (fs.existsSync(uiLogPath)) {
         const content = fs.readFileSync(uiLogPath, 'utf8');
-        const match = content.match(/http:\/\/localhost:[0-9]+/);
-        if (match) {
-            uiUrl = match[0];
+        const matches = content.match(/http:\/\/localhost:[0-9]+/g);
+        if (matches) {
+            uiUrl = matches[matches.length - 1];
             break;
         }
     }
