@@ -21,7 +21,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Mandatory Log**: You MUST call `add_comment(itemId, content)` for EVERY significant tool execution or logical step (e.g. "Analyzed file X", "Implemented function Y", "Running tests").
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
 *   **Verification**: You MUST use `verify_changes` to run tests before closing.
-*   **Decomposition**: Optional. If the task is simple, do not decompose into sub-items unless it provides significant organizational value.
+*   **Decomposition**: MANDATORY. Every piece of work must be minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
 *   **Handoff**: None. Do not spawn sub-agents.
 
 ### 2. Deep Mode (via `/agenfk-deep`)
@@ -86,6 +86,8 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Reasoning Step**: Before creating ANY item or initializing a project, you MUST reason about the implementation details.
     *   **Question UI**: If there are *any* ambiguities, missing technical details, or decisions to be made, you MUST use the environment's native "Question UI" (e.g., `default_api:question` in Opencode, or equivalent in other environments) to ask the user for clarification before proceeding with creation.
     *   **Objective**: Categorize as **EPIC**, **STORY**, **TASK**, or **BUG**.
+    *   **Minimum Decomposition Rule**: After exiting plan mode, the type of card that needs to be created is minimally a **STORY with sub-TASKS** or an **EPIC with sub-STORIES and their sub-TASKS**. Direct work on an EPIC or STORY without child TASKS is prohibited.
+    *   **Backlog Inspection Rule**: When starting new work, only items in **TODO** status should be inspected. Items labeled or in a state suggesting they are **IDEAs** (draft ideas or speculative plans) MUST be ignored until they are promoted to TODO.
     *   **Requirement**: All items created must be associated with the active `projectId`.
     *   **Hierarchy Rule — MANDATORY**: Before creating any new item, call `list_items(projectId)` and check if an existing EPIC or STORY already covers the work. If one exists, create your items **under it** using `parentId`. NEVER create orphan tasks when a parent hierarchy exists. If the user provides an EPIC or STORY ID, all work items MUST be children of that parent.
     *   **Transparency**: If you're opencode, display every MCP call parameter and return value.
