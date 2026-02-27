@@ -465,7 +465,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         return { 
           content: [{ 
             type: "text", 
-            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: If this request is complex (multiple steps/components), you MUST:\n1. Categorize as EPIC or STORY.\n2. Create ALL sub-items (Stories/Tasks) in TODO status.\n3. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
+            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: Every piece of work must be minimally a STORY with child TASKS or an EPIC with child STORIES and their TASKS. Direct coding on a STORY or EPIC without child TASKS is prohibited.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. Create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
           }] 
         };
       }
