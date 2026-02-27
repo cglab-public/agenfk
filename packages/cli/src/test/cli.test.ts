@@ -32,6 +32,7 @@ describe('CLI Commands', () => {
     const commands = program.commands.map(c => c.name());
     expect(commands).toContain('up');
     expect(commands).toContain('down');
+    expect(commands).toContain('kill');
     expect(commands).toContain('list');
     expect(commands).toContain('create');
   });
@@ -171,9 +172,25 @@ describe('CLI Commands', () => {
   });
 
   describe('down command', () => {
-    it('should call pkill or fuser', async () => {
+    it('should call killPattern for services', async () => {
       await program.parseAsync(['node', 'agenfk', 'down']);
-      expect(mockedChildProcess.execSync).toHaveBeenCalled();
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('packages/server/dist/server.js'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('packages/ui'), expect.any(Object));
+    });
+  });
+
+  describe('kill command', () => {
+    it('should call killPort and killPattern aggressively', async () => {
+      await program.parseAsync(['node', 'agenfk', 'kill']);
+      
+      // Check for port killing (port 3000 and 5173)
+      // On Linux/Mac it might use lsof or ps
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringMatching(/lsof -t -i:(3000|5173)|netstat -ano | findstr :(3000|5173)|ps -ef/), expect.any(Object));
+      
+      // Check for pattern killing
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('packages/server/dist/server.js'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('packages/ui'), expect.any(Object));
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('packages/server/dist/index.js'), expect.any(Object));
     });
   });
 

@@ -23,8 +23,7 @@ export default defineConfig({
       'packages/ui/src/test/CardDetailModal.test.tsx',
       'packages/ui/src/test/KanbanBoard.test.tsx',
       'packages/ui/src/test/JiraConnectionButton.test.tsx',
-      'packages/ui/src/test/JiraImportModal.test.tsx',
-      'packages/cli/src/test/cli.test.ts'
+      'packages/ui/src/test/JiraImportModal.test.tsx'
     ],
     coverage: {
       include: ['packages/core/src/**', 'packages/storage-json/src/**'],

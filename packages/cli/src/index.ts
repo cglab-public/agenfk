@@ -383,6 +383,29 @@ program
   });
 
 program
+  .command('kill')
+  .description('Force kill all AgenFK related processes and ports (aggressive cleanup)')
+  .action(() => {
+    console.log(chalk.red('🧹 Aggressively killing all AgenFK related processes...'));
+
+    // Kill by port
+    console.log(chalk.gray('  - Killing processes on port 3000 (API)...'));
+    killPort(3000);
+    console.log(chalk.gray('  - Killing processes on port 5173 (UI)...'));
+    killPort(5173);
+
+    // Kill by pattern
+    console.log(chalk.gray('  - Killing API server processes...'));
+    killPattern('packages/server/dist/server.js');
+    console.log(chalk.gray('  - Killing UI server processes...'));
+    killPattern('packages/ui');
+    console.log(chalk.gray('  - Killing MCP server processes...'));
+    killPattern('packages/server/dist/index.js');
+    
+    console.log(chalk.green('\n✅ Cleanup complete.'));
+  });
+
+program
   .command('restart')
   .description('Restart all AgenFK services')
   .action(async () => {
