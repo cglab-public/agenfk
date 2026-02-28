@@ -550,12 +550,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify && status === Status.DONE) {
     return res.status(403).json({
-      error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Use verify_changes via MCP to validate work before completion."
+      error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Move the item to TEST, then call test_changes(itemId) to run the project's test suite."
     });
   }
   if (!isInternalVerify && status === Status.REVIEW) {
     return res.status(403).json({
-      error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. The REVIEW state is managed automatically by verify_changes via MCP."
+      error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. Use review_changes(itemId, command) to run a review check and move to REVIEW."
     });
   }
 
@@ -660,10 +660,11 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
 
 // ── Verify Endpoint ──────────────────────────────────────────────────────────
 
-app.post("/items/:id/verify", asyncHandler(async (req: any, res: any) => {
+// ── review_changes: IN_PROGRESS → REVIEW (agent picks the command) ───────────
+app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify) {
-    return res.status(403).json({ error: "Forbidden: verify endpoint requires internal token." });
+    return res.status(403).json({ error: "Forbidden: review endpoint requires internal token." });
   }
 
   const { command } = req.body;
@@ -675,10 +676,11 @@ app.post("/items/:id/verify", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
+  if (item.status !== Status.IN_PROGRESS) {
+    return res.status(400).json({ error: `review_changes requires item to be IN_PROGRESS. Current status: ${item.status}` });
+  }
 
-  const isTestPhase = item.status === Status.TEST;
   const projectRoot = findProjectRoot(process.cwd());
-
   const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
     const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
@@ -689,45 +691,93 @@ app.post("/items/:id/verify", asyncHandler(async (req: any, res: any) => {
   });
 
   const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
-  const verifyLabel = isTestPhase ? 'Final Verification' : 'Initial Verification';
   const passed = code === 0;
 
   const comments = [...(item.comments || []), {
     id: uuidv4(),
-    author: 'VerifyTool',
-    content: `### ${verifyLabel} ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
+    author: 'ReviewTool',
+    content: `### Review ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
     timestamp: new Date(),
   }];
 
   if (passed) {
-    const targetStatus = isTestPhase ? Status.DONE : Status.REVIEW;
-    const updates: any = { status: targetStatus, comments };
-    if (isTestPhase) {
-      updates.tests = [...(item.tests || []), {
-        id: uuidv4(), command, output: truncated, status: 'PASSED', executedAt: new Date(),
-      }];
-    }
+    const updated = await storage.updateItem(req.params.id, { status: Status.REVIEW, comments });
+    io.emit('items_updated');
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    return res.json({ status: Status.REVIEW, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nStandard Mode: continue to self-review, then tests. Multi-Agent Mode: yield to the Review Agent.`, output: truncated });
+  } else {
+    await storage.updateItem(req.params.id, { status: Status.IN_PROGRESS, comments });
+    io.emit('items_updated');
+    return res.status(422).json({ status: Status.IN_PROGRESS, message: `❌ Review Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
+  }
+}));
+
+// ── test_changes: TEST → DONE (enforces project verifyCommand) ───────────────
+app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
+  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
+  if (!isInternalVerify) {
+    return res.status(403).json({ error: "Forbidden: test endpoint requires internal token." });
+  }
+
+  const item = await storage.getItem(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: "Item not found" });
+  }
+  if (item.status !== Status.TEST) {
+    return res.status(400).json({ error: `test_changes requires item to be in TEST status. Current status: ${item.status}` });
+  }
+
+  const project = await storage.getProject(item.projectId);
+  if (!project?.verifyCommand) {
+    return res.status(400).json({
+      error: "NO_VERIFY_COMMAND",
+      message: "No verifyCommand configured for this project. Ask the developer what command should be used to build and test the project, then set it with update_project({ id, verifyCommand }). Example: 'npm run build && npm test'"
+    });
+  }
+
+  const command = project.verifyCommand;
+  const projectRoot = findProjectRoot(process.cwd());
+  const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
+    const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    child.on('close', (c) => resolve({ output: out, code: c }));
+    child.on('error', (err) => resolve({ output: err.message, code: 1 }));
+  });
+
+  const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
+  const passed = code === 0;
+
+  const comments = [...(item.comments || []), {
+    id: uuidv4(),
+    author: 'TestTool',
+    content: `### Test Suite ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
+    timestamp: new Date(),
+  }];
+
+  if (passed) {
+    const updates: any = {
+      status: Status.DONE,
+      comments,
+      tests: [...(item.tests || []), { id: uuidv4(), command, output: truncated, status: 'PASSED', executedAt: new Date() }],
+    };
     const updated = await storage.updateItem(req.params.id, updates);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST && isTestPhase) {
+    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       autoGitCommit(updated, projectRoot);
     }
-    const message = isTestPhase
-      ? `✅ Final Verification Successful!\n\nCommand: \`${command}\`\nItem moved to DONE.`
-      : `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nStandard Mode: continue immediately to Phase 3 (self-review), then Phase 4 (tests). Multi-Agent Mode: yield to the Review Agent.`;
-    return res.json({ status: targetStatus, message, output: truncated });
+    return res.json({ status: Status.DONE, message: `✅ Test Suite Passed!\n\nCommand: \`${command}\`\nItem moved to DONE.`, output: truncated });
   } else {
-    const updates: any = { status: Status.IN_PROGRESS, comments };
-    if (isTestPhase) {
-      updates.tests = [...(item.tests || []), {
-        id: uuidv4(), command, output: truncated, status: 'FAILED', executedAt: new Date(),
-      }];
-    }
+    const updates: any = {
+      status: Status.IN_PROGRESS,
+      comments,
+      tests: [...(item.tests || []), { id: uuidv4(), command, output: truncated, status: 'FAILED', executedAt: new Date() }],
+    };
     await storage.updateItem(req.params.id, updates);
     io.emit('items_updated');
-    const message = `❌ Verification Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`;
-    return res.status(422).json({ status: Status.IN_PROGRESS, message, output: truncated });
+    return res.status(422).json({ status: Status.IN_PROGRESS, message: `❌ Test Suite Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
   }
 }));
 

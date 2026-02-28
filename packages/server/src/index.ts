@@ -157,6 +157,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "update_project",
+        description: "Update an existing project's name, description, or verifyCommand.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The project ID." },
+            name: { type: "string", description: "New project name." },
+            description: { type: "string", description: "New project description." },
+            verifyCommand: { type: "string", description: "The command to run for test_changes (e.g. 'npm run build && npm test'). Once set, test_changes will always use this command to gate TEST → DONE." },
+          },
+          required: ["id"],
+        },
+      },
+      {
         name: "create_item",
         description: "Create a new Epic, Story, Task, or Bug in the AgenFK framework.",
         inputSchema: {
@@ -175,7 +189,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE or REVIEW directly — use 'verify_changes' instead.",
+        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes. Cannot set status to REVIEW directly — use review_changes.",
         inputSchema: {
           type: "object",
           properties: {
@@ -317,15 +331,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "verify_changes",
-        description: "Executes a verification command and automatically updates the task status. Moves to REVIEW if the item is IN_PROGRESS, or DONE if the item is in TEST status.",
+        name: "review_changes",
+        description: "Runs an agent-chosen command to verify the implementation and moves the item from IN_PROGRESS → REVIEW. Use any command that makes sense (build, lint, type-check, etc.). If the command fails, the item stays IN_PROGRESS.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
-            command: { type: "string" },
+            command: { type: "string", description: "The command to run (e.g. 'npm run build', 'cargo check')." },
           },
           required: ["itemId", "command"],
+        },
+      },
+      {
+        name: "test_changes",
+        description: "Runs the project's verifyCommand (test suite) and moves the item from TEST → DONE. No command parameter — the project's verifyCommand is always used. If no verifyCommand is configured, returns an error — ask the developer to set one via update_project.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+          },
+          required: ["itemId"],
         },
       },
       {
@@ -358,6 +383,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const { data } = await api.post(`/projects`, args);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
+      case "update_project": {
+        const { id, ...updates } = z.object({
+          id: z.string(),
+          name: z.string().optional(),
+          description: z.string().optional(),
+          verifyCommand: z.string().optional(),
+        }).parse(request.params.arguments);
+        const { data } = await api.put(`/projects/${id}`, updates);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
       case "log_test_result": {
         const { itemId, command, output, status } = z.object({ 
           itemId: z.string(), 
@@ -376,13 +411,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { isError: true, content: [{ type: "text", text: `❌ Failed to log test result: ${error.message}` }] };
         }
       }
-      case "verify_changes": {
+      case "review_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/verify`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/review`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
           return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
-          const msg = error.response?.data?.message || error.message;
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: msg }] };
+        }
+      }
+      case "test_changes": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/test`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: data.message }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: msg }] };
         }
       }
@@ -558,7 +603,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (currentItem.status !== "TEST") {
             return {
               isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call 'verify_changes(itemId, command)' — the server will route TEST → DONE automatically.` }],
+              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call test_changes(itemId) to run the project's test suite.` }],
             };
           }
           // Allow TEST -> DONE, using verify token to bypass server guard
@@ -569,7 +614,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         if (updates.status === "REVIEW") {
           return {
             isError: true,
-            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. The REVIEW state is managed automatically by 'verify_changes(itemId, command)'. Call verify_changes instead.` }],
+            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. Use review_changes(itemId, command) instead.` }],
           };
         }
 

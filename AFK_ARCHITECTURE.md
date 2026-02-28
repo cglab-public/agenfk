@@ -25,7 +25,7 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
     - **Backlog Inspection Rule**: When starting new work, only items in **TODO** status should be inspected. Items labeled or in a state suggesting they are **IDEAs** (draft ideas or speculative plans) MUST be ignored until they are promoted to TODO.
     - **Item Type Selection Rule**: An agent receiving a new request MUST classify it before creating any item. Use TASK only for single-file, immediately-obvious changes. Use STORY for multi-file, single-package work. Use EPIC whenever the request spans multiple packages, introduces new architecture, or requires a plan to decompose — and always run `/agenfk-plan` before coding. Key signals for EPIC: new package/subsystem, 3+ packages touched, multiple distinct user-facing capabilities, or needing Plan Mode to understand scope.
 5.  **Verification Loop**:
-    - **REVIEW Status**: Triggered via `verify_changes` tool. MUST run the project's primary test suite (not just builds).
+    - **REVIEW Status**: Triggered via `review_changes` tool. Agent picks a build/lint command for self-review.
     - **TEST Status**: A mandatory quality gate following Review. In this stage, the Agent (e.g., Opencode/Claude) is responsible for running deep regression tests and verifying coverage requirements (minimum 80% for new code).
     - **Coverage Rule**: Newly inserted code MUST meet a minimum threshold (e.g., 80%). The specific implementation of this check (e.g., parsing Vitest vs Jest outputs) is project-specific. For the AgenFK Framework itself, a helper script at `scripts/enforce-coverage.ts` is provided to perform this check against Vitest output.
     - **DONE Status**: Only reachable after passing both Review and Test gates.
@@ -38,9 +38,9 @@ AgenFK features an automated orchestration layer where the primary agent acts as
     - **Protocol**: Decomposes request into `TODO` sub-items and **PAUSES** for human approval.
 2.  **Coding Agent (IN_PROGRESS Phase)**:
     - **Trigger**: Human approval of the plan.
-    - **Protocol**: Implements the plan and calls `verify_changes` to transition to `REVIEW`.
+    - **Protocol**: Implements the plan and calls `review_changes` to transition to `REVIEW`.
 3.  **Review Agent (REVIEW Phase)**:
-    - **Trigger**: Automatic spawn after `verify_changes`.
+    - **Trigger**: Automatic spawn after `review_changes`.
     - **Protocol**: Audits code for security and requirements. Success moves item to `TEST`.
 4.  **Testing Agent (TEST Phase)**:
     - **Trigger**: Automatic spawn after successful review.
