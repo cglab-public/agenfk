@@ -1587,6 +1587,10 @@ branchCmd
   .action(async (itemId, options) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+      }
       const prefix = item.type === 'BUG' ? 'fix' : 'feature';
       const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
       const branchName = `${prefix}/${slug}`;
@@ -1692,6 +1696,10 @@ prCmd
     }
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+      }
       const prTitle = options.title || item.title;
       const args = ['pr', 'create', '--title', prTitle];
       if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }

@@ -225,6 +225,32 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </button>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
+      {!item.parentId && (item.branchName || item.prUrl) && (
+        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+          {item.branchName && (
+            <span className="inline-flex items-center font-mono text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 truncate max-w-[140px]" title={item.branchName}>
+              {item.branchName}
+            </span>
+          )}
+          {item.prUrl && (
+            <a
+              href={item.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-medium border transition-colors ${
+                item.prStatus === 'merged'  ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900' :
+                item.prStatus === 'closed'  ? 'bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100 dark:hover:bg-rose-900' :
+                item.prStatus === 'draft'   ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700' :
+                                              'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900'
+              }`}
+              title={`PR: ${item.prStatus || 'open'}`}
+            >
+              PR {item.prStatus === 'merged' ? '✓' : item.prStatus === 'closed' ? '✗' : '↗'}
+            </a>
+          )}
+        </div>
+      )}
       {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
