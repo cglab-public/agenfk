@@ -46,7 +46,7 @@ const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
 const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
 const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
-    env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
+    env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}`, ...(process.env.VITE_EASTER_EGGS ? { VITE_EASTER_EGGS: 'true' } : {}) },
     detached: true,
     stdio: ['ignore', uiLog, uiLog],
     shell: true

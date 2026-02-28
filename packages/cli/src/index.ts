@@ -310,6 +310,7 @@ program
   .command('up')
   .description('Bootstrap and start AgenFK Engineering Framework')
   .option('--rebuild', 'Force a full build from source during bootstrap')
+  .option('--easter-eggs', 'Enable easter egg animations')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
@@ -345,7 +346,9 @@ program
     
     console.log(chalk.blue('⚡ Starting agenfk services...'));
     try {
-        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit' });
+        const startEnv = { ...process.env };
+        if (options.easterEggs) startEnv.VITE_EASTER_EGGS = 'true';
+        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv });
         start.on('close', (code) => {
             process.exit(code || 0);
         });
