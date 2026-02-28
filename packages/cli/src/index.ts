@@ -865,6 +865,7 @@ program
   .option('-s, --status <status>', 'New status (TODO, IN_PROGRESS, REVIEW, DONE, BLOCKED)')
   .option('-t, --title <title>', 'New title')
   .option('-d, --description <desc>', 'New description')
+  .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -887,9 +888,10 @@ program
       if (options.status) updates.status = options.status.toUpperCase();
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
+      if (options.type) updates.type = options.type.toUpperCase();
 
       const { data: updated } = await axios.put(`${API_URL}/items/${targetId}`, updates);
-      console.log(chalk.green(`Updated item: ${updated.title} (${updated.status})`));
+      console.log(chalk.green(`Updated item: ${updated.title} [${updated.type}] (${updated.status})`));
     } catch (error: any) {
       console.error(chalk.red('Error updating item:'), error.response?.data?.error || error.message);
     }

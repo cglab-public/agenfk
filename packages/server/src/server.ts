@@ -540,7 +540,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus } = req.body;
+  const { title, description, status, type, parentId, tokenUsage, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus } = req.body;
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -572,10 +572,24 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     return res.json(await storage.getItem(req.params.id));
   }
 
+  // Validate type change
+  if (type !== undefined) {
+    const validTypes = Object.values(ItemType);
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ error: `Invalid type '${type}'. Must be one of: ${validTypes.join(', ')}` });
+    }
+    // Prevent type change on items with children
+    const children = await storage.listChildren(req.params.id);
+    if (children.length > 0 && type !== currentItem.type) {
+      return res.status(400).json({ error: `Cannot change type of item with children. Remove or reassign children first.` });
+    }
+  }
+
   const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
   if (status !== undefined) updates.status = status;
+  if (type !== undefined) updates.type = type;
   if (parentId !== undefined) updates.parentId = parentId;
   if (tokenUsage !== undefined) updates.tokenUsage = tokenUsage;
   if (context !== undefined) updates.context = context;
