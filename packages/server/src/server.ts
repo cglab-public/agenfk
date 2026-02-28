@@ -1086,25 +1086,27 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       // If this is an Epic, also import its child stories
       if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
         try {
-          const baseUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql`;
-          const fields = 'summary,description,issuetype';
+          const searchBase = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search`;
+          const childFields = 'summary,description,issuetype';
 
           // Try next-gen (team-managed) projects first: parent = KEY
           let childIssues: any[] = [];
           const jqlNextGen = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
-          const { data: nextGenData } = await jiraApiRequest(tokenData, 'get', `${baseUrl}?jql=${jqlNextGen}&maxResults=100&fields=${fields}`);
+          console.log(`[JIRA] Fetching children of Epic ${issueKey} with JQL: parent = ${issueKey}`);
+          const { data: nextGenData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlNextGen}&maxResults=100&fields=${childFields}`);
           childIssues = nextGenData.issues || [];
+          console.log(`[JIRA] next-gen child query returned ${childIssues.length} issues`);
 
           // Fallback for classic (company-managed) projects: "Epic Link" = KEY
           if (childIssues.length === 0) {
             const jqlClassic = encodeURIComponent(`"Epic Link" = ${issueKey} ORDER BY created ASC`);
-            const { data: classicData } = await jiraApiRequest(tokenData, 'get', `${baseUrl}?jql=${jqlClassic}&maxResults=100&fields=${fields}`);
+            console.log(`[JIRA] Trying classic Epic Link fallback for ${issueKey}`);
+            const { data: classicData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlClassic}&maxResults=100&fields=${childFields}`);
             childIssues = classicData.issues || [];
+            console.log(`[JIRA] classic Epic Link query returned ${childIssues.length} issues`);
           }
 
-          const childData = { issues: childIssues };
-
-          for (const childIssue of (childData.issues || [])) {
+          for (const childIssue of childIssues) {
             const childKey = childIssue.key;
             const childType = mapJiraTypeToAgenFK(childIssue.fields.issuetype?.name || 'Task');
             const childDescription = adfToText(childIssue.fields.description);
@@ -1129,7 +1131,9 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
             imported.push({ issueKey: childKey, itemId: createdChild.id, parentItemId: created.id });
           }
         } catch (childErr: any) {
-          console.error(`[JIRA] Failed to fetch child issues for Epic ${issueKey}:`, childErr.message);
+          const detail = (childErr as any).response?.data?.errorMessages?.[0] || childErr.message;
+          console.error(`[JIRA] Failed to fetch child issues for Epic ${issueKey}:`, detail);
+          errors.push({ issueKey: `${issueKey} (children)`, error: detail });
         }
       }
     } catch (err: any) {
