@@ -22,6 +22,8 @@ If YES:
 - Run `git add . && git commit -m "chore: bump version to <version>"` and show the output.
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
+  - **STRICT SCOPE**: Only include changes that appear in the `git log` output above. Do NOT carry forward items from previous release notes, from other projects, or from your conversation context. Each release note must map 1-to-1 to a commit in the log range.
+  - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking `.agenfk/project.json`. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
 - Confirm the notes with the user, allow edits.
 - **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
 - **Push & Create**: Run `git push origin HEAD` to ensure the version bump is on the remote branch, then run `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes>"`.
