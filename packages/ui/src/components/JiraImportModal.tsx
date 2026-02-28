@@ -161,6 +161,10 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     p.key.toLowerCase().includes(projectSearch.toLowerCase())
   );
 
+  const directIssueKey = /^[A-Za-z]+-\d+$/.test(projectSearch.trim())
+    ? projectSearch.trim().toUpperCase()
+    : null;
+
   if (!open) return null;
 
   return (
@@ -199,12 +203,28 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search projects..."
+                  placeholder="Search projects or enter issue key (e.g. RD-3)..."
                   value={projectSearch}
                   onChange={e => setProjectSearch(e.target.value)}
                   className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-slate-200"
                 />
               </div>
+              {directIssueKey && (
+                <button
+                  onClick={() => {
+                    setSelectedIssues(new Map([[directIssueKey, '']]));
+                    setSelectedProjectName(directIssueKey);
+                    setStep('confirm');
+                  }}
+                  className="w-full flex items-center gap-3 px-4 py-3 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 rounded-lg border border-indigo-200 dark:border-indigo-800 transition-colors text-left"
+                  data-testid="direct-import-button"
+                >
+                  <Download size={14} className="text-indigo-500 shrink-0" />
+                  <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                    Import <span className="font-mono">{directIssueKey}</span> directly
+                  </span>
+                </button>
+              )}
               {loadingProjects && (
                 <div className="flex justify-center py-8" data-testid="projects-loading">
                   <Loader2 className="animate-spin text-slate-400" size={24} />
@@ -364,7 +384,9 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                 {Array.from(selectedIssues.entries()).map(([key, type]) => (
                   <li key={key} className="flex items-center justify-between font-mono bg-slate-50 dark:bg-slate-800/50 px-2 py-1 rounded">
                     <span>{key}</span>
-                    <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', TYPE_COLORS[type])}>{type}</span>
+                    <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', type ? TYPE_COLORS[type] : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400')}>
+                      {type || 'AUTO'}
+                    </span>
                   </li>
                 ))}
               </ul>
