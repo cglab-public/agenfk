@@ -97,6 +97,7 @@ const UpdateItemSchema = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -197,6 +198,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             title: { type: "string" },
             description: { type: "string" },
             status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
+            type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             implementationPlan: { type: "string" },
           },
           required: ["id"],
