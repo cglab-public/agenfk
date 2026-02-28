@@ -1086,9 +1086,23 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       // If this is an Epic, also import its child stories
       if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
         try {
-          const jql = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
-          const childUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=100&fields=summary,description,issuetype`;
-          const { data: childData } = await jiraApiRequest(tokenData, 'get', childUrl);
+          const baseUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql`;
+          const fields = 'summary,description,issuetype';
+
+          // Try next-gen (team-managed) projects first: parent = KEY
+          let childIssues: any[] = [];
+          const jqlNextGen = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
+          const { data: nextGenData } = await jiraApiRequest(tokenData, 'get', `${baseUrl}?jql=${jqlNextGen}&maxResults=100&fields=${fields}`);
+          childIssues = nextGenData.issues || [];
+
+          // Fallback for classic (company-managed) projects: "Epic Link" = KEY
+          if (childIssues.length === 0) {
+            const jqlClassic = encodeURIComponent(`"Epic Link" = ${issueKey} ORDER BY created ASC`);
+            const { data: classicData } = await jiraApiRequest(tokenData, 'get', `${baseUrl}?jql=${jqlClassic}&maxResults=100&fields=${fields}`);
+            childIssues = classicData.issues || [];
+          }
+
+          const childData = { issues: childIssues };
 
           for (const childIssue of (childData.issues || [])) {
             const childKey = childIssue.key;
