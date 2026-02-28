@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/storage-json",
-  "version": "0.1.50",
+  "version": "0.1.51",
   "description": "JSON storage implementation for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
