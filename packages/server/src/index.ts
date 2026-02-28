@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { execSync, spawn } from "child_process";
+import { execSync, spawnSync, spawn } from "child_process";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -290,6 +290,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: {
             itemId: { type: "string" },
+          },
+          required: ["itemId"],
+        },
+      },
+      {
+        name: "create_pr",
+        description: "Push the item's branch to remote and create a GitHub pull request. Stores prUrl, prNumber, and prStatus on the item. Requires GitHub CLI (gh) and a branch already assigned to the item. Only works for top-level items (no parentId).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            description: { type: "string", description: "PR body/description written by the agent." },
+            draft: { type: "boolean", description: "Create as a draft PR. Defaults to false." },
           },
           required: ["itemId"],
         },
@@ -650,6 +663,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 
         await api.put(`/items/${itemId}`, { branchName });
         return { content: [{ type: "text", text: `🔀 Created and switched to branch '${branchName}'. Stored on item [${itemId.substring(0, 8)}].` }] };
+      }
+      case "create_pr": {
+        const { itemId, description: prBody, draft } = z.object({
+          itemId: z.string(),
+          description: z.string().optional(),
+          draft: z.boolean().optional(),
+        }).parse(request.params.arguments);
+
+        // Check gh CLI is available
+        try {
+          execSync('gh --version', { stdio: 'ignore' });
+        } catch {
+          return { isError: true, content: [{ type: "text", text: `❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/` }] };
+        }
+
+        const { data: item } = await api.get(`/items/${itemId}`);
+
+        if (item.parentId) {
+          return { isError: true, content: [{ type: "text", text: `❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
+        }
+        if (!item.branchName) {
+          return { isError: true, content: [{ type: "text", text: `❌ No branch assigned to item [${itemId.substring(0, 8)}]. Create a branch first with the create_branch tool.` }] };
+        }
+        if (item.prUrl) {
+          return { content: [{ type: "text", text: `PR already exists for item [${itemId.substring(0, 8)}]: ${item.prUrl}` }] };
+        }
+
+        // Push branch to remote
+        try {
+          execSync(`git push -u origin ${item.branchName}`, { stdio: 'ignore' });
+        } catch (pushErr: any) {
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to push branch '${item.branchName}' to remote: ${pushErr.message}` }] };
+        }
+
+        // Create PR via gh CLI (spawnSync for safe arg passing)
+        const args = ['pr', 'create', '--title', item.title, '--body', prBody || item.description || ''];
+        if (draft) args.push('--draft');
+
+        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        if (result.status !== 0) {
+          return { isError: true, content: [{ type: "text", text: `❌ gh pr create failed:\n${result.stderr || result.stdout}` }] };
+        }
+
+        const output = (result.stdout || '').trim();
+        const prUrl = output.split('\n').filter(Boolean).pop() || '';
+        const prNumberMatch = prUrl.match(/\/pull\/(\d+)$/);
+        const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : undefined;
+        const prStatus = draft ? 'draft' : 'open';
+
+        await api.put(`/items/${itemId}`, { prUrl, prNumber, prStatus });
+
+        let msg = `✅ PR created: ${prUrl}`;
+        if (prNumber) msg += `\n   PR #${prNumber} linked to item [${itemId.substring(0, 8)}].`;
+        msg += `\n\nWhen the PR is approved and merged, run /agenfk-release to create a release.`;
+        return { content: [{ type: "text", text: msg }] };
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
