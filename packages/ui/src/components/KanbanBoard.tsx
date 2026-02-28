@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
+import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
+import { useEasterEggs } from '../useEasterEggs';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
@@ -322,6 +324,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
+  const easterEggsEnabled = useEasterEggs();
   
   // Project State
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
@@ -1181,6 +1184,7 @@ export const KanbanBoard: React.FC = () => {
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
+                      <CardAnimationWrapper key={`anim-${item.id}`} enabled={easterEggsEnabled} itemId={item.id} status={item.status}>
                       <KanbanCard
                         key={item.id}
                         item={item}
@@ -1203,6 +1207,7 @@ export const KanbanBoard: React.FC = () => {
                         /* v8 ignore stop */
                         onCopyId={handleCopyId}
                       />
+                      </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
                 <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
