@@ -433,8 +433,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (task.type === 'EPIC' || task.type === 'STORY') {
              return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role is not allowed on ${task.type} items. Please decompose into TASKS and work on those instead.` }] };
           }
-          
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+
+          // Auto-create git branch if branchName is set but branch doesn't exist locally
+          let branchHint = '';
+          if (task.branchName) {
+            try {
+              // Check if the branch exists locally
+              try {
+                execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
+                // Branch exists — check if we're on it
+                const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+                if (currentBranch !== task.branchName) {
+                  execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+                  branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
+                } else {
+                  branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
+                }
+              } catch {
+                // Branch doesn't exist locally — create and checkout
+                execSync(`git checkout -b ${task.branchName}`, { stdio: 'ignore' });
+                branchHint = `\n🔀 Created and switched to branch '${task.branchName}'.`;
+              }
+            } catch (gitErr: any) {
+              branchHint = `\n⚠️ Could not auto-checkout branch '${task.branchName}': ${gitErr.message}. You may need to handle this manually.`;
+            }
+          } else if (task.type === 'TASK' && !task.parentId) {
+            branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with `agenfk branch create <itemId>`, or continue on the current branch.';
+          }
+
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
         }
 
         if (role === 'review') {

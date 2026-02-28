@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord, buildBranchName } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -588,6 +588,19 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (prUrl !== undefined) updates.prUrl = prUrl;
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
+
+  // Auto-assign branchName for top-level BUG items transitioning to IN_PROGRESS
+  if (
+    status === Status.IN_PROGRESS &&
+    currentItem.status !== Status.IN_PROGRESS &&
+    currentItem.type === ItemType.BUG &&
+    !currentItem.parentId &&
+    !currentItem.branchName &&
+    !updates.branchName
+  ) {
+    updates.branchName = buildBranchName(currentItem.type, currentItem.title);
+    console.log(`[AUTO_BRANCH] Assigned branchName '${updates.branchName}' to BUG [${req.params.id.substring(0, 8)}]`);
+  }
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
