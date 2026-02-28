@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle } from '@agenfk/core';
 import { TelemetryClient } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -1564,17 +1564,6 @@ program
   });
 
 // ── Branch commands ──────────────────────────────────────────────────────────
-
-function slugifyTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .replace(/[\s]+/g, '-')
-    .replace(/-+/g, '-')
-    .substring(0, 50)
-    .replace(/-$/, '');
-}
 
 const branchCmd = program
   .command('branch')
