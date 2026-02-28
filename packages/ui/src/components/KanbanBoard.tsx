@@ -1095,8 +1095,8 @@ export const KanbanBoard: React.FC = () => {
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup id="board">
           <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
-            {/* Ideas Section */}
-            <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
+            {/* Ideas Section — hidden in drill-down view */}
+            {navPath.length === 0 && <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
               {isIdeasCollapsed ? (
                 <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
                   <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
@@ -1151,7 +1151,7 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 /* v8 ignore stop */
               )}
-            </div>
+            </div>}
 
           {statuses.map(status => (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
@@ -1212,7 +1212,8 @@ export const KanbanBoard: React.FC = () => {
             </div>
           ))}
 
-          <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
+          {/* Blocked + Archived — hidden in drill-down view */}
+          {navPath.length === 0 && <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
             {/* Blocked Section */}
             <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
               {isBlockedCollapsed ? (
@@ -1339,7 +1340,7 @@ export const KanbanBoard: React.FC = () => {
                 </div>
               )}
             </div>
-            </div>
+            </div>}
           </div>
         </LayoutGroup>
       </main>
