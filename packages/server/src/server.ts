@@ -999,7 +999,7 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
     let jqlParts = [`project = "${key}"`];
     
     if (summary && summary !== 'undefined') {
-      jqlParts.push(`summary ~ "${summary}*"`);
+      jqlParts.push(`(summary ~ "${summary}*" OR issueKey = "${summary}")`);
     }
     
     if (statusCategory && statusCategory !== 'undefined') {
