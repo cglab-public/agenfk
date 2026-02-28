@@ -532,21 +532,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
             branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with the `create_branch` MCP tool, or continue on the current branch.';
           }
 
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
         }
 
         if (role === 'review') {
           const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
           if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${effectiveProjectId}].` }] };
           const task = activeReviewItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         if (role === 'testing') {
           const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
           if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${effectiveProjectId}].` }] };
           const task = activeTestItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized
