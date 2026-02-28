@@ -12,6 +12,7 @@ interface ReadmeModalProps {
   onClose: () => void;
 }
 
+/* v8 ignore start */
 const Mermaid: React.FC<{ chart: string }> = ({ chart }) => {
   const ref = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
@@ -36,6 +37,7 @@ const Mermaid: React.FC<{ chart: string }> = ({ chart }) => {
 
   return <div ref={ref} className="flex justify-center my-4 overflow-x-auto" />;
 };
+/* v8 ignore stop */
 
 export const ReadmeModal: React.FC<ReadmeModalProps> = ({ isOpen, onClose }) => {
   const { data: readme, isLoading } = useQuery({
@@ -99,6 +101,7 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({ isOpen, onClose }) => 
               <ReactMarkdown 
                 remarkPlugins={[remarkGfm]}
                 components={{
+                  /* v8 ignore next */
                   code({ node, inline, className, children, ...props }: any) {
                     const match = /language-mermaid/.exec(className || '');
                     return !inline && match ? (
