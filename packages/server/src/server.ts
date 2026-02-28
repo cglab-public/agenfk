@@ -698,7 +698,7 @@ app.post("/items/:id/verify", asyncHandler(async (req: any, res: any) => {
     }
     const message = isTestPhase
       ? `✅ Final Verification Successful!\n\nCommand: \`${command}\`\nItem moved to DONE.`
-      : `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nREMINDER: A Review Agent will now be spawned to audit your changes before testing begins.`;
+      : `✅ Initial Verification Successful!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nStandard Mode: continue immediately to Phase 3 (self-review), then Phase 4 (tests). Multi-Agent Mode: yield to the Review Agent.`;
     return res.json({ status: targetStatus, message, output: truncated });
   } else {
     const updates: any = { status: Status.IN_PROGRESS, comments };
