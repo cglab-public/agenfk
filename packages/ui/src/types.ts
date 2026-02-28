@@ -93,4 +93,8 @@ export interface AgenFKItem {
   sortOrder?: number;
   externalId?: string;
   externalUrl?: string;
+  branchName?: string;
+  prUrl?: string;
+  prNumber?: number;
+  prStatus?: 'open' | 'merged' | 'closed' | 'draft';
 }

@@ -25,5 +25,6 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 **Step 4 — Handover**
 - Call `add_comment(id, "IMPLEMENTATION COMPLETE: ...")` to log the final summary of code changes.
 - Call `add_comment(id, "Phase Code complete: Implementation and self-verification finished.")` to log the phase completion.
-- Call `verify_changes(id, "<build_command_only>")` — pass a **compile/build command only**, never a test command. This moves the item to **REVIEW**.
-- **STOP IMMEDIATELY** after calling `verify_changes`. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
+- Call `review_changes(id, "<build_command>")` — pass a **compile/build command only**, never a test command. This moves the item to **REVIEW**.
+- **If a git remote is configured**: Use `create_pr(itemId, description)` MCP tool to push the branch and open a pull request. The user will be prompted to run `/agenfk-release` once the PR is merged.
+- **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.

@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
+import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
+import '../animations'; // Side-effect: registers all easter egg animations
+import { useEasterEggs } from '../useEasterEggs';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
@@ -225,6 +228,32 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </button>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
+      {!item.parentId && (item.branchName || item.prUrl) && (
+        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+          {item.branchName && (
+            <span className="inline-flex items-center font-mono text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 truncate max-w-[140px]" title={item.branchName}>
+              {item.branchName}
+            </span>
+          )}
+          {item.prUrl && (
+            <a
+              href={item.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-medium border transition-colors ${
+                item.prStatus === 'merged'  ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900' :
+                item.prStatus === 'closed'  ? 'bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100 dark:hover:bg-rose-900' :
+                item.prStatus === 'draft'   ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700' :
+                                              'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900'
+              }`}
+              title={`PR: ${item.prStatus || 'open'}`}
+            >
+              PR {item.prStatus === 'merged' ? '✓' : item.prStatus === 'closed' ? '✗' : '↗'}
+            </a>
+          )}
+        </div>
+      )}
       {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
@@ -296,6 +325,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
+  const easterEggsEnabled = useEasterEggs();
   
   // Project State
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
@@ -1069,8 +1099,8 @@ export const KanbanBoard: React.FC = () => {
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup id="board">
           <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
-            {/* Ideas Section */}
-            <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
+            {/* Ideas Section — hidden in drill-down view */}
+            {navPath.length === 0 && <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
               {isIdeasCollapsed ? (
                 <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
                   <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
@@ -1125,7 +1155,7 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 /* v8 ignore stop */
               )}
-            </div>
+            </div>}
 
           {statuses.map(status => (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
@@ -1155,6 +1185,7 @@ export const KanbanBoard: React.FC = () => {
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
+                      <CardAnimationWrapper key={`anim-${item.id}`} enabled={easterEggsEnabled} itemId={item.id} status={item.status}>
                       <KanbanCard
                         key={item.id}
                         item={item}
@@ -1177,6 +1208,7 @@ export const KanbanBoard: React.FC = () => {
                         /* v8 ignore stop */
                         onCopyId={handleCopyId}
                       />
+                      </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
                 <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
@@ -1186,7 +1218,8 @@ export const KanbanBoard: React.FC = () => {
             </div>
           ))}
 
-          <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
+          {/* Blocked + Archived — hidden in drill-down view */}
+          {navPath.length === 0 && <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", (!isArchiveCollapsed || !isBlockedCollapsed) ? "w-80 shrink-0" : "w-12 shrink-0")}>
             {/* Blocked Section */}
             <div className={clsx("flex flex-col transition-all duration-300", isBlockedCollapsed ? (isArchiveCollapsed ? "flex-1" : "h-12 shrink-0") : (isArchiveCollapsed ? "flex-1 h-full" : "flex-1 h-1/2"))}>
               {isBlockedCollapsed ? (
@@ -1313,7 +1346,7 @@ export const KanbanBoard: React.FC = () => {
                 </div>
               )}
             </div>
-            </div>
+            </div>}
           </div>
         </LayoutGroup>
       </main>

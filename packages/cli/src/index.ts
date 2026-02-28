@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle } from '@agenfk/core';
 import { TelemetryClient } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -310,6 +310,7 @@ program
   .command('up')
   .description('Bootstrap and start AgenFK Engineering Framework')
   .option('--rebuild', 'Force a full build from source during bootstrap')
+  .option('--easter-eggs', 'Enable easter egg animations')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
@@ -345,7 +346,9 @@ program
     
     console.log(chalk.blue('⚡ Starting agenfk services...'));
     try {
-        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit' });
+        const startEnv = { ...process.env };
+        if (options.easterEggs) startEnv.VITE_EASTER_EGGS = 'true';
+        const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv });
         start.on('close', (code) => {
             process.exit(code || 0);
         });
@@ -657,10 +660,12 @@ function configureClaudeCodeIde(rootDir: string): boolean {
         'mcp__agenfk__list_projects', 'mcp__agenfk__list_items',
         'mcp__agenfk__get_item', 'mcp__agenfk__create_item',
         'mcp__agenfk__update_item', 'mcp__agenfk__add_comment',
-        'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__verify_changes',
-        'mcp__agenfk__log_token_usage', 'mcp__agenfk__analyze_request',
-        'mcp__agenfk__get_server_info', 'mcp__agenfk__add_context',
-        'mcp__agenfk__delete_item', 'mcp__agenfk__log_test_result',
+        'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__review_changes',
+        'mcp__agenfk__test_changes', 'mcp__agenfk__log_token_usage',
+        'mcp__agenfk__analyze_request', 'mcp__agenfk__get_server_info',
+        'mcp__agenfk__add_context', 'mcp__agenfk__delete_item',
+        'mcp__agenfk__log_test_result', 'mcp__agenfk__create_branch',
+        'mcp__agenfk__create_pr', 'mcp__agenfk__update_project',
     ];
     for (const perm of mcpPermissions) {
         if (!localSettings.permissions.allow.includes(perm)) {
@@ -863,6 +868,7 @@ program
   .option('-s, --status <status>', 'New status (TODO, IN_PROGRESS, REVIEW, DONE, BLOCKED)')
   .option('-t, --title <title>', 'New title')
   .option('-d, --description <desc>', 'New description')
+  .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -885,9 +891,10 @@ program
       if (options.status) updates.status = options.status.toUpperCase();
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
+      if (options.type) updates.type = options.type.toUpperCase();
 
       const { data: updated } = await axios.put(`${API_URL}/items/${targetId}`, updates);
-      console.log(chalk.green(`Updated item: ${updated.title} (${updated.status})`));
+      console.log(chalk.green(`Updated item: ${updated.title} [${updated.type}] (${updated.status})`));
     } catch (error: any) {
       console.error(chalk.red('Error updating item:'), error.response?.data?.error || error.message);
     }
@@ -1522,8 +1529,8 @@ program
   });
 
 program
-  .command('verify <id> <command>')
-  .description('Run verification command and transition item to REVIEW (or DONE if status is TEST). MCP fallback: verify_changes')
+  .command('review <id> <command>')
+  .description('Run agent-chosen command and transition item IN_PROGRESS → REVIEW. MCP fallback: review_changes')
   .action(async (id, command) => {
     const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
     if (!fs.existsSync(tokenPath)) {
@@ -1546,19 +1553,304 @@ program
       }
     }
 
-    console.log(chalk.blue(`Running verification: ${command}`));
+    console.log(chalk.blue(`Running review: ${command}`));
     try {
       const { data } = await axios.post(
-        `${API_URL}/items/${targetId}/verify`,
+        `${API_URL}/items/${targetId}/review`,
         { command },
         { headers: { 'x-agenfk-internal': verifyToken } }
       );
       if (data.output) console.log(data.output);
-      console.log(chalk.green(`\n✅ Verification passed. Item moved to ${data.status}.`));
+      console.log(chalk.green(`\n✅ Review passed. Item moved to ${data.status}.`));
     } catch (error: any) {
       const errData = error.response?.data;
       if (errData?.output) console.error(errData.output);
       console.error(chalk.red(`\n❌ ${errData?.message || error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('test <id>')
+  .description('Run project verifyCommand and transition item TEST → DONE. MCP fallback: test_changes')
+  .action(async (id) => {
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
+      process.exit(1);
+    }
+    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
+
+    let targetId = id;
+    if (id.length < 36) {
+      try {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const found = allItems.filter((i: any) => i.id.startsWith(id));
+        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); }
+        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}`)); process.exit(1); }
+        targetId = found[0].id;
+      } catch (e: any) {
+        console.error(chalk.red('Error resolving item:'), e.response?.data?.error || e.message);
+        process.exit(1);
+      }
+    }
+
+    console.log(chalk.blue(`Running project test suite...`));
+    try {
+      const { data } = await axios.post(
+        `${API_URL}/items/${targetId}/test`,
+        {},
+        { headers: { 'x-agenfk-internal': verifyToken } }
+      );
+      if (data.output) console.log(data.output);
+      console.log(chalk.green(`\n✅ Tests passed. Item moved to ${data.status}.`));
+    } catch (error: any) {
+      const errData = error.response?.data;
+      if (errData?.output) console.error(errData.output);
+      console.error(chalk.red(`\n❌ ${errData?.message || error.message}`));
+      process.exit(1);
+    }
+  });
+
+// ── Branch commands ──────────────────────────────────────────────────────────
+
+const branchCmd = program
+  .command('branch')
+  .description('Manage git branches for AgenFK items');
+
+branchCmd
+  .command('create <itemId>')
+  .description('Create a git branch for an item (BUG → fix/, others → feature/). Stores branch name on the item.')
+  .option('--name <name>', 'Override the generated branch name (prefix is still enforced)')
+  .action(async (itemId, options) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+      }
+      const prefix = item.type === 'BUG' ? 'fix' : 'feature';
+      const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
+      const branchName = `${prefix}/${slug}`;
+
+      console.log(chalk.blue(`Creating branch: ${branchName}`));
+      try {
+        execSync(`git checkout -b ${branchName}`, { stdio: 'inherit' });
+      } catch {
+        console.error(chalk.red(`Failed to create branch. Does it already exist? Try: git checkout ${branchName}`));
+        process.exit(1);
+      }
+
+      await axios.put(`${API_URL}/items/${itemId}`, { branchName });
+      console.log(chalk.green(`✅ Branch '${branchName}' created and linked to item [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
+  .command('push <itemId>')
+  .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')
+  .action(async (itemId) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.branchName) {
+        console.error(chalk.yellow(`⚠ No branch linked to item [${itemId.substring(0, 8)}]. Run 'agenfk branch create' first.`));
+        process.exit(1);
+      }
+
+      let hasRemote = false;
+      try {
+        const remotes = execSync('git remote', { encoding: 'utf8' }).trim();
+        hasRemote = remotes.length > 0;
+      } catch { /* not a git repo */ }
+
+      if (!hasRemote) {
+        console.log(chalk.yellow('ℹ No git remote configured — skipping push.'));
+        return;
+      }
+
+      console.log(chalk.blue(`Pushing branch '${item.branchName}' to remote...`));
+      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit' });
+      console.log(chalk.green(`✅ Branch '${item.branchName}' pushed to remote.`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
+  .command('status <itemId>')
+  .description('Show the branch linked to an item and whether it has been pushed to remote')
+  .action(async (itemId) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.branchName) {
+        console.log(chalk.yellow(`No branch linked to item [${itemId.substring(0, 8)}].`));
+        return;
+      }
+
+      console.log(`Branch: ${chalk.cyan(item.branchName)}`);
+
+      try {
+        const remoteBranches = execSync('git branch -r', { encoding: 'utf8' });
+        const pushed = remoteBranches.split('\n').some(b => b.trim().endsWith(item.branchName));
+        console.log(`Remote: ${pushed ? chalk.green('pushed') : chalk.yellow('not pushed yet')}`);
+      } catch {
+        console.log(`Remote: ${chalk.dim('(not in a git repo)')}`);
+      }
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+// ── PR commands ───────────────────────────────────────────────────────────────
+
+function checkGhCli(): boolean {
+  try {
+    execSync('gh --version', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const prCmd = program
+  .command('pr')
+  .description('Manage pull requests for AgenFK items (requires GitHub CLI)');
+
+prCmd
+  .command('create <itemId>')
+  .description('Create a pull request for the item\'s branch and store the PR URL/number on the item')
+  .option('--title <title>', 'PR title (defaults to item title)')
+  .option('--body <body>', 'PR body/description')
+  .option('--draft', 'Create as a draft PR')
+  .action(async (itemId, options) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+      }
+      const prTitle = options.title || item.title;
+      const args = ['pr', 'create', '--title', prTitle];
+      if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }
+      if (options.draft) args.push('--draft');
+
+      console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
+      let output: string;
+      try {
+        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        if (result.status !== 0) {
+          console.error(chalk.red(`❌ gh pr create failed:\n${result.stderr || result.stdout}`));
+          process.exit(1);
+        }
+        output = (result.stdout || '').trim();
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr create failed: ${e.message}`));
+        process.exit(1);
+      }
+
+      // gh outputs the PR URL as the last line
+      const prUrl = output.split('\n').filter(Boolean).pop() || '';
+      const prNumberMatch = prUrl.match(/\/pull\/(\d+)$/);
+      const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : undefined;
+
+      await axios.put(`${API_URL}/items/${itemId}`, { prUrl, prNumber, prStatus: 'open' });
+      console.log(chalk.green(`✅ PR created: ${prUrl}`));
+      if (prNumber) console.log(chalk.dim(`   PR #${prNumber} linked to item [${itemId.substring(0, 8)}]`));
+      console.log(chalk.cyan('\nWhen your PR is approved and merged, run /agenfk-release to create a release.'));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+prCmd
+  .command('status <itemId>')
+  .description('Check the current status of the PR linked to an item')
+  .action(async (itemId) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.prNumber && !item.prUrl) {
+        console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
+        return;
+      }
+      const ref = item.prNumber || item.prUrl;
+      let result: any;
+      try {
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        result = JSON.parse(raw);
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
+        process.exit(1);
+      }
+
+      const stateColour: Record<string, any> = { open: chalk.yellow, merged: chalk.green, closed: chalk.red, draft: chalk.dim };
+      const colour = stateColour[result.state] || chalk.white;
+      console.log(`PR:     ${chalk.cyan(result.title)}`);
+      console.log(`Status: ${colour(result.state.toUpperCase())}`);
+      console.log(`URL:    ${result.url}`);
+
+      const prStatus = result.state as 'open' | 'merged' | 'closed' | 'draft';
+      await axios.put(`${API_URL}/items/${itemId}`, { prStatus });
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+prCmd
+  .command('check <itemId>')
+  .description('Check whether the PR linked to an item is merged (one-shot, for use before releasing)')
+  .action(async (itemId) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.prNumber && !item.prUrl) {
+        console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
+        process.exit(1);
+      }
+      const ref = item.prNumber || item.prUrl;
+      let result: any;
+      try {
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        result = JSON.parse(raw);
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
+        process.exit(1);
+      }
+
+      const prStatus = result.state as 'open' | 'merged' | 'closed' | 'draft';
+      await axios.put(`${API_URL}/items/${itemId}`, { prStatus });
+
+      if (result.state === 'merged') {
+        console.log(chalk.green(`✅ PR #${item.prNumber} is merged: "${result.title}"`));
+        console.log(chalk.cyan('You can now run /agenfk-release to create a release.'));
+        process.exit(0);
+      } else if (result.state === 'closed') {
+        console.log(chalk.red(`⚠ PR #${item.prNumber} was closed without merging.`));
+        process.exit(1);
+      } else {
+        console.log(chalk.yellow(`PR #${item.prNumber} is ${result.state}: "${result.title}"`));
+        console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
+        process.exit(1);
+      }
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
     }
   });

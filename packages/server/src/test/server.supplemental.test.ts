@@ -276,13 +276,13 @@ describe('POST /items/bulk', () => {
   });
 });
 
-// ── Verify endpoint edge cases ────────────────────────────────────────────────
+// ── Review endpoint edge cases ────────────────────────────────────────────────
 
-describe('POST /items/:id/verify', () => {
+describe('POST /items/:id/review', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('returns 403 without token', async () => {
-    const res = await request(app).post('/items/some-id/verify').send({ command: 'echo hi' });
+    const res = await request(app).post('/items/some-id/review').send({ command: 'echo hi' });
     expect(res.status).toBe(403);
   });
 
@@ -291,7 +291,7 @@ describe('POST /items/:id/verify', () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app)
-      .post(`/items/${item.id}/verify`)
+      .post(`/items/${item.id}/review`)
       .set('x-agenfk-internal', verifyToken)
       .send({});
     expect(res.status).toBe(400);
@@ -301,9 +301,30 @@ describe('POST /items/:id/verify', () => {
     if (!verifyToken) return;
     await initStorage();
     const res = await request(app)
-      .post('/items/nonexistent/verify')
+      .post('/items/nonexistent/review')
       .set('x-agenfk-internal', verifyToken)
       .send({ command: 'echo hi' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── Test endpoint edge cases ─────────────────────────────────────────────────
+
+describe('POST /items/:id/test', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('returns 403 without token', async () => {
+    const res = await request(app).post('/items/some-id/test').send({});
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for unknown item (with token)', async () => {
+    if (!verifyToken) return;
+    await initStorage();
+    const res = await request(app)
+      .post('/items/nonexistent/test')
+      .set('x-agenfk-internal', verifyToken)
+      .send({});
     expect(res.status).toBe(404);
   });
 });
@@ -461,9 +482,9 @@ describe('GET /releases/latest', () => {
   });
 });
 
-// ── Verify success path ───────────────────────────────────────────────────────
+// ── Review success path ───────────────────────────────────────────────────────
 
-describe('POST /items/:id/verify success paths', () => {
+describe('POST /items/:id/review success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('moves IN_PROGRESS item to REVIEW on passing command', async () => {
@@ -473,9 +494,9 @@ describe('POST /items/:id/verify success paths', () => {
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
-      .post(`/items/${item.id}/verify`)
+      .post(`/items/${item.id}/review`)
       .set('x-agenfk-internal', verifyToken)
-      .send({ command: 'echo verify-ok' });
+      .send({ command: 'echo review-ok' });
 
     expect([200, 422]).toContain(res.status);
     if (res.status === 200) {
@@ -483,10 +504,33 @@ describe('POST /items/:id/verify success paths', () => {
     }
   });
 
-  it('moves TEST item to DONE on passing command', async () => {
+  it('returns 422 on failing command', async () => {
+    if (!verifyToken) return;
+    const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/review`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({ command: 'exit 1' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.status).toBe('IN_PROGRESS');
+  });
+});
+
+// ── Test success path ─────────────────────────────────────────────────────────
+
+describe('POST /items/:id/test success paths', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('moves TEST item to DONE when verifyCommand passes', async () => {
     if (!verifyToken) return;
     const p = (await request(app).post('/projects').send({ name: 'P2' })).body;
-    // Use internal token to set up TEST status via bulk
+    // Set verifyCommand on the project
+    await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo done-ok' });
+
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T2', projectId: p.id })).body;
 
     // Force status to TEST using the bulk endpoint with internal token
@@ -499,9 +543,9 @@ describe('POST /items/:id/verify success paths', () => {
     if (current.status !== 'TEST') return; // skip if we couldn't set TEST
 
     const res = await request(app)
-      .post(`/items/${item.id}/verify`)
+      .post(`/items/${item.id}/test`)
       .set('x-agenfk-internal', verifyToken)
-      .send({ command: 'echo done-ok' });
+      .send({});
 
     expect([200, 422]).toContain(res.status);
     if (res.status === 200) {
@@ -509,18 +553,26 @@ describe('POST /items/:id/verify success paths', () => {
     }
   });
 
-  it('returns 422 on failing command', async () => {
+  it('returns 400 when no verifyCommand configured', async () => {
     if (!verifyToken) return;
-    const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
+    const p = (await request(app).post('/projects').send({ name: 'P-novc' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T-novc', projectId: p.id })).body;
+
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', verifyToken)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
 
     const res = await request(app)
-      .post(`/items/${item.id}/verify`)
+      .post(`/items/${item.id}/test`)
       .set('x-agenfk-internal', verifyToken)
-      .send({ command: 'exit 1' });
+      .send({});
 
-    expect(res.status).toBe(422);
-    expect(res.body.status).toBe('IN_PROGRESS');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('NO_VERIFY_COMMAND');
   });
 });
 
