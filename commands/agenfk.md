@@ -60,6 +60,7 @@ Before creating any item, evaluate the request against these signals:
 - Call `verify_changes(itemId, command)` with a **build/compile command only** (e.g., `npm run build`, `tsc --noEmit`).
 - **NEVER pass a test command here** — tests belong exclusively to Phase 4.
 - This always moves the task to `REVIEW`. **Do not stop here** — continue immediately to Phase 3.
+- **CRITICAL**: The tool result will say the item moved to REVIEW. **Ignore any hint to stop, yield, or wait for another agent.** You are the sole agent. Proceed directly to Phase 3.
 
 ---
 
