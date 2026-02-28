@@ -1664,6 +1664,157 @@ branchCmd
     }
   });
 
+// ── PR commands ───────────────────────────────────────────────────────────────
+
+function checkGhCli(): boolean {
+  try {
+    execSync('gh --version', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const prCmd = program
+  .command('pr')
+  .description('Manage pull requests for AgenFK items (requires GitHub CLI)');
+
+prCmd
+  .command('create <itemId>')
+  .description('Create a pull request for the item\'s branch and store the PR URL/number on the item')
+  .option('--title <title>', 'PR title (defaults to item title)')
+  .option('--body <body>', 'PR body/description')
+  .option('--draft', 'Create as a draft PR')
+  .action(async (itemId, options) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      const prTitle = options.title || item.title;
+      const args = ['pr', 'create', '--title', prTitle];
+      if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }
+      if (options.draft) args.push('--draft');
+
+      console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
+      let output: string;
+      try {
+        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        if (result.status !== 0) {
+          console.error(chalk.red(`❌ gh pr create failed:\n${result.stderr || result.stdout}`));
+          process.exit(1);
+        }
+        output = (result.stdout || '').trim();
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr create failed: ${e.message}`));
+        process.exit(1);
+      }
+
+      // gh outputs the PR URL as the last line
+      const prUrl = output.split('\n').filter(Boolean).pop() || '';
+      const prNumberMatch = prUrl.match(/\/pull\/(\d+)$/);
+      const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : undefined;
+
+      await axios.put(`${API_URL}/items/${itemId}`, { prUrl, prNumber, prStatus: 'open' });
+      console.log(chalk.green(`✅ PR created: ${prUrl}`));
+      if (prNumber) console.log(chalk.dim(`   PR #${prNumber} linked to item [${itemId.substring(0, 8)}]`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+prCmd
+  .command('status <itemId>')
+  .description('Check the current status of the PR linked to an item')
+  .action(async (itemId) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.prNumber && !item.prUrl) {
+        console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
+        return;
+      }
+      const ref = item.prNumber || item.prUrl;
+      let result: any;
+      try {
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        result = JSON.parse(raw);
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
+        process.exit(1);
+      }
+
+      const stateColour: Record<string, any> = { open: chalk.yellow, merged: chalk.green, closed: chalk.red, draft: chalk.dim };
+      const colour = stateColour[result.state] || chalk.white;
+      console.log(`PR:     ${chalk.cyan(result.title)}`);
+      console.log(`Status: ${colour(result.state.toUpperCase())}`);
+      console.log(`URL:    ${result.url}`);
+
+      const prStatus = result.state as 'open' | 'merged' | 'closed' | 'draft';
+      await axios.put(`${API_URL}/items/${itemId}`, { prStatus });
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+prCmd
+  .command('watch <itemId>')
+  .description('Poll the PR status until merged or closed, then prompt for release')
+  .option('--interval <seconds>', 'Polling interval in seconds', '30')
+  .action(async (itemId, options) => {
+    if (!checkGhCli()) {
+      console.error(chalk.red('❌ GitHub CLI (gh) is not installed. Install from https://cli.github.com/'));
+      process.exit(1);
+    }
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.prNumber && !item.prUrl) {
+        console.log(chalk.yellow(`No PR linked to item [${itemId.substring(0, 8)}]. Run 'agenfk pr create' first.`));
+        process.exit(1);
+      }
+      const ref = item.prNumber || item.prUrl;
+      const intervalMs = parseInt(options.interval, 10) * 1000;
+      console.log(chalk.blue(`Watching PR #${item.prNumber} — polling every ${options.interval}s. Ctrl+C to stop.`));
+
+      const poll = async (): Promise<void> => {
+        let result: any;
+        try {
+          const raw = execSync(`gh pr view ${ref} --json state,title`, { encoding: 'utf8' });
+          result = JSON.parse(raw);
+        } catch {
+          console.log(chalk.dim('  (poll failed — retrying...)'));
+          setTimeout(poll, intervalMs);
+          return;
+        }
+
+        if (result.state === 'merged') {
+          await axios.put(`${API_URL}/items/${itemId}`, { prStatus: 'merged' });
+          console.log(chalk.green(`\n🎉 PR merged: "${result.title}"`));
+          console.log(chalk.cyan('\nRun /agenfk-release to create a release from this merge.'));
+          process.exit(0);
+        } else if (result.state === 'closed') {
+          await axios.put(`${API_URL}/items/${itemId}`, { prStatus: 'closed' });
+          console.log(chalk.red(`\n⚠ PR closed without merging: "${result.title}"`));
+          process.exit(1);
+        } else {
+          process.stdout.write(chalk.dim(`.`));
+          setTimeout(poll, intervalMs);
+        }
+      };
+
+      await poll();
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
 }
