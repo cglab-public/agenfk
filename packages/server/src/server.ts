@@ -540,7 +540,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, tests, comments, sortOrder } = req.body;
+  const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus } = req.body;
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -584,6 +584,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (tests !== undefined) updates.tests = tests;
   if (comments !== undefined) updates.comments = comments;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
+  if (branchName !== undefined) updates.branchName = branchName;
+  if (prUrl !== undefined) updates.prUrl = prUrl;
+  if (prNumber !== undefined) updates.prNumber = prNumber;
+  if (prStatus !== undefined) updates.prStatus = prStatus;
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);

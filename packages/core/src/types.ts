@@ -95,6 +95,10 @@ export interface BaseItem {
   sortOrder?: number; // Position within column for prioritization
   externalId?: string; // Reference to external systems (e.g. JIRA key)
   externalUrl?: string; // Link to external system
+  branchName?: string; // Git branch associated with this item
+  prUrl?: string; // Pull request URL
+  prNumber?: number; // Pull request number
+  prStatus?: 'open' | 'merged' | 'closed' | 'draft'; // Pull request status
 }
 
 export interface Epic extends BaseItem {
