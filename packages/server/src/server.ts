@@ -1086,7 +1086,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       // If this is an Epic, also import its child stories
       if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
         try {
-          const searchBase = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search`;
+          const searchBase = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql`;
           const childFields = 'summary,description,issuetype';
 
           // Try next-gen (team-managed) projects first: parent = KEY
