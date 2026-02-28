@@ -25,7 +25,7 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
     - Call `log_test_result(id, "<test-command>", "<full captured output>", "PASSED")` — this populates the Test Results tab.
     - Call `add_comment(id, "TESTS PASSED: ... [85% Coverage]")` to log the summary.
     - Call `add_comment(id, "Phase Test complete: Coverage threshold met and tests passed.")` to log the phase completion.
-    - **DO NOT call `verify_changes`** — that would incorrectly move the item back to REVIEW.
+    - **DO NOT call `review_changes` or `test_changes`** — the Closing Agent handles TEST → DONE.
     - **DO NOT transition to DONE** — the Closing Agent handles TEST → DONE.
     - STOP and YIELD. The supervisor will assign a closing agent to finalize the task.
 - If failed:

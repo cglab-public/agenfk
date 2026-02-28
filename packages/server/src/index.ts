@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { execSync, spawn } from "child_process";
+import { execSync, spawnSync, spawn } from "child_process";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -97,6 +97,7 @@ const UpdateItemSchema = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
   status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -157,6 +158,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "update_project",
+        description: "Update an existing project's name, description, or verifyCommand.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The project ID." },
+            name: { type: "string", description: "New project name." },
+            description: { type: "string", description: "New project description." },
+            verifyCommand: { type: "string", description: "The command to run for test_changes (e.g. 'npm run build && npm test'). Once set, test_changes will always use this command to gate TEST → DONE." },
+          },
+          required: ["id"],
+        },
+      },
+      {
         name: "create_item",
         description: "Create a new Epic, Story, Task, or Bug in the AgenFK framework.",
         inputSchema: {
@@ -175,7 +190,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE or REVIEW directly — use 'verify_changes' instead.",
+        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes. Cannot set status to REVIEW directly — use review_changes.",
         inputSchema: {
           type: "object",
           properties: {
@@ -183,6 +198,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             title: { type: "string" },
             description: { type: "string" },
             status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
+            type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             implementationPlan: { type: "string" },
           },
           required: ["id"],
@@ -284,6 +300,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "create_branch",
+        description: "Create a git branch for an item. Computes the branch name (BUG → fix/, others → feature/), creates the local branch, switches to it, and stores branchName on the item. Only works for top-level items (no parentId).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+          },
+          required: ["itemId"],
+        },
+      },
+      {
+        name: "create_pr",
+        description: "Push the item's branch to remote and create a GitHub pull request. Stores prUrl, prNumber, and prStatus on the item. Requires GitHub CLI (gh) and a branch already assigned to the item. Only works for top-level items (no parentId).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            description: { type: "string", description: "PR body/description written by the agent." },
+            draft: { type: "boolean", description: "Create as a draft PR. Defaults to false." },
+          },
+          required: ["itemId"],
+        },
+      },
+      {
         name: "analyze_request",
         description: "Analyze a user request to suggest the appropriate AgenFK item type.",
         inputSchema: {
@@ -293,15 +333,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "verify_changes",
-        description: "Executes a verification command and automatically updates the task status. Moves to REVIEW if the item is IN_PROGRESS, or DONE if the item is in TEST status.",
+        name: "review_changes",
+        description: "Runs an agent-chosen command to verify the implementation and moves the item from IN_PROGRESS → REVIEW. Use any command that makes sense (build, lint, type-check, etc.). If the command fails, the item stays IN_PROGRESS.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
-            command: { type: "string" },
+            command: { type: "string", description: "The command to run (e.g. 'npm run build', 'cargo check')." },
           },
           required: ["itemId", "command"],
+        },
+      },
+      {
+        name: "test_changes",
+        description: "Runs the project's verifyCommand (test suite) and moves the item from TEST → DONE. No command parameter — the project's verifyCommand is always used. If no verifyCommand is configured, returns an error — ask the developer to set one via update_project.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+          },
+          required: ["itemId"],
         },
       },
       {
@@ -334,6 +385,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const { data } = await api.post(`/projects`, args);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
+      case "update_project": {
+        const { id, ...updates } = z.object({
+          id: z.string(),
+          name: z.string().optional(),
+          description: z.string().optional(),
+          verifyCommand: z.string().optional(),
+        }).parse(request.params.arguments);
+        const { data } = await api.put(`/projects/${id}`, updates);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
       case "log_test_result": {
         const { itemId, command, output, status } = z.object({ 
           itemId: z.string(), 
@@ -352,13 +413,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { isError: true, content: [{ type: "text", text: `❌ Failed to log test result: ${error.message}` }] };
         }
       }
-      case "verify_changes": {
+      case "review_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/verify`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/review`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
           return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
-          const msg = error.response?.data?.message || error.message;
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: msg }] };
+        }
+      }
+      case "test_changes": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/test`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: data.message }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: msg }] };
         }
       }
@@ -433,22 +504,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (task.type === 'EPIC' || task.type === 'STORY') {
              return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role is not allowed on ${task.type} items. Please decompose into TASKS and work on those instead.` }] };
           }
-          
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+
+          // Auto-create git branch if branchName is set but branch doesn't exist locally
+          let branchHint = '';
+          if (task.branchName) {
+            try {
+              // Check if the branch exists locally
+              try {
+                execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
+                // Branch exists — check if we're on it
+                const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+                if (currentBranch !== task.branchName) {
+                  execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+                  branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
+                } else {
+                  branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
+                }
+              } catch {
+                // Branch doesn't exist locally — create and checkout
+                execSync(`git checkout -b ${task.branchName}`, { stdio: 'ignore' });
+                branchHint = `\n🔀 Created and switched to branch '${task.branchName}'.`;
+              }
+            } catch (gitErr: any) {
+              branchHint = `\n⚠️ Could not auto-checkout branch '${task.branchName}': ${gitErr.message}. You may need to handle this manually.`;
+            }
+          } else if (task.type === 'TASK' && !task.parentId) {
+            branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with the `create_branch` MCP tool, or continue on the current branch.';
+          }
+
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
         }
 
         if (role === 'review') {
           const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
           if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${effectiveProjectId}].` }] };
           const task = activeReviewItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         if (role === 'testing') {
           const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
           if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${effectiveProjectId}].` }] };
           const task = activeTestItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized
@@ -507,7 +605,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (currentItem.status !== "TEST") {
             return {
               isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call 'verify_changes(itemId, command)' — the server will route TEST → DONE automatically.` }],
+              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call test_changes(itemId) to run the project's test suite.` }],
             };
           }
           // Allow TEST -> DONE, using verify token to bypass server guard
@@ -518,7 +616,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         if (updates.status === "REVIEW") {
           return {
             isError: true,
-            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. The REVIEW state is managed automatically by 'verify_changes(itemId, command)'. Call verify_changes instead.` }],
+            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. Use review_changes(itemId, command) instead.` }],
           };
         }
 
@@ -576,6 +674,97 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         });
         await api.put(`/items/${itemId}`, { comments });
         return { content: [{ type: "text", text: "Comment added." }] };
+      }
+      case "create_branch": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        const { data: item } = await api.get(`/items/${itemId}`);
+
+        if (item.parentId) {
+          return { isError: true, content: [{ type: "text", text: `❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
+        }
+        if (item.branchName) {
+          // Branch name already assigned — just ensure it exists locally
+          try {
+            try {
+              execSync(`git rev-parse --verify ${item.branchName}`, { stdio: 'ignore' });
+            } catch {
+              execSync(`git checkout -b ${item.branchName}`, { stdio: 'ignore' });
+            }
+            execSync(`git checkout ${item.branchName}`, { stdio: 'ignore' });
+          } catch (gitErr: any) {
+            return { isError: true, content: [{ type: "text", text: `⚠️ Branch '${item.branchName}' is stored on the item but could not be checked out: ${gitErr.message}` }] };
+          }
+          return { content: [{ type: "text", text: `🔀 Branch '${item.branchName}' already assigned. Switched to it.` }] };
+        }
+
+        // Compute branch name
+        const prefix = item.type === 'BUG' ? 'fix' : 'feature';
+        const slug = item.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s]+/g, '-').replace(/-+/g, '-').substring(0, 50).replace(/-$/, '');
+        const branchName = `${prefix}/${slug}`;
+
+        try {
+          execSync(`git checkout -b ${branchName}`, { stdio: 'ignore' });
+        } catch (gitErr: any) {
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to create branch '${branchName}': ${gitErr.message}` }] };
+        }
+
+        await api.put(`/items/${itemId}`, { branchName });
+        return { content: [{ type: "text", text: `🔀 Created and switched to branch '${branchName}'. Stored on item [${itemId.substring(0, 8)}].` }] };
+      }
+      case "create_pr": {
+        const { itemId, description: prBody, draft } = z.object({
+          itemId: z.string(),
+          description: z.string().optional(),
+          draft: z.boolean().optional(),
+        }).parse(request.params.arguments);
+
+        // Check gh CLI is available
+        try {
+          execSync('gh --version', { stdio: 'ignore' });
+        } catch {
+          return { isError: true, content: [{ type: "text", text: `❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/` }] };
+        }
+
+        const { data: item } = await api.get(`/items/${itemId}`);
+
+        if (item.parentId) {
+          return { isError: true, content: [{ type: "text", text: `❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
+        }
+        if (!item.branchName) {
+          return { isError: true, content: [{ type: "text", text: `❌ No branch assigned to item [${itemId.substring(0, 8)}]. Create a branch first with the create_branch tool.` }] };
+        }
+        if (item.prUrl) {
+          return { content: [{ type: "text", text: `PR already exists for item [${itemId.substring(0, 8)}]: ${item.prUrl}` }] };
+        }
+
+        // Push branch to remote
+        try {
+          execSync(`git push -u origin ${item.branchName}`, { stdio: 'ignore' });
+        } catch (pushErr: any) {
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to push branch '${item.branchName}' to remote: ${pushErr.message}` }] };
+        }
+
+        // Create PR via gh CLI (spawnSync for safe arg passing)
+        const args = ['pr', 'create', '--title', item.title, '--body', prBody || item.description || ''];
+        if (draft) args.push('--draft');
+
+        const result = spawnSync('gh', args, { encoding: 'utf8' });
+        if (result.status !== 0) {
+          return { isError: true, content: [{ type: "text", text: `❌ gh pr create failed:\n${result.stderr || result.stdout}` }] };
+        }
+
+        const output = (result.stdout || '').trim();
+        const prUrl = output.split('\n').filter(Boolean).pop() || '';
+        const prNumberMatch = prUrl.match(/\/pull\/(\d+)$/);
+        const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : undefined;
+        const prStatus = draft ? 'draft' : 'open';
+
+        await api.put(`/items/${itemId}`, { prUrl, prNumber, prStatus });
+
+        let msg = `✅ PR created: ${prUrl}`;
+        if (prNumber) msg += `\n   PR #${prNumber} linked to item [${itemId.substring(0, 8)}].`;
+        msg += `\n\nWhen the PR is approved and merged, run /agenfk-release to create a release.`;
+        return { content: [{ type: "text", text: msg }] };
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
