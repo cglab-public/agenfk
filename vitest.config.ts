@@ -20,13 +20,9 @@ export default defineConfig({
     sequence: { concurrent: false }, // run tests within a file serially
     include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
     exclude: [
-      '**/dist/**', 
+      '**/dist/**',
       '**/node_modules/**',
-      'packages/ui/src/test/ThemeContext.test.tsx',
-      'packages/ui/src/test/CardDetailModal.test.tsx',
-      'packages/ui/src/test/KanbanBoard.test.tsx',
-      'packages/ui/src/test/JiraConnectionButton.test.tsx',
-      'packages/ui/src/test/JiraImportModal.test.tsx',
+      'packages/ui/src/test/**',
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {
