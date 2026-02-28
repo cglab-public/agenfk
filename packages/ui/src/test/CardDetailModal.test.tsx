@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -62,7 +62,7 @@ describe('CardDetailModal', () => {
     createdAt: new Date(),
     updatedAt: new Date(),
     tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }],
-    reviews: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
+    tests: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
     implementationPlan: '# Plan\n- step 1',
   };
 
@@ -191,6 +191,287 @@ describe('CardDetailModal', () => {
     expect(screen.getByText(/No state transitions recorded/i)).toBeDefined();
   });
 
+  it('should enter edit mode when pencil button is clicked', async () => {
+    const onUpdateItem = vi.fn().mockResolvedValue({});
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+        onUpdateItem={onUpdateItem}
+      />,
+      { wrapper },
+    );
+
+    const editBtn = screen.getByTitle(/Edit item/i);
+    fireEvent.click(editBtn);
+
+    const editTitleInput = screen.getByTestId('edit-title') as HTMLInputElement;
+    expect(editTitleInput.value).toBe('Test Story');
+  });
+
+  it('should save edit changes when Save button is clicked', async () => {
+    const onUpdateItem = vi.fn().mockResolvedValue({});
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+        onUpdateItem={onUpdateItem}
+      />,
+      { wrapper },
+    );
+
+    fireEvent.click(screen.getByTitle(/Edit item/i));
+    const editTitle = screen.getByTestId('edit-title');
+    fireEvent.change(editTitle, { target: { value: 'Updated Title' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+    await waitFor(() => {
+      expect(onUpdateItem).toHaveBeenCalledWith('i1', expect.objectContaining({ title: 'Updated Title' }));
+    });
+  });
+
+  it('should cancel edit mode without saving', async () => {
+    const onUpdateItem = vi.fn().mockResolvedValue({});
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+        onUpdateItem={onUpdateItem}
+      />,
+      { wrapper },
+    );
+
+    fireEvent.click(screen.getByTitle(/Edit item/i));
+    const editTitle = screen.getByTestId('edit-title');
+    fireEvent.change(editTitle, { target: { value: 'Changed Title' } });
+
+    // Click cancel (pencil button again in editing state says 'Cancel editing')
+    fireEvent.click(screen.getByTitle(/Cancel editing/i));
+    expect(onUpdateItem).not.toHaveBeenCalled();
+    // Should show original title
+    expect(screen.getByText('Test Story')).toBeDefined();
+  });
+
+  it('should close on Escape key press', () => {
+    const onClose = vi.fn();
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={onClose}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('should render history when history tab is clicked', async () => {
+    const itemWithHistory = {
+      ...mockItem,
+      history: [{ id: 'h1', fromStatus: 'TODO', toStatus: 'IN_PROGRESS', timestamp: new Date().toISOString(), triggeredBy: 'user' }],
+    };
+    render(
+      <CardDetailModal
+        item={itemWithHistory as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /History/i }));
+    expect(screen.getByText('IN_PROGRESS')).toBeDefined();
+  });
+
+  it('should render EPIC subitems as STORY type', async () => {
+    const epicItem = { ...mockItem, type: ItemType.EPIC };
+    const storySubitem = { id: 'sub2', parentId: 'i1', title: 'Sub Story', type: ItemType.STORY, status: Status.TODO };
+    render(
+      <CardDetailModal
+        item={epicItem as any}
+        allItems={[storySubitem as any]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const subitemsTab = screen.getByRole('button', { name: /Subitems/i });
+    fireEvent.click(subitemsTab);
+    expect(await screen.findByText('Sub Story')).toBeDefined();
+  });
+
+  it('should add STORY type subitem for EPIC parent via Quick Add', async () => {
+    const epicItem = { ...mockItem, type: ItemType.EPIC };
+    const onAddItem = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CardDetailModal
+        item={epicItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={onAddItem}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Subitems/i }));
+    const input = screen.getByPlaceholderText(/Quick add/i);
+    fireEvent.change(input, { target: { value: 'New Story' } });
+    fireEvent.submit(input.closest('form')!);
+    expect(onAddItem).toHaveBeenCalledWith('New Story', ItemType.STORY, Status.TODO);
+  });
+
+  it('should call onDeleteItem when Delete is confirmed', async () => {
+    const onDeleteItem = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={onClose}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={onDeleteItem}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Delete/i }));
+    await waitFor(() => {
+      expect(onDeleteItem).toHaveBeenCalledWith('i1');
+    });
+  });
+
+  it('should NOT call onDeleteItem when Delete is cancelled', async () => {
+    const onDeleteItem = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={onDeleteItem}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Delete/i }));
+    expect(onDeleteItem).not.toHaveBeenCalled();
+  });
+
+  it('should render create form when item has no id (isNew)', () => {
+    const newItem = { type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: 'p1' };
+    render(
+      <CardDetailModal
+        item={newItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    expect(screen.getByPlaceholderText(/Title of your new task/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /Create task/i })).toBeDefined();
+  });
+
+  it('should call onAddItem with new item details via create form', async () => {
+    const onAddItem = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const newItem = { type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: 'p1' };
+    render(
+      <CardDetailModal
+        item={newItem as any}
+        allItems={[]}
+        onClose={onClose}
+        onSelectItem={() => {}}
+        onAddItem={onAddItem}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const titleInput = screen.getByPlaceholderText(/Title of your new task/i);
+    fireEvent.change(titleInput, { target: { value: 'Brand New Task' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create task/i }));
+    await waitFor(() => {
+      expect(onAddItem).toHaveBeenCalledWith('Brand New Task', ItemType.TASK, Status.TODO, '');
+    });
+  });
+
+  it('should navigate to subitem when subitem row is clicked', async () => {
+    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', type: ItemType.TASK, status: Status.DONE };
+    const onSelectItem = vi.fn();
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[subitem as any]}
+        onClose={() => {}}
+        onSelectItem={onSelectItem}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Subitems/i }));
+    const subitemRow = await screen.findByText('Sub Task');
+    const row = subitemRow.closest('tr')!;
+    fireEvent.click(row);
+    expect(onSelectItem).toHaveBeenCalledWith(subitem);
+  });
+
+  it('should enter confirm state and then delete on double-click of delete subitem button', async () => {
+    const onDeleteItem = vi.fn().mockResolvedValue(undefined);
+    const subitem = { id: 'sub1', parentId: 'i1', title: 'Sub Task', type: ItemType.TASK, status: Status.TODO };
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[subitem as any]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={onDeleteItem}
+      />,
+      { wrapper },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Subitems/i }));
+    await screen.findByText('Sub Task');
+
+    const deleteBtn = screen.getByTestId('delete-subitem-sub1');
+    // First click: enter confirm state
+    fireEvent.click(deleteBtn);
+    expect(screen.getByText('Confirm?')).toBeDefined();
+
+    // Second click: execute delete
+    fireEvent.click(deleteBtn);
+    await waitFor(() => {
+      expect(onDeleteItem).toHaveBeenCalledWith('sub1');
+    });
+  });
+
   it('should copy ID to clipboard when clicked', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {
@@ -200,10 +481,10 @@ describe('CardDetailModal', () => {
     });
 
     render(
-      <CardDetailModal 
-        item={mockItem as any} 
-        allItems={[]} 
-        onClose={() => {}} 
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
         onSelectItem={() => {}}
         onAddItem={async () => {}}
         onDeleteItem={async () => {}}

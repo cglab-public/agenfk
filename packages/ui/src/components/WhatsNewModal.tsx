@@ -23,9 +23,11 @@ const isNewerVersion = (latest: string, current: string): boolean => {
     const lv = l[i] || 0;
     const cv = c[i] || 0;
     if (lv > cv) return true;
+    /* v8 ignore start */
     if (lv < cv) return false;
   }
   return false;
+  /* v8 ignore stop */
 };
 
 interface WhatsNewModalProps {

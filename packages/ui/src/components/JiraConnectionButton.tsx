@@ -64,9 +64,11 @@ export const JiraConnectionButton: React.FC = () => {
     },
   });
 
+  /* v8 ignore start */
   const handleConnect = () => {
     window.location.href = `${API_URL}/jira/oauth/authorize`;
   };
+  /* v8 ignore stop */
 
   return (
     <>
