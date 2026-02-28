@@ -1563,6 +1563,107 @@ program
     }
   });
 
+// ── Branch commands ──────────────────────────────────────────────────────────
+
+function slugifyTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/[\s]+/g, '-')
+    .replace(/-+/g, '-')
+    .substring(0, 50)
+    .replace(/-$/, '');
+}
+
+const branchCmd = program
+  .command('branch')
+  .description('Manage git branches for AgenFK items');
+
+branchCmd
+  .command('create <itemId>')
+  .description('Create a git branch for an item (BUG → fix/, others → feature/). Stores branch name on the item.')
+  .option('--name <name>', 'Override the generated branch name (prefix is still enforced)')
+  .action(async (itemId, options) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      const prefix = item.type === 'BUG' ? 'fix' : 'feature';
+      const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
+      const branchName = `${prefix}/${slug}`;
+
+      console.log(chalk.blue(`Creating branch: ${branchName}`));
+      try {
+        execSync(`git checkout -b ${branchName}`, { stdio: 'inherit' });
+      } catch {
+        console.error(chalk.red(`Failed to create branch. Does it already exist? Try: git checkout ${branchName}`));
+        process.exit(1);
+      }
+
+      await axios.put(`${API_URL}/items/${itemId}`, { branchName });
+      console.log(chalk.green(`✅ Branch '${branchName}' created and linked to item [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
+  .command('push <itemId>')
+  .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')
+  .action(async (itemId) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.branchName) {
+        console.error(chalk.yellow(`⚠ No branch linked to item [${itemId.substring(0, 8)}]. Run 'agenfk branch create' first.`));
+        process.exit(1);
+      }
+
+      let hasRemote = false;
+      try {
+        const remotes = execSync('git remote', { encoding: 'utf8' }).trim();
+        hasRemote = remotes.length > 0;
+      } catch { /* not a git repo */ }
+
+      if (!hasRemote) {
+        console.log(chalk.yellow('ℹ No git remote configured — skipping push.'));
+        return;
+      }
+
+      console.log(chalk.blue(`Pushing branch '${item.branchName}' to remote...`));
+      execSync(`git push -u origin ${item.branchName}`, { stdio: 'inherit' });
+      console.log(chalk.green(`✅ Branch '${item.branchName}' pushed to remote.`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
+  .command('status <itemId>')
+  .description('Show the branch linked to an item and whether it has been pushed to remote')
+  .action(async (itemId) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (!item.branchName) {
+        console.log(chalk.yellow(`No branch linked to item [${itemId.substring(0, 8)}].`));
+        return;
+      }
+
+      console.log(`Branch: ${chalk.cyan(item.branchName)}`);
+
+      try {
+        const remoteBranches = execSync('git branch -r', { encoding: 'utf8' });
+        const pushed = remoteBranches.split('\n').some(b => b.trim().endsWith(item.branchName));
+        console.log(`Remote: ${pushed ? chalk.green('pushed') : chalk.yellow('not pushed yet')}`);
+      } catch {
+        console.log(`Remote: ${chalk.dim('(not in a git repo)')}`);
+      }
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
 }
