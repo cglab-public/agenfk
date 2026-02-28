@@ -14,6 +14,7 @@ import {
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
+import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
