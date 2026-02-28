@@ -92,6 +92,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Hierarchy Rule — MANDATORY**: Before creating any new item, call `list_items(projectId)` and check if an existing EPIC or STORY already covers the work. If one exists, create your items **under it** using `parentId`. NEVER create orphan tasks when a parent hierarchy exists. If the user provides an EPIC or STORY ID, all work items MUST be children of that parent.
     *   **Transparency**: If you're opencode, display every MCP call parameter and return value.
     *   **Conventional Commits**: Use standard prefixes for all commits: `fix:`, `feat:`, `chore:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`. NEVER use `close:`, `update:`, or other non-standard prefixes. Append the item ID in brackets if relevant, e.g., `fix: resolve crash [id]`.
+    *   **Cross-project commit guard (MANDATORY)**: Before appending a task ID to a commit message, verify that `get_item(id).projectId` matches the `projectId` in `.agenfk/project.json` of the current working directory. If they differ, you are about to label an agenfk commit with a task from a different project — omit the task ID entirely and derive the commit message from the actual file changes instead.
 
 3.  **Planning (Epics only)**
     *   **Action**: Require or generate a detailed Markdown **Implementation Plan**.
