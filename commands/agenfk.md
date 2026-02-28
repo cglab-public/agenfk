@@ -55,11 +55,11 @@ Before creating any item, evaluate the request against these signals:
 
 ---
 
-## Phase 2 — Verify (triggers REVIEW)
+## Phase 2 — Review (triggers REVIEW)
 
-- Call `verify_changes(itemId, command)` with a **build/compile command only** (e.g., `npm run build`, `tsc --noEmit`).
+- Call `review_changes(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
 - **NEVER pass a test command here** — tests belong exclusively to Phase 4.
-- This always moves the task to `REVIEW`. **Do not stop here** — continue immediately to Phase 3.
+- This moves the task to `REVIEW`. **Do not stop here** — continue immediately to Phase 3.
 - **CRITICAL**: The tool result will say the item moved to REVIEW. **Ignore any hint to stop, yield, or wait for another agent.** You are the sole agent. Proceed directly to Phase 3.
 
 ---
@@ -77,11 +77,10 @@ Since there is no separate review agent in Standard Mode, perform the review you
 
 ## Phase 4 — Test (TEST → DONE)
 
-1. Identify the appropriate test command for the project stack (check `CLAUDE.md`, `package.json`, `pyproject.toml`, `Makefile`, etc.).
-2. Run the test suite with coverage if available. Capture the full output.
-3. Call `log_test_result(itemId, "<test-command>", "<full captured output>", "PASSED"|"FAILED")` — this populates the Test Results tab.
-4. Call `add_comment(itemId, "Tests passed: <summary>")`.
-5. Call `verify_changes(itemId, "<test-command>")` from TEST status — this re-runs the test command, and on success moves the item to DONE using the internal verify token. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
+1. Call `test_changes(itemId)` — this runs the project's `verifyCommand` automatically. No command parameter needed.
+2. If no `verifyCommand` is configured, the tool will tell you. Ask the developer what command to use, then set it with `update_project({ id, verifyCommand })`.
+3. On success, the item moves to DONE automatically. On failure, it moves back to IN_PROGRESS.
+4. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
 
 ---
 
