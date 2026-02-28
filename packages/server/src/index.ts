@@ -284,6 +284,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "create_branch",
+        description: "Create a git branch for an item. Computes the branch name (BUG → fix/, others → feature/), creates the local branch, switches to it, and stores branchName on the item. Only works for top-level items (no parentId).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+          },
+          required: ["itemId"],
+        },
+      },
+      {
         name: "analyze_request",
         description: "Analyze a user request to suggest the appropriate AgenFK item type.",
         inputSchema: {
@@ -458,7 +469,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
               branchHint = `\n⚠️ Could not auto-checkout branch '${task.branchName}': ${gitErr.message}. You may need to handle this manually.`;
             }
           } else if (task.type === 'TASK' && !task.parentId) {
-            branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with `agenfk branch create <itemId>`, or continue on the current branch.';
+            branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with the `create_branch` MCP tool, or continue on the current branch.';
           }
 
           return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
@@ -603,6 +614,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         });
         await api.put(`/items/${itemId}`, { comments });
         return { content: [{ type: "text", text: "Comment added." }] };
+      }
+      case "create_branch": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        const { data: item } = await api.get(`/items/${itemId}`);
+
+        if (item.parentId) {
+          return { isError: true, content: [{ type: "text", text: `❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
+        }
+        if (item.branchName) {
+          // Branch name already assigned — just ensure it exists locally
+          try {
+            try {
+              execSync(`git rev-parse --verify ${item.branchName}`, { stdio: 'ignore' });
+            } catch {
+              execSync(`git checkout -b ${item.branchName}`, { stdio: 'ignore' });
+            }
+            execSync(`git checkout ${item.branchName}`, { stdio: 'ignore' });
+          } catch (gitErr: any) {
+            return { isError: true, content: [{ type: "text", text: `⚠️ Branch '${item.branchName}' is stored on the item but could not be checked out: ${gitErr.message}` }] };
+          }
+          return { content: [{ type: "text", text: `🔀 Branch '${item.branchName}' already assigned. Switched to it.` }] };
+        }
+
+        // Compute branch name
+        const prefix = item.type === 'BUG' ? 'fix' : 'feature';
+        const slug = item.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s]+/g, '-').replace(/-+/g, '-').substring(0, 50).replace(/-$/, '');
+        const branchName = `${prefix}/${slug}`;
+
+        try {
+          execSync(`git checkout -b ${branchName}`, { stdio: 'ignore' });
+        } catch (gitErr: any) {
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to create branch '${branchName}': ${gitErr.message}` }] };
+        }
+
+        await api.put(`/items/${itemId}`, { branchName });
+        return { content: [{ type: "text", text: `🔀 Created and switched to branch '${branchName}'. Stored on item [${itemId.substring(0, 8)}].` }] };
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
