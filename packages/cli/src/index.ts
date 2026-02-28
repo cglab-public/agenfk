@@ -1719,6 +1719,7 @@ prCmd
       await axios.put(`${API_URL}/items/${itemId}`, { prUrl, prNumber, prStatus: 'open' });
       console.log(chalk.green(`✅ PR created: ${prUrl}`));
       if (prNumber) console.log(chalk.dim(`   PR #${prNumber} linked to item [${itemId.substring(0, 8)}]`));
+      console.log(chalk.cyan('\nWhen your PR is approved and merged, run /agenfk-release to create a release.'));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
@@ -1764,10 +1765,9 @@ prCmd
   });
 
 prCmd
-  .command('watch <itemId>')
-  .description('Poll the PR status until merged or closed, then prompt for release')
-  .option('--interval <seconds>', 'Polling interval in seconds', '30')
-  .action(async (itemId, options) => {
+  .command('check <itemId>')
+  .description('Check whether the PR linked to an item is merged (one-shot, for use before releasing)')
+  .action(async (itemId) => {
     if (!checkGhCli()) {
       console.error(chalk.red('❌ GitHub CLI (gh) is not installed. Install from https://cli.github.com/'));
       process.exit(1);
@@ -1779,36 +1779,30 @@ prCmd
         process.exit(1);
       }
       const ref = item.prNumber || item.prUrl;
-      const intervalMs = parseInt(options.interval, 10) * 1000;
-      console.log(chalk.blue(`Watching PR #${item.prNumber} — polling every ${options.interval}s. Ctrl+C to stop.`));
+      let result: any;
+      try {
+        const raw = execSync(`gh pr view ${ref} --json state,title,url`, { encoding: 'utf8' });
+        result = JSON.parse(raw);
+      } catch (e: any) {
+        console.error(chalk.red(`❌ gh pr view failed: ${e.message}`));
+        process.exit(1);
+      }
 
-      const poll = async (): Promise<void> => {
-        let result: any;
-        try {
-          const raw = execSync(`gh pr view ${ref} --json state,title`, { encoding: 'utf8' });
-          result = JSON.parse(raw);
-        } catch {
-          console.log(chalk.dim('  (poll failed — retrying...)'));
-          setTimeout(poll, intervalMs);
-          return;
-        }
+      const prStatus = result.state as 'open' | 'merged' | 'closed' | 'draft';
+      await axios.put(`${API_URL}/items/${itemId}`, { prStatus });
 
-        if (result.state === 'merged') {
-          await axios.put(`${API_URL}/items/${itemId}`, { prStatus: 'merged' });
-          console.log(chalk.green(`\n🎉 PR merged: "${result.title}"`));
-          console.log(chalk.cyan('\nRun /agenfk-release to create a release from this merge.'));
-          process.exit(0);
-        } else if (result.state === 'closed') {
-          await axios.put(`${API_URL}/items/${itemId}`, { prStatus: 'closed' });
-          console.log(chalk.red(`\n⚠ PR closed without merging: "${result.title}"`));
-          process.exit(1);
-        } else {
-          process.stdout.write(chalk.dim(`.`));
-          setTimeout(poll, intervalMs);
-        }
-      };
-
-      await poll();
+      if (result.state === 'merged') {
+        console.log(chalk.green(`✅ PR #${item.prNumber} is merged: "${result.title}"`));
+        console.log(chalk.cyan('You can now run /agenfk-release to create a release.'));
+        process.exit(0);
+      } else if (result.state === 'closed') {
+        console.log(chalk.red(`⚠ PR #${item.prNumber} was closed without merging.`));
+        process.exit(1);
+      } else {
+        console.log(chalk.yellow(`PR #${item.prNumber} is ${result.state}: "${result.title}"`));
+        console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
+        process.exit(1);
+      }
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
