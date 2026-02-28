@@ -1222,6 +1222,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
     job.exitCode = code ?? 1;
     setTimeout(() => updateJobs.delete(jobId), 5 * 60 * 1000);
 
+    /* v8 ignore start */
     if (code === 0) {
       releaseCache = null; // Force fresh version read after update
       // Notify browser then restart server
@@ -1235,6 +1236,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
       restarter.unref();
       setTimeout(() => process.exit(0), 500);
     }
+    /* v8 ignore stop */
   });
 }));
 
@@ -1275,15 +1277,17 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
 }));
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
-
+/* v8 ignore start */
 io.on('connection', (socket) => {
   console.log('Client connected to WebSockets');
   socket.on('disconnect', () => {
     console.log('Client disconnected from WebSockets');
   });
 });
+/* v8 ignore stop */
 
 // ── Opencode Token Scraper ────────────────────────────────────────────────────
+/* v8 ignore start */
 
 const OPENCODE_DB = path.join(os.homedir(), '.local/share/opencode/opencode.db');
 const OPENCODE_SCRAPE_INTERVAL = 5 * 60 * 1000; // 5 minutes
@@ -1442,7 +1446,10 @@ const scrapeOpencodeSessions = async () => {
   }
 };
 
+/* v8 ignore stop */
+
 // ── Init and Listen ──────────────────────────────────────────────────────────
+/* v8 ignore start */
 
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   initStorage().then(() => {
@@ -1477,5 +1484,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     });
   });
 }
+
+/* v8 ignore stop */
 
 export { initStorage, storage, performBackup };

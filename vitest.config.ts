@@ -15,6 +15,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node', // Use node for server/storage
+    resetMocks: true, // reset queued mockResolvedValueOnce/mockRejectedValueOnce between tests
+    fileParallelism: false, // run test files serially to prevent filesystem state conflicts
+    sequence: { concurrent: false }, // run tests within a file serially
     include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
     exclude: [
       '**/dist/**', 
@@ -27,7 +30,15 @@ export default defineConfig({
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {
-      include: ['packages/core/src/**', 'packages/storage-json/src/**'],
+      include: ['packages/core/src/**', 'packages/storage-json/src/**', 'packages/server/src/**'],
+      exclude: [
+        '**/dist/**',
+        '**/node_modules/**',
+        'packages/server/src/index.ts',
+        'packages/server/src/test-import.ts',
+        'packages/server/src/test-import.js',
+        'packages/server/src/bulk-updates.ts',
+      ],
       thresholds: {
         statements: 80,
         branches: 80,
