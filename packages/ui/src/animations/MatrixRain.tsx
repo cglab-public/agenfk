@@ -4,7 +4,7 @@ import { AnimationWrapperProps } from './types';
 import { registerAnimation } from './registry';
 
 const DURATION = 1400;
-const COLUMN_COUNT = 12;
+const COLUMN_COUNT = 28;
 
 const MATRIX_CHARS = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEF';
 

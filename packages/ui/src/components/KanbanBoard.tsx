@@ -80,12 +80,13 @@ interface KanbanCardProps {
   onDrillDown: (item: AgenFKItem) => void;
   onArchive: (id: string) => void;
   onCopyId: (id: string) => void;
+  disableLayoutAnimation?: boolean;
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, highlightedId, dragId, dropTargetId, dropPosition,
   copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
-  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onCopyId
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onCopyId, disableLayoutAnimation
 }) => {
   const [isFlying, setIsFlying] = useState(false);
   const cardRef = React.useRef<HTMLDivElement>(null);
@@ -136,7 +137,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       const wasManual = isUserAction;
       lastStatus.current = item.status;
 
-      if (!wasManual) {
+      if (!wasManual && !disableLayoutAnimation) {
         setIsFlying(true);
         const timer = setTimeout(() => {
           setIsFlying(false);
@@ -145,7 +146,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         return () => clearTimeout(timer);
       }
     }
-  }, [item.status, isUserAction]);
+  }, [item.status, isUserAction, disableLayoutAnimation]);
 
   useEffect(() => {
     if (isFlying) {
@@ -159,8 +160,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   return (
     <motion.div
       ref={cardRef}
-      layout="position"
-      layoutId={item.id}
+      layout={disableLayoutAnimation ? false : "position"}
+      layoutId={disableLayoutAnimation ? undefined : item.id}
       id={`card-${item.id}`}
       initial={false}
       animate={controls}
@@ -1207,6 +1208,7 @@ export const KanbanBoard: React.FC = () => {
                         onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                         /* v8 ignore stop */
                         onCopyId={handleCopyId}
+                        disableLayoutAnimation={easterEggsEnabled}
                       />
                       </CardAnimationWrapper>
                     ))}
