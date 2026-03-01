@@ -14,6 +14,10 @@ const NC = '\x1b[0m';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 
+function getCliCommand(name) {
+    return os.platform() === 'win32' ? `${name}.cmd` : name;
+}
+
 function getCursorMcpPath() {
     if (os.platform() === 'win32') {
         const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -121,9 +125,10 @@ async function run() {
     // 5. MCP config — Claude Code
     console.log(`${GREEN}[5/10] Removing Claude Code MCP config...${NC}`);
     try {
-        const claudeCheck = spawnSync('claude', ['--version'], { shell: true });
+        const claudeCmd = getCliCommand('claude');
+        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
         if (claudeCheck.status === 0) {
-            spawnSync('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', shell: true });
+            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Claude Code");
         }
     } catch (e) {
@@ -171,9 +176,10 @@ async function run() {
     // 6c. MCP config — Codex
     console.log(`${GREEN}[6c/10] Removing Codex MCP config...${NC}`);
     try {
-        const codexCheck = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' });
+        const codexCmd = getCliCommand('codex');
+        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
         if (codexCheck.status === 0) {
-            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', shell: true });
+            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Codex");
         } else {
             console.log("  Codex CLI not found (skipping)");
@@ -185,9 +191,10 @@ async function run() {
     // 6d. MCP config — Gemini CLI
     console.log(`${GREEN}[6d/10] Removing Gemini CLI MCP config...${NC}`);
     try {
-        const geminiCheck = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' });
+        const geminiCmd = getCliCommand('gemini');
+        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
         if (geminiCheck.status === 0) {
-            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit', shell: true });
+            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Gemini CLI");
         } else {
             console.log("  Gemini CLI not found (skipping)");

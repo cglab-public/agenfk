@@ -48,8 +48,7 @@ const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
     env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
     detached: true,
-    stdio: ['ignore', uiLog, uiLog],
-    shell: true
+    stdio: ['ignore', uiLog, uiLog]
 });
 uiProcess.unref();
 
@@ -75,7 +74,11 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
-const openCmd = process.platform === 'win32' ? 'start' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
-spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', shell: true }).unref();
+if (process.platform === 'win32') {
+    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+} else {
+    const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore' }).unref();
+}
 
 process.exit(0);

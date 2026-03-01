@@ -18,6 +18,10 @@ const agenfkHome = path.join(os.homedir(), '.agenfk');
 
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX || (os.platform() === 'win32' && process.env.SHELL?.includes('bash')));
 
+function getCliCommand(name) {
+    return os.platform() === 'win32' && !isMinGW ? `${name}.cmd` : name;
+}
+
 // Returns the platform-appropriate path for Cursor's global mcp.json.
 function getCursorMcpPath() {
     if (os.platform() === 'win32') {
@@ -61,11 +65,11 @@ async function run() {
     const shouldRebuild = process.argv.includes('--rebuild');
 
     // 1. Build the project
-    const npmCmd = os.platform() === 'win32' && !isMinGW ? 'npm.cmd' : 'npm';
+    const npmCmd = getCliCommand('npm');
     if (!shouldRebuild) {
         console.log(`${GREEN}[1/14] Checking prebuilt binaries...${NC}`);
         // Need all dependencies including devDependencies to run 'npm run dev' for the UI.
-        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
+        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
 
         // Verify all required dist/ directories exist; build if any are missing
         const requiredDists = [
@@ -80,14 +84,14 @@ async function run() {
         if (missingDists.length > 0) {
             console.log(`${YELLOW}  Missing build artifacts: ${missingDists.join(', ')}${NC}`);
             console.log(`${YELLOW}  Running build to generate them...${NC}`);
-            spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
+            spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
         } else {
             console.log(`  All build artifacts present, skipping build.`);
         }
     } else {
         console.log(`${GREEN}[1/14] Building project...${NC}`);
-        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir, shell: true });
-        spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir, shell: true });
+        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
+        spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
     }
 
     // 2. Generate install-time secret verify token
@@ -169,7 +173,7 @@ async function run() {
     console.log(`${GREEN}[4/14] Initializing configuration...${NC}`);
     const localConfigDir = path.join(rootDir, '.agenfk');
     if (!existsSync(localConfigDir)) {
-        spawnSync('node', [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit', shell: true });
+        spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit' });
     }
 
     // 5. Create start script for UI/API
@@ -229,8 +233,7 @@ const uiProcess = spawn(npmCmd, ['run', 'dev'], {
     cwd: path.join(rootDir, 'packages/ui'),
     env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: \`http://localhost:\${API_PORT}\` },
     detached: true,
-    stdio: ['ignore', uiLog, uiLog],
-    shell: true
+    stdio: ['ignore', uiLog, uiLog]
 });
 uiProcess.unref();
 
@@ -256,8 +259,12 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
-const openCmd = process.platform === 'win32' ? 'start' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
-spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', shell: true }).unref();
+if (process.platform === 'win32') {
+    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+} else {
+    const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore' }).unref();
+}
 
 process.exit(0);
 `;
@@ -267,7 +274,7 @@ process.exit(0);
     // 6. Configure Opencode MCP
     console.log(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
     const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    const opencodeInstalled = spawnSync('opencode', ['--version'], { shell: true }).status === 0;
+    const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
     if (existsSync(opencodeConfigPath) || opencodeInstalled) {
         try {
             let config = {};
@@ -302,9 +309,9 @@ process.exit(0);
     console.log(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
     const cursorMcpPath = getCursorMcpPath();
     const cursorConfigDir = path.dirname(cursorMcpPath);
-    const cursorCmd = os.platform() === 'win32' && !isMinGW ? 'cursor.cmd' : 'cursor';
+    const cursorCmd = getCliCommand('cursor');
     const cursorInstalled = existsSync(cursorConfigDir) ||
-        spawnSync(cursorCmd, ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+        spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
     if (cursorInstalled) {
         try {
             let cursorMcp = {};
@@ -341,19 +348,20 @@ process.exit(0);
 
     // 6c. Configure Codex MCP
     console.log(`${GREEN}[6c/14] Configuring Codex MCP...${NC}`);
-    const codexInstalled = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    const codexCmd = getCliCommand('codex');
+    const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
     if (codexInstalled) {
         try {
             console.log("  Registering AgenFK MCP server with Codex...");
             // Remove any existing registration first (ignore errors if not registered)
-            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
-            const result = spawnSync('codex', [
+            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            const result = spawnSync(codexCmd, [
                 'mcp', 'add',
                 '--env', `AGENFK_DB_PATH=${dbPath}`,
                 '--',
                 'agenfk',
                 'node', serverPath
-            ], { stdio: 'inherit', shell: true });
+            ], { stdio: 'inherit' });
             if (result.status === 0) {
                 console.log(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
             } else {
@@ -368,19 +376,20 @@ process.exit(0);
 
     // 6d. Configure Gemini CLI MCP
     console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
-    const geminiInstalled = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    const geminiCmd = getCliCommand('gemini');
+    const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
     if (geminiInstalled) {
         try {
             console.log("  Registering AgenFK MCP server with Gemini CLI...");
             // Remove any existing registration first (ignore errors if not registered)
-            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { shell: true, stdio: 'ignore' });
-            const result = spawnSync('gemini', [
+            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+            const result = spawnSync(geminiCmd, [
                 'mcp', 'add',
                 '-s', 'user',
                 '-e', `AGENFK_DB_PATH=${dbPath}`,
                 'agenfk',
                 'node', serverPath
-            ], { stdio: 'inherit', shell: true });
+            ], { stdio: 'inherit' });
             if (result.status === 0) {
                 console.log(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
             } else {
@@ -547,13 +556,14 @@ process.exit(0);
     // 7 (deferred). Configure Claude Code MCP via official CLI
     console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
     try {
-        const claudeCheck = spawnSync('claude', ['--version'], { shell: true, stdio: 'ignore' });
+        const claudeCmd = getCliCommand('claude');
+        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
         if (claudeCheck.status === 0) {
             console.log("  Registering AgenFK MCP server with Claude Code...");
             // Remove any existing registration first (ignore errors if not registered)
-            spawnSync('claude', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
             // Register with correct syntax: options, then -- to end variadic -e, then name + command
-            const result = spawnSync('claude', [
+            const result = spawnSync(claudeCmd, [
                 'mcp', 'add',
                 '--transport', 'stdio',
                 '--scope', 'user',
@@ -561,7 +571,7 @@ process.exit(0);
                 '--',
                 'agenfk',
                 cliDest, 'mcp'
-            ], { stdio: 'inherit', shell: true });
+            ], { stdio: 'inherit' });
             if (result.status === 0) {
                 console.log(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
             } else {
