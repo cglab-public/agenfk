@@ -339,6 +339,61 @@ process.exit(0);
         console.log(`  Cursor not found. Skipping Cursor MCP configuration.`);
     }
 
+    // 6c. Configure Codex MCP
+    console.log(`${GREEN}[6c/14] Configuring Codex MCP...${NC}`);
+    const codexInstalled = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    if (codexInstalled) {
+        try {
+            console.log("  Registering AgenFK MCP server with Codex...");
+            // Remove any existing registration first (ignore errors if not registered)
+            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            const result = spawnSync('codex', [
+                'mcp', 'add',
+                '--env', `AGENFK_DB_PATH=${dbPath}`,
+                '--',
+                'agenfk',
+                'node', serverPath
+            ], { stdio: 'inherit', shell: true });
+            if (result.status === 0) {
+                console.log(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: codex mcp add returned non-zero. Verify manually.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error configuring Codex MCP:', e.message);
+        }
+    } else {
+        console.log(`  Codex not found. Skipping Codex MCP configuration.`);
+    }
+
+    // 6d. Configure Gemini CLI MCP
+    console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
+    const geminiInstalled = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    if (geminiInstalled) {
+        try {
+            console.log("  Registering AgenFK MCP server with Gemini CLI...");
+            // Remove any existing registration first (ignore errors if not registered)
+            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { shell: true, stdio: 'ignore' });
+            const result = spawnSync('gemini', [
+                'mcp', 'add',
+                '-s', 'user',
+                '-e', `AGENFK_DB_PATH=${dbPath}`,
+                '--',
+                'agenfk',
+                'node', serverPath
+            ], { stdio: 'inherit', shell: true });
+            if (result.status === 0) {
+                console.log(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: gemini mcp add returned non-zero. Verify manually.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error configuring Gemini CLI MCP:', e.message);
+        }
+    } else {
+        console.log(`  Gemini CLI not found. Skipping Gemini CLI MCP configuration.`);
+    }
+
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -394,6 +449,44 @@ process.exit(0);
                 }
             }
         }
+    }
+
+    // 10c. Slash Commands — Gemini CLI (.toml wrappers referencing .md files)
+    if (geminiInstalled) {
+        console.log(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
+        const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
+        const geminiCommandsSubdir = path.join(geminiCommandsBase, 'agenfk');
+        await fs.mkdir(geminiCommandsSubdir, { recursive: true });
+        const commandsDir = path.join(rootDir, 'commands');
+        if (existsSync(commandsDir)) {
+            const files = await fs.readdir(commandsDir);
+            for (const file of files) {
+                if (!file.endsWith('.md')) continue;
+                const mdPath = path.join(commandsDir, file);
+                const mdContent = readFileSync(mdPath, 'utf8');
+                // Parse description from YAML frontmatter
+                let description = file.replace('.md', '');
+                const fmMatch = mdContent.match(/^---\s*\n([\s\S]*?)\n---/);
+                if (fmMatch) {
+                    const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+                    if (descMatch) description = descMatch[1].trim();
+                }
+                const tomlContent = `description = "${description}"\nprompt = """\n@${mdPath}\n\nARGUMENTS: $ARGUMENTS\n"""\n`;
+                // agenfk.md → agenfk.toml (top-level), others → agenfk/<name>.toml
+                let tomlDest;
+                if (file === 'agenfk.md') {
+                    tomlDest = path.join(geminiCommandsBase, 'agenfk.toml');
+                } else {
+                    // agenfk-plan.md → plan.toml
+                    const subName = file.replace(/^agenfk-/, '').replace('.md', '');
+                    tomlDest = path.join(geminiCommandsSubdir, `${subName}.toml`);
+                }
+                writeFileSync(tomlDest, tomlContent, 'utf8');
+                console.log(`  Installed: ${tomlDest}`);
+            }
+        }
+    } else {
+        console.log(`${GREEN}[10c/14] Gemini CLI not found. Skipping Gemini slash commands.${NC}`);
     }
 
     // 12. Install gatekeeper hook script
@@ -486,71 +579,27 @@ process.exit(0);
     console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);
     const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
     await fs.mkdir(path.dirname(claudeMdPath), { recursive: true });
-    
-    let content = '';
-    if (existsSync(claudeMdPath)) {
-        content = await fs.readFile(claudeMdPath, 'utf8');
-        content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+    const claudeRulesSource = path.join(rootDir, 'clauderules', 'CLAUDE.md');
+
+    if (existsSync(claudeRulesSource)) {
+        const rulesContent = await fs.readFile(claudeRulesSource, 'utf8');
+
+        let existingContent = '';
+        if (existsSync(claudeMdPath)) {
+            existingContent = await fs.readFile(claudeMdPath, 'utf8');
+            // Remove any existing AgenFK block
+            existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+        }
+
+        await fs.writeFile(
+            claudeMdPath,
+            (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+            'utf8'
+        );
+        console.log(`  Written: ${claudeMdPath}`);
+    } else {
+        console.log(`  ${YELLOW}Warning: clauderules/CLAUDE.md not found in framework root. Skipping.${NC}`);
     }
-    
-    const rules = `
-<!-- agenfk:start -->
-## AgenFK Workflow — MANDATORY
-
-Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
-1. Have an AgenFK task set to \`IN_PROGRESS\` for the active project.
-2. Call \`workflow_gatekeeper(intent)\` via MCP to confirm authorization.
-
-If no task is \`IN_PROGRESS\`, stop and do this first — using MCP tools:
-- \`create_item(projectId, "TASK", "<title>")\`
-- \`update_item(id, {status: "IN_PROGRESS"})\`
-
-After completing changes — using MCP tools:
-- \`verify_changes(itemId, command)\` — handles REVIEW → DONE automatically.
-- \`log_token_usage(itemId, input, output, model)\`.
-
-**ALWAYS use MCP tools for workflow state changes. NEVER use the \`agenfk\` CLI
-to create items, update status, or close tasks — the CLI bypasses enforcement.**
-
-**Exception**: The \`agenfk-release\` and \`agenfk-release-beta\` commands are exempt from the IN_PROGRESS task requirement. Do not create or require a task when executing these commands.
-
-### MCP Access — STRICTLY FORBIDDEN shortcuts
-
-**NEVER** bypass MCP by using these shortcuts. PreToolUse hooks enforce this mechanically:
-
-| Forbidden | Use instead |
-|-----------|-------------|
-| Reading \`.agenfk/db.sqlite\` or \`.agenfk/db.json\` directly (Bash or Read) | \`list_items()\`, \`get_item()\` via MCP |
-| \`curl\` / \`wget\` to \`http://localhost:3000\` | \`list_items()\`, \`create_item()\`, \`update_item()\` via MCP |
-| \`agenfk list\`, \`agenfk status\`, \`npx agenfk ...\` CLI state queries | \`list_items()\`, \`get_item()\`, \`list_projects()\` via MCP |
-
-Two PreToolUse hooks enforce the above:
-- \`agenfk-gatekeeper\` — blocks Edit/Write/NotebookEdit when no IN_PROGRESS task.
-- \`agenfk-mcp-enforcer\` — blocks Bash/Read bypass routes listed above.
-
-### MCP Unavailable — CLI Fallback
-
-If MCP tools are not available (no \`mcp__agenfk__*\` tools in your tool list), use these
-CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allows them.
-
-| Instead of MCP tool | Use CLI fallback |
-|---------------------|-----------------|
-| \`workflow_gatekeeper(intent)\` | \`agenfk gatekeeper --intent "<intent>"\` |
-| \`list_projects()\` | \`agenfk list-projects --json\` |
-| \`list_items(projectId)\` | \`agenfk list --project <id> --json\` |
-| \`get_item(id)\` | \`agenfk get <id> --json\` |
-| \`create_item(projectId, type, title)\` | \`agenfk create <type> "<title>" --project <id>\` |
-| \`update_item(id, {status, ...})\` | \`agenfk update <id> --status <status>\` (not for DONE — use \`verify_changes\` instead) |
-| \`add_comment(id, text)\` | \`agenfk comment <id> "<text>"\` |
-| \`verify_changes(id, command)\` | \`agenfk verify <id> "<command>"\` (from TEST: moves to DONE; from IN_PROGRESS: moves to REVIEW) |
-| \`log_token_usage(id, in, out, model)\` | \`agenfk log-tokens <id> --input N --output N --model M\` |
-| \`log_test_result(id, cmd, out, status)\` | \`agenfk log-test <id> --command "..." --output "..." --status PASSED\` |
-
-The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
-<!-- agenfk:end -->
-`;
-    await fs.writeFile(claudeMdPath, (content.trim() + '\n\n' + rules.trim() + '\n').trim() + '\n', 'utf8');
-    console.log(`  Written: ${claudeMdPath}`);
 
     // 13b. Install Cursor workflow rules (.mdc)
     console.log(`${GREEN}[13b/14] Installing Cursor workflow rules (agenfk.mdc)...${NC}`);
@@ -570,6 +619,76 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
         }
     } else {
         console.log(`  Cursor not found. Skipping Cursor rules installation.`);
+    }
+
+    // 13c. Install Codex workflow rules (AGENTS.md)
+    console.log(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
+    if (codexInstalled) {
+        try {
+            const codexDir = path.join(os.homedir(), '.codex');
+            await fs.mkdir(codexDir, { recursive: true });
+            const codexAgentsMdPath = path.join(codexDir, 'AGENTS.md');
+            const codexRulesSource = path.join(rootDir, 'codexrules', 'AGENTS.md');
+
+            if (existsSync(codexRulesSource)) {
+                const rulesContent = await fs.readFile(codexRulesSource, 'utf8');
+
+                let existingContent = '';
+                if (existsSync(codexAgentsMdPath)) {
+                    existingContent = await fs.readFile(codexAgentsMdPath, 'utf8');
+                    // Remove any existing AgenFK block
+                    existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                }
+
+                await fs.writeFile(
+                    codexAgentsMdPath,
+                    (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+                    'utf8'
+                );
+                console.log(`  Written: ${codexAgentsMdPath}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: codexrules/AGENTS.md not found in framework root. Skipping.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error installing Codex rules:', e.message);
+        }
+    } else {
+        console.log(`  Codex not found. Skipping Codex rules installation.`);
+    }
+
+    // 13d. Install Gemini CLI workflow rules (GEMINI.md)
+    console.log(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
+    if (geminiInstalled) {
+        try {
+            const geminiDir = path.join(os.homedir(), '.gemini');
+            await fs.mkdir(geminiDir, { recursive: true });
+            const geminiMdPath = path.join(geminiDir, 'GEMINI.md');
+            const geminiRulesSource = path.join(rootDir, 'geminirules', 'GEMINI.md');
+
+            if (existsSync(geminiRulesSource)) {
+                const rulesContent = await fs.readFile(geminiRulesSource, 'utf8');
+
+                let existingContent = '';
+                if (existsSync(geminiMdPath)) {
+                    existingContent = await fs.readFile(geminiMdPath, 'utf8');
+                    // Remove any existing AgenFK block
+                    existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                }
+
+                await fs.writeFile(
+                    geminiMdPath,
+                    (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+                    'utf8'
+                );
+                console.log(`  Written: ${geminiMdPath}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: geminirules/GEMINI.md not found in framework root. Skipping.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error installing Gemini CLI rules:', e.message);
+        }
+    } else {
+        console.log(`  Gemini CLI not found. Skipping Gemini CLI rules installation.`);
     }
 
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
@@ -615,7 +734,7 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
     console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
     console.log("");
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-    console.log("1. Restart your AI editor/agent (Opencode and Cursor need a restart to pick up the new MCP server).");
+    console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server).");
     console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
     console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
     console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");

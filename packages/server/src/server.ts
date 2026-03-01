@@ -481,7 +481,6 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, comments, sortOrder } = bodyUpdates;
 
     if (!isInternalVerify && status === Status.DONE) continue;
-    if (!isInternalVerify && status === Status.REVIEW) continue;
 
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
@@ -551,11 +550,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (!isInternalVerify && status === Status.DONE) {
     return res.status(403).json({
       error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Move the item to TEST, then call test_changes(itemId) to run the project's test suite."
-    });
-  }
-  if (!isInternalVerify && status === Status.REVIEW) {
-    return res.status(403).json({
-      error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. Use review_changes(itemId, command) to run a review check and move to REVIEW."
     });
   }
 
@@ -674,7 +668,7 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
 
 // ── Verify Endpoint ──────────────────────────────────────────────────────────
 
-// ── review_changes: IN_PROGRESS → REVIEW (agent picks the command) ───────────
+// ── review_changes: REVIEW → TEST (agent picks the command) ──────────────────
 app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify) {
@@ -690,8 +684,29 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  if (item.status !== Status.IN_PROGRESS) {
-    return res.status(400).json({ error: `review_changes requires item to be IN_PROGRESS. Current status: ${item.status}` });
+  if (item.status !== Status.REVIEW) {
+    return res.status(400).json({ error: `review_changes requires item to be in REVIEW. Current status: ${item.status}` });
+  }
+
+  // ── Sibling propagation: skip build if a sibling already passed review ──────
+  if (item.parentId) {
+    const siblings = await storage.listItems({ parentId: item.parentId });
+    const passedSibling = siblings.find(s =>
+      s.id !== item.id &&
+      (s.status === Status.TEST || s.status === Status.DONE)
+    );
+    if (passedSibling) {
+      const sibComment = {
+        id: uuidv4(),
+        author: 'ReviewTool',
+        content: `### Review PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`,
+        timestamp: new Date(),
+      };
+      const updated = await storage.updateItem(req.params.id, { status: Status.TEST, comments: [...(item.comments || []), sibComment] });
+      io.emit('items_updated');
+      if (updated.parentId) await syncParentStatus(updated.parentId);
+      return res.json({ status: Status.TEST, message: `✅ Review Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to TEST column.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: 'Sibling propagation' });
+    }
   }
 
   const projectRoot = findProjectRoot(process.cwd());
@@ -715,10 +730,10 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   }];
 
   if (passed) {
-    const updated = await storage.updateItem(req.params.id, { status: Status.REVIEW, comments });
+    const updated = await storage.updateItem(req.params.id, { status: Status.TEST, comments });
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: Status.REVIEW, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nStandard Mode: continue to self-review, then tests. Multi-Agent Mode: yield to the Review Agent.`, output: truncated });
+    return res.json({ status: Status.TEST, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to TEST column.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: truncated });
   } else {
     await storage.updateItem(req.params.id, { status: Status.IN_PROGRESS, comments });
     io.emit('items_updated');
@@ -751,6 +766,37 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
 
   const command = project.verifyCommand;
   const projectRoot = findProjectRoot(process.cwd());
+
+  // ── Sibling propagation: skip test execution if a sibling already passed ────
+  if (item.parentId) {
+    const siblings = await storage.listItems({ parentId: item.parentId });
+    const passedSibling = siblings.find(s =>
+      s.id !== item.id &&
+      s.status === Status.DONE &&
+      s.tests?.some((t: any) => t.status === 'PASSED' && t.command === command)
+    );
+    if (passedSibling) {
+      const sibComment = {
+        id: uuidv4(),
+        author: 'TestTool',
+        content: `### Test Suite PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`,
+        timestamp: new Date(),
+      };
+      const updates: any = {
+        status: Status.DONE,
+        comments: [...(item.comments || []), sibComment],
+        tests: [...(item.tests || []), { id: uuidv4(), command, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }],
+      };
+      const updated = await storage.updateItem(req.params.id, updates);
+      io.emit('items_updated');
+      if (updated.parentId) await syncParentStatus(updated.parentId);
+      if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        autoGitCommit(updated, projectRoot);
+      }
+      return res.json({ status: Status.DONE, message: `✅ Test Suite Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to DONE.`, output: 'Sibling propagation' });
+    }
+  }
+
   const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
     const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';

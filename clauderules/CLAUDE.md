@@ -1,0 +1,57 @@
+<!-- agenfk:start -->
+## AgenFK Workflow — MANDATORY
+
+Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
+1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
+2. Call `workflow_gatekeeper(intent)` via MCP to confirm authorization.
+
+If no task is `IN_PROGRESS`, stop and do this first — using MCP tools:
+- `create_item(projectId, "TASK", "<title>")`
+- `update_item(id, {status: "IN_PROGRESS"})`
+
+After completing changes — using MCP tools:
+- `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
+- `review_changes(itemId, command)` — build gate, REVIEW → TEST on success.
+- `test_changes(itemId)` — runs project verifyCommand, TEST → DONE.
+- `log_token_usage(itemId, input, output, model)`.
+
+**ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
+to create items, update status, or close tasks — the CLI bypasses enforcement.**
+
+**Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the IN_PROGRESS task requirement. Do not create or require a task when executing these commands.
+
+### MCP Access — STRICTLY FORBIDDEN shortcuts
+
+**NEVER** bypass MCP by using these shortcuts. PreToolUse hooks enforce this mechanically:
+
+| Forbidden | Use instead |
+|-----------|-------------|
+| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (Bash or Read) | `list_items()`, `get_item()` via MCP |
+| `curl` / `wget` to `http://localhost:3000` | `list_items()`, `create_item()`, `update_item()` via MCP |
+| `agenfk list`, `agenfk status`, `npx agenfk ...` CLI state queries | `list_items()`, `get_item()`, `list_projects()` via MCP |
+
+Two PreToolUse hooks enforce the above:
+- `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no IN_PROGRESS task.
+- `agenfk-mcp-enforcer` — blocks Bash/Read bypass routes listed above.
+
+### MCP Unavailable — CLI Fallback
+
+If MCP tools are not available (no `mcp__agenfk__*` tools in your tool list), use these
+CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allows them.
+
+| Instead of MCP tool | Use CLI fallback |
+|---------------------|-----------------|
+| `workflow_gatekeeper(intent)` | `agenfk gatekeeper --intent "<intent>"` |
+| `list_projects()` | `agenfk list-projects --json` |
+| `list_items(projectId)` | `agenfk list --project <id> --json` |
+| `get_item(id)` | `agenfk get <id> --json` |
+| `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
+| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `verify_changes` instead) |
+| `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
+| `review_changes(id, command)` | `agenfk verify <id> "<command>"` (from REVIEW: moves to TEST) |
+| `test_changes(id)` | `agenfk verify <id>` (from TEST: moves to DONE, uses project verifyCommand) |
+| `log_token_usage(id, in, out, model)` | `agenfk log-tokens <id> --input N --output N --model M` |
+| `log_test_result(id, cmd, out, status)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED` |
+
+The workflow rules still apply: call `agenfk gatekeeper` before editing files.
+<!-- agenfk:end -->
