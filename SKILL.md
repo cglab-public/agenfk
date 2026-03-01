@@ -110,11 +110,12 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
     *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
-    *   **Workflow**: 
+    *   **Workflow**:
         *   `review_changes(itemId, command)` moves items from IN_PROGRESS → REVIEW. The agent picks a build/lint command.
         *   The Agent verifies coverage and regressions in `TEST`.
         *   Success: Agent calls `test_changes(itemId)` from TEST status — this runs the project's `verifyCommand` and moves to DONE. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
         *   Failure: Agent moves item back to `IN_PROGRESS`.
+    *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `review_changes` or `test_changes` call validates the code for all siblings. After one passes, move remaining siblings directly to TEST via `update_item` (skipping individual `review_changes`), then call `test_changes` on each to reach DONE.
 
 6.  **Final Verification (Review Tool)**
     *   **Action**: BEFORE moving to `TEST`, the Agent **MUST** use `review_changes(itemId, command)` with a build/lint command to move to REVIEW.
@@ -130,6 +131,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up:
         1. Close all child TASKs first: `review_changes` (IN_PROGRESS→REVIEW), self-review (REVIEW→TEST), then `test_changes` from TEST (TEST→DONE).
+           - **Sibling shortcut**: If one child's `review_changes` already passed, remaining siblings can skip to TEST via `update_item({ status: "TEST" })`. Then call `test_changes` on each — subsequent calls pass immediately since the code is already verified.
         2. Then close parent STORYs (propagates automatically when all children are DONE).
         3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in REVIEW. If `review_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
