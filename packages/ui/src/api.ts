@@ -126,6 +126,22 @@ export const api = {
   importJiraIssues: async (projectId: string, items: { issueKey: string; type: string }[]): Promise<void> => {
     await axios.post(`${API_URL}/jira/import`, { projectId, items });
   },
+  getGitHubStatus: async (projectId: string): Promise<{ configured: boolean; owner?: string; repo?: string; syncEnabled?: boolean; lastSyncedAt?: string | null; ghCliAuthenticated?: boolean }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/github/status`, { params: { projectId } });
+      return data;
+    } catch {
+      return { configured: false };
+    }
+  },
+  githubSyncPush: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; failed: number; errors?: string[] }> => {
+    const { data } = await axios.post(`${API_URL}/github/sync/push`, { projectId }, { timeout: 120000 });
+    return data;
+  },
+  githubSyncPull: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; conflicts: number }> => {
+    const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
+    return data;
+  },
   getVersion: async (): Promise<{ version: string }> => {
     const { data } = await axios.get(`${API_URL}/version`);
     return data;
