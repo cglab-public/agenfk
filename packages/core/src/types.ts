@@ -6,6 +6,7 @@ export enum Status {
   REVIEW = "REVIEW",
   DONE = "DONE",
   BLOCKED = "BLOCKED",
+  PAUSED = "PAUSED",
   ARCHIVED = "ARCHIVED",
   TRASHED = "TRASHED"
 }
@@ -125,3 +126,17 @@ export interface Bug extends BaseItem {
 }
 
 export type AgenFKItem = Epic | Story | Task | Bug;
+
+export interface PauseSnapshot {
+  id: string;
+  itemId: string;
+  projectId: string;
+  status: Status;                // Item's status at time of pause
+  summary: string;               // Agent-written summary of work done and what's left
+  filesModified: string[];       // List of files changed
+  branchName?: string;           // Git branch at pause time
+  gitDiff?: string;              // Condensed diff of uncommitted changes
+  resumeInstructions: string;    // Agent-written instructions for the next agent
+  pausedAt: Date;
+  resumedAt?: Date;              // Set when resumed
+}

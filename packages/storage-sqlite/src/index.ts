@@ -7,7 +7,8 @@ import {
   StorageQuery,
   AgenFKItem,
   Status,
-  Project
+  Project,
+  PauseSnapshot
 } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
@@ -66,6 +67,13 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id);
       CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
       CREATE INDEX IF NOT EXISTS idx_items_parent ON items(parent_id);
+      CREATE TABLE IF NOT EXISTS snapshots (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_snapshots_item ON snapshots(item_id);
     `);
   }
 
@@ -190,5 +198,40 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async listChildren(parentId: string): Promise<AgenFKItem[]> {
     return this.listItems({ parentId });
+  }
+
+  // ── Snapshot methods (pause/resume) ─────────────────────────────────────
+
+  private parseSnapshot(data: string): PauseSnapshot {
+    const s = JSON.parse(data);
+    return {
+      ...s,
+      pausedAt: new Date(s.pausedAt),
+      resumedAt: s.resumedAt ? new Date(s.resumedAt) : undefined,
+    };
+  }
+
+  async createSnapshot(snapshot: PauseSnapshot): Promise<PauseSnapshot> {
+    // Replace any existing active snapshot for the same item
+    this.database.prepare('DELETE FROM snapshots WHERE item_id = ?').run(snapshot.itemId);
+    this.database.prepare(
+      'INSERT INTO snapshots (id, item_id, project_id, data) VALUES (?, ?, ?, ?)'
+    ).run(snapshot.id, snapshot.itemId, snapshot.projectId, JSON.stringify(snapshot));
+    return snapshot;
+  }
+
+  async getSnapshot(id: string): Promise<PauseSnapshot | null> {
+    const row = this.database.prepare('SELECT data FROM snapshots WHERE id = ?').get(id) as { data: string } | undefined;
+    return row ? this.parseSnapshot(row.data) : null;
+  }
+
+  async getSnapshotByItemId(itemId: string): Promise<PauseSnapshot | null> {
+    const row = this.database.prepare('SELECT data FROM snapshots WHERE item_id = ? ORDER BY rowid DESC LIMIT 1').get(itemId) as { data: string } | undefined;
+    return row ? this.parseSnapshot(row.data) : null;
+  }
+
+  async deleteSnapshot(id: string): Promise<boolean> {
+    const result = this.database.prepare('DELETE FROM snapshots WHERE id = ?').run(id) as { changes: number };
+    return result.changes > 0;
   }
 }
