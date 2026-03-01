@@ -23,6 +23,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 **Step 4 — Close Children First (Bottom-Up)**
 - If the item has children (EPIC with STORYs, STORY with TASKs), use `list_items(parentId=id)` to check their status.
 - Any child still in TEST must be progressed to DONE first: use `test_changes(childId)` — the project's verifyCommand runs automatically. The server blocks direct DONE transitions via `update_item`.
+- **Sibling propagation**: If one child's `test_changes` already passed, remaining siblings in TEST will pass immediately (same verified code). Call `test_changes` on each — it's a formality but required by the server to reach DONE.
 - Any child still in IN_PROGRESS should be flagged to the user before proceeding.
 - Only proceed to Step 5 once ALL children are DONE.
 

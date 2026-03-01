@@ -40,10 +40,12 @@ async function run() {
     console.log(`${BLUE}=== AgenFK Uninstaller ===${NC}`);
     console.log("");
     console.log(`${YELLOW}This will remove:${NC}`);
-    console.log("  - Slash commands from Claude Code and Opencode");
+    console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
     console.log("  - Opencode skill");
-    console.log("  - MCP server config from Claude Code, Opencode, and Cursor");
+    console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
     console.log("  - Cursor workflow rules (agenfk.mdc)");
+    console.log("  - Codex workflow rules (~/.codex/AGENTS.md)");
+    console.log("  - Gemini CLI workflow rules (~/.gemini/GEMINI.md)");
     console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
     console.log("  - AgenFK PreToolUse hook from ~/.claude/settings.json");
     console.log("  - ~/.agenfk-system (the framework files)");
@@ -83,6 +85,20 @@ async function run() {
                 console.log(`  Removed: ${fullPath}`);
             }
         }
+    }
+
+    // 2b. Slash commands — Gemini CLI
+    console.log(`${GREEN}[2b/10] Removing Gemini CLI slash commands...${NC}`);
+    const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
+    const geminiAgenfkToml = path.join(geminiCommandsBase, 'agenfk.toml');
+    if (existsSync(geminiAgenfkToml)) {
+        await fs.unlink(geminiAgenfkToml);
+        console.log(`  Removed: ${geminiAgenfkToml}`);
+    }
+    const geminiAgenfkSubdir = path.join(geminiCommandsBase, 'agenfk');
+    if (existsSync(geminiAgenfkSubdir)) {
+        await fs.rm(geminiAgenfkSubdir, { recursive: true, force: true });
+        console.log(`  Removed: ${geminiAgenfkSubdir}`);
     }
 
     // 3. Opencode skill
@@ -152,14 +168,76 @@ async function run() {
         console.log(`  ${cursorMcpPath} not found (skipping)`);
     }
 
-    // 6c. Cursor workflow rules (.mdc)
-    console.log(`${GREEN}[6c/10] Removing Cursor workflow rules...${NC}`);
+    // 6c. MCP config — Codex
+    console.log(`${GREEN}[6c/10] Removing Codex MCP config...${NC}`);
+    try {
+        const codexCheck = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' });
+        if (codexCheck.status === 0) {
+            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', shell: true });
+            console.log("  Removed: agenfk MCP from Codex");
+        } else {
+            console.log("  Codex CLI not found (skipping)");
+        }
+    } catch (e) {
+        console.log("  Codex CLI not found (skipping)");
+    }
+
+    // 6d. MCP config — Gemini CLI
+    console.log(`${GREEN}[6d/10] Removing Gemini CLI MCP config...${NC}`);
+    try {
+        const geminiCheck = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' });
+        if (geminiCheck.status === 0) {
+            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit', shell: true });
+            console.log("  Removed: agenfk MCP from Gemini CLI");
+        } else {
+            console.log("  Gemini CLI not found (skipping)");
+        }
+    } catch (e) {
+        console.log("  Gemini CLI not found (skipping)");
+    }
+
+    // 6e. Codex workflow rules (AGENTS.md)
+    console.log(`${GREEN}[6e/10] Removing Codex workflow rules...${NC}`);
+    const codexAgentsMdPath = path.join(os.homedir(), '.codex', 'AGENTS.md');
+    if (existsSync(codexAgentsMdPath)) {
+        let codexContent = await fs.readFile(codexAgentsMdPath, 'utf8');
+        codexContent = codexContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+        if (codexContent.trim()) {
+            await fs.writeFile(codexAgentsMdPath, codexContent, 'utf8');
+            console.log(`  Removed AgenFK block from ${codexAgentsMdPath}`);
+        } else {
+            await fs.unlink(codexAgentsMdPath);
+            console.log(`  Removed: ${codexAgentsMdPath} (was AgenFK-only)`);
+        }
+    } else {
+        console.log(`  ${codexAgentsMdPath} not found (skipping)`);
+    }
+
+    // 6f. Cursor workflow rules (.mdc)
+    console.log(`${GREEN}[6f/10] Removing Cursor workflow rules...${NC}`);
     const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
     if (existsSync(cursorMdcPath)) {
         await fs.unlink(cursorMdcPath);
         console.log(`  Removed: ${cursorMdcPath}`);
     } else {
         console.log(`  ${cursorMdcPath} not found (skipping)`);
+    }
+
+    // 6g. Gemini CLI workflow rules (GEMINI.md)
+    console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules...${NC}`);
+    const geminiMdPath = path.join(os.homedir(), '.gemini', 'GEMINI.md');
+    if (existsSync(geminiMdPath)) {
+        let geminiContent = await fs.readFile(geminiMdPath, 'utf8');
+        geminiContent = geminiContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+        if (geminiContent.trim()) {
+            await fs.writeFile(geminiMdPath, geminiContent, 'utf8');
+            console.log(`  Removed AgenFK block from ${geminiMdPath}`);
+        } else {
+            await fs.unlink(geminiMdPath);
+            console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+        }
+    } else {
+        console.log(`  ${geminiMdPath} not found (skipping)`);
     }
 
     // 7. Gatekeeper hook script

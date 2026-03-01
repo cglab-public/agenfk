@@ -20,7 +20,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Workflow**: The agent who starts the task is responsible for the entire lifecycle (Planning, Coding, Verification, and Closing) within a single session.
 *   **Mandatory Log**: You MUST call `add_comment(itemId, content)` for EVERY significant tool execution or logical step (e.g. "Analyzed file X", "Implemented function Y", "Running tests").
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
-*   **Verification**: You MUST use `review_changes` (IN_PROGRESS → REVIEW) and `test_changes` (TEST → DONE) to progress items.
+*   **Verification**: You MUST use `update_item({ status: "REVIEW" })` to enter REVIEW, then `review_changes` (REVIEW → TEST) to run the build gate, and `test_changes` (TEST → DONE) to close items.
 *   **Decomposition**: MANDATORY. Every piece of work must be minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
 *   **Handoff**: None. Do not spawn sub-agents.
 
@@ -110,26 +110,30 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
     *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
-    *   **Workflow**: 
-        *   `review_changes(itemId, command)` moves items from IN_PROGRESS → REVIEW. The agent picks a build/lint command.
+    *   **Workflow**:
+        *   `update_item(itemId, { status: "REVIEW" })` moves items from IN_PROGRESS → REVIEW when coding is complete.
+        *   `review_changes(itemId, command)` runs a build/lint command in REVIEW and moves to TEST on success (back to IN_PROGRESS on failure).
         *   The Agent verifies coverage and regressions in `TEST`.
         *   Success: Agent calls `test_changes(itemId)` from TEST status — this runs the project's `verifyCommand` and moves to DONE. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
         *   Failure: Agent moves item back to `IN_PROGRESS`.
+    *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `review_changes` or `test_changes` call validates the code for all siblings. After one passes, move remaining siblings directly to TEST via `update_item` (skipping individual `review_changes`), then call `test_changes` on each to reach DONE.
 
 6.  **Final Verification (Review Tool)**
-    *   **Action**: BEFORE moving to `TEST`, the Agent **MUST** use `review_changes(itemId, command)` with a build/lint command to move to REVIEW.
+    *   **Action**: After self-review in REVIEW, the Agent **MUST** use `review_changes(itemId, command)` with a build/lint command to gate the transition to TEST.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `update_project`) defines the mandatory test command. `test_changes` always uses it — agents cannot override or bypass it.
     *   **Transition Logic (Automated by Tool)**:
-        1. The tool moves the item to `REVIEW`.
-        2. The tool executes the command.
-        3. Success: Moves to `TEST`. Failure: Moves back to `IN_PROGRESS`.
+        1. The agent moves the item to `REVIEW` via `update_item`.
+        2. The agent performs self-review (re-reads files, checks correctness).
+        3. The agent calls `review_changes` which executes the build command.
+        4. Success: Moves to `TEST`. Failure: Moves back to `IN_PROGRESS`.
 
 7.  **Measurement & Tracking**
     *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `test_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up:
-        1. Close all child TASKs first: `review_changes` (IN_PROGRESS→REVIEW), self-review (REVIEW→TEST), then `test_changes` from TEST (TEST→DONE).
+        1. Close all child TASKs first: `update_item({ status: "REVIEW" })`, self-review, `review_changes` (REVIEW→TEST), then `test_changes` from TEST (TEST→DONE).
+           - **Sibling shortcut**: If one child's `review_changes` already passed, remaining siblings can skip to TEST via `update_item({ status: "TEST" })`. Then call `test_changes` on each — subsequent calls pass immediately since the code is already verified.
         2. Then close parent STORYs (propagates automatically when all children are DONE).
         3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in REVIEW. If `review_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
@@ -155,6 +159,6 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `add_context`: Attach relevant file paths.
 *   `analyze_request`: Categorization strategy.
 *   `workflow_gatekeeper`: Pre-flight authorization and role verification.
-*   `review_changes`: Agent-driven review check (IN_PROGRESS → REVIEW).
+*   `review_changes`: Agent-driven build gate (REVIEW → TEST).
 *   `test_changes`: Enforced test suite execution (TEST → DONE).
 *   `get_server_info`: Framework health check.
