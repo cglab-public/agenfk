@@ -327,6 +327,50 @@ describe('JiraImportModal', () => {
     expect((screen.getByTestId('type-select-PROJ-5') as HTMLSelectElement).value).toBe('TASK');
   });
 
+  it('should extract issue key from /browse/ JIRA URL and show direct import', async () => {
+    vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
+    render(
+      <JiraImportModal open={true} onClose={() => {}} projectId="proj-1" />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await screen.findByTestId('project-list');
+    const searchInput = screen.getByPlaceholderText(/paste issue key/i);
+    fireEvent.change(searchInput, { target: { value: 'https://mycompany.atlassian.net/browse/RD-3' } });
+
+    const directBtn = await screen.findByTestId('direct-import-button');
+    expect(directBtn.textContent).toContain('RD-3');
+  });
+
+  it('should extract issue key from ?selectedIssue= JIRA URL and show direct import', async () => {
+    vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
+    render(
+      <JiraImportModal open={true} onClose={() => {}} projectId="proj-1" />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await screen.findByTestId('project-list');
+    const searchInput = screen.getByPlaceholderText(/paste issue key/i);
+    fireEvent.change(searchInput, { target: { value: 'https://mycompany.atlassian.net/jira/software/projects/RD/boards/1?selectedIssue=RD-42' } });
+
+    const directBtn = await screen.findByTestId('direct-import-button');
+    expect(directBtn.textContent).toContain('RD-42');
+  });
+
+  it('should not show direct import for a URL without a valid issue key', async () => {
+    vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
+    render(
+      <JiraImportModal open={true} onClose={() => {}} projectId="proj-1" />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await screen.findByTestId('project-list');
+    const searchInput = screen.getByPlaceholderText(/paste issue key/i);
+    fireEvent.change(searchInput, { target: { value: 'https://mycompany.atlassian.net/jira/software/projects/RD/boards/1' } });
+
+    expect(screen.queryByTestId('direct-import-button')).toBeNull();
+  });
+
   it('should show issues-error state on issue fetch failure', async () => {
     vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
     vi.mocked(api.listJiraIssues).mockRejectedValue(new Error('Issues fetch failed'));
