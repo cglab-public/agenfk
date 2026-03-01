@@ -11,19 +11,21 @@ import {
   BaseItem,
   TokenUsage,
   ContextItem,
-  Project
+  Project,
+  PauseSnapshot
 } from "@agenfk/core";
 
 interface JSONData {
   projects: Project[];
   items: AgenFKItem[];
+  snapshots: PauseSnapshot[];
 }
 
 export class JSONStorageProvider implements StorageProvider {
   name = "json-storage";
   version = "1.0.0";
   public dbPath: string = "";
-  private data: JSONData = { projects: [], items: [] };
+  private data: JSONData = { projects: [], items: [], snapshots: [] };
   private lock: Promise<any> = Promise.resolve();
 
   async init(config: PluginConfig): Promise<void> {
@@ -34,7 +36,7 @@ export class JSONStorageProvider implements StorageProvider {
     }
 
     // Reset data to ensure clean state if re-initialized with a different path (e.g. in tests)
-    this.data = { projects: [], items: [] };
+    this.data = { projects: [], items: [], snapshots: [] };
 
     return this.runLocked(() => {
       this.load();
@@ -78,6 +80,12 @@ export class JSONStorageProvider implements StorageProvider {
               ...h,
               timestamp: new Date(h.timestamp)
             }))
+        }));
+
+        this.data.snapshots = (parsed.snapshots || []).map((s: any) => ({
+            ...s,
+            pausedAt: new Date(s.pausedAt),
+            resumedAt: s.resumedAt ? new Date(s.resumedAt) : undefined,
         }));
       } catch (e) {
         console.error(`[STORAGE] Error parsing ${this.dbPath}. Keeping current in-memory state.`, e);
@@ -251,5 +259,42 @@ export class JSONStorageProvider implements StorageProvider {
 
   async listChildren(parentId: string): Promise<AgenFKItem[]> {
       return this.listItems({ parentId });
+  }
+
+  // Snapshot Methods (pause/resume)
+  async createSnapshot(snapshot: PauseSnapshot): Promise<PauseSnapshot> {
+    return this.runLocked(() => {
+      this.load();
+      // Replace any existing snapshot for the same item
+      this.data.snapshots = this.data.snapshots.filter(s => s.itemId !== snapshot.itemId);
+      this.data.snapshots.push(snapshot);
+      this.save();
+      return snapshot;
+    });
+  }
+
+  async getSnapshot(id: string): Promise<PauseSnapshot | null> {
+    return this.runLocked(() => {
+      this.load();
+      return this.data.snapshots.find(s => s.id === id) || null;
+    });
+  }
+
+  async getSnapshotByItemId(itemId: string): Promise<PauseSnapshot | null> {
+    return this.runLocked(() => {
+      this.load();
+      return this.data.snapshots.find(s => s.itemId === itemId) || null;
+    });
+  }
+
+  async deleteSnapshot(id: string): Promise<boolean> {
+    return this.runLocked(() => {
+      this.load();
+      const index = this.data.snapshots.findIndex(s => s.id === id);
+      if (index === -1) return false;
+      this.data.snapshots.splice(index, 1);
+      this.save();
+      return true;
+    });
   }
 }

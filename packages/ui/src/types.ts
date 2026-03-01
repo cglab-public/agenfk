@@ -7,6 +7,7 @@ export enum Status {
   REVIEW = "REVIEW",
   DONE = "DONE",
   BLOCKED = "BLOCKED",
+  PAUSED = "PAUSED",
   ARCHIVED = "ARCHIVED"
 }
 

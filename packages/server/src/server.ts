@@ -841,6 +841,88 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
+// ── Pause / Resume ───────────────────────────────────────────────────────────
+
+app.post("/items/:id/pause", asyncHandler(async (req: any, res: any) => {
+  const item = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  const pausable = [Status.IN_PROGRESS, Status.REVIEW, Status.TEST];
+  if (!pausable.includes(item.status)) {
+    return res.status(400).json({ error: `Cannot pause item in ${item.status} status. Must be IN_PROGRESS, REVIEW, or TEST.` });
+  }
+
+  const { summary, filesModified, resumeInstructions, gitDiff } = req.body;
+  if (!summary || !resumeInstructions) {
+    return res.status(400).json({ error: "summary and resumeInstructions are required." });
+  }
+
+  const snapshot = {
+    id: uuidv4(),
+    itemId: item.id,
+    projectId: item.projectId,
+    status: item.status,
+    summary,
+    filesModified: filesModified || [],
+    branchName: item.branchName,
+    gitDiff: gitDiff || undefined,
+    resumeInstructions,
+    pausedAt: new Date(),
+  };
+
+  await storage.createSnapshot(snapshot);
+
+  const comments = [...(item.comments || []), {
+    id: uuidv4(),
+    author: 'PauseTool',
+    content: `### Work Paused\n\n**Previous status**: ${item.status}\n\n**Summary**: ${summary}\n\n**Resume instructions**: ${resumeInstructions}`,
+    timestamp: new Date(),
+  }];
+
+  await storage.updateItem(req.params.id, { status: Status.PAUSED, comments });
+  io.emit('items_updated');
+
+  res.json(snapshot);
+}));
+
+app.post("/items/:id/resume", asyncHandler(async (req: any, res: any) => {
+  const item = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  if (item.status !== Status.PAUSED) {
+    return res.status(400).json({ error: `Cannot resume item in ${item.status} status. Must be PAUSED.` });
+  }
+
+  const snapshot = await storage.getSnapshotByItemId(req.params.id);
+  if (!snapshot) {
+    return res.status(404).json({ error: "No pause snapshot found for this item." });
+  }
+
+  // Restore item to its pre-pause status
+  const comments = [...(item.comments || []), {
+    id: uuidv4(),
+    author: 'ResumeTool',
+    content: `### Work Resumed\n\n**Restored status**: ${snapshot.status}`,
+    timestamp: new Date(),
+  }];
+
+  await storage.updateItem(req.params.id, { status: snapshot.status, comments });
+
+  // Mark snapshot as resumed
+  snapshot.resumedAt = new Date();
+  await storage.createSnapshot(snapshot);
+
+  io.emit('items_updated');
+
+  res.json({ snapshot, item: await storage.getItem(req.params.id) });
+}));
+
+app.get("/items/:id/snapshot", asyncHandler(async (req: any, res: any) => {
+  const snapshot = await storage.getSnapshotByItemId(req.params.id);
+  if (!snapshot) return res.status(404).json({ error: "No snapshot found for this item." });
+  res.json(snapshot);
+}));
+
 // ── JIRA Integration ─────────────────────────────────────────────────────────
 
 const JIRA_TOKEN_PATH = path.join(os.homedir(), '.agenfk', 'jira-token.json');

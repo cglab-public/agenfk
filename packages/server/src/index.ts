@@ -89,7 +89,7 @@ const CreateItemSchema = z.object({
   title: z.string(),
   description: z.string().optional(),
   parentId: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]).optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -97,7 +97,7 @@ const UpdateItemSchema = z.object({
   id: z.string(),
   title: z.string().optional(),
   description: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]).optional(),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]).optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   implementationPlan: z.string().optional(),
 });
@@ -105,7 +105,7 @@ const UpdateItemSchema = z.object({
 const ListItemsSchema = z.object({
   projectId: z.string(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"]),
+  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]),
   parentId: z.string().optional(),
   full: z.boolean().optional(), // Return full item objects if true
 });
@@ -183,7 +183,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             title: { type: "string" },
             description: { type: "string" },
             parentId: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
             implementationPlan: { type: "string" },
           },
           required: ["projectId", "type", "title"],
@@ -198,7 +198,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string" },
             title: { type: "string" },
             description: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             implementationPlan: { type: "string" },
           },
@@ -213,7 +213,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectId: { type: "string", description: "The ID of the project." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED"] },
+            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
             parentId: { type: "string" },
           },
           required: ["projectId", "status"],
@@ -368,6 +368,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             status: { type: "string", enum: ["PASSED", "FAILED"] },
           },
           required: ["itemId", "command", "output", "status"],
+        },
+      },
+      {
+        name: "pause_work",
+        description: "Pause work on an item, saving a snapshot of the current context so another agent can resume later. Sets the item to PAUSED status.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            summary: { type: "string", description: "Summary of work done and what remains." },
+            filesModified: { type: "array", items: { type: "string" }, description: "List of files modified during this session." },
+            resumeInstructions: { type: "string", description: "Step-by-step instructions for the next agent to pick up where you left off." },
+            gitDiff: { type: "string", description: "Optional condensed git diff of uncommitted changes." },
+          },
+          required: ["itemId", "summary", "resumeInstructions"],
+        },
+      },
+      {
+        name: "resume_work",
+        description: "Resume work on a paused item. Retrieves the pause snapshot with full context (summary, files modified, resume instructions, git diff) and restores the item to its pre-pause status.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+          },
+          required: ["itemId"],
         },
       },
     ],
@@ -759,6 +785,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         if (prNumber) msg += `\n   PR #${prNumber} linked to item [${itemId.substring(0, 8)}].`;
         msg += `\n\nWhen the PR is approved and merged, run /agenfk-release to create a release.`;
         return { content: [{ type: "text", text: msg }] };
+      }
+      case "pause_work": {
+        const { itemId, summary, filesModified, resumeInstructions, gitDiff } = z.object({
+          itemId: z.string(),
+          summary: z.string(),
+          filesModified: z.array(z.string()).optional(),
+          resumeInstructions: z.string(),
+          gitDiff: z.string().optional(),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/pause`, { summary, filesModified, resumeInstructions, gitDiff });
+          return { content: [{ type: "text", text: `⏸️ Work paused on item [${itemId.substring(0, 8)}].\n\nSnapshot ID: ${data.id}\nPrevious status: ${data.status}\n\nThe item is now in PAUSED status. Use resume_work(itemId) to continue later.` }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to pause: ${msg}` }] };
+        }
+      }
+      case "resume_work": {
+        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/resume`);
+          const snapshot = data.snapshot;
+          const item = data.item;
+          let text = `▶️ Work resumed on item [${itemId.substring(0, 8)}] — ${item.title}\n\n`;
+          text += `**Restored status**: ${snapshot.status}\n`;
+          if (snapshot.branchName) text += `**Branch**: ${snapshot.branchName}\n`;
+          text += `\n## Summary of previous work\n${snapshot.summary}\n`;
+          text += `\n## Resume instructions\n${snapshot.resumeInstructions}\n`;
+          if (snapshot.filesModified?.length) {
+            text += `\n## Files modified\n${snapshot.filesModified.map((f: string) => `- ${f}`).join('\n')}\n`;
+          }
+          if (snapshot.gitDiff) {
+            text += `\n## Git diff (at pause time)\n\`\`\`\n${snapshot.gitDiff}\n\`\`\`\n`;
+          }
+          return { content: [{ type: "text", text }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to resume: ${msg}` }] };
+        }
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);

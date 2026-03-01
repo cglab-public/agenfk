@@ -1,4 +1,276 @@
 {
-  "projects": [],
-  "items": []
+  "projects": [
+    {
+      "id": "366793c3-2a42-4a8c-8b88-2ad491e36bb0",
+      "name": "P1 Updated",
+      "description": "",
+      "createdAt": "2026-03-01T15:19:07.618Z",
+      "updatedAt": "2026-03-01T15:19:07.631Z"
+    },
+    {
+      "id": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "name": "Item Test",
+      "description": "",
+      "createdAt": "2026-03-01T15:19:07.641Z",
+      "updatedAt": "2026-03-01T15:19:07.641Z"
+    },
+    {
+      "id": "19d8c308-4906-41a9-b4cf-176983c40733",
+      "name": "JIRA Import Test",
+      "description": "",
+      "createdAt": "2026-03-01T15:19:07.715Z",
+      "updatedAt": "2026-03-01T15:19:07.715Z"
+    },
+    {
+      "id": "6a922321-3935-4e3e-af2a-09318b83bbe2",
+      "name": "JIRA Err Test",
+      "description": "",
+      "createdAt": "2026-03-01T15:19:07.719Z",
+      "updatedAt": "2026-03-01T15:19:07.719Z"
+    }
+  ],
+  "items": [
+    {
+      "id": "60b032c6-8890-445d-b7ce-5381b6045c4e",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "T1",
+      "description": "D1",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.643Z",
+      "updatedAt": "2026-03-01T15:19:07.643Z",
+      "history": [
+        {
+          "id": "d3182b0e-63a2-4765-bd84-438d80aa611d",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.644Z"
+        }
+      ]
+    },
+    {
+      "id": "a839031d-d569-4480-b118-283684a6727f",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "To Update",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.645Z",
+      "updatedAt": "2026-03-01T15:19:07.648Z",
+      "history": [
+        {
+          "id": "ca9ef9da-3030-4d75-8f9d-90a1e74ff6b7",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.645Z"
+        },
+        {
+          "id": "b9b193f6-4ce9-4d1e-a723-cb0306315507",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-03-01T15:19:07.648Z"
+        }
+      ]
+    },
+    {
+      "id": "fd156d9e-f846-4c2d-8a0a-074826219169",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "No Cheat",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.650Z",
+      "updatedAt": "2026-03-01T15:19:07.650Z",
+      "history": [
+        {
+          "id": "99e3d2a7-929c-4b0d-bfbe-a495a917ee67",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.651Z"
+        }
+      ]
+    },
+    {
+      "id": "2391bdb5-808e-42d0-b982-fd32bb595045",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "Verify Me",
+      "description": "D",
+      "status": "DONE",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.653Z",
+      "updatedAt": "2026-03-01T15:19:07.661Z",
+      "history": [
+        {
+          "id": "5d6a2d79-b70d-4bb8-9fdb-6c9ecaa01890",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.653Z"
+        },
+        {
+          "id": "0d1d53ec-afcc-45aa-bd94-959790300948",
+          "fromStatus": "TODO",
+          "toStatus": "DONE",
+          "timestamp": "2026-03-01T15:19:07.661Z"
+        }
+      ]
+    },
+    {
+      "id": "538c7c58-4275-474d-8dfb-3e0909d69086",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "STORY",
+      "title": "Parent Story",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.663Z",
+      "updatedAt": "2026-03-01T15:19:07.667Z",
+      "history": [
+        {
+          "id": "2f16f850-e196-45f7-bce9-5ceb728b7337",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.664Z"
+        },
+        {
+          "id": "58480123-dc73-49cc-b2ae-2a2c0648c550",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-03-01T15:19:07.667Z"
+        }
+      ]
+    },
+    {
+      "id": "897bbed2-55b9-4a9b-b4e1-b85617b4bb35",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "Child Task",
+      "description": "D",
+      "status": "IN_PROGRESS",
+      "parentId": "538c7c58-4275-474d-8dfb-3e0909d69086",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.665Z",
+      "updatedAt": "2026-03-01T15:19:07.667Z",
+      "history": [
+        {
+          "id": "5d8012e8-3e7d-45a6-a386-477214f360d0",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.665Z"
+        },
+        {
+          "id": "11f75078-38a4-4c68-a364-94903d46d60f",
+          "fromStatus": "TODO",
+          "toStatus": "IN_PROGRESS",
+          "timestamp": "2026-03-01T15:19:07.667Z"
+        }
+      ]
+    },
+    {
+      "id": "e0977526-d8c5-47c6-8c10-3fc9a84eb396",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "Archive Me",
+      "description": "D",
+      "status": "TODO",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.670Z",
+      "updatedAt": "2026-03-01T15:19:07.673Z",
+      "history": [
+        {
+          "id": "8cefc746-8af3-49cf-a937-294d11f43b88",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.670Z"
+        },
+        {
+          "id": "7cd9097e-0f4b-48af-b3a2-f9440e2576f6",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-03-01T15:19:07.671Z"
+        },
+        {
+          "id": "dee347a5-1b9d-41bc-9401-fb925e4fd75c",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.672Z"
+        }
+      ]
+    },
+    {
+      "id": "34f049b1-092e-4f05-8e2a-08dd9c91e132",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "Delete Me",
+      "description": "D",
+      "status": "TRASHED",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.674Z",
+      "updatedAt": "2026-03-01T15:19:07.675Z",
+      "history": [
+        {
+          "id": "cc624a29-2cb3-4353-91cf-ad51a0328e87",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.674Z"
+        },
+        {
+          "id": "b21bfe6a-0109-4753-81fa-b9b319ce4571",
+          "fromStatus": "TODO",
+          "toStatus": "TRASHED",
+          "timestamp": "2026-03-01T15:19:07.675Z"
+        }
+      ]
+    },
+    {
+      "id": "1fbc67b6-34ca-4c51-a0ed-3ec283d0eecf",
+      "projectId": "74b2fa9d-5946-40c8-aa6a-76e96e5c6a23",
+      "type": "TASK",
+      "title": "Archived Task",
+      "description": "",
+      "status": "TRASHED",
+      "implementationPlan": "",
+      "createdAt": "2026-03-01T15:19:07.680Z",
+      "updatedAt": "2026-03-01T15:19:07.682Z",
+      "history": [
+        {
+          "id": "c69d2a35-4555-471a-8c91-df02baf04846",
+          "fromStatus": "TODO",
+          "toStatus": "ARCHIVED",
+          "timestamp": "2026-03-01T15:19:07.680Z"
+        },
+        {
+          "id": "bd7eb74b-e5e7-4c1e-8c0e-1e4feb76bcc9",
+          "fromStatus": "ARCHIVED",
+          "toStatus": "TRASHED",
+          "timestamp": "2026-03-01T15:19:07.682Z"
+        }
+      ]
+    },
+    {
+      "id": "89298258-ea11-4424-81ed-73c0f5d3a85e",
+      "projectId": "19d8c308-4906-41a9-b4cf-176983c40733",
+      "type": "BUG",
+      "title": "[PROJ-1] Fix login bug",
+      "description": "Imported from JIRA: PROJ-1",
+      "status": "TODO",
+      "implementationPlan": "",
+      "externalId": "PROJ-1",
+      "externalUrl": "https://test.atlassian.net/browse/PROJ-1",
+      "createdAt": "2026-03-01T15:19:07.716Z",
+      "updatedAt": "2026-03-01T15:19:07.716Z",
+      "history": [
+        {
+          "id": "4df73198-4141-491c-b23c-cd7b0f93aa38",
+          "fromStatus": "TODO",
+          "toStatus": "TODO",
+          "timestamp": "2026-03-01T15:19:07.716Z"
+        }
+      ]
+    }
+  ],
+  "snapshots": []
 }
