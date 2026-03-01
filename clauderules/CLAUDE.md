@@ -3,11 +3,19 @@
 
 Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
 1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
-2. Call `workflow_gatekeeper(intent)` via MCP to confirm authorization.
+2. Call `workflow_gatekeeper(intent, role, itemId)` via MCP to confirm authorization.
+   - Use `role="coding"` for file edits and implementation work.
+   - Use `role="planning"` when decomposing EPICs or STORYs.
+   - Use `role="review"` when auditing code in REVIEW status.
+   - Use `role="testing"` when running the test suite in TEST status.
+   - Pass `itemId` whenever multiple tasks are IN_PROGRESS simultaneously.
 
-If no task is `IN_PROGRESS`, stop and do this first — using MCP tools:
-- `create_item(projectId, "TASK", "<title>")`
-- `update_item(id, {status: "IN_PROGRESS"})`
+If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
+- If no task is IN_PROGRESS — create and start one using MCP tools:
+  - `create_item(projectId, "TASK", "<title>")`
+  - `update_item(id, {status: "IN_PROGRESS"})`
+- If the wrong item is IN_PROGRESS — use `itemId` to disambiguate.
+- Never proceed past a gatekeeper rejection.
 
 After completing changes — using MCP tools:
 - `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
@@ -41,12 +49,12 @@ CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allow
 
 | Instead of MCP tool | Use CLI fallback |
 |---------------------|-----------------|
-| `workflow_gatekeeper(intent)` | `agenfk gatekeeper --intent "<intent>"` |
+| `workflow_gatekeeper(intent, role, itemId)` | `agenfk gatekeeper --intent "<intent>" --item-id <id>` |
 | `list_projects()` | `agenfk list-projects --json` |
 | `list_items(projectId)` | `agenfk list --project <id> --json` |
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
-| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `verify_changes` instead) |
+| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `test_changes` instead) |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
 | `review_changes(id, command)` | `agenfk verify <id> "<command>"` (from REVIEW: moves to TEST) |
 | `test_changes(id)` | `agenfk verify <id>` (from TEST: moves to DONE, uses project verifyCommand) |

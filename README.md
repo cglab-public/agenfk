@@ -22,7 +22,19 @@ AgenFK is built on six core mandates to ensure your AI-assisted development is c
 *   **Visual**: A real-time, hierarchical Kanban board provides instant oversight of the entire project state.
 *   **Repeatable**: Uses standardized tools, prompt protocols, and context engineering to make AI behavior deterministic.
 *   **Reliable**: Enforces mandatory verification (build/lint/test) before any work is declared "Done".
-*   **Flexible**: Plugin-based architecture with support for MCP (Model Context Protocol), usable in Opencode, Cursor, Claude, and more.
+*   **Flexible**: Plugin-based architecture with support for MCP (Model Context Protocol), usable across multiple AI coding agents.
+
+## Supported Platforms
+
+| Platform | Support Level | Enforcement | Notes |
+|---|---|---|---|
+| **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations |
+| **Opencode** | Fully Supported | MCP + skill integration | Native slash commands and skill system |
+| **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
+| **OpenAI Codex CLI** | Experimental | Instructional (`AGENTS.md`) | MCP + workflow rules |
+| **Google Gemini CLI** | Experimental | Instructional (`GEMINI.md`) | MCP + workflow rules |
+
+> Experimental platforms work via MCP and instructional rules but lack mechanical enforcement hooks. Feedback and contributions are welcome!
 
 ## Installation & Setup
 
@@ -35,8 +47,9 @@ npx github:cglab-PRIVATE/agenfk
 This will:
 *   Download the framework directly from GitHub.
 *   Install all dependencies and build the full stack.
-*   Configure the **MCP Server** for both **Opencode** and **Claude Code**.
+*   Configure the **MCP Server** for all detected AI coding agents (Claude Code, Opencode, Cursor, Codex CLI, Gemini CLI).
 *   Install the **`/agenfk`** and **`/agenfk-release`** slash commands in your AI editors.
+*   Install **workflow rules** into each platform (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.mdc` for Cursor).
 *   Install the **Agent Skill** into Opencode.
 *   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
 *   Configure the **`start:services`** Node script to launch the API and Web UI.
@@ -79,7 +92,7 @@ AgenFK supports managing multiple distinct projects from a single unified backen
 AgenFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
 
 *   **API Server (The Owner)**: The heart of the framework. Built with Node.js and Express. It is the exclusive manager of the `db.json` storage. It actively watches the disk for changes and broadcasts real-time updates to all connected clients via **WebSockets**.
-*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgenFK tools (`create_item`, `verify_changes`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
+*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgenFK tools (`create_item`, `review_changes`, `test_changes`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
 *   **CLI (The Interface)**: A unified command-line tool (`./agenfk`) written in TypeScript. It allows both humans and agents to manage the backlog and framework state. Like the MCP server, it acts as a client to the API Server.
 *   **Web Dashboard (The UI)**: A modern React/Vite application utilizing TanStack Query for state management. It provides a hierarchical Kanban board, token metrics, real-time progress logs (comments), detailed test results, and seamless context switching.
 *   **Storage (The Memory)**: Uses an atomic, file-based JSON storage plugin by default for maximum portability. The plugin uses temporary file swapping (`fs.renameSync`) to ensure atomic writes and prevent database corruption during concurrent operations.
@@ -98,7 +111,7 @@ graph TD
     E -->|No Active Task| F[Pause: Select/Create Task]
     F --> E
     E -->|Authorized| G["Execute Code Changes<br/>/agenfk-code · Coding Agent"]
-    G --> H["verify_changes · /agenfk-code<br/>Build/Compile only"]
+    G --> H["review_changes · /agenfk-code<br/>Build/Compile only"]
     H -->|Build Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
     I --> G
     H -->|Build OK| J["/agenfk-review · REVIEW Agent<br/>Compile check · Security · Requirements"]
@@ -119,14 +132,14 @@ graph TD
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
 4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
 5.  **Implementation Logging**: Agents log every significant step as a **Comment** on the card, providing a real-time audit trail in the UI.
-6.  **Build Verify**: The `verify_changes` tool runs a **build/compile command only** to gate the transition to `REVIEW`. Tests are never run at this stage.
+6.  **Build Verify**: The `review_changes` tool runs a **build/compile command only** to gate the transition from `REVIEW` to `TEST`. Tests are never run at this stage.
 7.  **Review**: The Review Agent checks compilation, security vulnerabilities, and requirements traceability. If issues are found, the item returns to `IN_PROGRESS`.
 8.  **Test**: The Testing Agent writes any missing tests, runs the full suite with coverage, and records results with `log_test_result` — populating the **Test Results** tab on the card. Coverage must meet the 80% threshold.
 9.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
 
-## Quick Start (Opencode & Claude Code)
+## Quick Start
 
-After installation, four primary slash commands are available in your AI editor:
+After installation, slash commands are available in your AI editor (Claude Code, Opencode, and other supported platforms):
 
 | Command | Description |
 |---|---|
@@ -135,7 +148,7 @@ After installation, four primary slash commands are available in your AI editor:
 | `/agenfk-release` | Push to remote and cut a stable GitHub release. |
 | `/agenfk-release-beta` | Push to remote and cut a pre-release (beta). |
 
-Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
+Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight. On experimental platforms (Cursor, Codex, Gemini), the MCP tools are available directly — refer to the platform-specific workflow rules installed during setup.
 
 ## Operation Modes
 
