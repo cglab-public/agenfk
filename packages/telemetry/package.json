@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/telemetry",
-  "version": "0.1.54",
+  "version": "0.1.55",
   "description": "Anonymous telemetry client for AgenFK",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
