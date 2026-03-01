@@ -74,8 +74,24 @@ After installation, complete the setup:
     *   `agenfk restart`: Quickly cycle both the API and UI.
     *   `agenfk down`: Stop all running AgenFK processes.
     *   `agenfk health`: Verify configuration, database, and connectivity.
+    *   `agenfk integration list`: Show the supported editor and agent integrations.
+    *   `agenfk integration install <platform>`: Reinstall one integration without rerunning the full framework installer.
+    *   `agenfk integration uninstall <platform>`: Remove one integration without uninstalling the full framework.
     *   `npm run uninstall:framework`: Fully remove AgenFK from your system.
 4.  **Initialize a project** — go to any repository and type `/agenfk` in your AI editor to link it to the framework.
+
+### Managing Individual Integrations
+
+If you only need to repair or refresh one editor integration, use the `agenfk integration` command group instead of rerunning the full installer.
+
+```bash
+agenfk integration list
+agenfk integration install claude
+agenfk integration install codex --rebuild
+agenfk integration uninstall cursor
+```
+
+Supported platform IDs are `claude`, `opencode`, `cursor`, `codex`, and `gemini`.
 
 ## Multi-Project Support
 
