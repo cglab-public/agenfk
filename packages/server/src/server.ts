@@ -1431,6 +1431,7 @@ app.post("/github/sync/push", async (req: any, res: any) => {
       const allItems = await storage.listItems({ projectId });
       const items = allItems.filter((i: AgenFKItem) => !i.parentId);
       const syncResult: SyncResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+      const details: Array<{ action: string; title: string; issueNumber?: number; issueUrl?: string; error?: string }> = [];
 
       for (const item of items) {
         if (item.status === Status.TRASHED) { syncResult.skipped++; continue; }
@@ -1449,6 +1450,8 @@ app.post("/github/sync/push", async (req: any, res: any) => {
           if (updatedItem) pushComments(config, updatedItem);
         }
 
+        details.push({ action: result.action, title: item.title, issueNumber: result.issueNumber, issueUrl: result.issueUrl, error: result.error });
+
         switch (result.action) {
           case 'created': syncResult.created++; break;
           case 'updated': syncResult.updated++; break;
@@ -1461,7 +1464,7 @@ app.post("/github/sync/push", async (req: any, res: any) => {
 
       updateLastSynced(projectId);
       io.emit("items_updated");
-      res.json(syncResult);
+      res.json({ ...syncResult, details });
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
@@ -1481,6 +1484,7 @@ app.post("/github/sync/pull", async (req: any, res: any) => {
     const { items: pullResults } = pullAll(config, existingItems, projectId);
 
     const summary = { created: 0, updated: 0, skipped: 0, conflicts: 0 };
+    const details: Array<{ action: string; title: string; issueNumber: number; reason?: string }> = [];
 
     for (const pr of pullResults) {
       switch (pr.action) {
@@ -1500,16 +1504,19 @@ app.post("/github/sync/pull", async (req: any, res: any) => {
             } as AgenFKItem;
             await storage.createItem(newItem);
             summary.created++;
+            details.push({ action: 'created', title: pr.itemData.title || 'Untitled', issueNumber: pr.issueNumber });
           }
           break;
         case 'updated':
           if (pr.itemId && pr.itemData) {
             await storage.updateItem(pr.itemId, pr.itemData as Partial<AgenFKItem>);
             summary.updated++;
+            details.push({ action: 'updated', title: pr.itemData.title || 'Untitled', issueNumber: pr.issueNumber });
           }
           break;
         case 'conflict':
           summary.conflicts++;
+          details.push({ action: 'conflict', title: pr.itemData?.title || `Issue #${pr.issueNumber}`, issueNumber: pr.issueNumber, reason: pr.reason });
           break;
         case 'skipped':
           summary.skipped++;
@@ -1519,7 +1526,7 @@ app.post("/github/sync/pull", async (req: any, res: any) => {
 
     updateLastSynced(projectId);
     io.emit("items_updated");
-    res.json(summary);
+    res.json({ ...summary, details });
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }

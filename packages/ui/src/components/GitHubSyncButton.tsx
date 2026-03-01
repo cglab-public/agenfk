@@ -17,11 +17,11 @@ interface Props {
 
 export const GitHubSyncButton: React.FC<Props> = ({ projectId }) => {
   const queryClient = useQueryClient();
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string; details?: string[] } | null>(null);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 5000);
+    const t = setTimeout(() => setToast(null), 8000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -41,8 +41,24 @@ export const GitHubSyncButton: React.FC<Props> = ({ projectId }) => {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['githubStatus'] });
+
+      const details: string[] = [];
+      if (data.push.details?.length) {
+        for (const d of data.push.details) {
+          if (d.action === 'created') details.push(`↑ Created #${d.issueNumber}: ${d.title}`);
+          else if (d.action === 'updated') details.push(`↑ Updated #${d.issueNumber}: ${d.title}`);
+        }
+      }
+      if (data.pull.details?.length) {
+        for (const d of data.pull.details) {
+          if (d.action === 'created') details.push(`↓ Created from #${d.issueNumber}: ${d.title}`);
+          else if (d.action === 'updated') details.push(`↓ Updated from #${d.issueNumber}: ${d.title}`);
+          else if (d.action === 'conflict') details.push(`⚠ Conflict #${d.issueNumber}: ${d.title}`);
+        }
+      }
+
       const msg = `Push: ${data.push.created} created, ${data.push.updated} updated. Pull: ${data.pull.created} created, ${data.pull.updated} updated.`;
-      setToast({ type: 'success', message: msg });
+      setToast({ type: 'success', message: msg, details: details.length > 0 ? details : undefined });
     },
     onError: (err: any) => {
       const msg = err.response?.data?.error || err.message || 'Sync failed';
@@ -60,14 +76,23 @@ export const GitHubSyncButton: React.FC<Props> = ({ projectId }) => {
         <div
           data-testid="github-toast"
           className={clsx(
-            'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2 max-w-md',
-            toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
+            'fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-2xl text-sm font-medium max-w-sm',
+            toast.type === 'success' ? 'bg-slate-900 text-white border border-slate-700' : 'bg-red-500 text-white'
           )}
           role="alert"
         >
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          <span className="truncate">{toast.message}</span>
-          <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75 flex-shrink-0" aria-label="Dismiss">x</button>
+          <div className="flex items-center gap-2">
+            {toast.type === 'success' ? <CheckCircle size={16} className="text-emerald-400 flex-shrink-0" /> : <AlertCircle size={16} className="flex-shrink-0" />}
+            <span className="font-bold text-xs">{toast.message}</span>
+            <button onClick={() => setToast(null)} className="ml-auto hover:opacity-75 flex-shrink-0 text-slate-400" aria-label="Dismiss">×</button>
+          </div>
+          {toast.details && toast.details.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-slate-700 space-y-0.5 max-h-48 overflow-y-auto">
+              {toast.details.map((d, i) => (
+                <div key={i} className="text-xs text-slate-300 font-mono truncate">{d}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

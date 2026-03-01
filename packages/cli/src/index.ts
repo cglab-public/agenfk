@@ -1620,16 +1620,32 @@ githubCommand
 
     try {
       if (doPush) {
-        console.log(chalk.blue('\nPushing to GitHub...'));
+        console.log(chalk.blue('\n↑ Pushing to GitHub...\n'));
         const body: any = { projectId };
         if (options.itemId) body.itemId = options.itemId;
         const { data } = await axios.post(`${API_URL}/github/sync/push`, body, { timeout: 120000 });
 
         if (data.result) {
           // Single item result
-          console.log(chalk.green(`  ${data.result.action}: issue #${data.result.issueNumber || '?'}`));
+          const icon = data.result.action === 'created' ? '✓' : data.result.action === 'updated' ? '↻' : '–';
+          console.log(chalk.green(`  ${icon} ${data.result.action}: issue #${data.result.issueNumber || '?'}`));
         } else {
-          console.log(chalk.green(`  Created: ${data.created}, Updated: ${data.updated}, Skipped: ${data.skipped}, Failed: ${data.failed}`));
+          // Per-item details
+          if (data.details?.length) {
+            for (const d of data.details) {
+              if (d.action === 'created') {
+                console.log(chalk.green(`  ✓ Created #${d.issueNumber}: ${d.title}`));
+              } else if (d.action === 'updated') {
+                console.log(chalk.cyan(`  ↻ Updated #${d.issueNumber}: ${d.title}`));
+              } else if (d.error) {
+                console.log(chalk.red(`  ✗ Failed: ${d.title} — ${d.error}`));
+              } else {
+                console.log(chalk.gray(`  – Skipped: ${d.title}`));
+              }
+            }
+            console.log('');
+          }
+          console.log(chalk.white(`  Summary: ${data.created} created, ${data.updated} updated, ${data.skipped} skipped, ${data.failed} failed`));
           if (data.errors?.length) {
             for (const err of data.errors) {
               console.log(chalk.red(`    Error: ${err}`));
@@ -1639,12 +1655,26 @@ githubCommand
       }
 
       if (doPull) {
-        console.log(chalk.blue('\nPulling from GitHub...'));
+        console.log(chalk.blue('\n↓ Pulling from GitHub...\n'));
         const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
-        console.log(chalk.green(`  Created: ${data.created}, Updated: ${data.updated}, Skipped: ${data.skipped}, Conflicts: ${data.conflicts}`));
+
+        // Per-item details
+        if (data.details?.length) {
+          for (const d of data.details) {
+            if (d.action === 'created') {
+              console.log(chalk.green(`  ✓ Created from #${d.issueNumber}: ${d.title}`));
+            } else if (d.action === 'updated') {
+              console.log(chalk.cyan(`  ↻ Updated from #${d.issueNumber}: ${d.title}`));
+            } else if (d.action === 'conflict') {
+              console.log(chalk.yellow(`  ⚠ Conflict #${d.issueNumber}: ${d.title}${d.reason ? ` (${d.reason})` : ''}`));
+            }
+          }
+          console.log('');
+        }
+        console.log(chalk.white(`  Summary: ${data.created} created, ${data.updated} updated, ${data.skipped} skipped, ${data.conflicts} conflicts`));
       }
 
-      console.log(chalk.green('\nSync complete!'));
+      console.log(chalk.green('\n✓ Sync complete!'));
     } catch (err: any) {
       const msg = err.response?.data?.error || err.message;
       console.error(chalk.red(`\nSync failed: ${msg}`));
