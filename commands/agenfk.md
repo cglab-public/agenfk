@@ -44,6 +44,9 @@ Before creating any item, evaluate the request against these signals:
 
 1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0) and immediately set it to `IN_PROGRESS` with `update_item`.
 2. Call `workflow_gatekeeper(intent, role="coding", itemId)` before making any file changes.
+3. **Branch enforcement** — read the gatekeeper response carefully:
+   - If the item already has a branch (BUG auto-branch or previously created), the gatekeeper auto-checks it out. No action needed.
+   - If the gatekeeper says *"This TASK has no branch"*, you **MUST** ask the user whether they want to create a dedicated feature branch via `create_branch(itemId)` or continue on the current branch. Do NOT skip this step silently.
 
 ---
 
@@ -88,7 +91,11 @@ Since there is no separate review agent in Standard Mode, perform the review you
 
 1. Call `log_token_usage(itemId, input, output, model)` with approximate token counts for this session.
 2. Call `add_comment(itemId, "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>")`.
-3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
-    - **Release**: Run `/agenfk-release` to create a new release.
+3. **PR creation gate** — Re-read the item with `get_item(itemId)`:
+   - If the item has a `branchName` but **no** `prUrl`: call `create_pr(itemId, "<summary of changes>")` to push the branch and open a pull request. Show the PR URL to the user.
+   - If the item already has a `prUrl`: skip — PR already exists.
+   - If the item has no `branchName`: skip — work was done on the current branch (no PR needed).
+4. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
+    - **Release**: Run `/agenfk-release` to create a new release. _(If a PR was created, remind the user it must be merged first.)_
     - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
     - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
