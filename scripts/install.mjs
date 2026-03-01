@@ -366,6 +366,33 @@ process.exit(0);
         console.log(`  Codex not found. Skipping Codex MCP configuration.`);
     }
 
+    // 6d. Configure Gemini CLI MCP
+    console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
+    const geminiInstalled = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    if (geminiInstalled) {
+        try {
+            console.log("  Registering AgenFK MCP server with Gemini CLI...");
+            // Remove any existing registration first (ignore errors if not registered)
+            spawnSync('gemini', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            const result = spawnSync('gemini', [
+                'mcp', 'add',
+                '-e', `AGENFK_DB_PATH=${dbPath}`,
+                '--',
+                'agenfk',
+                'node', serverPath
+            ], { stdio: 'inherit', shell: true });
+            if (result.status === 0) {
+                console.log(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: gemini mcp add returned non-zero. Verify manually.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error configuring Gemini CLI MCP:', e.message);
+        }
+    } else {
+        console.log(`  Gemini CLI not found. Skipping Gemini CLI MCP configuration.`);
+    }
+
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -634,6 +661,41 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
         console.log(`  Codex not found. Skipping Codex rules installation.`);
     }
 
+    // 13d. Install Gemini CLI workflow rules (GEMINI.md)
+    console.log(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
+    if (geminiInstalled) {
+        try {
+            const geminiDir = path.join(os.homedir(), '.gemini');
+            await fs.mkdir(geminiDir, { recursive: true });
+            const geminiMdPath = path.join(geminiDir, 'GEMINI.md');
+            const geminiRulesSource = path.join(rootDir, 'geminirules', 'GEMINI.md');
+
+            if (existsSync(geminiRulesSource)) {
+                const rulesContent = await fs.readFile(geminiRulesSource, 'utf8');
+
+                let existingContent = '';
+                if (existsSync(geminiMdPath)) {
+                    existingContent = await fs.readFile(geminiMdPath, 'utf8');
+                    // Remove any existing AgenFK block
+                    existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                }
+
+                await fs.writeFile(
+                    geminiMdPath,
+                    (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+                    'utf8'
+                );
+                console.log(`  Written: ${geminiMdPath}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: geminirules/GEMINI.md not found in framework root. Skipping.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error installing Gemini CLI rules:', e.message);
+        }
+    } else {
+        console.log(`  Gemini CLI not found. Skipping Gemini CLI rules installation.`);
+    }
+
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
     console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
@@ -677,7 +739,7 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
     console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
     console.log("");
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-    console.log("1. Restart your AI editor/agent (Opencode, Cursor, and Codex need a restart to pick up the new MCP server).");
+    console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server).");
     console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
     console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
     console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");
