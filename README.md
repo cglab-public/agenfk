@@ -127,7 +127,7 @@ graph TD
     style L fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46
 ```
 
-1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgenFK project. *In Opencode or Claude Code, you can simply type `/agenfk` to have the agent set this up for you.*
+1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgenFK project. *In Opencode, Claude Code or Gemini, you can simply type `/agenfk` to have the agent set this up for you.*
 2.  **Analyze**: Every request is analyzed to determine if it's an Epic, Story, Task, or Bug within the current project's scope.
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
 4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
@@ -139,7 +139,7 @@ graph TD
 
 ## Quick Start
 
-After installation, slash commands are available in your AI editor (Claude Code, Opencode, and other supported platforms):
+After installation, slash commands are available in your AI editor (Claude Code, Opencode, Gemini and other supported platforms):
 
 | Command | Description |
 |---|---|
@@ -148,7 +148,7 @@ After installation, slash commands are available in your AI editor (Claude Code,
 | `/agenfk-release` | Push to remote and cut a stable GitHub release. |
 | `/agenfk-release-beta` | Push to remote and cut a pre-release (beta). |
 
-Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight. On experimental platforms (Cursor, Codex, Gemini), the MCP tools are available directly — refer to the platform-specific workflow rules installed during setup.
+Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight. On experimental platforms (Cursor), the MCP tools are available directly — refer to the platform-specific workflow rules installed during setup.
 
 ## Operation Modes
 
