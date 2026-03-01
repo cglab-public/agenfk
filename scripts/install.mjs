@@ -378,7 +378,6 @@ process.exit(0);
                 'mcp', 'add',
                 '-s', 'user',
                 '-e', `AGENFK_DB_PATH=${dbPath}`,
-                '--',
                 'agenfk',
                 'node', serverPath
             ], { stdio: 'inherit', shell: true });
