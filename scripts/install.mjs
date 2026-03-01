@@ -339,6 +339,33 @@ process.exit(0);
         console.log(`  Cursor not found. Skipping Cursor MCP configuration.`);
     }
 
+    // 6c. Configure Codex MCP
+    console.log(`${GREEN}[6c/14] Configuring Codex MCP...${NC}`);
+    const codexInstalled = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' }).status === 0;
+    if (codexInstalled) {
+        try {
+            console.log("  Registering AgenFK MCP server with Codex...");
+            // Remove any existing registration first (ignore errors if not registered)
+            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            const result = spawnSync('codex', [
+                'mcp', 'add',
+                '--env', `AGENFK_DB_PATH=${dbPath}`,
+                '--',
+                'agenfk',
+                'node', serverPath
+            ], { stdio: 'inherit', shell: true });
+            if (result.status === 0) {
+                console.log(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: codex mcp add returned non-zero. Verify manually.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error configuring Codex MCP:', e.message);
+        }
+    } else {
+        console.log(`  Codex not found. Skipping Codex MCP configuration.`);
+    }
+
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -572,6 +599,41 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
         console.log(`  Cursor not found. Skipping Cursor rules installation.`);
     }
 
+    // 13c. Install Codex workflow rules (AGENTS.md)
+    console.log(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
+    if (codexInstalled) {
+        try {
+            const codexDir = path.join(os.homedir(), '.codex');
+            await fs.mkdir(codexDir, { recursive: true });
+            const codexAgentsMdPath = path.join(codexDir, 'AGENTS.md');
+            const codexRulesSource = path.join(rootDir, 'codexrules', 'AGENTS.md');
+
+            if (existsSync(codexRulesSource)) {
+                const rulesContent = await fs.readFile(codexRulesSource, 'utf8');
+
+                let existingContent = '';
+                if (existsSync(codexAgentsMdPath)) {
+                    existingContent = await fs.readFile(codexAgentsMdPath, 'utf8');
+                    // Remove any existing AgenFK block
+                    existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                }
+
+                await fs.writeFile(
+                    codexAgentsMdPath,
+                    (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+                    'utf8'
+                );
+                console.log(`  Written: ${codexAgentsMdPath}`);
+            } else {
+                console.log(`  ${YELLOW}Warning: codexrules/AGENTS.md not found in framework root. Skipping.${NC}`);
+            }
+        } catch (e) {
+            console.error('  Error installing Codex rules:', e.message);
+        }
+    } else {
+        console.log(`  Codex not found. Skipping Codex rules installation.`);
+    }
+
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
     console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
@@ -615,7 +677,7 @@ The workflow rules still apply: call \`agenfk gatekeeper\` before editing files.
     console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
     console.log("");
     console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-    console.log("1. Restart your AI editor/agent (Opencode and Cursor need a restart to pick up the new MCP server).");
+    console.log("1. Restart your AI editor/agent (Opencode, Cursor, and Codex need a restart to pick up the new MCP server).");
     console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
     console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
     console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");
