@@ -6,7 +6,7 @@ import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
 import {
   Plus, Loader2, AlertCircle, Tag,
-  Zap, ChevronRight, Home, ArrowRight,
+  Zap, ChevronRight, Home,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause
@@ -222,8 +222,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             {item.type}
           </span>
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase flex items-center gap-1 transition-colors">
-              Drill <ArrowRight size={9} />
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors">
+              <Search size={9} /> {items?.filter((i: AgenFKItem) => i.parentId === item.id).length}
             </button>
           )}
         </div>
