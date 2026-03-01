@@ -206,11 +206,12 @@ describe('PUT /items/:id workflow guards', () => {
     expect(res.status).toBe(403);
   });
 
-  it('returns 403 when setting REVIEW directly', async () => {
+  it('allows setting REVIEW directly', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('REVIEW');
   });
 
   it('returns 404 for unknown item', async () => {
@@ -487,11 +488,12 @@ describe('GET /releases/latest', () => {
 describe('POST /items/:id/review success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('moves IN_PROGRESS item to REVIEW on passing command', async () => {
+  it('moves REVIEW item to TEST on passing command', async () => {
     if (!verifyToken) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
     const res = await request(app)
       .post(`/items/${item.id}/review`)
@@ -500,15 +502,16 @@ describe('POST /items/:id/review success paths', () => {
 
     expect([200, 422]).toContain(res.status);
     if (res.status === 200) {
-      expect(res.body.status).toBe('REVIEW');
+      expect(res.body.status).toBe('TEST');
     }
   });
 
-  it('returns 422 on failing command', async () => {
+  it('returns 422 on failing command and moves back to IN_PROGRESS', async () => {
     if (!verifyToken) return;
     const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
     const res = await request(app)
       .post(`/items/${item.id}/review`)
@@ -1144,7 +1147,7 @@ describe('POST /items/bulk - branch coverage', () => {
     expect(res.body.results).toHaveLength(0);
   });
 
-  it('skips REVIEW status without internal token', async () => {
+  it('allows REVIEW status without internal token', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
 
@@ -1153,7 +1156,7 @@ describe('POST /items/bulk - branch coverage', () => {
     });
     expect(res.status).toBe(200);
     const updated = (await request(app).get(`/items/${item.id}`)).body;
-    expect(updated.status).not.toBe('REVIEW');
+    expect(updated.status).toBe('REVIEW');
   });
 
   it('syncs parent after bulk update with parentId', async () => {

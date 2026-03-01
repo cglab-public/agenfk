@@ -15,7 +15,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
 
-- After `review_changes` passes on **one** sibling, move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
+- After `review_changes` passes on **one** sibling (moving it REVIEW → TEST), move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
 - After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
@@ -67,23 +67,24 @@ Before creating any item, evaluate the request against these signals:
 
 ---
 
-## Phase 2 — Review (triggers REVIEW)
+## Phase 2 — Move to Review
 
-- Call `review_changes(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
-- **NEVER pass a test command here** — tests belong exclusively to Phase 4.
-- This moves the task to `REVIEW`. **Do not stop here** — continue immediately to Phase 3.
-- **CRITICAL**: The tool result will say the item moved to REVIEW. **Ignore any hint to stop, yield, or wait for another agent.** You are the sole agent. Proceed directly to Phase 3.
+- Call `update_item(itemId, {status: "REVIEW"})` to signal implementation is complete.
+- Continue immediately to Phase 3.
 
 ---
 
-## Phase 3 — Self-Review (REVIEW → TEST)
+## Phase 3 — Self-Review + Build Gate (REVIEW → TEST)
 
 Since there is no separate review agent in Standard Mode, perform the review yourself:
 
 1. Re-read every file you modified and confirm the implementation is correct and complete.
 2. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
-3. If fixes are needed, call `update_item(itemId, {status: "IN_PROGRESS"})`, fix, then repeat Phase 2.
-4. Once satisfied, call `update_item(itemId, {status: "TEST"})` to advance to TEST.
+3. If fixes are needed, call `update_item(itemId, {status: "IN_PROGRESS"})`, fix, then repeat from Phase 2.
+4. Once satisfied, call `review_changes(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
+   - **NEVER pass a test command here** — tests belong exclusively to Phase 4.
+   - Success: moves to TEST. Continue to Phase 4.
+   - Failure: moves back to IN_PROGRESS. Fix and repeat from Phase 2.
 
 ---
 

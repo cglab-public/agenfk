@@ -10,7 +10,9 @@ If no task is `IN_PROGRESS`, stop and do this first — using MCP tools:
 - `update_item(id, {status: "IN_PROGRESS"})`
 
 After completing changes — using MCP tools:
-- `verify_changes(itemId, command)` — handles REVIEW → DONE automatically.
+- `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
+- `review_changes(itemId, command)` — build gate, REVIEW → TEST on success.
+- `test_changes(itemId)` — runs project verifyCommand, TEST → DONE.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
@@ -46,7 +48,8 @@ CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allow
 | `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
 | `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `verify_changes` instead) |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
-| `verify_changes(id, command)` | `agenfk verify <id> "<command>"` (from TEST: moves to DONE; from IN_PROGRESS: moves to REVIEW) |
+| `review_changes(id, command)` | `agenfk verify <id> "<command>"` (from REVIEW: moves to TEST) |
+| `test_changes(id)` | `agenfk verify <id>` (from TEST: moves to DONE, uses project verifyCommand) |
 | `log_token_usage(id, in, out, model)` | `agenfk log-tokens <id> --input N --output N --model M` |
 | `log_test_result(id, cmd, out, status)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED` |
 

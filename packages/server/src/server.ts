@@ -481,7 +481,6 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     const { title, description, status, parentId, tokenUsage, context, implementationPlan, reviews, comments, sortOrder } = bodyUpdates;
 
     if (!isInternalVerify && status === Status.DONE) continue;
-    if (!isInternalVerify && status === Status.REVIEW) continue;
 
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
@@ -551,11 +550,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (!isInternalVerify && status === Status.DONE) {
     return res.status(403).json({
       error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Move the item to TEST, then call test_changes(itemId) to run the project's test suite."
-    });
-  }
-  if (!isInternalVerify && status === Status.REVIEW) {
-    return res.status(403).json({
-      error: "WORKFLOW VIOLATION: Cannot set status to REVIEW directly. Use review_changes(itemId, command) to run a review check and move to REVIEW."
     });
   }
 
@@ -674,7 +668,7 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
 
 // ── Verify Endpoint ──────────────────────────────────────────────────────────
 
-// ── review_changes: IN_PROGRESS → REVIEW (agent picks the command) ───────────
+// ── review_changes: REVIEW → TEST (agent picks the command) ──────────────────
 app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify) {
@@ -690,8 +684,8 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  if (item.status !== Status.IN_PROGRESS) {
-    return res.status(400).json({ error: `review_changes requires item to be IN_PROGRESS. Current status: ${item.status}` });
+  if (item.status !== Status.REVIEW) {
+    return res.status(400).json({ error: `review_changes requires item to be in REVIEW. Current status: ${item.status}` });
   }
 
   const projectRoot = findProjectRoot(process.cwd());
@@ -715,10 +709,10 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   }];
 
   if (passed) {
-    const updated = await storage.updateItem(req.params.id, { status: Status.REVIEW, comments });
+    const updated = await storage.updateItem(req.params.id, { status: Status.TEST, comments });
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: Status.REVIEW, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to REVIEW column.\n\nStandard Mode: continue to self-review, then tests. Multi-Agent Mode: yield to the Review Agent.`, output: truncated });
+    return res.json({ status: Status.TEST, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to TEST column.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: truncated });
   } else {
     await storage.updateItem(req.params.id, { status: Status.IN_PROGRESS, comments });
     io.emit('items_updated');
