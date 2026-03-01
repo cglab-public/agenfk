@@ -190,7 +190,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes. Cannot set status to REVIEW directly — use review_changes.",
+        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes.",
         inputSchema: {
           type: "object",
           properties: {
@@ -334,7 +334,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "review_changes",
-        description: "Runs an agent-chosen command to verify the implementation and moves the item from IN_PROGRESS → REVIEW. Use any command that makes sense (build, lint, type-check, etc.). If the command fails, the item stays IN_PROGRESS.",
+        description: "Runs an agent-chosen command to verify the implementation and moves the item from REVIEW → TEST. Use any command that makes sense (build, lint, type-check, etc.). If the command fails, the item moves back to IN_PROGRESS.",
         inputSchema: {
           type: "object",
           properties: {
@@ -611,13 +611,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           // Allow TEST -> DONE, using verify token to bypass server guard
           const { data } = await api.put(`/items/${id}`, updates, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
           return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-        }
-
-        if (updates.status === "REVIEW") {
-          return {
-            isError: true,
-            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to REVIEW directly via update_item. Use review_changes(itemId, command) instead.` }],
-          };
         }
 
         const { data } = await api.put(`/items/${id}`, updates);

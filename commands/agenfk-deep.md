@@ -21,7 +21,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
 
-- After `review_changes` passes on **one** sibling, move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
+- After `review_changes` passes on **one** sibling (moving it REVIEW → TEST), move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
 - After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
