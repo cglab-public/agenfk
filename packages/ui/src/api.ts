@@ -126,7 +126,7 @@ export const api = {
   importJiraIssues: async (projectId: string, items: { issueKey: string; type: string }[]): Promise<void> => {
     await axios.post(`${API_URL}/jira/import`, { projectId, items });
   },
-  getGitHubStatus: async (projectId: string): Promise<{ configured: boolean; owner?: string; repo?: string; syncEnabled?: boolean; lastSyncedAt?: string | null; ghCliAuthenticated?: boolean }> => {
+  getGitHubStatus: async (projectId: string): Promise<{ configured: boolean; owner?: string; repo?: string; ghCliAuthenticated?: boolean }> => {
     try {
       const { data } = await axios.get(`${API_URL}/github/status`, { params: { projectId } });
       return data;
@@ -134,12 +134,12 @@ export const api = {
       return { configured: false };
     }
   },
-  githubSyncPush: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; failed: number; errors?: string[]; details?: Array<{ action: string; title: string; issueNumber?: number }> }> => {
-    const { data } = await axios.post(`${API_URL}/github/sync/push`, { projectId }, { timeout: 120000 });
+  listGitHubIssues: async (projectId: string, params?: { state?: string; search?: string }): Promise<{ number: number; title: string; state: string; labels: string[]; url: string }[]> => {
+    const { data } = await axios.get(`${API_URL}/github/issues`, { params: { projectId, ...params } });
     return data;
   },
-  githubSyncPull: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; conflicts: number; details?: Array<{ action: string; title: string; issueNumber: number }> }> => {
-    const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
+  importGitHubIssues: async (projectId: string, items: { issueNumber: number; type: string }[]): Promise<{ imported: { issueNumber: number; itemId: string }[]; errors: string[] }> => {
+    const { data } = await axios.post(`${API_URL}/github/import`, { projectId, items });
     return data;
   },
   getVersion: async (): Promise<{ version: string }> => {

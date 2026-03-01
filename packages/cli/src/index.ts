@@ -1414,11 +1414,11 @@ jiraCommand
 
 const githubCommand = program
   .command('github')
-  .description('GitHub Issues sync integration');
+  .description('GitHub Issues import integration');
 
 githubCommand
   .command('setup')
-  .description('Link the current project to a GitHub repository for issue sync')
+  .description('Link the current project to a GitHub repository for issue import')
   .option('--owner <owner>', 'GitHub repository owner')
   .option('--repo <repo>', 'GitHub repository name')
   .action(async (options: { owner?: string; repo?: string }) => {
@@ -1496,26 +1496,23 @@ githubCommand
     config.github.repos[projectId] = {
       owner,
       repo,
-      syncEnabled: true,
     };
 
     const agenfkDir = path.join(os.homedir(), '.agenfk');
     if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-    console.log(chalk.green(`\nGitHub sync configured for project ${projectId}!`));
+    console.log(chalk.green(`\nGitHub import configured for project ${projectId}!`));
     console.log(chalk.gray(`  Repository: ${owner}/${repo}`));
     console.log(chalk.blue('\nNext steps:'));
-    console.log(chalk.white('  Push items to GitHub:  agenfk github sync --push'));
-    console.log(chalk.white('  Pull from GitHub:      agenfk github sync --pull'));
-    console.log(chalk.white('  Bidirectional sync:    agenfk github sync'));
+    console.log(chalk.white('  Import issues from the AgenFK dashboard using the GitHub import button.'));
   });
 
 githubCommand
   .command('status')
-  .description('Show GitHub sync configuration and connection status')
+  .description('Show GitHub import configuration and connection status')
   .action(async () => {
-    console.log(chalk.blue('\nGitHub Sync Status\n'));
+    console.log(chalk.blue('\nGitHub Import Status\n'));
 
     const projectId = findProjectId(process.cwd());
 
@@ -1534,10 +1531,6 @@ githubCommand
     if (ghConfig) {
       console.log(chalk.green('  Configuration: ✓ Configured'));
       console.log(chalk.gray(`    Repository:    ${ghConfig.owner}/${ghConfig.repo}`));
-      console.log(chalk.gray(`    Sync Enabled:  ${ghConfig.syncEnabled ? 'yes' : 'no'}`));
-      if (ghConfig.lastSyncedAt) {
-        console.log(chalk.gray(`    Last Synced:   ${new Date(ghConfig.lastSyncedAt).toLocaleString()}`));
-      }
     } else {
       console.log(chalk.yellow('  Configuration: ✗ Not configured'));
       if (!projectId) {
@@ -1569,7 +1562,7 @@ githubCommand
 
 githubCommand
   .command('disconnect')
-  .description('Remove GitHub sync configuration for the current project')
+  .description('Remove GitHub import configuration for the current project')
   .action(async () => {
     const projectId = findProjectId(process.cwd());
     if (!projectId) {
@@ -1592,7 +1585,7 @@ githubCommand
           delete config.github;
         }
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        console.log(chalk.green('GitHub sync configuration removed for this project.'));
+        console.log(chalk.green('GitHub import configuration removed for this project.'));
       } else {
         console.log(chalk.yellow('No GitHub configuration found for this project.'));
       }
@@ -1601,86 +1594,6 @@ githubCommand
     }
   });
 
-githubCommand
-  .command('sync')
-  .description('Sync items between AgenFK and GitHub Issues')
-  .option('--push', 'Push AgenFK items to GitHub only')
-  .option('--pull', 'Pull GitHub issues into AgenFK only')
-  .option('--item-id <id>', 'Sync a single item by ID')
-  .action(async (options: { push?: boolean; pull?: boolean; itemId?: string }) => {
-    const projectId = findProjectId(process.cwd());
-    if (!projectId) {
-      console.error(chalk.red('No AgenFK project found. Run `agenfk init` first.'));
-      process.exit(1);
-    }
-
-    // Determine direction: default is both
-    const doPush = options.push || (!options.push && !options.pull);
-    const doPull = options.pull || (!options.push && !options.pull);
-
-    try {
-      if (doPush) {
-        console.log(chalk.blue('\n↑ Pushing to GitHub...\n'));
-        const body: any = { projectId };
-        if (options.itemId) body.itemId = options.itemId;
-        const { data } = await axios.post(`${API_URL}/github/sync/push`, body, { timeout: 120000 });
-
-        if (data.result) {
-          // Single item result
-          const icon = data.result.action === 'created' ? '✓' : data.result.action === 'updated' ? '↻' : '–';
-          console.log(chalk.green(`  ${icon} ${data.result.action}: issue #${data.result.issueNumber || '?'}`));
-        } else {
-          // Per-item details
-          if (data.details?.length) {
-            for (const d of data.details) {
-              if (d.action === 'created') {
-                console.log(chalk.green(`  ✓ Created #${d.issueNumber}: ${d.title}`));
-              } else if (d.action === 'updated') {
-                console.log(chalk.cyan(`  ↻ Updated #${d.issueNumber}: ${d.title}`));
-              } else if (d.error) {
-                console.log(chalk.red(`  ✗ Failed: ${d.title} — ${d.error}`));
-              } else {
-                console.log(chalk.gray(`  – Skipped: ${d.title}`));
-              }
-            }
-            console.log('');
-          }
-          console.log(chalk.white(`  Summary: ${data.created} created, ${data.updated} updated, ${data.skipped} skipped, ${data.failed} failed`));
-          if (data.errors?.length) {
-            for (const err of data.errors) {
-              console.log(chalk.red(`    Error: ${err}`));
-            }
-          }
-        }
-      }
-
-      if (doPull) {
-        console.log(chalk.blue('\n↓ Pulling from GitHub...\n'));
-        const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
-
-        // Per-item details
-        if (data.details?.length) {
-          for (const d of data.details) {
-            if (d.action === 'created') {
-              console.log(chalk.green(`  ✓ Created from #${d.issueNumber}: ${d.title}`));
-            } else if (d.action === 'updated') {
-              console.log(chalk.cyan(`  ↻ Updated from #${d.issueNumber}: ${d.title}`));
-            } else if (d.action === 'conflict') {
-              console.log(chalk.yellow(`  ⚠ Conflict #${d.issueNumber}: ${d.title}${d.reason ? ` (${d.reason})` : ''}`));
-            }
-          }
-          console.log('');
-        }
-        console.log(chalk.white(`  Summary: ${data.created} created, ${data.updated} updated, ${data.skipped} skipped, ${data.conflicts} conflicts`));
-      }
-
-      console.log(chalk.green('\n✓ Sync complete!'));
-    } catch (err: any) {
-      const msg = err.response?.data?.error || err.message;
-      console.error(chalk.red(`\nSync failed: ${msg}`));
-      process.exit(1);
-    }
-  });
 
 // ── agenfk config ─────────────────────────────────────────────────────────────
 

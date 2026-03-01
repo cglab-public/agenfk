@@ -132,8 +132,6 @@ export type AgenFKItem = Epic | Story | Task | Bug;
 export interface GitHubRepoMapping {
   owner: string;
   repo: string;
-  syncEnabled: boolean;
-  lastSyncedAt?: string; // ISO timestamp of last successful sync
 }
 
 /** Stored in ~/.agenfk/config.json under the "github" key */
