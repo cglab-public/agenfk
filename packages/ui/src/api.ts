@@ -134,11 +134,11 @@ export const api = {
       return { configured: false };
     }
   },
-  githubSyncPush: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; failed: number; errors?: string[] }> => {
+  githubSyncPush: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; failed: number; errors?: string[]; details?: Array<{ action: string; title: string; issueNumber?: number }> }> => {
     const { data } = await axios.post(`${API_URL}/github/sync/push`, { projectId }, { timeout: 120000 });
     return data;
   },
-  githubSyncPull: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; conflicts: number }> => {
+  githubSyncPull: async (projectId: string): Promise<{ created: number; updated: number; skipped: number; conflicts: number; details?: Array<{ action: string; title: string; issueNumber: number }> }> => {
     const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
     return data;
   },
