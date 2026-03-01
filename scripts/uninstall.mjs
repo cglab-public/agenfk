@@ -40,7 +40,7 @@ async function run() {
     console.log(`${BLUE}=== AgenFK Uninstaller ===${NC}`);
     console.log("");
     console.log(`${YELLOW}This will remove:${NC}`);
-    console.log("  - Slash commands from Claude Code and Opencode");
+    console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
     console.log("  - Opencode skill");
     console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
     console.log("  - Cursor workflow rules (agenfk.mdc)");
@@ -85,6 +85,20 @@ async function run() {
                 console.log(`  Removed: ${fullPath}`);
             }
         }
+    }
+
+    // 2b. Slash commands — Gemini CLI
+    console.log(`${GREEN}[2b/10] Removing Gemini CLI slash commands...${NC}`);
+    const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
+    const geminiAgenfkToml = path.join(geminiCommandsBase, 'agenfk.toml');
+    if (existsSync(geminiAgenfkToml)) {
+        await fs.unlink(geminiAgenfkToml);
+        console.log(`  Removed: ${geminiAgenfkToml}`);
+    }
+    const geminiAgenfkSubdir = path.join(geminiCommandsBase, 'agenfk');
+    if (existsSync(geminiAgenfkSubdir)) {
+        await fs.rm(geminiAgenfkSubdir, { recursive: true, force: true });
+        console.log(`  Removed: ${geminiAgenfkSubdir}`);
     }
 
     // 3. Opencode skill
@@ -173,7 +187,7 @@ async function run() {
     try {
         const geminiCheck = spawnSync('gemini', ['--version'], { shell: true, stdio: 'ignore' });
         if (geminiCheck.status === 0) {
-            spawnSync('gemini', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', shell: true });
+            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit', shell: true });
             console.log("  Removed: agenfk MCP from Gemini CLI");
         } else {
             console.log("  Gemini CLI not found (skipping)");

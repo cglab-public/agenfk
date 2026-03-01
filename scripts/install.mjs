@@ -373,9 +373,10 @@ process.exit(0);
         try {
             console.log("  Registering AgenFK MCP server with Gemini CLI...");
             // Remove any existing registration first (ignore errors if not registered)
-            spawnSync('gemini', ['mcp', 'remove', 'agenfk'], { shell: true, stdio: 'ignore' });
+            spawnSync('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { shell: true, stdio: 'ignore' });
             const result = spawnSync('gemini', [
                 'mcp', 'add',
+                '-s', 'user',
                 '-e', `AGENFK_DB_PATH=${dbPath}`,
                 '--',
                 'agenfk',
@@ -448,6 +449,44 @@ process.exit(0);
                 }
             }
         }
+    }
+
+    // 10c. Slash Commands — Gemini CLI (.toml wrappers referencing .md files)
+    if (geminiInstalled) {
+        console.log(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
+        const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
+        const geminiCommandsSubdir = path.join(geminiCommandsBase, 'agenfk');
+        await fs.mkdir(geminiCommandsSubdir, { recursive: true });
+        const commandsDir = path.join(rootDir, 'commands');
+        if (existsSync(commandsDir)) {
+            const files = await fs.readdir(commandsDir);
+            for (const file of files) {
+                if (!file.endsWith('.md')) continue;
+                const mdPath = path.join(commandsDir, file);
+                const mdContent = readFileSync(mdPath, 'utf8');
+                // Parse description from YAML frontmatter
+                let description = file.replace('.md', '');
+                const fmMatch = mdContent.match(/^---\s*\n([\s\S]*?)\n---/);
+                if (fmMatch) {
+                    const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+                    if (descMatch) description = descMatch[1].trim();
+                }
+                const tomlContent = `description = "${description}"\nprompt = """\n@${mdPath}\n\nARGUMENTS: $ARGUMENTS\n"""\n`;
+                // agenfk.md → agenfk.toml (top-level), others → agenfk/<name>.toml
+                let tomlDest;
+                if (file === 'agenfk.md') {
+                    tomlDest = path.join(geminiCommandsBase, 'agenfk.toml');
+                } else {
+                    // agenfk-plan.md → plan.toml
+                    const subName = file.replace(/^agenfk-/, '').replace('.md', '');
+                    tomlDest = path.join(geminiCommandsSubdir, `${subName}.toml`);
+                }
+                writeFileSync(tomlDest, tomlContent, 'utf8');
+                console.log(`  Installed: ${tomlDest}`);
+            }
+        }
+    } else {
+        console.log(`${GREEN}[10c/14] Gemini CLI not found. Skipping Gemini slash commands.${NC}`);
     }
 
     // 12. Install gatekeeper hook script
