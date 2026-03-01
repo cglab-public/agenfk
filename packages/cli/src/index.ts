@@ -1410,6 +1410,248 @@ jiraCommand
     } catch { /* server may not be running */ }
   });
 
+// ── agenfk github ────────────────────────────────────────────────────────────
+
+const githubCommand = program
+  .command('github')
+  .description('GitHub Issues sync integration');
+
+githubCommand
+  .command('setup')
+  .description('Link the current project to a GitHub repository for issue sync')
+  .option('--owner <owner>', 'GitHub repository owner')
+  .option('--repo <repo>', 'GitHub repository name')
+  .action(async (options: { owner?: string; repo?: string }) => {
+    // 1. Verify gh CLI is installed and authenticated
+    try {
+      execSync('gh auth status', { stdio: 'pipe' });
+    } catch {
+      console.error(chalk.red('\nError: GitHub CLI (gh) is not installed or not authenticated.'));
+      console.log(chalk.white('  Install: https://cli.github.com/'));
+      console.log(chalk.white('  Authenticate: gh auth login'));
+      process.exit(1);
+    }
+
+    // 2. Resolve project ID
+    const projectId = findProjectId(process.cwd());
+    if (!projectId) {
+      console.error(chalk.red('\nError: No AgenFK project found. Run `agenfk init` first.'));
+      process.exit(1);
+    }
+
+    // 3. Determine owner/repo
+    let owner = options.owner;
+    let repo = options.repo;
+
+    if (!owner || !repo) {
+      // Try to detect from git remote
+      try {
+        const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf8' }).trim();
+        const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+        if (match) {
+          owner = owner || match[1];
+          repo = repo || match[2];
+          console.log(chalk.gray(`\nDetected from git remote: ${owner}/${repo}`));
+        }
+      } catch { /* no git remote */ }
+    }
+
+    if (!owner || !repo) {
+      // Interactive fallback
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (q: string): Promise<string> =>
+        new Promise((resolve) => rl.question(q, (a: string) => resolve(a.trim())));
+
+      console.log(chalk.blue('\nGitHub Repository Setup\n'));
+      if (!owner) owner = await ask(chalk.white('Repository owner (org or username): '));
+      if (!repo) repo = await ask(chalk.white('Repository name: '));
+      rl.close();
+    }
+
+    if (!owner || !repo) {
+      console.error(chalk.red('\nError: Owner and repo are required.'));
+      process.exit(1);
+    }
+
+    // 4. Verify the repo exists and is accessible
+    try {
+      execSync(`gh repo view ${owner}/${repo} --json name`, { stdio: 'pipe' });
+    } catch {
+      console.error(chalk.red(`\nError: Cannot access repository ${owner}/${repo}.`));
+      console.log(chalk.white('  Check that the repo exists and you have access.'));
+      process.exit(1);
+    }
+
+    // 5. Write to config
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    let config: any = {};
+    if (fs.existsSync(configPath)) {
+      try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* ignore */ }
+    }
+
+    if (!config.github) config.github = { repos: {} };
+    if (!config.github.repos) config.github.repos = {};
+
+    config.github.repos[projectId] = {
+      owner,
+      repo,
+      syncEnabled: true,
+    };
+
+    const agenfkDir = path.join(os.homedir(), '.agenfk');
+    if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+    console.log(chalk.green(`\nGitHub sync configured for project ${projectId}!`));
+    console.log(chalk.gray(`  Repository: ${owner}/${repo}`));
+    console.log(chalk.blue('\nNext steps:'));
+    console.log(chalk.white('  Push items to GitHub:  agenfk github sync --push'));
+    console.log(chalk.white('  Pull from GitHub:      agenfk github sync --pull'));
+    console.log(chalk.white('  Bidirectional sync:    agenfk github sync'));
+  });
+
+githubCommand
+  .command('status')
+  .description('Show GitHub sync configuration and connection status')
+  .action(async () => {
+    console.log(chalk.blue('\nGitHub Sync Status\n'));
+
+    const projectId = findProjectId(process.cwd());
+
+    // Config check
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    let ghConfig: any = null;
+    if (fs.existsSync(configPath)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (projectId && cfg.github?.repos?.[projectId]) {
+          ghConfig = cfg.github.repos[projectId];
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (ghConfig) {
+      console.log(chalk.green('  Configuration: ✓ Configured'));
+      console.log(chalk.gray(`    Repository:    ${ghConfig.owner}/${ghConfig.repo}`));
+      console.log(chalk.gray(`    Sync Enabled:  ${ghConfig.syncEnabled ? 'yes' : 'no'}`));
+      if (ghConfig.lastSyncedAt) {
+        console.log(chalk.gray(`    Last Synced:   ${new Date(ghConfig.lastSyncedAt).toLocaleString()}`));
+      }
+    } else {
+      console.log(chalk.yellow('  Configuration: ✗ Not configured'));
+      if (!projectId) {
+        console.log(chalk.white('    No AgenFK project found. Run `agenfk init` first.'));
+      } else {
+        console.log(chalk.white('    Run: agenfk github setup'));
+      }
+    }
+
+    // gh CLI check
+    try {
+      execSync('gh auth status', { stdio: 'pipe' });
+      console.log(chalk.green('\n  GitHub CLI:    ✓ Authenticated'));
+    } catch {
+      console.log(chalk.yellow('\n  GitHub CLI:    ✗ Not authenticated'));
+      console.log(chalk.white('    Run: gh auth login'));
+    }
+
+    // Live server status
+    try {
+      const { data } = await axios.get(`${API_URL}/github/status`, { timeout: 2000 });
+      console.log(chalk.blue(`\n  Live Server:   ${data.configured ? chalk.green('✓ Configured') : chalk.yellow('✗ Not configured')}`));
+    } catch {
+      console.log(chalk.gray('\n  Live Server:   (server not reachable)'));
+    }
+
+    console.log('');
+  });
+
+githubCommand
+  .command('disconnect')
+  .description('Remove GitHub sync configuration for the current project')
+  .action(async () => {
+    const projectId = findProjectId(process.cwd());
+    if (!projectId) {
+      console.log(chalk.yellow('No AgenFK project found.'));
+      return;
+    }
+
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (!fs.existsSync(configPath)) {
+      console.log(chalk.yellow('No GitHub configuration found — already disconnected.'));
+      return;
+    }
+
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config.github?.repos?.[projectId]) {
+        delete config.github.repos[projectId];
+        // Clean up empty repos object
+        if (Object.keys(config.github.repos).length === 0) {
+          delete config.github;
+        }
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log(chalk.green('GitHub sync configuration removed for this project.'));
+      } else {
+        console.log(chalk.yellow('No GitHub configuration found for this project.'));
+      }
+    } catch {
+      console.log(chalk.yellow('Could not read configuration file.'));
+    }
+  });
+
+githubCommand
+  .command('sync')
+  .description('Sync items between AgenFK and GitHub Issues')
+  .option('--push', 'Push AgenFK items to GitHub only')
+  .option('--pull', 'Pull GitHub issues into AgenFK only')
+  .option('--item-id <id>', 'Sync a single item by ID')
+  .action(async (options: { push?: boolean; pull?: boolean; itemId?: string }) => {
+    const projectId = findProjectId(process.cwd());
+    if (!projectId) {
+      console.error(chalk.red('No AgenFK project found. Run `agenfk init` first.'));
+      process.exit(1);
+    }
+
+    // Determine direction: default is both
+    const doPush = options.push || (!options.push && !options.pull);
+    const doPull = options.pull || (!options.push && !options.pull);
+
+    try {
+      if (doPush) {
+        console.log(chalk.blue('\nPushing to GitHub...'));
+        const body: any = { projectId };
+        if (options.itemId) body.itemId = options.itemId;
+        const { data } = await axios.post(`${API_URL}/github/sync/push`, body, { timeout: 120000 });
+
+        if (data.result) {
+          // Single item result
+          console.log(chalk.green(`  ${data.result.action}: issue #${data.result.issueNumber || '?'}`));
+        } else {
+          console.log(chalk.green(`  Created: ${data.created}, Updated: ${data.updated}, Skipped: ${data.skipped}, Failed: ${data.failed}`));
+          if (data.errors?.length) {
+            for (const err of data.errors) {
+              console.log(chalk.red(`    Error: ${err}`));
+            }
+          }
+        }
+      }
+
+      if (doPull) {
+        console.log(chalk.blue('\nPulling from GitHub...'));
+        const { data } = await axios.post(`${API_URL}/github/sync/pull`, { projectId }, { timeout: 120000 });
+        console.log(chalk.green(`  Created: ${data.created}, Updated: ${data.updated}, Skipped: ${data.skipped}, Conflicts: ${data.conflicts}`));
+      }
+
+      console.log(chalk.green('\nSync complete!'));
+    } catch (err: any) {
+      const msg = err.response?.data?.error || err.message;
+      console.error(chalk.red(`\nSync failed: ${msg}`));
+      process.exit(1);
+    }
+  });
+
 // ── agenfk config ─────────────────────────────────────────────────────────────
 
 const configCommand = program
