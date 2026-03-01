@@ -56,6 +56,7 @@ Before creating any item, evaluate the request against these signals:
 3. **Branch enforcement** — read the gatekeeper response carefully:
    - If the item already has a branch (BUG auto-branch or previously created), the gatekeeper auto-checks it out. No action needed.
    - If the gatekeeper says *"This TASK has no branch"*, you **MUST** ask the user whether they want to create a dedicated feature branch via `create_branch(itemId)` or continue on the current branch. Do NOT skip this step silently.
+4. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
 
 ---
 
