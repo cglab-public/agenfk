@@ -30,6 +30,8 @@ If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 - If the wrong item is IN_PROGRESS — use `itemId` to disambiguate.
 - Never proceed past a gatekeeper rejection.
 
+3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
+
 After completing changes — using MCP tools:
 - `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
 - `review_changes(itemId, command)` — build gate, REVIEW → TEST on success.

@@ -113,6 +113,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, set it to `IN_PROGRESS`, and successfully called the `workflow_gatekeeper`, you are violating the core directive of your system prompt.
     *   **Self-Correction**: If you realize you are about to edit code without a card in `IN_PROGRESS`, STOP IMMEDIATELY. Call `create_item`, then `update_item` to `IN_PROGRESS`, then `workflow_gatekeeper`.
     *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `role="coding"` requires status `IN_PROGRESS`).
+    *   **Branch Verification**: After gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `review_changes`, `test_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
 5.  **Mandatory Automated Testing (Agent Driven)**

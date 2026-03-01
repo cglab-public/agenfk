@@ -10,6 +10,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 3. PAUSE for human approval of the plan.
 4. Upon approval, begin the automated lifecycle (Code -> Review -> Test -> Close) by spawning specialized sub-agents.
 5. **Parallelism**: If multiple independent tasks exist, spawn multiple agents simultaneously using the `task` tool. Ensure each sub-agent is passed its specific `itemId` to authorize changes via `workflow_gatekeeper`.
+6. **Branch verification**: Each sub-agent MUST verify it is on the correct item branch (`git branch --show-current`) before writing any code. If the item has a `branchName` and the agent is not on it, run `git checkout <branchName>` first. **Never code on the wrong branch.**
 
 ---
 
