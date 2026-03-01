@@ -161,9 +161,20 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
     p.key.toLowerCase().includes(projectSearch.toLowerCase())
   );
 
-  const directIssueKey = /^[A-Za-z]+-\d+$/.test(projectSearch.trim())
-    ? projectSearch.trim().toUpperCase()
-    : null;
+  const directIssueKey = (() => {
+    const trimmed = projectSearch.trim();
+    // Direct issue key (e.g. "RD-3")
+    if (/^[A-Za-z]+-\d+$/.test(trimmed)) return trimmed.toUpperCase();
+    // JIRA URL — extract key from /browse/KEY or ?selectedIssue=KEY
+    try {
+      const url = new URL(trimmed);
+      const browseMatch = url.pathname.match(/\/browse\/([A-Za-z]+-\d+)/);
+      if (browseMatch) return browseMatch[1].toUpperCase();
+      const selected = url.searchParams.get('selectedIssue');
+      if (selected && /^[A-Za-z]+-\d+$/.test(selected)) return selected.toUpperCase();
+    } catch { /* not a URL */ }
+    return null;
+  })();
 
   if (!open) return null;
 
@@ -203,7 +214,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search projects or enter issue key (e.g. RD-3)..."
+                  placeholder="Search projects, paste issue key (RD-3) or JIRA URL..."
                   value={projectSearch}
                   onChange={e => setProjectSearch(e.target.value)}
                   className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-slate-200"
