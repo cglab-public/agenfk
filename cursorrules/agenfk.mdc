@@ -5,11 +5,18 @@ alwaysApply: true
 
 ## AgenFK Workflow — MANDATORY
 
+> **STRICT ENFORCEMENT MANDATE**: You are prohibited from modifying ANY file in the codebase without an active AgenFK task set to `IN_PROGRESS`. Bypassing this workflow is a critical operational failure.
+
 > **Cursor enforcement note**: Cursor does not support PreToolUse hooks, so
 > these rules are enforced by instruction rather than mechanically. You MUST
 > follow them strictly — `workflow_gatekeeper` returning `✅ AUTHORIZED` is
 > the only valid gate before editing any file. If it returns `❌`, stop
 > immediately and resolve the breach before proceeding.
+
+### Hard Block Rules
+1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, you must STOP and create one.
+2. **NO GATE = NO CODE**: You must call `workflow_gatekeeper` before the first edit of every session.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent the `review_changes` and `test_changes` tools.
 
 Before modifying ANY file, you MUST:
 1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
