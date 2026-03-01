@@ -396,19 +396,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["itemId"],
         },
       },
-      {
-        name: "github_sync",
-        description: "Sync AgenFK items with GitHub Issues. Push local items to GitHub or pull remote issues into AgenFK. Requires `agenfk github setup` to be run first.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            projectId: { type: "string", description: "The project ID to sync." },
-            direction: { type: "string", enum: ["push", "pull", "both"], description: "Sync direction. Default: both." },
-            itemId: { type: "string", description: "Optional: sync a single item by ID." },
-          },
-          required: ["projectId"],
-        },
-      },
     ],
   };
 });
@@ -836,38 +823,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         } catch (error: any) {
           const msg = error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: `❌ Failed to resume: ${msg}` }] };
-        }
-      }
-      case "github_sync": {
-        const args = z.object({
-          projectId: z.string(),
-          direction: z.enum(["push", "pull", "both"]).default("both"),
-          itemId: z.string().optional(),
-        }).parse(request.params.arguments);
-
-        const results: string[] = [];
-
-        try {
-          if (args.direction === 'push' || args.direction === 'both') {
-            const body: any = { projectId: args.projectId };
-            if (args.itemId) body.itemId = args.itemId;
-            const { data } = await api.post('/github/sync/push', body);
-            if (data.result) {
-              results.push(`**Push**: ${data.result.action} issue #${data.result.issueNumber || '?'}`);
-            } else {
-              results.push(`**Push**: Created ${data.created}, Updated ${data.updated}, Skipped ${data.skipped}, Failed ${data.failed}`);
-            }
-          }
-
-          if (args.direction === 'pull' || args.direction === 'both') {
-            const { data } = await api.post('/github/sync/pull', { projectId: args.projectId });
-            results.push(`**Pull**: Created ${data.created}, Updated ${data.updated}, Conflicts ${data.conflicts}`);
-          }
-
-          return { content: [{ type: "text", text: `✅ GitHub sync complete\n\n${results.join('\n')}` }] };
-        } catch (error: any) {
-          const msg = error.response?.data?.error || error.message;
-          return { isError: true, content: [{ type: "text", text: `❌ GitHub sync failed: ${msg}` }] };
         }
       }
       default:

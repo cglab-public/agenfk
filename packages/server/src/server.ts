@@ -1358,14 +1358,27 @@ app.post("/jira/disconnect", (req: any, res: any) => {
   res.json({ disconnected: true });
 });
 
-// ── GitHub Sync Routes ────────────────────────────────────────────────────────
+// ── GitHub Import Routes (read-only) ──────────────────────────────────────────
 
-import {
-  loadGitHubConfig, updateLastSynced, ensureLabels, verifyGhCli,
-  pushItem, pushComments, pushAll,
-  pullItem, pullAll, pullComments, extractItemId,
-  listIssues, getIssue, SyncResult, PushItemResult,
-} from './github-sync.js';
+function loadGitHubConfig(projectId: string): { owner: string; repo: string } | null {
+  try {
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (!fs.existsSync(configPath)) return null;
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return cfg.github?.repos?.[projectId] || null;
+  } catch {
+    return null;
+  }
+}
+
+function verifyGhCli(): boolean {
+  try {
+    execSync('gh auth status', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 app.get("/github/status", async (req: any, res: any) => {
   const projectId = req.query.projectId;
@@ -1381,152 +1394,83 @@ app.get("/github/status", async (req: any, res: any) => {
     configured: true,
     owner: config.owner,
     repo: config.repo,
-    syncEnabled: config.syncEnabled,
-    lastSyncedAt: config.lastSyncedAt || null,
     ghCliAuthenticated: ghAvailable,
   });
 });
 
-app.post("/github/sync/push", async (req: any, res: any) => {
+app.get("/github/issues", async (req: any, res: any) => {
   try {
-    const { projectId, itemId } = req.body;
+    const { projectId, state, search } = req.query;
     if (!projectId) return res.status(400).json({ error: 'projectId required' });
 
-    const config = loadGitHubConfig(projectId);
-    if (!config) return res.status(400).json({ error: 'GitHub not configured for this project. Run: agenfk github setup' });
+    const config = loadGitHubConfig(projectId as string);
+    if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
     if (!verifyGhCli()) return res.status(400).json({ error: 'GitHub CLI not authenticated. Run: gh auth login' });
 
-    // Ensure labels exist on first push
-    ensureLabels(config);
+    const args = [`-R ${config.owner}/${config.repo}`];
+    args.push(`--state ${state || 'open'}`);
+    args.push('--limit 100');
+    if (search) args.push(`--search "${(search as string).replace(/"/g, '\\"')}"`);
+    args.push('--json number,title,state,labels,url,createdAt');
 
-    if (itemId) {
-      // Push single item
-      const item = await storage.getItem(itemId);
-      if (!item) return res.status(404).json({ error: 'Item not found' });
-
-      // Child items are embedded in their parent's issue body, not synced separately
-      if (item.parentId) {
-        return res.json({ result: { action: 'skipped', reason: 'Child items are synced as part of their parent issue. Push the parent instead.' } });
-      }
-
-      const children = await storage.listChildren(item.id);
-      const result = pushItem(config, item, children.length > 0 ? children : undefined);
-
-      // Persist externalId/externalUrl
-      if (result.issueNumber && result.action !== 'skipped') {
-        await storage.updateItem(item.id, {
-          externalId: String(result.issueNumber),
-          externalUrl: result.issueUrl,
-        } as Partial<AgenFKItem>);
-
-        // Push comments
-        const updatedItem = await storage.getItem(item.id);
-        if (updatedItem) pushComments(config, updatedItem);
-      }
-
-      io.emit("items_updated");
-      res.json({ result });
-    } else {
-      // Push only top-level items — children are embedded as task lists in parent body
-      const allItems = await storage.listItems({ projectId });
-      const items = allItems.filter((i: AgenFKItem) => !i.parentId);
-      const syncResult: SyncResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
-      const details: Array<{ action: string; title: string; issueNumber?: number; issueUrl?: string; error?: string }> = [];
-
-      for (const item of items) {
-        if (item.status === Status.TRASHED) { syncResult.skipped++; continue; }
-
-        const children = await storage.listChildren(item.id);
-        const result = pushItem(config, item, children.length > 0 ? children : undefined);
-
-        if (result.issueNumber && result.action !== 'skipped') {
-          await storage.updateItem(item.id, {
-            externalId: String(result.issueNumber),
-            externalUrl: result.issueUrl,
-          } as Partial<AgenFKItem>);
-
-          // Push comments
-          const updatedItem = await storage.getItem(item.id);
-          if (updatedItem) pushComments(config, updatedItem);
-        }
-
-        details.push({ action: result.action, title: item.title, issueNumber: result.issueNumber, issueUrl: result.issueUrl, error: result.error });
-
-        switch (result.action) {
-          case 'created': syncResult.created++; break;
-          case 'updated': syncResult.updated++; break;
-          case 'skipped':
-            if (result.error) { syncResult.failed++; syncResult.errors.push(`${item.title}: ${result.error}`); }
-            else syncResult.skipped++;
-            break;
-        }
-      }
-
-      updateLastSynced(projectId);
-      io.emit("items_updated");
-      res.json({ ...syncResult, details });
-    }
+    const result = execSync(`gh issue list ${args.join(' ')}`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const issues = JSON.parse(result);
+    res.json(issues.map((i: any) => ({
+      number: i.number,
+      title: i.title,
+      state: i.state,
+      labels: (i.labels || []).map((l: any) => l.name),
+      url: i.url,
+    })));
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
-app.post("/github/sync/pull", async (req: any, res: any) => {
+app.post("/github/import", async (req: any, res: any) => {
   try {
-    const { projectId } = req.body;
-    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+    const { projectId, items } = req.body;
+    if (!projectId || !items?.length) return res.status(400).json({ error: 'projectId and items[] required' });
 
     const config = loadGitHubConfig(projectId);
     if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
     if (!verifyGhCli()) return res.status(400).json({ error: 'GitHub CLI not authenticated.' });
 
-    const existingItems = await storage.listItems({ projectId });
-    const { items: pullResults } = pullAll(config, existingItems, projectId);
+    const imported: Array<{ issueNumber: number; itemId: string }> = [];
+    const errors: string[] = [];
 
-    const summary = { created: 0, updated: 0, skipped: 0, conflicts: 0 };
-    const details: Array<{ action: string; title: string; issueNumber: number; reason?: string }> = [];
+    for (const { issueNumber, type } of items) {
+      try {
+        const result = execSync(
+          `gh issue view ${issueNumber} -R ${config.owner}/${config.repo} --json number,title,body,state,url`,
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        );
+        const issue = JSON.parse(result);
 
-    for (const pr of pullResults) {
-      switch (pr.action) {
-        case 'created':
-          if (pr.itemData) {
-            const newItem: AgenFKItem = {
-              id: uuidv4(),
-              projectId,
-              type: pr.itemData.type || ItemType.TASK,
-              title: pr.itemData.title || 'Untitled',
-              description: pr.itemData.description || '',
-              status: pr.itemData.status || Status.TODO,
-              externalId: pr.itemData.externalId,
-              externalUrl: pr.itemData.externalUrl,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            } as AgenFKItem;
-            await storage.createItem(newItem);
-            summary.created++;
-            details.push({ action: 'created', title: pr.itemData.title || 'Untitled', issueNumber: pr.issueNumber });
-          }
-          break;
-        case 'updated':
-          if (pr.itemId && pr.itemData) {
-            await storage.updateItem(pr.itemId, pr.itemData as Partial<AgenFKItem>);
-            summary.updated++;
-            details.push({ action: 'updated', title: pr.itemData.title || 'Untitled', issueNumber: pr.issueNumber });
-          }
-          break;
-        case 'conflict':
-          summary.conflicts++;
-          details.push({ action: 'conflict', title: pr.itemData?.title || `Issue #${pr.issueNumber}`, issueNumber: pr.issueNumber, reason: pr.reason });
-          break;
-        case 'skipped':
-          summary.skipped++;
-          break;
+        const newItem: AgenFKItem = {
+          id: uuidv4(),
+          projectId,
+          type: type || ItemType.TASK,
+          title: issue.title,
+          description: issue.body || '',
+          status: Status.TODO,
+          externalId: String(issue.number),
+          externalUrl: issue.url,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        } as AgenFKItem;
+        await storage.createItem(newItem);
+        imported.push({ issueNumber: issue.number, itemId: newItem.id });
+      } catch (err: any) {
+        errors.push(`Issue #${issueNumber}: ${err.message || String(err)}`);
       }
     }
 
-    updateLastSynced(projectId);
     io.emit("items_updated");
-    res.json({ ...summary, details });
+    res.json({ imported, errors });
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
