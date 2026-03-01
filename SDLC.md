@@ -135,6 +135,15 @@ Examples by stack:
 
 The `verifyCommand` is stored on the **Project entity** and used by `test_changes` for every TEST → DONE transition. Agents cannot supply their own command.
 
+### Sibling Propagation Rule
+
+When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
+
+- After `review_changes` passes on **one** sibling, move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
+- After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
+
+This avoids redundant build and test runs when the underlying code changes are shared across sibling items.
+
 ---
 
 ## 4. Workflow Gatekeeper
