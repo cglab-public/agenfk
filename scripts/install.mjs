@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync } from 'fs';
+import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync, execSync } from 'child_process';
@@ -83,10 +83,30 @@ async function run() {
         'packages/server/dist',
     ];
 
+    // Clean stale dist/ directories to prevent type mismatches after upgrades
+    function cleanDists() {
+        for (const d of requiredDists) {
+            const fullPath = path.join(rootDir, d);
+            if (existsSync(fullPath)) {
+                rmSync(fullPath, { recursive: true, force: true });
+            }
+        }
+        console.log(`  Cleaned stale build artifacts.`);
+    }
+
+    function runBuild() {
+        const result = spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
+        if (result.status !== 0) {
+            console.error(`${YELLOW}Build failed with exit code ${result.status}. Installation cannot continue.${NC}`);
+            process.exit(1);
+        }
+    }
+
     if (shouldRebuild) {
         console.log(`${GREEN}[1/14] Building project...${NC}`);
         spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-        spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
+        cleanDists();
+        runBuild();
     } else if (!onlyPlatform) {
         console.log(`${GREEN}[1/14] Checking prebuilt binaries...${NC}`);
         // Need all dependencies including devDependencies to run 'npm run dev' for the UI.
@@ -96,7 +116,8 @@ async function run() {
         if (missingDists.length > 0) {
             console.log(`${YELLOW}  Missing build artifacts: ${missingDists.join(', ')}${NC}`);
             console.log(`${YELLOW}  Running build to generate them...${NC}`);
-            spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
+            cleanDists();
+            runBuild();
         } else {
             console.log(`  All build artifacts present, skipping build.`);
         }
@@ -106,7 +127,8 @@ async function run() {
             console.log(`${GREEN}[1/14] Missing build artifacts for integration install. Rebuilding...${NC}`);
             console.log(`${YELLOW}  Missing build artifacts: ${missingDists.join(', ')}${NC}`);
             spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-            spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
+            cleanDists();
+            runBuild();
         }
     }
 

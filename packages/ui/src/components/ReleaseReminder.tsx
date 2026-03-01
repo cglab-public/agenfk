@@ -119,9 +119,26 @@ export const ReleaseReminder: React.FC = () => {
       setUpdateState({ phase: 'running', jobId, output: '' });
 
       /* v8 ignore start */
+      let pollFailCount = 0;
+      const pollStartTime = Date.now();
+      const MAX_POLL_DURATION = 3 * 60 * 1000; // 3 minutes
+      const MAX_CONSECUTIVE_FAILURES = 3;
+
       pollRef.current = setInterval(async () => {
+        // Max polling duration — give up after 3 minutes
+        if (Date.now() - pollStartTime > MAX_POLL_DURATION) {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+          setUpdateState(prev =>
+            prev.phase === 'running'
+              ? { phase: 'error', output: (prev.output || '') + '\n\nUpdate timed out. Check the server logs or try again.' }
+              : prev
+          );
+          return;
+        }
+
         try {
           const result = await api.getUpdateStatus(jobId);
+          pollFailCount = 0; // Reset on success
           setUpdateState(prev =>
             prev.phase === 'running'
               ? result.status === 'running'
@@ -136,7 +153,16 @@ export const ReleaseReminder: React.FC = () => {
             pollRef.current = null;
           }
         } catch {
-          // keep polling
+          pollFailCount++;
+          // After consecutive failures, server likely restarted after successful update
+          if (pollFailCount >= MAX_CONSECUTIVE_FAILURES) {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+            setUpdateState(prev =>
+              prev.phase === 'running'
+                ? { phase: 'success', output: (prev.output || '') + '\n\nUpdate complete — server restarted.' }
+                : prev
+            );
+          }
         }
       }, 1500);
       /* v8 ignore stop */
