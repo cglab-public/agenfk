@@ -11,6 +11,16 @@ metadata:
 
 This skill enforces the core AgenFK Engineering workflow to ensure all software tasks are Agile, Measurable, Visual, Repeatable, Reliable, and Flexible.
 
+## Strict Enforcement Mandate
+
+> **MANDATORY**: You are strictly prohibited from modifying ANY file in the codebase without an active task in `IN_PROGRESS` status and a successful `workflow_gatekeeper` call. Bypassing this workflow is a critical operational failure.
+
+### Hard Block Rules
+1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
+2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent the `review_changes` and `test_changes` tools.
+4. **MEASURE EVERYTHING**: Every task MUST have token usage logged via `log_token_usage` before completion.
+
 ## Operation Modes
 
 AgenFK supports two distinct operation modes based on the slash command invoked:
