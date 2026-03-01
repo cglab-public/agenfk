@@ -42,8 +42,9 @@ async function run() {
     console.log(`${YELLOW}This will remove:${NC}`);
     console.log("  - Slash commands from Claude Code and Opencode");
     console.log("  - Opencode skill");
-    console.log("  - MCP server config from Claude Code, Opencode, and Cursor");
+    console.log("  - MCP server config from Claude Code, Opencode, Cursor, and Codex");
     console.log("  - Cursor workflow rules (agenfk.mdc)");
+    console.log("  - Codex workflow rules (~/.codex/AGENTS.md)");
     console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
     console.log("  - AgenFK PreToolUse hook from ~/.claude/settings.json");
     console.log("  - ~/.agenfk-system (the framework files)");
@@ -152,8 +153,39 @@ async function run() {
         console.log(`  ${cursorMcpPath} not found (skipping)`);
     }
 
-    // 6c. Cursor workflow rules (.mdc)
-    console.log(`${GREEN}[6c/10] Removing Cursor workflow rules...${NC}`);
+    // 6c. MCP config — Codex
+    console.log(`${GREEN}[6c/10] Removing Codex MCP config...${NC}`);
+    try {
+        const codexCheck = spawnSync('codex', ['--version'], { shell: true, stdio: 'ignore' });
+        if (codexCheck.status === 0) {
+            spawnSync('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', shell: true });
+            console.log("  Removed: agenfk MCP from Codex");
+        } else {
+            console.log("  Codex CLI not found (skipping)");
+        }
+    } catch (e) {
+        console.log("  Codex CLI not found (skipping)");
+    }
+
+    // 6d. Codex workflow rules (AGENTS.md)
+    console.log(`${GREEN}[6d/10] Removing Codex workflow rules...${NC}`);
+    const codexAgentsMdPath = path.join(os.homedir(), '.codex', 'AGENTS.md');
+    if (existsSync(codexAgentsMdPath)) {
+        let codexContent = await fs.readFile(codexAgentsMdPath, 'utf8');
+        codexContent = codexContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+        if (codexContent.trim()) {
+            await fs.writeFile(codexAgentsMdPath, codexContent, 'utf8');
+            console.log(`  Removed AgenFK block from ${codexAgentsMdPath}`);
+        } else {
+            await fs.unlink(codexAgentsMdPath);
+            console.log(`  Removed: ${codexAgentsMdPath} (was AgenFK-only)`);
+        }
+    } else {
+        console.log(`  ${codexAgentsMdPath} not found (skipping)`);
+    }
+
+    // 6e. Cursor workflow rules (.mdc)
+    console.log(`${GREEN}[6e/10] Removing Cursor workflow rules...${NC}`);
     const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
     if (existsSync(cursorMdcPath)) {
         await fs.unlink(cursorMdcPath);
