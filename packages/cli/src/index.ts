@@ -295,7 +295,15 @@ program
             
             // Clean up temp dir
             fs.rmSync(tempDir, { recursive: true, force: true });
-            
+
+            // Clean stale dist/ to prevent type mismatches with new source
+            console.log(chalk.gray('Cleaning stale build artifacts...'));
+            const distDirs = ['packages/core/dist', 'packages/storage-json/dist', 'packages/storage-sqlite/dist', 'packages/telemetry/dist', 'packages/cli/dist', 'packages/server/dist'];
+            for (const d of distDirs) {
+              const p = path.join(rootDir, d);
+              if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+            }
+
             console.log(chalk.gray(`Running install script${options.rebuild ? ' (rebuild mode)' : ' (pre-built mode)'}...`));
             execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
             console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));

@@ -1443,7 +1443,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
         stdio: 'ignore',
       });
       restarter.unref();
-      setTimeout(() => process.exit(0), 500);
+      setTimeout(() => process.exit(0), 5000);
     }
     /* v8 ignore stop */
   });
