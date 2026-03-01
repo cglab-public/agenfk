@@ -12,6 +12,22 @@ import os from 'os';
 
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
+const INTEGRATION_ALIASES: Record<string, string> = {
+  claude: 'claude',
+  'claude-code': 'claude',
+  opencode: 'opencode',
+  cursor: 'cursor',
+  codex: 'codex',
+  gemini: 'gemini',
+  'gemini-cli': 'gemini',
+};
+const INTEGRATION_LABELS: Record<string, string> = {
+  claude: 'Claude Code',
+  opencode: 'Opencode',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  gemini: 'Gemini CLI',
+};
 
 const telemetry = new TelemetryClient();
 
@@ -96,6 +112,29 @@ function killPattern(pattern: string) {
       }
     }
   } catch (e) {}
+}
+
+function resolveIntegrationPlatform(platform: string): string {
+  const normalized = platform.trim().toLowerCase();
+  const resolved = INTEGRATION_ALIASES[normalized];
+
+  if (!resolved) {
+    console.error(chalk.red(`Unknown integration: ${platform}`));
+    console.error(chalk.gray(`Supported integrations: ${Object.keys(INTEGRATION_LABELS).join(', ')}`));
+    process.exit(1);
+  }
+
+  return resolved;
+}
+
+function runIntegrationScript(scriptName: string, args: string[]) {
+  const rootDir = path.resolve(__dirname, '../../..');
+  const scriptPath = path.join(rootDir, 'scripts', scriptName);
+  const result = spawnSync('node', [scriptPath, ...args], { cwd: rootDir, stdio: 'inherit' });
+
+  if (result.status !== 0) {
+    process.exit(result.status || 1);
+  }
 }
 
 if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
@@ -767,6 +806,54 @@ program
 
     console.log(chalk.green('\n✓ IDE configuration complete.'));
     console.log(chalk.gray('Restart Claude Code for the changes to take effect.'));
+  });
+
+const integrationCommand = program
+  .command('integration')
+  .description('Manage individual AI editor and agent integrations');
+
+integrationCommand
+  .command('list')
+  .description('List supported integrations')
+  .action(() => {
+    console.table(
+      Object.entries(INTEGRATION_LABELS).map(([id, label]) => ({
+        ID: id,
+        Name: label,
+      }))
+    );
+  });
+
+integrationCommand
+  .command('install <platform>')
+  .description('Install or refresh a single integration without running the full framework installer')
+  .option('--rebuild', 'Force a rebuild before installing the integration')
+  .action((platform, options) => {
+    const resolvedPlatform = resolveIntegrationPlatform(platform);
+    const args = [`--only=${resolvedPlatform}`];
+
+    if (options.rebuild) {
+      args.push('--rebuild');
+    }
+
+    console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
+    runIntegrationScript('install.mjs', args);
+  });
+
+integrationCommand
+  .command('uninstall <platform>')
+  .description('Remove a single integration without uninstalling the full framework')
+  .option('-y, --yes', 'Skip confirmation prompts')
+  .action((platform, options) => {
+    const resolvedPlatform = resolveIntegrationPlatform(platform);
+    const args = [`--only=${resolvedPlatform}`];
+
+    if (options.yes) {
+      args.push('--yes');
+    }
+
+    console.log(chalk.blue(`Removing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
+    runIntegrationScript('uninstall.mjs', args);
   });
 
 /**

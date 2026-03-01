@@ -43,17 +43,28 @@ function getCursorRulesDir() {
 async function run() {
     console.log(`${BLUE}=== AgenFK Uninstaller ===${NC}`);
     console.log("");
-    console.log(`${YELLOW}This will remove:${NC}`);
-    console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
-    console.log("  - Opencode skill");
-    console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
-    console.log("  - Cursor workflow rules (agenfk.mdc)");
-    console.log("  - Codex workflow rules (~/.codex/AGENTS.md)");
-    console.log("  - Gemini CLI workflow rules (~/.gemini/GEMINI.md)");
-    console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
-    console.log("  - AgenFK PreToolUse hook from ~/.claude/settings.json");
-    console.log("  - ~/.agenfk-system (the framework files)");
-    console.log("");
+    const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
+    const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
+
+    function shouldRun(platform) {
+        if (onlyPlatform) return onlyPlatform.toLowerCase() === platform.toLowerCase();
+        if (skipPlatform) return skipPlatform.toLowerCase() !== platform.toLowerCase();
+        return true;
+    }
+
+    if (!onlyPlatform) {
+        console.log(`${YELLOW}This will remove:${NC}`);
+        console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
+        console.log("  - Opencode skill");
+        console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
+        console.log("  - Cursor workflow rules (agenfk.mdc)");
+        console.log("  - Codex workflow rules (~/.codex/AGENTS.md)");
+        console.log("  - Gemini CLI workflow rules (~/.gemini/GEMINI.md)");
+        console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
+        console.log("  - AgenFK PreToolUse hook from ~/.claude/settings.json");
+        console.log("  - ~/.agenfk-system (the framework files)");
+        console.log("");
+    }
 
     const skipConfirm = process.argv.includes('-y') || process.argv.includes('--yes');
     if (!skipConfirm) {
@@ -64,243 +75,283 @@ async function run() {
     }
 
     // 1. Slash commands — Claude Code
-    console.log(`${GREEN}[1/10] Removing Claude Code slash commands...${NC}`);
-    const claudeCommandsDir = path.join(os.homedir(), '.claude', 'commands');
-    if (existsSync(claudeCommandsDir)) {
-        const files = await fs.readdir(claudeCommandsDir);
-        for (const file of files) {
-            if (file.startsWith('agenfk') && file.endsWith('.md')) {
-                const fullPath = path.join(claudeCommandsDir, file);
-                await fs.unlink(fullPath);
-                console.log(`  Removed: ${fullPath}`);
+    if (shouldRun('claude')) {
+        console.log(`${GREEN}[1/10] Removing Claude Code slash commands...${NC}`);
+        const claudeCommandsDir = path.join(os.homedir(), '.claude', 'commands');
+        if (existsSync(claudeCommandsDir)) {
+            const files = await fs.readdir(claudeCommandsDir);
+            for (const file of files) {
+                if (file.startsWith('agenfk') && file.endsWith('.md')) {
+                    const fullPath = path.join(claudeCommandsDir, file);
+                    await fs.unlink(fullPath);
+                    console.log(`  Removed: ${fullPath}`);
+                }
             }
         }
     }
 
     // 2. Slash commands — Opencode
-    console.log(`${GREEN}[2/10] Removing Opencode slash commands...${NC}`);
-    const opencodeCommandsDir = path.join(os.homedir(), '.config', 'opencode', 'commands');
-    if (existsSync(opencodeCommandsDir)) {
-        const files = await fs.readdir(opencodeCommandsDir);
-        for (const file of files) {
-            if (file.startsWith('agenfk') && file.endsWith('.md')) {
-                const fullPath = path.join(opencodeCommandsDir, file);
-                await fs.unlink(fullPath);
-                console.log(`  Removed: ${fullPath}`);
+    if (shouldRun('opencode')) {
+        console.log(`${GREEN}[2/10] Removing Opencode slash commands...${NC}`);
+        const opencodeCommandsDir = path.join(os.homedir(), '.config', 'opencode', 'commands');
+        if (existsSync(opencodeCommandsDir)) {
+            const files = await fs.readdir(opencodeCommandsDir);
+            for (const file of files) {
+                if (file.startsWith('agenfk') && file.endsWith('.md')) {
+                    const fullPath = path.join(opencodeCommandsDir, file);
+                    await fs.unlink(fullPath);
+                    console.log(`  Removed: ${fullPath}`);
+                }
             }
         }
     }
 
     // 2b. Slash commands — Gemini CLI
-    console.log(`${GREEN}[2b/10] Removing Gemini CLI slash commands...${NC}`);
-    const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
-    const geminiAgenfkToml = path.join(geminiCommandsBase, 'agenfk.toml');
-    if (existsSync(geminiAgenfkToml)) {
-        await fs.unlink(geminiAgenfkToml);
-        console.log(`  Removed: ${geminiAgenfkToml}`);
-    }
-    const geminiAgenfkSubdir = path.join(geminiCommandsBase, 'agenfk');
-    if (existsSync(geminiAgenfkSubdir)) {
-        await fs.rm(geminiAgenfkSubdir, { recursive: true, force: true });
-        console.log(`  Removed: ${geminiAgenfkSubdir}`);
+    if (shouldRun('gemini')) {
+        console.log(`${GREEN}[2b/10] Removing Gemini CLI slash commands...${NC}`);
+        const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
+        const geminiAgenfkToml = path.join(geminiCommandsBase, 'agenfk.toml');
+        if (existsSync(geminiAgenfkToml)) {
+            await fs.unlink(geminiAgenfkToml);
+            console.log(`  Removed: ${geminiAgenfkToml}`);
+        }
+        const geminiAgenfkSubdir = path.join(geminiCommandsBase, 'agenfk');
+        if (existsSync(geminiAgenfkSubdir)) {
+            await fs.rm(geminiAgenfkSubdir, { recursive: true, force: true });
+            console.log(`  Removed: ${geminiAgenfkSubdir}`);
+        }
     }
 
     // 3. Opencode skill
-    console.log(`${GREEN}[3/10] Removing Opencode skill...${NC}`);
-    const skillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
-    if (existsSync(skillDir)) {
-        await fs.rm(skillDir, { recursive: true, force: true });
-        console.log(`  Removed: ${skillDir}`);
+    if (shouldRun('opencode')) {
+        console.log(`${GREEN}[3/10] Removing Opencode skill...${NC}`);
+        const skillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
+        if (existsSync(skillDir)) {
+            await fs.rm(skillDir, { recursive: true, force: true });
+            console.log(`  Removed: ${skillDir}`);
+        }
     }
 
     // 4. CLI symlink
-    console.log(`${GREEN}[4/10] Removing agenfk CLI symlink...${NC}`);
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
-    const cliDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk.cmd' : 'agenfk');
-    if (existsSync(cliDest)) {
-        await fs.unlink(cliDest);
-        console.log(`  Removed: ${cliDest}`);
+    if (!onlyPlatform) {
+        console.log(`${GREEN}[4/10] Removing agenfk CLI symlink...${NC}`);
+        const cliDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk.cmd' : 'agenfk');
+        if (existsSync(cliDest)) {
+            await fs.unlink(cliDest);
+            console.log(`  Removed: ${cliDest}`);
+        }
     }
 
     // 5. MCP config — Claude Code
-    console.log(`${GREEN}[5/10] Removing Claude Code MCP config...${NC}`);
-    try {
-        const claudeCmd = getCliCommand('claude');
-        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
-        if (claudeCheck.status === 0) {
-            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
-            console.log("  Removed: agenfk MCP from Claude Code");
+    if (shouldRun('claude')) {
+        console.log(`${GREEN}[5/10] Removing Claude Code MCP config...${NC}`);
+        try {
+            const claudeCmd = getCliCommand('claude');
+            const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+            if (claudeCheck.status === 0) {
+                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+                console.log("  Removed: agenfk MCP from Claude Code");
+            }
+        } catch (e) {
+            console.log("  Claude Code CLI not found (skipping)");
         }
-    } catch (e) {
-        console.log("  Claude Code CLI not found (skipping)");
     }
 
     // 6. MCP config — Opencode
-    console.log(`${GREEN}[6/10] Removing Opencode MCP config...${NC}`);
-    const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (existsSync(opencodeConfigPath)) {
-        try {
-            const config = JSON.parse(await fs.readFile(opencodeConfigPath, 'utf8'));
-            if (config.mcp && config.mcp.agenfk) {
-                delete config.mcp.agenfk;
-                await fs.writeFile(opencodeConfigPath, JSON.stringify(config, null, 2));
-                console.log('  Removed: agenfk MCP from opencode.json');
-            } else {
-                console.log('  Not found in opencode.json (skipping)');
+    if (shouldRun('opencode')) {
+        console.log(`${GREEN}[6/10] Removing Opencode MCP config...${NC}`);
+        const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+        if (existsSync(opencodeConfigPath)) {
+            try {
+                const config = JSON.parse(await fs.readFile(opencodeConfigPath, 'utf8'));
+                if (config.mcp && config.mcp.agenfk) {
+                    delete config.mcp.agenfk;
+                    await fs.writeFile(opencodeConfigPath, JSON.stringify(config, null, 2));
+                    console.log('  Removed: agenfk MCP from opencode.json');
+                } else {
+                    console.log('  Not found in opencode.json (skipping)');
+                }
+            } catch (e) {
+                console.error('  Error updating opencode.json:', e.message);
             }
-        } catch (e) {
-            console.error('  Error updating opencode.json:', e.message);
         }
     }
 
     // 6b. MCP config — Cursor
-    console.log(`${GREEN}[6b/10] Removing Cursor MCP config...${NC}`);
-    const cursorMcpPath = getCursorMcpPath();
-    if (existsSync(cursorMcpPath)) {
-        try {
-            const cursorMcp = JSON.parse(await fs.readFile(cursorMcpPath, 'utf8'));
-            if (cursorMcp.mcpServers && cursorMcp.mcpServers.agenfk) {
-                delete cursorMcp.mcpServers.agenfk;
-                await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
-                console.log(`  Removed: agenfk MCP from ${cursorMcpPath}`);
-            } else {
-                console.log(`  Not found in ${cursorMcpPath} (skipping)`);
+    if (shouldRun('cursor')) {
+        console.log(`${GREEN}[6b/10] Removing Cursor MCP config...${NC}`);
+        const cursorMcpPath = getCursorMcpPath();
+        if (existsSync(cursorMcpPath)) {
+            try {
+                const cursorMcp = JSON.parse(await fs.readFile(cursorMcpPath, 'utf8'));
+                if (cursorMcp.mcpServers && cursorMcp.mcpServers.agenfk) {
+                    delete cursorMcp.mcpServers.agenfk;
+                    await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
+                    console.log(`  Removed: agenfk MCP from ${cursorMcpPath}`);
+                } else {
+                    console.log(`  Not found in ${cursorMcpPath} (skipping)`);
+                }
+            } catch (e) {
+                console.error('  Error updating Cursor mcp.json:', e.message);
             }
-        } catch (e) {
-            console.error('  Error updating Cursor mcp.json:', e.message);
+        } else {
+            console.log(`  ${cursorMcpPath} not found (skipping)`);
         }
-    } else {
-        console.log(`  ${cursorMcpPath} not found (skipping)`);
     }
 
     // 6c. MCP config — Codex
-    console.log(`${GREEN}[6c/10] Removing Codex MCP config...${NC}`);
-    try {
-        const codexCmd = getCliCommand('codex');
-        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
-        if (codexCheck.status === 0) {
-            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
-            console.log("  Removed: agenfk MCP from Codex");
-        } else {
+    if (shouldRun('codex')) {
+        console.log(`${GREEN}[6c/10] Removing Codex MCP config...${NC}`);
+        try {
+            const codexCmd = getCliCommand('codex');
+            const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
+            if (codexCheck.status === 0) {
+                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+                console.log("  Removed: agenfk MCP from Codex");
+            } else {
+                console.log("  Codex CLI not found (skipping)");
+            }
+        } catch (e) {
             console.log("  Codex CLI not found (skipping)");
         }
-    } catch (e) {
-        console.log("  Codex CLI not found (skipping)");
     }
 
     // 6d. MCP config — Gemini CLI
-    console.log(`${GREEN}[6d/10] Removing Gemini CLI MCP config...${NC}`);
-    try {
-        const geminiCmd = getCliCommand('gemini');
-        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
-        if (geminiCheck.status === 0) {
-            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
-            console.log("  Removed: agenfk MCP from Gemini CLI");
-        } else {
+    if (shouldRun('gemini')) {
+        console.log(`${GREEN}[6d/10] Removing Gemini CLI MCP config...${NC}`);
+        try {
+            const geminiCmd = getCliCommand('gemini');
+            const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
+            if (geminiCheck.status === 0) {
+                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
+                console.log("  Removed: agenfk MCP from Gemini CLI");
+            } else {
+                console.log("  Gemini CLI not found (skipping)");
+            }
+        } catch (e) {
             console.log("  Gemini CLI not found (skipping)");
         }
-    } catch (e) {
-        console.log("  Gemini CLI not found (skipping)");
     }
 
     // 6e. Codex workflow rules (AGENTS.md)
-    console.log(`${GREEN}[6e/10] Removing Codex workflow rules...${NC}`);
-    const codexAgentsMdPath = path.join(os.homedir(), '.codex', 'AGENTS.md');
-    if (existsSync(codexAgentsMdPath)) {
-        let codexContent = await fs.readFile(codexAgentsMdPath, 'utf8');
-        codexContent = codexContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-        if (codexContent.trim()) {
-            await fs.writeFile(codexAgentsMdPath, codexContent, 'utf8');
-            console.log(`  Removed AgenFK block from ${codexAgentsMdPath}`);
+    if (shouldRun('codex')) {
+        console.log(`${GREEN}[6e/10] Removing Codex workflow rules...${NC}`);
+        const codexAgentsMdPath = path.join(os.homedir(), '.codex', 'AGENTS.md');
+        if (existsSync(codexAgentsMdPath)) {
+            let codexContent = await fs.readFile(codexAgentsMdPath, 'utf8');
+            codexContent = codexContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+            if (codexContent.trim()) {
+                await fs.writeFile(codexAgentsMdPath, codexContent, 'utf8');
+                console.log(`  Removed AgenFK block from ${codexAgentsMdPath}`);
+            } else {
+                await fs.unlink(codexAgentsMdPath);
+                console.log(`  Removed: ${codexAgentsMdPath} (was AgenFK-only)`);
+            }
         } else {
-            await fs.unlink(codexAgentsMdPath);
-            console.log(`  Removed: ${codexAgentsMdPath} (was AgenFK-only)`);
+            console.log(`  ${codexAgentsMdPath} not found (skipping)`);
         }
-    } else {
-        console.log(`  ${codexAgentsMdPath} not found (skipping)`);
     }
 
     // 6f. Cursor workflow rules (.mdc)
-    console.log(`${GREEN}[6f/10] Removing Cursor workflow rules...${NC}`);
-    const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
-    if (existsSync(cursorMdcPath)) {
-        await fs.unlink(cursorMdcPath);
-        console.log(`  Removed: ${cursorMdcPath}`);
-    } else {
-        console.log(`  ${cursorMdcPath} not found (skipping)`);
+    if (shouldRun('cursor')) {
+        console.log(`${GREEN}[6f/10] Removing Cursor workflow rules...${NC}`);
+        const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
+        if (existsSync(cursorMdcPath)) {
+            await fs.unlink(cursorMdcPath);
+            console.log(`  Removed: ${cursorMdcPath}`);
+        } else {
+            console.log(`  ${cursorMdcPath} not found (skipping)`);
+        }
     }
 
     // 6g. Gemini CLI workflow rules (GEMINI.md)
-    console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules...${NC}`);
-    const geminiMdPath = path.join(os.homedir(), '.gemini', 'GEMINI.md');
-    if (existsSync(geminiMdPath)) {
-        let geminiContent = await fs.readFile(geminiMdPath, 'utf8');
-        geminiContent = geminiContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-        if (geminiContent.trim()) {
-            await fs.writeFile(geminiMdPath, geminiContent, 'utf8');
-            console.log(`  Removed AgenFK block from ${geminiMdPath}`);
+    if (shouldRun('gemini')) {
+        console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules...${NC}`);
+        const geminiMdPath = path.join(os.homedir(), '.gemini', 'GEMINI.md');
+        if (existsSync(geminiMdPath)) {
+            let geminiContent = await fs.readFile(geminiMdPath, 'utf8');
+            geminiContent = geminiContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+            if (geminiContent.trim()) {
+                await fs.writeFile(geminiMdPath, geminiContent, 'utf8');
+                console.log(`  Removed AgenFK block from ${geminiMdPath}`);
+            } else {
+                await fs.unlink(geminiMdPath);
+                console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+            }
         } else {
-            await fs.unlink(geminiMdPath);
-            console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+            console.log(`  ${geminiMdPath} not found (skipping)`);
         }
-    } else {
-        console.log(`  ${geminiMdPath} not found (skipping)`);
     }
 
     // 7. Gatekeeper hook script
-    console.log(`${GREEN}[7/10] Removing agenfk-gatekeeper hook script...${NC}`);
-    const gatekeeperDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk-gatekeeper.cmd' : 'agenfk-gatekeeper');
-    if (existsSync(gatekeeperDest)) {
-        await fs.unlink(gatekeeperDest);
-        console.log(`  Removed: ${gatekeeperDest}`);
+    if (!onlyPlatform) {
+        console.log(`${GREEN}[7/10] Removing agenfk-gatekeeper hook script...${NC}`);
+        const gatekeeperDest = path.join(localBinDir, os.platform() === 'win32' ? 'agenfk-gatekeeper.cmd' : 'agenfk-gatekeeper');
+        if (existsSync(gatekeeperDest)) {
+            await fs.unlink(gatekeeperDest);
+            console.log(`  Removed: ${gatekeeperDest}`);
+        }
     }
 
     // 8. CLAUDE.md workflow rules
-    console.log(`${GREEN}[8/10] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}`);
-    const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-    if (existsSync(claudeMdPath)) {
-        let content = await fs.readFile(claudeMdPath, 'utf8');
-        content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-        await fs.writeFile(claudeMdPath, content, 'utf8');
-        console.log(`  Removed AgenFK block from ${claudeMdPath}`);
+    if (shouldRun('claude')) {
+        console.log(`${GREEN}[8/10] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}`);
+        const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+        if (existsSync(claudeMdPath)) {
+            let content = await fs.readFile(claudeMdPath, 'utf8');
+            content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+            await fs.writeFile(claudeMdPath, content, 'utf8');
+            console.log(`  Removed AgenFK block from ${claudeMdPath}`);
+        }
     }
 
     // 9. Verify token
-    console.log(`${GREEN}[9/10] Removing verify token...${NC}`);
-    const agenfkHome = path.join(os.homedir(), '.agenfk');
-    const tokenPath = path.join(agenfkHome, 'verify-token');
-    if (existsSync(tokenPath)) {
-        await fs.unlink(tokenPath);
-        console.log(`  Removed: ${tokenPath}`);
+    if (!onlyPlatform) {
+        console.log(`${GREEN}[9/10] Removing verify token...${NC}`);
+        const agenfkHome = path.join(os.homedir(), '.agenfk');
+        const tokenPath = path.join(agenfkHome, 'verify-token');
+        if (existsSync(tokenPath)) {
+            await fs.unlink(tokenPath);
+            console.log(`  Removed: ${tokenPath}`);
+        }
     }
 
     // 10. PreToolUse hook in ~/.claude/settings.json
-    console.log(`${GREEN}[10/10] Removing PreToolUse hook from ~/.claude/settings.json...${NC}`);
-    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-    if (existsSync(settingsPath)) {
-        try {
-            let settings = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
-            if (settings.hooks && settings.hooks.PreToolUse) {
-                settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
-                    !JSON.stringify(entry).includes('agenfk-gatekeeper')
-                );
-                await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-                console.log(`  Removed agenfk-gatekeeper hook from ${settingsPath}`);
-            }
-        } catch (e) {}
+    if (shouldRun('claude')) {
+        console.log(`${GREEN}[10/10] Removing PreToolUse hook from ~/.claude/settings.json...${NC}`);
+        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        if (existsSync(settingsPath)) {
+            try {
+                let settings = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+                if (settings.hooks && settings.hooks.PreToolUse) {
+                    settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
+                        !JSON.stringify(entry).includes('agenfk-gatekeeper')
+                    );
+                    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+                    console.log(`  Removed agenfk-gatekeeper hook from ${settingsPath}`);
+                }
+            } catch (e) {}
+        }
     }
 
-    console.log("");
-    console.log(`${RED}Removing ~/.agenfk-system...${NC}`);
-    const systemDir = path.join(os.homedir(), '.agenfk-system');
-    if (existsSync(systemDir)) {
-        await fs.rm(systemDir, { recursive: true, force: true });
-        console.log(`  Removed: ${systemDir}`);
-    }
+    if (!onlyPlatform) {
+        console.log("");
+        console.log(`${RED}Removing ~/.agenfk-system...${NC}`);
+        const systemDir = path.join(os.homedir(), '.agenfk-system');
+        if (existsSync(systemDir)) {
+            await fs.rm(systemDir, { recursive: true, force: true });
+            console.log(`  Removed: ${systemDir}`);
+        }
 
-    console.log("");
-    console.log(`${GREEN}AgenFK uninstalled successfully.${NC}`);
-    console.log("Restart your AI editor to complete the removal.");
+        console.log("");
+        console.log(`${GREEN}AgenFK uninstalled successfully.${NC}`);
+        console.log("Restart your AI editor to complete the removal.");
+    } else {
+        console.log("");
+        console.log(`${GREEN}Integration '${onlyPlatform}' uninstalled successfully.${NC}`);
+        console.log(`Restart ${onlyPlatform} to complete the removal.`);
+    }
 }
 
 run().catch(err => {
