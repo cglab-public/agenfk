@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { toToon } from "@agenfk/core";
 import { execSync, spawnSync, spawn } from "child_process";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -378,7 +379,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
     switch (request.params.name) {
       case "list_projects": {
         const { data } = await api.get(`/projects`);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        return { content: [{ type: "text", text: toToon(data) }] };
       }
       case "create_project": {
         const args = CreateProjectSchema.parse(request.params.arguments);
@@ -621,7 +622,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const { data } = await api.get(`/items`, { params: args });
         
         if (full) {
-          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+          return { content: [{ type: "text", text: toToon(data) }] };
         }
 
         // Return a summarized version to save tokens/avoid truncation
@@ -633,7 +634,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           parentId: item.parentId
         }));
 
-        return { content: [{ type: "text", text: JSON.stringify(summary, null, 2) }] };
+        return { content: [{ type: "text", text: toToon(summary) }] };
       }
       case "get_item": {
         const args = GetItemSchema.parse(request.params.arguments);
