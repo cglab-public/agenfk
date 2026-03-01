@@ -114,7 +114,7 @@ test_changes({ itemId })
 
 - **No command parameter** — the project's `verifyCommand` is always used.
 - The agent cannot override or bypass the test suite.
-- If `verifyCommand` is not configured: the tool returns an error instructing the agent to ask the developer and set it via `update_project`.
+- If `verifyCommand` is not configured: the tool returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. If nothing can be detected, the agent asks the developer as a last resort.
 - If the command passes: item moves to `DONE`, auto-git-commit is triggered.
 - If it fails: item moves back to `IN_PROGRESS`.
 - A test record is logged on the item.

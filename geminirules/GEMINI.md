@@ -56,7 +56,7 @@ CLI equivalents via Bash:
 | `list_items(projectId)` | `agenfk list --project <id> --json` |
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
-| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `verify_changes` instead) |
+| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `test_changes` instead) |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
 | `review_changes(id, command)` | `agenfk verify <id> "<command>"` (from REVIEW: moves to TEST) |
 | `test_changes(id)` | `agenfk verify <id>` (from TEST: moves to DONE, uses project verifyCommand) |
