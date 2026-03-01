@@ -30,11 +30,11 @@ AgenFK is built on six core mandates to ensure your AI-assisted development is c
 |---|---|---|---|
 | **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations |
 | **Opencode** | Fully Supported | MCP + skill integration | Native slash commands and skill system |
+| **Google Gemini CLI** | Fully Supported | MCP + workflow rules | Native slash commands and skill system |
 | **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
 | **OpenAI Codex CLI** | Experimental | Instructional (`AGENTS.md`) | MCP + workflow rules |
-| **Google Gemini CLI** | Experimental | Instructional (`GEMINI.md`) | MCP + workflow rules |
 
-> Experimental platforms work via MCP and instructional rules but lack mechanical enforcement hooks. Feedback and contributions are welcome!
+> Experimental platforms (Cursor, Codex) work via MCP and instructional rules but lack mechanical enforcement hooks. Feedback and contributions are welcome!
 
 ## Installation & Setup
 
