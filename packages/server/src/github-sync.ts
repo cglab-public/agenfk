@@ -497,12 +497,11 @@ export function pushAll(
 ): SyncResult {
   const result: SyncResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
 
-  // Push parent items first (EPICs/STORYs), then children
-  const parents = items.filter(i => !i.parentId);
-  const children = items.filter(i => !!i.parentId);
-  const ordered = [...parents, ...children];
+  // Only push top-level items — children are embedded as task list checkboxes
+  // inside their parent's issue body (see buildIssueBody)
+  const topLevel = items.filter(i => !i.parentId);
 
-  for (const item of ordered) {
+  for (const item of topLevel) {
     // Skip TRASHED items
     if (item.status === Status.TRASHED) {
       result.skipped++;

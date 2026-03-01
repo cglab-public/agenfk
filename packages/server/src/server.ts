@@ -1404,6 +1404,11 @@ app.post("/github/sync/push", async (req: any, res: any) => {
       const item = await storage.getItem(itemId);
       if (!item) return res.status(404).json({ error: 'Item not found' });
 
+      // Child items are embedded in their parent's issue body, not synced separately
+      if (item.parentId) {
+        return res.json({ result: { action: 'skipped', reason: 'Child items are synced as part of their parent issue. Push the parent instead.' } });
+      }
+
       const children = await storage.listChildren(item.id);
       const result = pushItem(config, item, children.length > 0 ? children : undefined);
 
@@ -1422,8 +1427,9 @@ app.post("/github/sync/push", async (req: any, res: any) => {
       io.emit("items_updated");
       res.json({ result });
     } else {
-      // Push all items in the project
-      const items = await storage.listItems({ projectId });
+      // Push only top-level items — children are embedded as task lists in parent body
+      const allItems = await storage.listItems({ projectId });
+      const items = allItems.filter((i: AgenFKItem) => !i.parentId);
       const syncResult: SyncResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
 
       for (const item of items) {
