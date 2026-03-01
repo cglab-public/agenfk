@@ -1358,6 +1358,167 @@ app.post("/jira/disconnect", (req: any, res: any) => {
   res.json({ disconnected: true });
 });
 
+// ── GitHub Sync Routes ────────────────────────────────────────────────────────
+
+import {
+  loadGitHubConfig, updateLastSynced, ensureLabels, verifyGhCli,
+  pushItem, pushComments, pushAll,
+  pullItem, pullAll, pullComments, extractItemId,
+  listIssues, getIssue, SyncResult, PushItemResult,
+} from './github-sync.js';
+
+app.get("/github/status", async (req: any, res: any) => {
+  const projectId = req.query.projectId;
+  if (!projectId) {
+    return res.json({ configured: false, error: 'projectId query param required' });
+  }
+  const config = loadGitHubConfig(projectId);
+  if (!config) {
+    return res.json({ configured: false });
+  }
+  const ghAvailable = verifyGhCli();
+  res.json({
+    configured: true,
+    owner: config.owner,
+    repo: config.repo,
+    syncEnabled: config.syncEnabled,
+    lastSyncedAt: config.lastSyncedAt || null,
+    ghCliAuthenticated: ghAvailable,
+  });
+});
+
+app.post("/github/sync/push", async (req: any, res: any) => {
+  try {
+    const { projectId, itemId } = req.body;
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+
+    const config = loadGitHubConfig(projectId);
+    if (!config) return res.status(400).json({ error: 'GitHub not configured for this project. Run: agenfk github setup' });
+    if (!verifyGhCli()) return res.status(400).json({ error: 'GitHub CLI not authenticated. Run: gh auth login' });
+
+    // Ensure labels exist on first push
+    ensureLabels(config);
+
+    if (itemId) {
+      // Push single item
+      const item = await storage.getItem(itemId);
+      if (!item) return res.status(404).json({ error: 'Item not found' });
+
+      const children = await storage.listChildren(item.id);
+      const result = pushItem(config, item, children.length > 0 ? children : undefined);
+
+      // Persist externalId/externalUrl
+      if (result.issueNumber && result.action !== 'skipped') {
+        await storage.updateItem(item.id, {
+          externalId: String(result.issueNumber),
+          externalUrl: result.issueUrl,
+        } as Partial<AgenFKItem>);
+
+        // Push comments
+        const updatedItem = await storage.getItem(item.id);
+        if (updatedItem) pushComments(config, updatedItem);
+      }
+
+      io.emit("items_updated");
+      res.json({ result });
+    } else {
+      // Push all items in the project
+      const items = await storage.listItems({ projectId });
+      const syncResult: SyncResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+
+      for (const item of items) {
+        if (item.status === Status.TRASHED) { syncResult.skipped++; continue; }
+
+        const children = await storage.listChildren(item.id);
+        const result = pushItem(config, item, children.length > 0 ? children : undefined);
+
+        if (result.issueNumber && result.action !== 'skipped') {
+          await storage.updateItem(item.id, {
+            externalId: String(result.issueNumber),
+            externalUrl: result.issueUrl,
+          } as Partial<AgenFKItem>);
+
+          // Push comments
+          const updatedItem = await storage.getItem(item.id);
+          if (updatedItem) pushComments(config, updatedItem);
+        }
+
+        switch (result.action) {
+          case 'created': syncResult.created++; break;
+          case 'updated': syncResult.updated++; break;
+          case 'skipped':
+            if (result.error) { syncResult.failed++; syncResult.errors.push(`${item.title}: ${result.error}`); }
+            else syncResult.skipped++;
+            break;
+        }
+      }
+
+      updateLastSynced(projectId);
+      io.emit("items_updated");
+      res.json(syncResult);
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.post("/github/sync/pull", async (req: any, res: any) => {
+  try {
+    const { projectId } = req.body;
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+
+    const config = loadGitHubConfig(projectId);
+    if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
+    if (!verifyGhCli()) return res.status(400).json({ error: 'GitHub CLI not authenticated.' });
+
+    const existingItems = await storage.listItems({ projectId });
+    const { items: pullResults } = pullAll(config, existingItems, projectId);
+
+    const summary = { created: 0, updated: 0, skipped: 0, conflicts: 0 };
+
+    for (const pr of pullResults) {
+      switch (pr.action) {
+        case 'created':
+          if (pr.itemData) {
+            const newItem: AgenFKItem = {
+              id: uuidv4(),
+              projectId,
+              type: pr.itemData.type || ItemType.TASK,
+              title: pr.itemData.title || 'Untitled',
+              description: pr.itemData.description || '',
+              status: pr.itemData.status || Status.TODO,
+              externalId: pr.itemData.externalId,
+              externalUrl: pr.itemData.externalUrl,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            } as AgenFKItem;
+            await storage.createItem(newItem);
+            summary.created++;
+          }
+          break;
+        case 'updated':
+          if (pr.itemId && pr.itemData) {
+            await storage.updateItem(pr.itemId, pr.itemData as Partial<AgenFKItem>);
+            summary.updated++;
+          }
+          break;
+        case 'conflict':
+          summary.conflicts++;
+          break;
+        case 'skipped':
+          summary.skipped++;
+          break;
+      }
+    }
+
+    updateLastSynced(projectId);
+    io.emit("items_updated");
+    res.json(summary);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Release Check ─────────────────────────────────────────────────────────────
 
 let releaseCache: { data: any; fetchedAt: number } | null = null;

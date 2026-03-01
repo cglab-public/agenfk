@@ -127,6 +127,20 @@ export interface Bug extends BaseItem {
 
 export type AgenFKItem = Epic | Story | Task | Bug;
 
+// ── GitHub Integration ──────────────────────────────────────────────
+
+export interface GitHubRepoMapping {
+  owner: string;
+  repo: string;
+  syncEnabled: boolean;
+  lastSyncedAt?: string; // ISO timestamp of last successful sync
+}
+
+/** Stored in ~/.agenfk/config.json under the "github" key */
+export interface GitHubConfig {
+  repos: Record<string, GitHubRepoMapping>; // keyed by projectId
+}
+
 export interface PauseSnapshot {
   id: string;
   itemId: string;
