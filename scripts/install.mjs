@@ -102,30 +102,15 @@ async function run() {
         }
     }
 
-    if (shouldRebuild) {
+    if (!onlyPlatform) {
         console.log(`${GREEN}[1/14] Building project...${NC}`);
         spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
         cleanDists();
         runBuild();
-    } else if (!onlyPlatform) {
-        console.log(`${GREEN}[1/14] Checking prebuilt binaries...${NC}`);
-        // Need all dependencies including devDependencies to run 'npm run dev' for the UI.
-        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-
-        const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
-        if (missingDists.length > 0) {
-            console.log(`${YELLOW}  Missing build artifacts: ${missingDists.join(', ')}${NC}`);
-            console.log(`${YELLOW}  Running build to generate them...${NC}`);
-            cleanDists();
-            runBuild();
-        } else {
-            console.log(`  All build artifacts present, skipping build.`);
-        }
     } else {
         const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
         if (missingDists.length > 0) {
             console.log(`${GREEN}[1/14] Missing build artifacts for integration install. Rebuilding...${NC}`);
-            console.log(`${YELLOW}  Missing build artifacts: ${missingDists.join(', ')}${NC}`);
             spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
             cleanDists();
             runBuild();
