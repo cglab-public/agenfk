@@ -4,12 +4,24 @@ description: Commit local changes, push to remote, and optionally create a GitHu
 
 You are executing the `/agenfk-release` command. This command is **exempt from AgenFK workflow requirements** — do not create, check for, or require an IN_PROGRESS task. Follow these steps precisely:
 
-**Step 1 — Commit local changes**
+**Step 1 — Branch check**
+Run `git branch --show-current` to determine the current branch.
+
+If **not on `main`**:
+- Tell the user which branch they are on and that releases are created from `main`.
+- Ask the user how they want to proceed, offering exactly these options:
+  1. **Merge to main locally** — fetch origin, switch to `main`, pull latest, merge the feature branch (with `--no-edit`), then rebase if diverged. Continue to Step 2 on `main`.
+  2. **Create a PR** — follow the `/agenfk-pr` rules: look up the current AgenFK item linked to this branch (via `get_item`), call `create_branch` if needed, call `create_pr(itemId, "<summary>")` to push and open a GitHub PR, show the PR URL, and **STOP** — tell the user to merge the PR first and then re-run `/agenfk-release`.
+  3. **Continue on this branch** — skip the merge and release from the current branch as-is (advanced, user takes responsibility).
+
+If already on `main`, continue to Step 2.
+
+**Step 2 — Commit local changes**
 Check for local changes using `git status`. If there are unstaged or uncommitted changes:
 - Ask the user for a commit message (or offer to generate one).
 - Run `git add . && git commit -m "<message>"` and show the output.
 
-**Step 2 — GitHub Release (optional)**
+**Step 3 — GitHub Release (optional)**
 Ask the user: "Do you want to create a GitHub release?"
 
 If YES:
@@ -30,6 +42,6 @@ If YES:
 - Show the release URL returned by `gh`.
 
 If NO:
-- **Step 3 — Push to remote**
+- **Step 4 — Push to remote**
 - Run `git push` and show the output to the user.
 - Confirm the push succeeded and stop.
