@@ -103,6 +103,61 @@ AgenFK supports managing multiple distinct projects from a single unified backen
 *   **Cross-Browser Drag & Drop**: Easily reorganize priorities with robust drag-and-drop card reordering that syncs instantly via WebSockets and optimistic UI updates.
 *   **Deep Type Filtering**: Toggle view filters (e.g., "Stories Only") without losing your custom priority order across hidden items.
 
+## GitHub Issues Sync
+
+AgenFK supports **bidirectional sync with GitHub Issues**, letting you share your Kanban cards as GitHub Issues and pull external issues back into your board.
+
+### Prerequisites
+
+*   [GitHub CLI (`gh`)](https://cli.github.com/) installed and authenticated (`gh auth login`).
+*   A git remote pointing to a GitHub repository.
+
+### Setup
+
+From inside your project repository, run:
+
+```bash
+agenfk github setup
+```
+
+This auto-detects the `owner/repo` from your git remote and links it to the active AgenFK project. The configuration is stored in `~/.agenfk/config.json`.
+
+### Usage
+
+#### CLI
+
+| Command | Description |
+|---|---|
+| `agenfk github setup` | Link the current repo to AgenFK for sync. |
+| `agenfk github status` | Show current config, auth state, and last sync time. |
+| `agenfk github sync` | Push and pull all items (default: both directions). |
+| `agenfk github sync --push` | Push local items to GitHub Issues only. |
+| `agenfk github sync --pull` | Pull GitHub Issues into AgenFK only. |
+| `agenfk github sync --item-id <id>` | Sync a single item by ID. |
+| `agenfk github disconnect` | Remove the GitHub link for the current project. |
+
+#### MCP Tool
+
+AI agents can sync via the `github_sync` MCP tool:
+
+```
+github_sync(projectId, direction: "push" | "pull" | "both", itemId?)
+```
+
+#### Web UI
+
+When GitHub sync is configured, the Kanban toolbar automatically shows:
+
+*   **Issues** — Opens the GitHub Issues board in a new tab.
+*   **Sync** — Triggers a full push + pull with a progress spinner and toast notification.
+*   **Per-card links** — Cards linked to a GitHub Issue display a GitHub icon with the issue number (e.g., `#42`) that opens the issue directly.
+
+### How It Works
+
+*   **Outbound (Push)**: AgenFK items are created/updated as GitHub Issues. Status maps to labels (`status:in-progress`, `status:done`, etc.) and open/closed state. Item type maps to labels (`type:bug`, `type:story`, etc.). Parent-child relationships render as markdown task lists.
+*   **Inbound (Pull)**: GitHub Issues are matched by `externalId` or created as new AgenFK items. Labels are reverse-mapped to AgenFK statuses and types. Conflict detection uses timestamps — local wins when `updatedAt` is newer.
+*   **Comments**: Synced bidirectionally with a `<!-- agenfk-sync -->` marker to prevent duplicates.
+
 ## Architecture Deep Dive
 
 AgenFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
