@@ -114,7 +114,7 @@ If MCP tools are not available in your context, surface the connectivity problem
         *   `update_item(itemId, { status: "REVIEW" })` moves items from IN_PROGRESS → REVIEW when coding is complete.
         *   `review_changes(itemId, command)` runs a build/lint command in REVIEW and moves to TEST on success (back to IN_PROGRESS on failure).
         *   The Agent verifies coverage and regressions in `TEST`.
-        *   Success: Agent calls `test_changes(itemId)` from TEST status — this runs the project's `verifyCommand` and moves to DONE. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
+        *   Success: Agent calls `test_changes(itemId)` from TEST status — this runs the project's `verifyCommand` and moves to DONE. If `test_changes` returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
         *   Failure: Agent moves item back to `IN_PROGRESS`.
     *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `review_changes` or `test_changes` call validates the code for all siblings. After one passes, move remaining siblings directly to TEST via `update_item` (skipping individual `review_changes`), then call `test_changes` on each to reach DONE.
 

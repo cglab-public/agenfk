@@ -91,7 +91,20 @@ Since there is no separate review agent in Standard Mode, perform the review you
 ## Phase 4 — Test (TEST → DONE)
 
 1. Call `test_changes(itemId)` — this runs the project's `verifyCommand` automatically. No command parameter needed.
-2. If no `verifyCommand` is configured, the tool will tell you. Ask the developer what command to use, then set it with `update_project({ id, verifyCommand })`.
+2. If no `verifyCommand` is configured, the tool returns `NO_VERIFY_COMMAND`. **Auto-detect** the project's stack instead of asking the developer:
+   1. Read the project root for config files: `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`, `Makefile`, `*.csproj`/`*.sln`.
+   2. Detect the stack and compose the idiomatic build+test command:
+      - **Node.js** (`package.json`): detect the package manager from lockfiles (`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, default → `npm`). Read `package.json` `scripts` for `build` and `test` entries. Compose `{pm} run build && {pm} test`.
+      - **Rust** (`Cargo.toml`): `cargo build && cargo test`
+      - **Go** (`go.mod`): `go build ./... && go test ./...`
+      - **Python** (`pyproject.toml`): `python -m pytest`
+      - **Java/Maven** (`pom.xml`): `mvn package`
+      - **Java/Gradle** (`build.gradle`): `./gradlew build`
+      - **.NET** (`*.csproj` or `*.sln`): `dotnet build && dotnet test`
+      - **Make** (`Makefile`): `make test`
+   3. Call `update_project({ id, verifyCommand: "<detected>" })` to persist the command.
+   4. Retry `test_changes(itemId)`.
+   5. If no config files are found and the stack cannot be detected, **then** ask the developer as a last resort.
 3. On success, the item moves to DONE automatically. On failure, it moves back to IN_PROGRESS.
 4. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
 
