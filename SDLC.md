@@ -1,6 +1,20 @@
-# AgenFK Software Development Lifecycle (SDLC)
+## AgenFK Software Development Lifecycle (SDLC)
 
 This document describes the complete development lifecycle enforced by the AgenFK framework — from task creation to release.
+
+---
+
+## 0. Strict Enforcement Mandate
+
+**MANDATORY**: AI Agents are strictly prohibited from modifying ANY file in the codebase without an active task in `IN_PROGRESS` status and a successful `workflow_gatekeeper` call.
+
+**Hard Block Rules**:
+1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
+2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `review_changes` and `test_changes`.
+4. **MEASURE EVERYTHING**: Every task MUST have token usage logged via `log_token_usage` before completion.
+
+Bypassing these rules is a critical operational failure and degrades the project's measurability and reliability.
 
 ---
 
