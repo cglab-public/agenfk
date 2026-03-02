@@ -1304,20 +1304,19 @@ export const KanbanBoard: React.FC = () => {
 
           {/* Paused + Blocked + Archived — hidden in drill-down view */}
           {navPath.length === 0 && (
-            <div className="flex flex-row gap-2 h-full shrink min-w-0 transition-all duration-300">
-              {/* Expanded sections render as full w-80 columns on the left */}
+            <>
+              {/* Expanded sections render as independent columns side-by-side with main board */}
               {!isPausedCollapsed && (
-                /* v8 ignore start */
-                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.PAUSED)} onDragOver={handleDragOver}>
+                <div className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.PAUSED)} onDragOver={handleDragOver}>
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-orange-400 pt-2">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => setIsPausedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                      <button onClick={() => setIsPausedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
                       <Pause size={14} className="text-orange-500" />
-                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Paused</h2>
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Paused</h2>
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.PAUSED).length || 0}</span>
                   </div>
-                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.PAUSED).map((item: AgenFKItem) => (
                           <KanbanCard
@@ -1339,26 +1338,25 @@ export const KanbanBoard: React.FC = () => {
                             onDrillDown={handleDrillDown}
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             onCopyId={handleCopyId}
+                            disableLayoutAnimation={easterEggsEnabled}
                           />
                         ))}
                       </AnimatePresence>
                   </div>
                 </div>
-                /* v8 ignore stop */
               )}
 
               {!isBlockedCollapsed && (
-                /* v8 ignore start */
-                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
+                <div className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
+                      <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
                       <AlertCircle size={14} className="text-red-500" />
-                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Blocked</h2>
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Blocked</h2>
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                   </div>
-                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
                       {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
                           <KanbanCard
@@ -1380,35 +1378,31 @@ export const KanbanBoard: React.FC = () => {
                             onDrillDown={handleDrillDown}
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             onCopyId={handleCopyId}
+                            disableLayoutAnimation={easterEggsEnabled}
                           />
                         ))}
                       </AnimatePresence>
-                  <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-1.5">
-                    <Plus size={14} /> Add blocked
-                  </button>
+                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
+                      <Plus size={16} /> Add blocked
+                    </button>
+                  </div>
                 </div>
-                </div>
-                /* v8 ignore stop */
               )}
 
               {!isArchiveCollapsed && (
-                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300">
+                <div className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.ARCHIVED)} onDragOver={handleDragOver}>
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
                     <div className="flex items-center gap-2">
-                      {/* v8 ignore start */}
-                      <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                      {/* v8 ignore stop */}
+                      <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
                       <Archive size={14} className="text-slate-500" />
-                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Archived</h2>
+                      <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Archived</h2>
                       {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
                         <button
-                          /* v8 ignore start */
                           onClick={() => {
                             if (window.confirm('Move all archived items to trash?')) {
                               trashArchivedMutation.mutate(selectedProjectId!);
                             }
                           }}
-                          /* v8 ignore stop */
                           className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors"
                           title="Trash All Archived"
                         >
@@ -1418,36 +1412,33 @@ export const KanbanBoard: React.FC = () => {
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                   </div>
-                <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
-                        <AnimatePresence mode="popLayout" initial={false}>
-                          {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
-                          <KanbanCard
-                            key={item.id}
-                            item={item}
-                            items={items}
-                            highlightedId={highlightedId}
-                            dragId={dragId}
-                            dropTargetId={dropTargetId}
-                            dropPosition={dropPosition}
-                            copiedId={copiedId}
-                            pricesData={pricesData}
-                            isUserAction={isUserAction}
-                            onCardDragStart={handleDragStart}
-                            onCardDragEnd={handleDragEnd}
-                            onCardDragOver={handleCardDragOver}
-                            onCardDragLeave={handleCardDragLeave}
-                            /* v8 ignore start */
-                            onDoubleClick={() => setSelectedItem(item)}
-                            /* v8 ignore stop */
-                            onDrillDown={handleDrillDown}
-                            /* v8 ignore start */
-                            onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
-                            /* v8 ignore stop */
-                            onCopyId={handleCopyId}
-                          />
-                        ))}
-                      </AnimatePresence>
-                </div>
+                  <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
+                        <KanbanCard
+                          key={item.id}
+                          item={item}
+                          items={items}
+                          highlightedId={highlightedId}
+                          dragId={dragId}
+                          dropTargetId={dropTargetId}
+                          dropPosition={dropPosition}
+                          copiedId={copiedId}
+                          pricesData={pricesData}
+                          isUserAction={isUserAction}
+                          onCardDragStart={handleDragStart}
+                          onCardDragEnd={handleDragEnd}
+                          onCardDragOver={handleCardDragOver}
+                          onCardDragLeave={handleCardDragLeave}
+                          onDoubleClick={() => setSelectedItem(item)}
+                          onDrillDown={handleDrillDown}
+                          onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
+                          onCopyId={handleCopyId}
+                          disableLayoutAnimation={easterEggsEnabled}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </div>
                 </div>
               )}
 
@@ -1456,9 +1447,7 @@ export const KanbanBoard: React.FC = () => {
                 <div className="w-12 shrink-0 flex flex-col gap-2 h-full">
                   {isPausedCollapsed && (
                     <button
-                      /* v8 ignore start */
                       onClick={() => setIsPausedCollapsed(false)}
-                      /* v8 ignore stop */
                       className="flex-1 w-full bg-orange-50/50 dark:bg-orange-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-orange-100/50 dark:hover:bg-orange-900/20 transition-colors group border border-dashed border-orange-200 dark:border-orange-900/30"
                     >
                       <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
@@ -1468,9 +1457,7 @@ export const KanbanBoard: React.FC = () => {
                   )}
                   {isBlockedCollapsed && (
                     <button
-                      /* v8 ignore start */
                       onClick={() => setIsBlockedCollapsed(false)}
-                      /* v8 ignore stop */
                       className="flex-1 w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30"
                     >
                       <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
@@ -1487,7 +1474,7 @@ export const KanbanBoard: React.FC = () => {
                   )}
                 </div>
               )}
-            </div>
+            </>
           )}
           </div>
         </LayoutGroup>
