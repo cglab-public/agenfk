@@ -979,14 +979,42 @@ const loadJiraToken = (): JiraTokenData | null => {
   } catch { return null; }
 };
 
+// Cached token validation to avoid repeated Atlassian API calls
+export let jiraValidationCache: { valid: boolean; checkedAt: number } | null = null;
+const JIRA_VALIDATION_TTL = 60_000; // 60 seconds
+
 const saveJiraToken = (data: JiraTokenData): void => {
   const dir = path.dirname(JIRA_TOKEN_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(JIRA_TOKEN_PATH, JSON.stringify(data, null, 2));
+  jiraValidationCache = null;
 };
 
 const deleteJiraToken = (): void => {
   if (fs.existsSync(JIRA_TOKEN_PATH)) fs.unlinkSync(JIRA_TOKEN_PATH);
+  jiraValidationCache = null;
+};
+
+export const clearJiraValidationCache = (): void => { jiraValidationCache = null; };
+
+const validateJiraToken = async (tokenData: JiraTokenData): Promise<boolean> => {
+  if (jiraValidationCache && Date.now() - jiraValidationCache.checkedAt < JIRA_VALIDATION_TTL) {
+    return jiraValidationCache.valid;
+  }
+  try {
+    // jiraApiRequest auto-refreshes on 401
+    await jiraApiRequest(tokenData, 'get',
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/myself`);
+    jiraValidationCache = { valid: true, checkedAt: Date.now() };
+    return true;
+  } catch (err: any) {
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      jiraValidationCache = { valid: false, checkedAt: Date.now() };
+      return false;
+    }
+    // Network errors (Atlassian down): assume still valid, don't cache failure
+    return true;
+  }
 };
 
 let refreshPromise: Promise<JiraTokenData | null> | null = null;
@@ -1161,7 +1189,7 @@ app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
-app.get("/jira/status", (req: any, res: any) => {
+app.get("/jira/status", asyncHandler(async (req: any, res: any) => {
   const jiraConfig = loadJiraConfig();
   const configured = !!(jiraConfig.clientId && jiraConfig.clientSecret);
   const tokenData = loadJiraToken();
@@ -1172,8 +1200,15 @@ app.get("/jira/status", (req: any, res: any) => {
       ...(configured ? {} : { message: "Run 'agenfk jira setup' to configure JIRA integration." }),
     });
   }
+  // Validate token against Atlassian (cached, ~60s TTL)
+  if (configured) {
+    const valid = await validateJiraToken(tokenData);
+    if (!valid) {
+      return res.json({ configured, connected: false, reason: 'token_expired' });
+    }
+  }
   res.json({ configured, connected: true, cloudId: tokenData.cloudId, email: tokenData.email });
-});
+}));
 
 app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
   const tokenData = loadJiraToken();
