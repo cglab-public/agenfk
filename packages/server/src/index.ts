@@ -782,6 +782,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { content: [{ type: "text", text: `PR already exists for item [${itemId.substring(0, 8)}]: ${item.prUrl}` }] };
         }
 
+        // Auto-commit any uncommitted local changes before push
+        const statusResult = spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
+        if (statusResult.stdout && statusResult.stdout.trim()) {
+          try {
+            execSync('git add .', { stdio: 'ignore' });
+            execSync('git commit -m "chore: commit local changes before push"', { stdio: 'ignore' });
+          } catch (commitErr: any) {
+            return { isError: true, content: [{ type: "text", text: `❌ Failed to auto-commit local changes before push: ${commitErr.message}` }] };
+          }
+        }
+
         // Push branch to remote
         try {
           execSync(`git push -u origin ${item.branchName}`, { stdio: 'ignore' });
