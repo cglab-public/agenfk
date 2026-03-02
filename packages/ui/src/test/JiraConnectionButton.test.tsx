@@ -122,4 +122,12 @@ describe('JiraConnectionButton', () => {
     fireEvent.click(screen.getByLabelText('Dismiss'));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
+
+  it('shows loading spinner when getJiraStatus throws (server unavailable)', async () => {
+    vi.mocked(api.getJiraStatus).mockRejectedValue(new Error('Network Error'));
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+
+    // Should show loading/spinner, not "Connect JIRA"
+    expect(await screen.findByTestId('jira-loading')).toBeDefined();
+  });
 });
