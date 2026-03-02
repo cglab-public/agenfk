@@ -51,6 +51,10 @@ Before creating any item, evaluate the request against these signals:
 
 ## Initialization
 
+0. **Main branch checkout** — Before creating or resuming work, ensure you're starting from the correct base:
+   - Run `git branch --show-current` to check the current branch.
+   - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`) followed by `git pull` first.
+   - This prevents new feature branches from being based on stale/unrelated feature branches and ensures you have the latest upstream changes.
 1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0) and immediately set it to `IN_PROGRESS` with `update_item`.
 2. Call `workflow_gatekeeper(intent, role="coding", itemId)` before making any file changes.
 3. **Branch enforcement** — read the gatekeeper response carefully:
