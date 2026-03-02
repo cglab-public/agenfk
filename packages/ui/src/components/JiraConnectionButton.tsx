@@ -50,10 +50,12 @@ export const JiraConnectionButton: React.FC = () => {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const { data: jiraStatus, isLoading } = useQuery({
+  const { data: jiraStatus, isLoading, isError } = useQuery({
     queryKey: ['jiraStatus'],
     queryFn: api.getJiraStatus,
     staleTime: 30_000,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000),
   });
 
   const disconnectMutation = useMutation({
@@ -88,8 +90,8 @@ export const JiraConnectionButton: React.FC = () => {
         </div>
       )}
 
-      {/* Connection control */}
-      {isLoading ? (
+      {/* Connection control — show spinner while loading or retrying (prevents false "disconnected" flash) */}
+      {(isLoading || (isError && !jiraStatus)) ? (
         <div className="p-2 text-slate-400" data-testid="jira-loading">
           <Loader2 size={16} className="animate-spin" />
         </div>

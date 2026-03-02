@@ -99,13 +99,9 @@ export const api = {
       throw e;
     }
   },
-  getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string }> => {
-    try {
-      const { data } = await axios.get(`${API_URL}/jira/status`);
-      return data;
-    } catch {
-      return { configured: false, connected: false };
-    }
+  getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string; reason?: string }> => {
+    const { data } = await axios.get(`${API_URL}/jira/status`);
+    return data;
   },
   disconnectJira: async (): Promise<void> => {
     try {

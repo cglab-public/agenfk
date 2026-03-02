@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, pkceStore, mapJiraTypeToAgenFK } from '../server';
+import { app, initStorage, storage, pkceStore, mapJiraTypeToAgenFK, clearJiraValidationCache } from '../server';
 import { Status, ItemType, AgenFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -252,7 +252,8 @@ describe('JIRA Integration', () => {
     delete process.env.JIRA_CLIENT_SECRET;
     delete process.env.JIRA_REDIRECT_URI;
     pkceStore.clear();
-    vi.clearAllMocks();
+    clearJiraValidationCache();
+    vi.resetAllMocks();
   });
 
   afterEach(() => {
@@ -292,16 +293,48 @@ describe('JIRA Integration', () => {
       expect(res.body.connected).toBe(false);
     });
 
-    it('returns connected:true with cloudId and email when token exists', async () => {
+    it('returns connected:true with cloudId and email when token is valid', async () => {
       process.env.JIRA_CLIENT_ID = 'cid';
       process.env.JIRA_CLIENT_SECRET = 'csec';
       fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      const axios = (await import('axios')).default as any;
+      // Mock the /myself validation call
+      axios.mockResolvedValueOnce({ data: { emailAddress: 'test@example.com' } });
       const res = await request(app).get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(true);
       expect(res.body.connected).toBe(true);
       expect(res.body.cloudId).toBe('test-cloud-id');
       expect(res.body.email).toBe('test@example.com');
+    });
+
+    it('returns connected:false with reason when token is expired and refresh fails', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      const axios = (await import('axios')).default as any;
+      const err401 = Object.assign(new Error('Unauthorized'), { response: { status: 401 } });
+      // Validation call to /myself returns 401
+      axios.mockRejectedValueOnce(err401);
+      // refreshJiraToken uses axios.post — mock that to fail too
+      axios.post.mockRejectedValueOnce(new Error('Refresh failed'));
+      const res = await request(app).get('/jira/status');
+      expect(res.status).toBe(200);
+      expect(res.body.configured).toBe(true);
+      expect(res.body.connected).toBe(false);
+      expect(res.body.reason).toBe('token_expired');
+    });
+
+    it('returns connected:true when Atlassian API is unreachable (network error)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      const axios = (await import('axios')).default as any;
+      // Network error (no response property)
+      axios.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      const res = await request(app).get('/jira/status');
+      expect(res.status).toBe(200);
+      expect(res.body.connected).toBe(true);
     });
   });
 
