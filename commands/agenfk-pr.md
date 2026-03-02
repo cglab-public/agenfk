@@ -10,6 +10,11 @@ You are executing the `/agenfk-pr <itemId>` command. Follow these steps precisel
   - If no branch is linked, call `create_branch(itemId)` to create and switch to a feature branch.
   - If a branch exists, confirm you are on it.
 
+**Step 1.5 — Commit local changes**
+Check for local changes using `git status`. If there are unstaged or uncommitted changes:
+- Ask the user for a commit message (or offer to generate one from `git diff --stat`).
+- Run `git add . && git commit -m "<message>"` and show the output.
+
 **Step 2 — Create the Pull Request**
 - Call `create_pr(itemId, "<summary of changes>")` — this pushes the branch to the remote and opens a GitHub PR in one step.
 - The tool stores `prUrl`, `prNumber`, and `prStatus` on the item automatically.
