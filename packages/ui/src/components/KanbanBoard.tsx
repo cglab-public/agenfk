@@ -1183,7 +1183,7 @@ export const KanbanBoard: React.FC = () => {
         <LayoutGroup id="board">
           <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
             {/* Ideas Section — hidden in drill-down view */}
-            {navPath.length === 0 && <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-80 shrink-0" : "w-12 shrink-0")}>
+            {navPath.length === 0 && <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-64 shrink min-w-0" : "w-12 shrink-0")}>
               {isIdeasCollapsed ? (
                 <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
                   <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
@@ -1303,27 +1303,12 @@ export const KanbanBoard: React.FC = () => {
           ))}
 
           {/* Paused + Blocked + Archived — hidden in drill-down view */}
-          {navPath.length === 0 && (() => {
-            const rightExpandedCount = [!isPausedCollapsed, !isBlockedCollapsed, !isArchiveCollapsed].filter(Boolean).length;
-            const rightAnyExpanded = rightExpandedCount > 0;
-            const collapsedClass = (isExpanded: boolean) => isExpanded ? "flex-1" : (rightAnyExpanded ? "h-12 shrink-0" : "flex-1");
-            return <div className={clsx("flex flex-col gap-4 transition-all duration-300 h-full", rightAnyExpanded ? "w-80 shrink-0" : "w-12 shrink-0")}>
-            {/* Paused Section */}
-            <div className={clsx("flex flex-col transition-all duration-300", collapsedClass(!isPausedCollapsed))}>
-              {isPausedCollapsed ? (
-                <button
-                  /* v8 ignore start */
-                  onClick={() => setIsPausedCollapsed(false)}
-                  /* v8 ignore stop */
-                  className="h-full w-full bg-orange-50/50 dark:bg-orange-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-orange-100/50 dark:hover:bg-orange-900/20 transition-colors group border border-dashed border-orange-200 dark:border-orange-900/30"
-                >
-                  <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
-                  {!rightAnyExpanded && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-orange-400 shrink-0 mt-2">Paused</span>}
-                  <span className={clsx("bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30", !rightAnyExpanded && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.PAUSED).length || 0}</span>
-                </button>
-              ) : (
+          {navPath.length === 0 && (
+            <div className="flex flex-row gap-2 h-full shrink min-w-0 transition-all duration-300">
+              {/* Expanded sections render as full w-80 columns on the left */}
+              {!isPausedCollapsed && (
                 /* v8 ignore start */
-                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.PAUSED)} onDragOver={handleDragOver}>
+                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.PAUSED)} onDragOver={handleDragOver}>
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-orange-400 pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsPausedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
@@ -1361,24 +1346,10 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 /* v8 ignore stop */
               )}
-            </div>
 
-            {/* Blocked Section */}
-            <div className={clsx("flex flex-col transition-all duration-300", collapsedClass(!isBlockedCollapsed))}>
-              {isBlockedCollapsed ? (
-                <button
-                  /* v8 ignore start */
-                  onClick={() => setIsBlockedCollapsed(false)}
-                  /* v8 ignore stop */
-                  className="h-full w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30"
-                >
-                  <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
-                  {!rightAnyExpanded && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>}
-                  <span className={clsx("bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30", !rightAnyExpanded && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
-                </button>
-              ) : (
+              {!isBlockedCollapsed && (
                 /* v8 ignore start */
-                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
+                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
@@ -1419,18 +1390,9 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 /* v8 ignore stop */
               )}
-            </div>
 
-            {/* Archived Section */}
-            <div className={clsx("flex flex-col transition-all duration-300", collapsedClass(!isArchiveCollapsed))}>
-              {isArchiveCollapsed ? (
-                <button onClick={() => setIsArchiveCollapsed(false)} className="h-full w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
-                  <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
-                  {isBlockedCollapsed && <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>}
-                  <span className={clsx("bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700", isBlockedCollapsed && "mt-auto")}>{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
-                </button>
-              ) : (
-                <div className="flex flex-col h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800">
+              {!isArchiveCollapsed && (
+                <div className="flex flex-col w-64 shrink min-w-0 h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300">
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-300 pt-2">
                     <div className="flex items-center gap-2">
                       {/* v8 ignore start */}
@@ -1447,7 +1409,7 @@ export const KanbanBoard: React.FC = () => {
                             }
                           }}
                           /* v8 ignore stop */
-                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors" 
+                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors"
                           title="Trash All Archived"
                         >
                           <Trash2 size={12} />
@@ -1488,8 +1450,45 @@ export const KanbanBoard: React.FC = () => {
                 </div>
                 </div>
               )}
+
+              {/* Collapsed sections stacked vertically in a narrow column on the right */}
+              {(isPausedCollapsed || isBlockedCollapsed || isArchiveCollapsed) && (
+                <div className="w-12 shrink-0 flex flex-col gap-2 h-full">
+                  {isPausedCollapsed && (
+                    <button
+                      /* v8 ignore start */
+                      onClick={() => setIsPausedCollapsed(false)}
+                      /* v8 ignore stop */
+                      className="flex-1 w-full bg-orange-50/50 dark:bg-orange-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-orange-100/50 dark:hover:bg-orange-900/20 transition-colors group border border-dashed border-orange-200 dark:border-orange-900/30"
+                    >
+                      <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
+                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-orange-400 shrink-0 mt-2">Paused</span>
+                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                    </button>
+                  )}
+                  {isBlockedCollapsed && (
+                    <button
+                      /* v8 ignore start */
+                      onClick={() => setIsBlockedCollapsed(false)}
+                      /* v8 ignore stop */
+                      className="flex-1 w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30"
+                    >
+                      <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
+                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>
+                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                    </button>
+                  )}
+                  {isArchiveCollapsed && (
+                    <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
+                      <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
+                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
+                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-            </div>})()}
+          )}
           </div>
         </LayoutGroup>
       </main>
