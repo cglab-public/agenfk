@@ -5,7 +5,7 @@ import { api } from '../api';
 import { AgenFKItem, ItemType, Status, Project } from '../types';
 import { clsx } from 'clsx';
 import {
-  Plus, Loader2, AlertCircle, Tag,
+  Plus, Loader2, AlertCircle,
   Zap, ChevronRight, Home,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
@@ -429,7 +429,7 @@ export const KanbanBoard: React.FC = () => {
   }, [selectedItem?.id]);
 
   const [navPath, setNavPath] = useState<NavItem[]>([]);
-  const [selectedItemType, setSelectedItemType] = useState<ItemType | 'ALL'>('ALL');
+
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
@@ -594,9 +594,9 @@ export const KanbanBoard: React.FC = () => {
     capture('project_switched');
   };
 
-  const getItemsByStatus = (status: Status, ignoreFilter = false) => {
+  const getItemsByStatus = (status: Status) => {
     if (!items) return [];
-    
+
     let filtered = items.filter((i: AgenFKItem) => i.status === status);
 
     // Navigation Filtering
@@ -605,11 +605,6 @@ export const KanbanBoard: React.FC = () => {
     } else {
       const currentParent = navPath[navPath.length - 1];
       filtered = filtered.filter((i: AgenFKItem) => i.parentId === currentParent.id);
-    }
-
-    // Type Filtering
-    if (!ignoreFilter && selectedItemType !== 'ALL') {
-      filtered = filtered.filter((i: AgenFKItem) => i.type === selectedItemType);
     }
 
     // Sort by sortOrder, then by createdAt for stable ordering
@@ -692,7 +687,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Reorder within same column or move to specific position in another column
     if (currentDropTargetId && currentDropTargetId !== id) {
-      const columnItemsBefore = getItemsByStatus(status, true);
+      const columnItemsBefore = getItemsByStatus(status);
       const columnItems = columnItemsBefore.filter((i: AgenFKItem) => i.id !== id);
       const targetIndex = columnItems.findIndex((i: AgenFKItem) => i.id === currentDropTargetId);
       
@@ -733,7 +728,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Cross-column or drop on empty space: update status (append to end of target column)
     if (draggedItem.status !== status) {
-      const targetColumnItems = getItemsByStatus(status, true);
+      const targetColumnItems = getItemsByStatus(status);
       const newSortOrder = targetColumnItems.length;
 
       // Optimistic local UI update
@@ -799,7 +794,6 @@ export const KanbanBoard: React.FC = () => {
         } else break;
       }
       setNavPath(chain);
-      setSelectedItemType('ALL');
       setHighlightedId(found.id);
       setSearchTerm('');
       
@@ -1069,22 +1063,6 @@ export const KanbanBoard: React.FC = () => {
               >
                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
               </button>
-              
-              <div className="w-px h-4 bg-slate-200 dark:bg-slate-700 mx-1 hidden md:block" />
-
-              <div className="flex items-center gap-1 px-1">
-                <Tag size={14} className="text-slate-400" />
-                <select 
-                  value={selectedItemType} 
-                  onChange={(e) => setSelectedItemType(e.target.value as ItemType | 'ALL')}
-                  className="bg-transparent text-xs font-bold text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer hover:text-indigo-600 transition-colors py-1"
-                >
-                  <option value="ALL">All Types</option>
-                  {Object.values(ItemType).map(type => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-              </div>
             </div>
 
             <button 
