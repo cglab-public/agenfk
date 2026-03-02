@@ -19,6 +19,7 @@ If already on `main`, continue to Step 2.
 **Step 2 — Commit local changes**
 Check for local changes using `git status`. If there are unstaged or uncommitted changes:
 - Ask the user for a commit message (or offer to generate one).
+- **Cross-project guard**: If you generate or suggest a message that references a task ID (e.g. `[<uuid>]`), first call `get_item(<taskId>)` and verify its `projectId` matches `.agenfk/project.json`. If it does not match, omit the task reference and use a generic summary instead. Never embed a foreign task ID in a commit message.
 - Run `git add . && git commit -m "<message>"` and show the output.
 
 **Step 3 — GitHub Release (optional)**
