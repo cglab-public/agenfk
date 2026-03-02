@@ -548,9 +548,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
                   branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
                 }
               } catch {
-                // Branch doesn't exist locally — create and checkout
+                // Branch doesn't exist locally — checkout main first, then create
+                const mainBranch = (() => {
+                  try {
+                    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { encoding: 'utf8' }).trim();
+                    return ref.replace('refs/remotes/origin/', '');
+                  } catch {}
+                  try { execSync('git rev-parse --verify main', { stdio: 'ignore' }); return 'main'; } catch {}
+                  try { execSync('git rev-parse --verify master', { stdio: 'ignore' }); return 'master'; } catch {}
+                  return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+                })();
+                execSync(`git checkout ${mainBranch}`, { stdio: 'ignore' });
+                try { execSync(`git pull`, { stdio: 'ignore' }); } catch {}
                 execSync(`git checkout -b ${task.branchName}`, { stdio: 'ignore' });
-                branchHint = `\n🔀 Created and switched to branch '${task.branchName}'.`;
+                branchHint = `\n🔀 Created branch '${task.branchName}' from '${mainBranch}'.`;
               }
             } catch (gitErr: any) {
               branchHint = `\n⚠️ Could not auto-checkout branch '${task.branchName}': ${gitErr.message}. You may need to handle this manually.`;
@@ -696,6 +707,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         return { content: [{ type: "text", text: "Comment added." }] };
       }
       case "create_branch": {
+        // Helper: detect the default branch (main/master)
+        function detectMainBranch(): string {
+          try {
+            const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { encoding: 'utf8' }).trim();
+            return ref.replace('refs/remotes/origin/', '');
+          } catch {}
+          try { execSync('git rev-parse --verify main', { stdio: 'ignore' }); return 'main'; } catch {}
+          try { execSync('git rev-parse --verify master', { stdio: 'ignore' }); return 'master'; } catch {}
+          return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+        }
         const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
         const { data: item } = await api.get(`/items/${itemId}`);
 
@@ -723,13 +744,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const branchName = `${prefix}/${slug}`;
 
         try {
+          const mainBranch = detectMainBranch();
+          execSync(`git checkout ${mainBranch}`, { stdio: 'ignore' });
+          try { execSync(`git pull`, { stdio: 'ignore' }); } catch {}
           execSync(`git checkout -b ${branchName}`, { stdio: 'ignore' });
         } catch (gitErr: any) {
           return { isError: true, content: [{ type: "text", text: `❌ Failed to create branch '${branchName}': ${gitErr.message}` }] };
         }
 
         await api.put(`/items/${itemId}`, { branchName });
-        return { content: [{ type: "text", text: `🔀 Created and switched to branch '${branchName}'. Stored on item [${itemId.substring(0, 8)}].` }] };
+        const baseBranch = detectMainBranch();
+        return { content: [{ type: "text", text: `🔀 Created branch '${branchName}' from '${baseBranch}'. Stored on item [${itemId.substring(0, 8)}].` }] };
       }
       case "create_pr": {
         const { itemId, description: prBody, draft } = z.object({
