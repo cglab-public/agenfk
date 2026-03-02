@@ -35,7 +35,7 @@ If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 After completing changes — using MCP tools:
 - `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
 - `review_changes(itemId, command)` — build gate, REVIEW → TEST on success.
-- `test_changes(itemId)` — runs project verifyCommand, TEST → DONE.
+- `test_changes(itemId)` — runs project verifyCommand, TEST → DONE. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
