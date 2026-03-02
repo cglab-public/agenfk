@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence, LayoutGroup, useAnimation } from 'framer-motion';
 import { api } from '../api';
@@ -9,7 +9,8 @@ import {
   Zap, ChevronRight, Home,
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
-  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause
+  Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
+  ChevronUp, ChevronDown, X
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -193,7 +194,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       }}
       className={clsx(
         "group bg-white dark:bg-slate-900 rounded-xl p-3 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
-        highlightedId === item.id && "ring-2 ring-indigo-500 border-indigo-500 dark:border-indigo-500 bg-indigo-50/50 dark:bg-indigo-900/30",
+        highlightedId === item.id && "search-highlight border-indigo-500 dark:border-indigo-500",
         dragId === item.id && "opacity-40",
         isFlying ? "!z-[9999] isolate" : (highlightedId === item.id ? "z-20 relative" : "z-0 relative")
       )}
@@ -432,6 +433,9 @@ export const KanbanBoard: React.FC = () => {
 
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [searchMatches, setSearchMatches] = useState<AgenFKItem[]>([]);
+  const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
   const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(true);
@@ -760,57 +764,89 @@ export const KanbanBoard: React.FC = () => {
     });
   };
 
+  // Priority order for search results: active items first, archived last
+  const statusPriority: Record<string, number> = {
+    [Status.IN_PROGRESS]: 0,
+    [Status.TODO]: 1,
+    [Status.REVIEW]: 2,
+    [Status.TEST]: 3,
+    [Status.BLOCKED]: 4,
+    [Status.PAUSED]: 5,
+    [Status.IDEAS]: 6,
+    [Status.DONE]: 7,
+    [Status.ARCHIVED]: 8,
+  };
+
+  const navigateToMatch = (item: AgenFKItem) => {
+    if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
+    if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
+    if (item.status === Status.BLOCKED) setIsBlockedCollapsed(false);
+    if (item.status === Status.PAUSED) setIsPausedCollapsed(false);
+
+    const chain: NavItem[] = [];
+    let currentParentId = item.parentId;
+    while (currentParentId) {
+      const parent = items?.find((i: AgenFKItem) => i.id === currentParentId);
+      if (parent) {
+        chain.unshift({ id: parent.id, title: parent.title, type: parent.type });
+        currentParentId = parent.parentId;
+      } else break;
+    }
+    setNavPath(chain);
+    setHighlightedId(item.id);
+
+    setTimeout(() => {
+      const element = document.getElementById(`card-${item.id}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, item.status === Status.ARCHIVED || chain.length > 0 ? 400 : 100);
+
+    // Brief highlight: clear after 3s, cancelling any previous timer
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 3000);
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim() || !items) return;
 
     const term = searchQuery.toLowerCase();
-    const found = items.find((i: AgenFKItem) => 
-      i.id.toLowerCase().includes(term) || 
-      i.title.toLowerCase().includes(term)
-    );
+    const matches = items
+      .filter((i: AgenFKItem) =>
+        i.id.toLowerCase().includes(term) ||
+        i.title.toLowerCase().includes(term)
+      )
+      .sort((a: AgenFKItem, b: AgenFKItem) =>
+        (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
+      );
 
-    if (found) {
-      if (found.status === Status.IDEAS) {
-        setIsIdeasCollapsed(false);
-      }
-      if (found.status === Status.ARCHIVED) {
-        setIsArchiveCollapsed(false);
-      }
-      if (found.status === Status.BLOCKED) {
-        setIsBlockedCollapsed(false);
-      }
-      if (found.status === Status.PAUSED) {
-        setIsPausedCollapsed(false);
-      }
-
-      const chain: NavItem[] = [];
-      let currentParentId = found.parentId;
-      while (currentParentId) {
-        const parent = items.find((i: AgenFKItem) => i.id === currentParentId);
-        if (parent) {
-          chain.unshift({ id: parent.id, title: parent.title, type: parent.type });
-          currentParentId = parent.parentId;
-        } else break;
-      }
-      setNavPath(chain);
-      setHighlightedId(found.id);
-      setSearchTerm('');
-      
-      // Give DOM time to update if we expanded archive or changed levels
-      setTimeout(() => {
-        const element = document.getElementById(`card-${found.id}`);
-        if (element) {
-          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      }, found.status === Status.ARCHIVED || chain.length > 0 ? 400 : 100);
-      
-      setTimeout(() => setHighlightedId(null), 3000);
+    if (matches.length > 0) {
+      setSearchMatches(matches);
+      setCurrentMatchIndex(0);
+      navigateToMatch(matches[0]);
     } else {
-      // Temporary visual feedback for not found
+      setSearchMatches([]);
+      setCurrentMatchIndex(0);
       setSearchTerm('NOT FOUND');
       setTimeout(() => setSearchTerm(''), 1000);
     }
+  };
+
+  const handleSearchNav = (direction: 'prev' | 'next') => {
+    if (searchMatches.length === 0) return;
+    const newIndex = direction === 'next'
+      ? (currentMatchIndex + 1) % searchMatches.length
+      : (currentMatchIndex - 1 + searchMatches.length) % searchMatches.length;
+    setCurrentMatchIndex(newIndex);
+    navigateToMatch(searchMatches[newIndex]);
+  };
+
+  const clearSearch = () => {
+    setSearchMatches([]);
+    setCurrentMatchIndex(0);
+    setSearchTerm('');
+    setHighlightedId(null);
   };
 
   if (isLoadingProjects) {
@@ -997,15 +1033,32 @@ export const KanbanBoard: React.FC = () => {
             </div>
           </div>
 
-          <form onSubmit={handleSearch} className="relative flex-1 max-w-md hidden lg:block">
-            <input 
-              type="text"
-              placeholder="Search Item ID or Name..."
-              value={searchQuery}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all dark:text-slate-200 shadow-inner"
-            />
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <form onSubmit={handleSearch} className="relative flex-1 max-w-md hidden lg:flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                placeholder="Search Item ID or Name..."
+                value={searchQuery}
+                onChange={(e) => { setSearchTerm(e.target.value); if (!e.target.value.trim()) clearSearch(); }}
+                onKeyDown={(e) => { if (e.key === 'Escape') clearSearch(); }}
+                className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all dark:text-slate-200 shadow-inner"
+              />
+              <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+            {searchMatches.length > 0 && (
+              <div className="flex items-center gap-0.5 text-xs font-medium text-slate-500 dark:text-slate-400 shrink-0">
+                <span className="tabular-nums whitespace-nowrap">{currentMatchIndex + 1}/{searchMatches.length}</span>
+                <button type="button" onClick={() => handleSearchNav('prev')} className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors" title="Previous match">
+                  <ChevronUp size={14} />
+                </button>
+                <button type="button" onClick={() => handleSearchNav('next')} className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors" title="Next match">
+                  <ChevronDown size={14} />
+                </button>
+                <button type="button" onClick={clearSearch} className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors ml-0.5" title="Clear search">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </form>
 
           <div className="flex items-center gap-3">

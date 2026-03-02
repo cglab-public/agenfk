@@ -359,9 +359,10 @@ describe('KanbanBoard', () => {
     const form = searchInput.closest('form');
     if (form) fireEvent.submit(form);
 
-    // The item should still be visible (highlights it)
+    // The item should still be visible and match counter should appear
     await waitFor(() => {
       expect(screen.queryByText('SearchableTask')).toBeDefined();
+      expect(screen.getByText('1/1')).toBeDefined();
     });
   });
 
@@ -384,6 +385,48 @@ describe('KanbanBoard', () => {
     // Just verify no crash
     await waitFor(() => {
       expect(true).toBe(true);
+    });
+  });
+
+  it('should prioritize active items over archived in search and allow navigation', async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    const items = [
+      { id: 'archived-1', projectId: 'p1', type: ItemType.TASK, title: 'Widget Config', status: Status.ARCHIVED, createdAt: new Date(), updatedAt: new Date(), history: [] },
+      { id: 'active-1', projectId: 'p1', type: ItemType.TASK, title: 'Widget Feature', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] },
+      { id: 'active-2', projectId: 'p1', type: ItemType.TASK, title: 'Widget Bug', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date(), history: [] },
+    ];
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Widget Feature');
+
+    const searchInput = screen.getByPlaceholderText(/Search Item ID or Name/i);
+    fireEvent.change(searchInput, { target: { value: 'Widget' } });
+
+    const form = searchInput.closest('form');
+    if (form) fireEvent.submit(form);
+
+    // Should show match counter with 3 matches, starting at first (active item)
+    await waitFor(() => {
+      expect(screen.getByText('1/3')).toBeDefined();
+    });
+
+    // Click next match button
+    const nextButton = screen.getByTitle('Next match');
+    fireEvent.click(nextButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('2/3')).toBeDefined();
+    });
+
+    // Click previous match button
+    const prevButton = screen.getByTitle('Previous match');
+    fireEvent.click(prevButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('1/3')).toBeDefined();
     });
   });
 
