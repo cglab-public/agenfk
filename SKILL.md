@@ -173,3 +173,5 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `review_changes`: Agent-driven build gate (REVIEW → TEST).
 *   `test_changes`: Enforced test suite execution (TEST → DONE).
 *   `get_server_info`: Framework health check.
+*   `pause_work`: Save context snapshot and pause item.
+*   `resume_work`: Restore context and resume paused item.
