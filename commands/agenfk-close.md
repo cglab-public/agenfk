@@ -34,14 +34,8 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
 - For leaf items (TASK/BUG) still in TEST: call `test_changes(id)` to move to DONE. If still in REVIEW, call `update_item(id, {status: "TEST"})` first, then `test_changes`.
 
-**Step 6 — PR Creation**
-- Re-read the item with `get_item(id)`.
-- If the item has a `branchName` but **no** `prUrl`: call `create_pr(id, "<summary of changes>")` to push the branch and open a pull request. Show the PR URL to the user.
-- If the item already has a `prUrl`: skip — PR already exists.
-- If the item has no `branchName`: skip — work was done on the current branch (no PR needed).
-
-**Step 7 — Next Steps**
+**Step 6 — Next Steps**
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
-    1. **Release**: Run `/agenfk-release` to create a new release. _(If a PR was created, remind the user it must be merged first.)_
+    1. **Release**: Run `/agenfk-release` to create a new release.
     2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
     3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).

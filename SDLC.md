@@ -40,45 +40,26 @@ Coding is only allowed on **TASK** and **BUG** items. EPICs and STORYs must be d
 
 ---
 
-## 2. Branch Creation
+## 2. Branch Management
 
-When an item moves to `IN_PROGRESS`, the branching strategy depends on the item type:
+Branches are managed manually by the developer. AgenFK does not create branches automatically.
 
-### BUG Items (Automatic)
+### Convention
 
-1. **Server auto-assigns** a `branchName` when status transitions to `IN_PROGRESS`.
-2. Branch name: `fix/<slugified-title>` (e.g., `fix/login-crash-on-empty-email`).
-3. The **workflow gatekeeper** auto-creates and checks out the git branch before the agent's first file edit.
-4. No human intervention needed — fully automatic.
-
-### TASK Items (Optional)
-
-1. No branch is auto-created.
-2. The gatekeeper informs the agent: *"This TASK has no branch. You may offer the developer to create one with the `create_branch` MCP tool, or continue on the current branch."*
-3. The developer decides whether to work on a feature branch or stay on main.
-4. If a branch is created: `feature/<slugified-title>`.
-
-### Branch Naming Convention
-
-| Item type | Prefix | Example |
+| Item type | Suggested prefix | Example |
 |---|---|---|
 | BUG | `fix/` | `fix/null-pointer-in-parser` |
 | TASK | `feature/` | `feature/add-dark-mode-toggle` |
 | STORY | `feature/` | `feature/user-authentication` |
 | EPIC | `feature/` | `feature/git-branch-workflow` |
 
+The developer creates the branch and links it to the item via `update_item({ id, branchName: '<branch>' })`.
+
 Branches are only tracked on **top-level items** (no `parentId`). Child tasks inherit the parent's branch.
 
-### MCP Tool: `create_branch`
+### Gatekeeper Branch Checkout
 
-```
-create_branch({ itemId })
-```
-
-- Computes the branch name from item type and title.
-- Creates the local git branch and switches to it.
-- Stores `branchName` on the item.
-- Rejects items with a `parentId`.
+If the item has a `branchName` that exists locally, the **workflow gatekeeper** will auto-checkout the branch before the agent's first edit. If the branch does not exist locally, the gatekeeper warns the agent to create and check out the branch manually.
 
 ---
 
@@ -93,8 +74,7 @@ Each transition has specific rules and enforcement:
 ### TODO → IN_PROGRESS
 
 - Set via `update_item({ id, status: "IN_PROGRESS" })`.
-- For BUG items: server auto-assigns `branchName`.
-- Gatekeeper auto-creates/checkouts the git branch.
+- If a `branchName` is set on the item and the branch exists locally, the gatekeeper auto-checks it out.
 
 ### IN_PROGRESS → REVIEW
 
@@ -172,28 +152,20 @@ workflow_gatekeeper({ intent, role, itemId })
 The gatekeeper:
 1. Verifies an active task exists in `IN_PROGRESS`.
 2. Validates the agent's role matches the phase (e.g., `coding` requires `IN_PROGRESS`).
-3. For BUG items with a `branchName`: auto-creates and checks out the git branch if it doesn't exist locally.
-4. For TASK items without a branch: hints to the agent about optional branch creation.
+3. If the item has a `branchName` that exists locally, auto-checks it out.
+4. If the branch is set but does not exist locally, warns the agent to create it manually.
 5. Rejects coding on EPIC/STORY items (must decompose first).
 
 ---
 
 ## 5. PR Creation
 
-After code is reviewed and pushed, a pull request can be created:
+Pull requests are created manually by the developer. Use the `/agenfk-pr` skill or run `gh pr create` directly.
 
-### MCP Tool: `create_pr`
-
+After creating a PR, store the details on the item:
 ```
-create_pr({ itemId, description: "PR body text", draft: false })
+update_item({ id, branchName: '<branch>', prUrl: '<url>', prNumber: <number>, prStatus: 'open' })
 ```
-
-- Pushes the branch to remote (`git push -u origin <branch>`).
-- Creates a GitHub PR via `gh pr create` (safe argument passing via `spawnSync`).
-- Stores `prUrl`, `prNumber`, `prStatus` on the item.
-- Returns the PR URL and a release hint.
-- Requires `gh` CLI installed and a branch already assigned to the item.
-- Only works for top-level items (no `parentId`).
 
 ### PR Status Tracking
 
@@ -240,44 +212,39 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 
 ## 7. Complete Lifecycle Example
 
-### Bug Fix (Fully Automatic Branch)
+### Bug Fix
 
 ```
-1. create_item({ type: "BUG", title: "Login crash on empty email" })
-2. update_item({ status: "IN_PROGRESS" })
-   → Server auto-assigns branchName: fix/login-crash-on-empty-email
-3. workflow_gatekeeper({ intent: "Fix null check", role: "coding" })
-   → Gatekeeper auto-creates and checkouts the branch
-4. [Agent implements the fix]
-5. update_item({ status: "REVIEW" })
-6. [Agent self-reviews: re-reads files, checks correctness]
-7. review_changes({ itemId, command: "npm run build" })
+1. [Developer] git checkout -b fix/login-crash-on-empty-email
+2. create_item({ type: "BUG", title: "Login crash on empty email" })
+3. update_item({ id, status: "IN_PROGRESS", branchName: "fix/login-crash-on-empty-email" })
+4. workflow_gatekeeper({ intent: "Fix null check", role: "coding" })
+   → Gatekeeper auto-checks out the branch
+5. [Agent implements the fix]
+6. update_item({ status: "REVIEW" })
+7. [Agent self-reviews: re-reads files, checks correctness]
+8. review_changes({ itemId, command: "npm run build" })
    → Passes → item moves to TEST
-8. test_changes({ itemId })
+9. test_changes({ itemId })
    → Runs project verifyCommand (npm run build && npm test)
    → Passes → item moves to DONE
-9. create_pr({ itemId, description: "Fix null pointer..." })
-   → Pushes branch, creates PR, stores PR URL
-10. [Developer reviews and merges PR]
-11. /agenfk-release
-    → Checks PR is merged → creates release
+10. [Developer] git push -u origin fix/login-crash-on-empty-email
+11. [Developer] gh pr create (or /agenfk-pr)
+12. [Developer reviews and merges PR]
+13. /agenfk-release → creates release
 ```
 
-### Feature Task (Optional Branch)
+### Feature Task
 
 ```
 1. create_item({ type: "TASK", title: "Add dark mode toggle" })
 2. update_item({ status: "IN_PROGRESS" })
 3. workflow_gatekeeper({ intent: "Add toggle", role: "coding" })
-   → Hint: "This TASK has no branch. Offer to create one or continue on current branch."
-4. [Agent asks developer] → Developer says "create a branch"
-5. create_branch({ itemId })
-   → Creates feature/add-dark-mode-toggle
-6. [Agent implements the feature]
-7. update_item({ status: "REVIEW" })
-8. [Self-review] → review_changes({ itemId, command: "npm run build" })
+4. [Agent implements the feature]
+5. update_item({ status: "REVIEW" })
+6. [Self-review] → review_changes({ itemId, command: "npm run build" })
    → Passes → TEST
-9. test_changes({ itemId })
+7. test_changes({ itemId })
    → Passes → DONE
 ```
 
@@ -292,13 +259,6 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 | `workflow_gatekeeper` | Pre-flight auth before file edits | `intent`, `role`, `itemId?` |
 | `review_changes` | Agent-chosen build command, REVIEW → TEST | `itemId`, `command` |
 | `test_changes` | Project verifyCommand, TEST → DONE | `itemId` |
-
-### Git Tools
-
-| Tool | Purpose | Params |
-|---|---|---|
-| `create_branch` | Create + checkout branch for item | `itemId` |
-| `create_pr` | Push branch + create GitHub PR | `itemId`, `description?`, `draft?` |
 
 ### Project Tools
 
@@ -339,7 +299,5 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 | Cannot set DONE directly | Server rejects `update_item({ status: "DONE" })` |
 | Test suite must run for DONE | `test_changes` uses project `verifyCommand`, not agent command |
 | Fixes must be BUG items | Enforced in CLAUDE.md, SKILL.md, skill files |
-| Branches only on top-level items | `create_branch` and `create_pr` reject items with `parentId` |
-| BUG branches are automatic | Server auto-assigns `branchName` on IN_PROGRESS transition |
-| PR must be merged before release | `/agenfk-release` Step 0 PR merge gate |
+| Branches managed by developer | No automatic branch creation; developer creates and links branches manually |
 | MCP-first, not CLI | PreToolUse hooks block direct DB/API access |

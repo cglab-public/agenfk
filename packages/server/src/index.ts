@@ -301,30 +301,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "create_branch",
-        description: "Create a git branch for an item. Computes the branch name (BUG → fix/, others → feature/), creates the local branch, switches to it, and stores branchName on the item. Only works for top-level items (no parentId).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            itemId: { type: "string" },
-          },
-          required: ["itemId"],
-        },
-      },
-      {
-        name: "create_pr",
-        description: "Push the item's branch to remote and create a GitHub pull request. Stores prUrl, prNumber, and prStatus on the item. Requires GitHub CLI (gh) and a branch already assigned to the item. Only works for top-level items (no parentId).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            itemId: { type: "string" },
-            description: { type: "string", description: "PR body/description written by the agent." },
-            draft: { type: "boolean", description: "Create as a draft PR. Defaults to false." },
-          },
-          required: ["itemId"],
-        },
-      },
-      {
         name: "analyze_request",
         description: "Analyze a user request to suggest the appropriate AgenFK item type.",
         inputSchema: {
@@ -532,42 +508,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
              return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role is not allowed on ${task.type} items. Please decompose into TASKS and work on those instead.` }] };
           }
 
-          // Auto-create git branch if branchName is set but branch doesn't exist locally
+          // Auto-checkout git branch if branchName is set and branch exists locally
           let branchHint = '';
           if (task.branchName) {
             try {
-              // Check if the branch exists locally
-              try {
-                execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
-                // Branch exists — check if we're on it
-                const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
-                if (currentBranch !== task.branchName) {
-                  execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
-                  branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-                } else {
-                  branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-                }
-              } catch {
-                // Branch doesn't exist locally — checkout main first, then create
-                const mainBranch = (() => {
-                  try {
-                    const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { encoding: 'utf8' }).trim();
-                    return ref.replace('refs/remotes/origin/', '');
-                  } catch {}
-                  try { execSync('git rev-parse --verify main', { stdio: 'ignore' }); return 'main'; } catch {}
-                  try { execSync('git rev-parse --verify master', { stdio: 'ignore' }); return 'master'; } catch {}
-                  return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
-                })();
-                execSync(`git checkout ${mainBranch}`, { stdio: 'ignore' });
-                try { execSync(`git pull`, { stdio: 'ignore' }); } catch {}
-                execSync(`git checkout -b ${task.branchName}`, { stdio: 'ignore' });
-                branchHint = `\n🔀 Created branch '${task.branchName}' from '${mainBranch}'.`;
+              execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
+              const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+              if (currentBranch !== task.branchName) {
+                execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+                branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
+              } else {
+                branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
               }
-            } catch (gitErr: any) {
-              branchHint = `\n⚠️ Could not auto-checkout branch '${task.branchName}': ${gitErr.message}. You may need to handle this manually.`;
+            } catch {
+              branchHint = `\n⚠️ Branch '${task.branchName}' is linked to this item but does not exist locally. Please create and check out this branch manually before writing code.`;
             }
-          } else if (task.type === 'TASK' && !task.parentId) {
-            branchHint = '\n💡 This TASK has no branch. You may offer the developer to create one with the `create_branch` MCP tool, or continue on the current branch.';
           }
 
           return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
@@ -705,122 +660,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         });
         await api.put(`/items/${itemId}`, { comments });
         return { content: [{ type: "text", text: "Comment added." }] };
-      }
-      case "create_branch": {
-        // Helper: detect the default branch (main/master)
-        function detectMainBranch(): string {
-          try {
-            const ref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { encoding: 'utf8' }).trim();
-            return ref.replace('refs/remotes/origin/', '');
-          } catch {}
-          try { execSync('git rev-parse --verify main', { stdio: 'ignore' }); return 'main'; } catch {}
-          try { execSync('git rev-parse --verify master', { stdio: 'ignore' }); return 'master'; } catch {}
-          return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
-        }
-        const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
-        const { data: item } = await api.get(`/items/${itemId}`);
-
-        if (item.parentId) {
-          return { isError: true, content: [{ type: "text", text: `❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
-        }
-        if (item.branchName) {
-          // Branch name already assigned — just ensure it exists locally
-          try {
-            try {
-              execSync(`git rev-parse --verify ${item.branchName}`, { stdio: 'ignore' });
-            } catch {
-              execSync(`git checkout -b ${item.branchName}`, { stdio: 'ignore' });
-            }
-            execSync(`git checkout ${item.branchName}`, { stdio: 'ignore' });
-          } catch (gitErr: any) {
-            return { isError: true, content: [{ type: "text", text: `⚠️ Branch '${item.branchName}' is stored on the item but could not be checked out: ${gitErr.message}` }] };
-          }
-          return { content: [{ type: "text", text: `🔀 Branch '${item.branchName}' already assigned. Switched to it.` }] };
-        }
-
-        // Compute branch name
-        const prefix = item.type === 'BUG' ? 'fix' : 'feature';
-        const slug = item.title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s]+/g, '-').replace(/-+/g, '-').substring(0, 50).replace(/-$/, '');
-        const branchName = `${prefix}/${slug}`;
-
-        try {
-          const mainBranch = detectMainBranch();
-          execSync(`git checkout ${mainBranch}`, { stdio: 'ignore' });
-          try { execSync(`git pull`, { stdio: 'ignore' }); } catch {}
-          execSync(`git checkout -b ${branchName}`, { stdio: 'ignore' });
-        } catch (gitErr: any) {
-          return { isError: true, content: [{ type: "text", text: `❌ Failed to create branch '${branchName}': ${gitErr.message}` }] };
-        }
-
-        await api.put(`/items/${itemId}`, { branchName });
-        const baseBranch = detectMainBranch();
-        return { content: [{ type: "text", text: `🔀 Created branch '${branchName}' from '${baseBranch}'. Stored on item [${itemId.substring(0, 8)}].` }] };
-      }
-      case "create_pr": {
-        const { itemId, description: prBody, draft } = z.object({
-          itemId: z.string(),
-          description: z.string().optional(),
-          draft: z.boolean().optional(),
-        }).parse(request.params.arguments);
-
-        // Check gh CLI is available
-        try {
-          execSync('gh --version', { stdio: 'ignore' });
-        } catch {
-          return { isError: true, content: [{ type: "text", text: `❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/` }] };
-        }
-
-        const { data: item } = await api.get(`/items/${itemId}`);
-
-        if (item.parentId) {
-          return { isError: true, content: [{ type: "text", text: `❌ PRs are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this on the parent item instead.` }] };
-        }
-        if (!item.branchName) {
-          return { isError: true, content: [{ type: "text", text: `❌ No branch assigned to item [${itemId.substring(0, 8)}]. Create a branch first with the create_branch tool.` }] };
-        }
-        if (item.prUrl) {
-          return { content: [{ type: "text", text: `PR already exists for item [${itemId.substring(0, 8)}]: ${item.prUrl}` }] };
-        }
-
-        // Auto-commit any uncommitted local changes before push
-        const statusResult = spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' });
-        if (statusResult.stdout && statusResult.stdout.trim()) {
-          try {
-            execSync('git add .', { stdio: 'ignore' });
-            execSync('git commit -m "chore: commit local changes before push"', { stdio: 'ignore' });
-          } catch (commitErr: any) {
-            return { isError: true, content: [{ type: "text", text: `❌ Failed to auto-commit local changes before push: ${commitErr.message}` }] };
-          }
-        }
-
-        // Push branch to remote
-        try {
-          execSync(`git push -u origin ${item.branchName}`, { stdio: 'ignore' });
-        } catch (pushErr: any) {
-          return { isError: true, content: [{ type: "text", text: `❌ Failed to push branch '${item.branchName}' to remote: ${pushErr.message}` }] };
-        }
-
-        // Create PR via gh CLI (spawnSync for safe arg passing)
-        const args = ['pr', 'create', '--title', item.title, '--body', prBody || item.description || ''];
-        if (draft) args.push('--draft');
-
-        const result = spawnSync('gh', args, { encoding: 'utf8' });
-        if (result.status !== 0) {
-          return { isError: true, content: [{ type: "text", text: `❌ gh pr create failed:\n${result.stderr || result.stdout}` }] };
-        }
-
-        const output = (result.stdout || '').trim();
-        const prUrl = output.split('\n').filter(Boolean).pop() || '';
-        const prNumberMatch = prUrl.match(/\/pull\/(\d+)$/);
-        const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : undefined;
-        const prStatus = draft ? 'draft' : 'open';
-
-        await api.put(`/items/${itemId}`, { prUrl, prNumber, prStatus });
-
-        let msg = `✅ PR created: ${prUrl}`;
-        if (prNumber) msg += `\n   PR #${prNumber} linked to item [${itemId.substring(0, 8)}].`;
-        msg += `\n\nWhen the PR is approved and merged, run /agenfk-release to create a release.`;
-        return { content: [{ type: "text", text: msg }] };
       }
       case "pause_work": {
         const { itemId, summary, filesModified, resumeInstructions, gitDiff } = z.object({

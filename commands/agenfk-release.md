@@ -11,7 +11,7 @@ If **not on `main`**:
 - Tell the user which branch they are on and that releases are created from `main`.
 - Ask the user how they want to proceed, offering exactly these options:
   1. **Merge to main locally** — fetch origin, switch to `main`, pull latest, merge the feature branch (with `--no-edit`), then rebase if diverged. Continue to Step 2 on `main`.
-  2. **Create a PR** — follow the `/agenfk-pr` rules: look up the current AgenFK item linked to this branch (via `get_item`), call `create_branch` if needed, call `create_pr(itemId, "<summary>")` to push and open a GitHub PR, show the PR URL, and **STOP** — tell the user to merge the PR first and then re-run `/agenfk-release`.
+  2. **Create a PR manually** — run `/agenfk-pr` or create the PR yourself via `gh pr create`. Then re-run `/agenfk-release` after the PR is merged.
   3. **Continue on this branch** — skip the merge and release from the current branch as-is (advanced, user takes responsibility).
 
 If already on `main`, continue to Step 2.

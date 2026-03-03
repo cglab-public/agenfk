@@ -711,8 +711,7 @@ function configureClaudeCodeIde(rootDir: string): boolean {
         'mcp__agenfk__test_changes', 'mcp__agenfk__log_token_usage',
         'mcp__agenfk__analyze_request', 'mcp__agenfk__get_server_info',
         'mcp__agenfk__add_context', 'mcp__agenfk__delete_item',
-        'mcp__agenfk__log_test_result', 'mcp__agenfk__create_branch',
-        'mcp__agenfk__create_pr', 'mcp__agenfk__update_project',
+        'mcp__agenfk__log_test_result', 'mcp__agenfk__update_project',
     ];
     for (const perm of mcpPermissions) {
         if (!localSettings.permissions.allow.includes(perm)) {
