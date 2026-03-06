@@ -71,6 +71,7 @@ export interface Project {
   name: string;
   description?: string;
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
+  flowId?: string;        // ID of the active Flow for this project (falls back to DEFAULT_FLOW)
   createdAt: Date;
   updatedAt: Date;
 }

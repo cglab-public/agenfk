@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -265,6 +265,60 @@ const initStorage = async () => {
 const asyncHandler = (fn: any) => (req: any, res: any, next: any) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
+// ── Flow-aware transition resolver ───────────────────────────────────────────
+
+/**
+ * Special statuses that can always be entered/exited regardless of flow step order.
+ */
+const SPECIAL_STATUSES = new Set([
+  Status.BLOCKED,
+  Status.PAUSED,
+  Status.ARCHIVED,
+  Status.TRASHED,
+]);
+
+/**
+ * Build the set of statuses reachable from `fromStatus` given the active Flow.
+ * Rules:
+ *  - Each non-special step can transition to the next non-special step (and back).
+ *  - Any status can transition to/from any special status.
+ *  - DONE is reachable only via the verify pipeline (enforced separately).
+ */
+function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean }> }): Set<string> {
+  const allowed = new Set<string>();
+
+  // Special statuses are always reachable from/to any step
+  for (const s of SPECIAL_STATUSES) {
+    allowed.add(s);
+  }
+
+  // If coming from a special status, allow transitioning to any non-special step
+  if (SPECIAL_STATUSES.has(fromStatus as Status)) {
+    for (const step of flow.steps) {
+      allowed.add(step.name);
+    }
+    return allowed;
+  }
+
+  // Non-special: find neighbours in the sorted step list
+  const sorted = [...flow.steps].sort((a, b) => a.order - b.order);
+  const currentIdx = sorted.findIndex(s => s.name === fromStatus);
+
+  if (currentIdx === -1) {
+    // Unknown status in this flow: allow all steps
+    for (const step of sorted) allowed.add(step.name);
+    return allowed;
+  }
+
+  // Allow forward and backward one step (and all special steps already added)
+  if (currentIdx > 0) allowed.add(sorted[currentIdx - 1].name);
+  if (currentIdx < sorted.length - 1) allowed.add(sorted[currentIdx + 1].name);
+  // Also allow staying in the same status (idempotent updates)
+  allowed.add(fromStatus);
+
+  return allowed;
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => {
@@ -377,6 +431,190 @@ app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
   await storage.deleteProject(req.params.id);
   io.emit('items_updated');
   res.status(204).send();
+}));
+
+// ── Project Flow assignment ───────────────────────────────────────────────────
+
+app.post("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  const { flowId } = req.body;
+  if (flowId === undefined) return res.status(400).json({ error: "flowId is required" });
+
+  // Validate that the flow exists (unless clearing with null/empty string)
+  if (flowId) {
+    const flow = await storage.getFlow(flowId);
+    if (!flow) return res.status(404).json({ error: "Flow not found" });
+  }
+
+  const updated = await storage.updateProject(req.params.id, { flowId: flowId || undefined });
+
+  // Run card migration if flowId is being set
+  if (flowId) {
+    const items = await storage.listItems({ projectId: req.params.id });
+    const flows = await storage.listFlows(req.params.id);
+    const activeFlow = getActiveFlow(flowId, flows);
+    const oldFlow = (project as any).flowId
+      ? (await storage.getFlow((project as any).flowId)) ?? DEFAULT_FLOW
+      : DEFAULT_FLOW;
+    const migrationPlan = migrateCardsToFlow(items, oldFlow, activeFlow);
+    for (const plan of migrationPlan) {
+      if (plan.oldStatus !== plan.newStatus) {
+        await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
+      }
+    }
+  }
+
+  io.emit('flow:updated', { projectId: req.params.id, flowId: flowId || null });
+  io.emit('items_updated');
+  res.json(updated);
+}));
+
+app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  if (!(project as any).flowId) {
+    return res.json(DEFAULT_FLOW);
+  }
+
+  const flows = await storage.listFlows(req.params.id);
+  const activeFlow = getActiveFlow((project as any).flowId, flows);
+  res.json(activeFlow);
+}));
+
+// ── Flows API ─────────────────────────────────────────────────────────────────
+
+app.get("/flows", asyncHandler(async (req: any, res: any) => {
+  const { projectId } = req.query;
+  if (!projectId) return res.status(400).json({ error: "projectId query param is required" });
+  const flows = await storage.listFlows(projectId as string);
+  res.json(flows);
+}));
+
+app.post("/flows", asyncHandler(async (req: any, res: any) => {
+  const { projectId, name, description, steps } = req.body;
+  if (!projectId || !name) return res.status(400).json({ error: "projectId and name are required" });
+
+  const flow: Flow = {
+    id: uuidv4(),
+    projectId,
+    name,
+    description: description || "",
+    steps: steps || [],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const created = await storage.createFlow(flow);
+  io.emit('flow:updated', { projectId, flowId: created.id });
+  res.status(201).json(created);
+}));
+
+app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
+  const flow = await storage.getFlow(req.params.id);
+  if (!flow) return res.status(404).json({ error: "Flow not found" });
+  res.json(flow);
+}));
+
+app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
+  try {
+    const { name, description, steps } = req.body;
+    const updates: Partial<Flow> = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (steps !== undefined) updates.steps = steps;
+
+    const updated = await storage.updateFlow(req.params.id, updates);
+    io.emit('flow:updated', { projectId: updated.projectId, flowId: updated.id });
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Flow not found" });
+  }
+}));
+
+app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
+  const flow = await storage.getFlow(req.params.id);
+  if (!flow) return res.status(404).json({ error: "Flow not found" });
+
+  await storage.deleteFlow(req.params.id);
+  io.emit('flow:updated', { projectId: flow.projectId, flowId: req.params.id, deleted: true });
+  res.status(204).send();
+}));
+
+// Flow Migration API
+app.post("/projects/:id/flow/migrate", asyncHandler(async (req: any, res: any) => {
+  const { id: projectId } = req.params;
+  const { flowId, dryRun = false } = req.body;
+
+  if (!flowId) {
+    return res.status(400).json({ error: "flowId is required" });
+  }
+
+  const project = await storage.getProject(projectId);
+  if (!project) {
+    return res.status(404).json({ error: "Project not found" });
+  }
+
+  // Resolve the old (current) flow for this project
+  const projectWithFlow = project as Project & { flowId?: string };
+  const currentFlowId: string | undefined = projectWithFlow.flowId;
+
+  let oldFlow: Flow;
+  if (currentFlowId) {
+    const found = await storage.getFlow(currentFlowId);
+    if (!found) {
+      return res.status(404).json({ error: `Current project flow '${currentFlowId}' not found` });
+    }
+    oldFlow = found;
+  } else {
+    // No custom flow set — use DEFAULT_FLOW
+    oldFlow = DEFAULT_FLOW;
+  }
+
+  // Resolve the target flow
+  const newFlow = await storage.getFlow(flowId);
+  if (!newFlow) {
+    return res.status(404).json({ error: `Target flow '${flowId}' not found` });
+  }
+
+  // Gather all items for this project
+  const items = await storage.listItems({ projectId });
+
+  // Run migration algorithm
+  const migrationPlan = migrateCardsToFlow(items, oldFlow, newFlow);
+
+  if (dryRun) {
+    return res.json({ dryRun: true, migrations: migrationPlan });
+  }
+
+  // Apply migrations
+  const applied: typeof migrationPlan = [];
+  for (const plan of migrationPlan) {
+    const item = items.find((i) => i.id === plan.itemId);
+    if (!item) continue;
+
+    if (plan.oldStatus !== plan.newStatus) {
+      const migrationComment = {
+        id: uuidv4(),
+        author: 'FlowMigration',
+        content: `Migrated from step '${plan.oldStatus}' to '${plan.newStatus}' (${plan.reason})`,
+        timestamp: new Date(),
+      };
+      const updatedComments = [...(item.comments || []), migrationComment];
+      await storage.updateItem(plan.itemId, {
+        status: plan.newStatus as Status,
+        comments: updatedComments,
+      });
+    }
+    applied.push(plan);
+  }
+
+  io.emit('flow:migrate:complete', { projectId, flowId, migrations: applied });
+  io.emit('items_updated');
+
+  return res.json({ dryRun: false, migrations: applied });
 }));
 
 // Items API
@@ -551,6 +789,20 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     return res.status(403).json({
       error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Move the item to TEST, then call test_changes(itemId) to run the project's test suite."
     });
+  }
+
+  // Flow-aware transition validation
+  if (status !== undefined && status !== currentItem.status && !isInternalVerify) {
+    const project = await storage.getProject(currentItem.projectId);
+    const projectFlowId = (project as any)?.flowId as string | undefined;
+    const projectFlows = project ? await storage.listFlows(currentItem.projectId) : [];
+    const activeFlow = getActiveFlow(projectFlowId, projectFlows);
+    const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
+    if (!allowed.has(status)) {
+      return res.status(400).json({
+        error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}.`
+      });
+    }
   }
 
   if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {

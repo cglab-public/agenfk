@@ -482,17 +482,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
 
-        // Fetch items and filter by project ID
-        const { data: allItems } = await api.get(`/items`, { params: { projectId: effectiveProjectId } });
-        
+        // Fetch items and active flow for project
+        const [{ data: allItems }, { data: activeFlow }] = await Promise.all([
+          api.get(`/items`, { params: { projectId: effectiveProjectId } }),
+          api.get(`/projects/${effectiveProjectId}/flow`).catch(() => ({ data: null })),
+        ]);
+
         // Find items that are not in terminal states
-        const activeItems = allItems.filter((i: any) => 
+        const activeItems = allItems.filter((i: any) =>
           i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY' || i.type === 'EPIC')
         );
 
         const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
         const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
         const testItems = activeItems.filter((i: any) => i.status === 'TEST');
+
+        // Build a human-readable flow steps summary for inclusion in responses
+        const flowStepsSummary = activeFlow
+          ? `\nActive Flow: "${activeFlow.name}" — Steps: ${[...activeFlow.steps].sort((a: any, b: any) => a.order - b.order).map((s: any) => s.name).join(' → ')}`
+          : '';
 
         // Enforcement Logic
         if (role === 'planning') {
@@ -501,7 +509,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           if (item.type !== 'EPIC' && item.type !== 'STORY') {
             return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Planning role is only valid for EPIC or STORY items.` }] };
           }
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (PLANNING).\n\nItem: [${item.id.substring(0,8)}] ${item.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (PLANNING).\n\nItem: [${item.id.substring(0,8)}] ${item.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
         }
 
         if (role === 'coding') {
