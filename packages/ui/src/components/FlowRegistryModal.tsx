@@ -350,13 +350,13 @@ const AboutTab: React.FC = () => (
     <div>
       <h4 className="font-semibold text-slate-700 dark:text-slate-200 mb-1">Registry repository</h4>
       <a
-        href="https://github.com/agenfk-flows/registry"
+        href="https://github.com/cglab-public/agenfk-flows"
         target="_blank"
         rel="noopener noreferrer"
         className="text-indigo-600 dark:text-indigo-400 underline hover:no-underline text-sm"
         data-testid="registry-repo-link"
       >
-        github.com/agenfk-flows/registry
+        github.com/cglab-public/agenfk-flows
       </a>
     </div>
 

@@ -138,7 +138,7 @@ describe('flow registry commands', () => {
       mockedAxios.put.mockResolvedValue({
         data: {
           content: {
-            html_url: 'https://github.com/agenfk-flows/registry/blob/main/flows/standard-dev-flow.json',
+            html_url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/standard-dev-flow.json',
           },
         },
       });
@@ -153,7 +153,7 @@ describe('flow registry commands', () => {
 
       // Verify GitHub PUT was called with correct structure
       expect(mockedAxios.put).toHaveBeenCalledWith(
-        expect.stringContaining('api.github.com/repos/agenfk-flows/registry/contents/flows/'),
+        expect.stringContaining('api.github.com/repos/cglab-public/agenfk-flows/contents/flows/'),
         expect.objectContaining({
           message: expect.stringContaining('Standard Dev Flow'),
           content: expect.any(String),
@@ -193,7 +193,7 @@ describe('flow registry commands', () => {
       mockedAxios.put.mockResolvedValue({
         data: {
           content: {
-            html_url: 'https://github.com/agenfk-flows/registry/blob/main/flows/standard-dev-flow.json',
+            html_url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/standard-dev-flow.json',
           },
         },
       });
@@ -279,7 +279,7 @@ describe('flow registry commands', () => {
       await program.parseAsync(['node', 'agenfk', 'flow', 'browse']);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
-        expect.stringContaining('api.github.com/repos/agenfk-flows/registry/contents/flows'),
+        expect.stringContaining('api.github.com/repos/cglab-public/agenfk-flows/contents/flows'),
         expect.any(Object)
       );
 
@@ -382,7 +382,7 @@ describe('flow registry commands', () => {
       await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow.json', '--project', 'proj-123']);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
-        expect.stringContaining('raw.githubusercontent.com/agenfk-flows/registry/main/flows/standard-dev-flow.json')
+        expect.stringContaining('raw.githubusercontent.com/cglab-public/agenfk-flows/main/flows/standard-dev-flow.json')
       );
 
       expect(mockedAxios.post).toHaveBeenCalledWith(
