@@ -69,7 +69,7 @@ describe('FlowRegistryModal', () => {
     vi.mocked(api.browseRegistry).mockResolvedValue(SAMPLE_REGISTRY_FLOWS);
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_LOCAL_FLOW]);
     vi.mocked(api.installFromRegistry).mockResolvedValue({ ...SAMPLE_LOCAL_FLOW, id: 'installed-1', name: 'Scrum Flow' });
-    vi.mocked(api.publishToRegistry).mockResolvedValue({ url: 'https://github.com/agenfk-flows/registry/blob/main/flows/my-custom-flow.json' });
+    vi.mocked(api.publishToRegistry).mockResolvedValue({ url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/my-custom-flow.json' });
   });
 
   afterEach(() => {
@@ -264,7 +264,11 @@ describe('FlowRegistryModal', () => {
       <FlowRegistryModal open={true} onClose={() => {}} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
-    await waitFor(() => expect(screen.getByText(/Registry unavailable/)).toBeDefined());
+    // Wait for the Retry button to appear — that's the landmark of the error state
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: /retry/i })).toBeDefined(),
+      { timeout: 5000 }
+    );
   });
 
   // ── My Flows Tab ──────────────────────────────────────────────────────────
@@ -383,7 +387,7 @@ describe('FlowRegistryModal', () => {
     fireEvent.click(screen.getByTestId('tab-about'));
     expect(screen.getByTestId('about-tab')).toBeDefined();
     const link = screen.getByTestId('registry-repo-link') as HTMLAnchorElement;
-    expect(link.href).toContain('github.com/agenfk-flows/registry');
+    expect(link.href).toContain('github.com/cglab-public/agenfk-flows');
   });
 
   it('About tab mentions AGENFK_REGISTRY_TOKEN', () => {

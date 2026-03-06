@@ -545,8 +545,8 @@ app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
 
 // ── Flow Registry Proxy ───────────────────────────────────────────────────────
 
-const REGISTRY_OWNER = process.env.AGENFK_REGISTRY_OWNER ?? 'agenfk-flows';
-const REGISTRY_REPO = process.env.AGENFK_REGISTRY_REPO ?? 'registry';
+const REGISTRY_OWNER = process.env.AGENFK_REGISTRY_OWNER ?? 'cglab-public';
+const REGISTRY_REPO = process.env.AGENFK_REGISTRY_REPO ?? 'agenfk-flows';
 const REGISTRY_BRANCH = process.env.AGENFK_REGISTRY_BRANCH ?? 'main';
 const GITHUB_API = 'https://api.github.com';
 
@@ -636,8 +636,8 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
         exitCriteria: s.exitCriteria ?? '',
         isSpecial: s.isSpecial ?? false,
       })) : [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
 
     res.json(newFlow);

@@ -1662,7 +1662,7 @@ configSetCommand
 
 configSetCommand
   .command('flowRegistry <owner/repo>')
-  .description('Set the community flow registry repo (e.g. agenfk-flows/registry)')
+  .description('Set the community flow registry repo (e.g. cglab-public/agenfk-flows)')
   .action((value: string) => {
     if (!value.includes('/')) {
       console.error(chalk.red('Error: value must be in "owner/repo" format'));
@@ -2461,7 +2461,7 @@ function getFlowRegistryRepo(): string {
       if (config.flowRegistry) return config.flowRegistry;
     }
   } catch { /* ignore */ }
-  return 'agenfk-flows/registry';
+  return 'cglab-public/agenfk-flows';
 }
 
 function serializeFlowToRegistry(flow: any): object {
@@ -2487,7 +2487,7 @@ function serializeFlowToRegistry(flow: any): object {
 flowCommand
   .command('publish <id>')
   .description('Publish a flow to the community registry (requires AGENFK_REGISTRY_TOKEN)')
-  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
   .action(async (id, options) => {
     try {
       const token = process.env.AGENFK_REGISTRY_TOKEN;
@@ -2540,7 +2540,7 @@ flowCommand
 flowCommand
   .command('browse')
   .description('Browse flows available in the community registry')
-  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
   .action(async (options) => {
     try {
       const registry = options.registry || getFlowRegistryRepo();
@@ -2591,7 +2591,7 @@ flowCommand
 flowCommand
   .command('install <filename>')
   .description('Install a flow from the community registry into the local server')
-  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
   .option('--project <projectId>', 'Project ID to scope this flow to')
   .action(async (filename, options) => {
     try {
