@@ -22,7 +22,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 When child items of the same parent share the same source code (same branch/workspace), a single `validate_progress` call validates the code for **all** siblings:
 
-- After `validate_progress` passes on **one** sibling (advancing it to the next step), move remaining siblings to that same step via `update_item({ status: "<nextStep>" })` — no individual `validate_progress` calls needed.
+- After `validate_progress` passes on **one** sibling (advancing it to the next step), call `validate_progress` on remaining siblings — the server's sibling propagation detects the already-advanced sibling and skips command execution, passing immediately.
 - For the final step (→ DONE): call `validate_progress` on each remaining sibling — the server's sibling propagation will skip execution and pass immediately.
 
 This avoids redundant build and test runs when the underlying code changes are shared.

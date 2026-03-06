@@ -25,7 +25,7 @@ Before modifying ANY file, you MUST:
 If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 - If no task is IN_PROGRESS — create and start one using MCP tools:
   - `create_item(projectId, "TASK", "<title>")`
-  - `update_item(id, {status: "IN_PROGRESS"})`
+  - `validate_progress(id)` — advances from TODO to the coding step (enforces TODO exit criteria)
 - If the wrong item is IN_PROGRESS — use `itemId` to disambiguate.
 - Never proceed past a gatekeeper rejection.
 
@@ -46,8 +46,7 @@ Or via CLI: `agenfk flow show --project <projectId>`
 **Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow. Always use the flow's actual step `name` values when calling `update_item({ status })`. The gatekeeper will reject invalid transitions.
 
 After completing changes — using MCP tools:
-- `update_item(id, {status: "<next-flow-step>"})` — move to the next step in the active flow when coding is done (typically REVIEW in the default flow).
-- `validate_progress(itemId, command?)` — validates exit criteria for the current flow step and advances to the next step. `command` is optional: if omitted, uses `project.verifyCommand`. Call `workflow_gatekeeper(role="validating")` first — the response includes the step's exit criteria. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry.
+- `validate_progress(itemId, command?)` — validates exit criteria for the current flow step and advances to the next step. **Use this for ALL forward step transitions** (including TODO → coding step). `command` is optional: if omitted, uses `project.verifyCommand`. Call `workflow_gatekeeper(role="validating")` first — the response includes the step's exit criteria. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
@@ -77,7 +76,7 @@ CLI equivalents via Bash:
 | `list_items(projectId)` | `agenfk list --project <id> --json` |
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
-| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `validate_progress` instead) |
+| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (backward/rollback only — use `validate_progress` for all forward transitions) |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
 | `validate_progress(id, command?)` | `agenfk verify <id> "<command>"` (advances to next step) or `agenfk verify <id>` (uses verifyCommand) |
 | `log_token_usage(id, in, out, model)` | `agenfk log-tokens <id> --input N --output N --model M` |
