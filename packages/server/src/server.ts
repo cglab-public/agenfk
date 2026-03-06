@@ -606,6 +606,8 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
 
     res.json(flows);
   } catch (e: any) {
+    // 404 means the flows directory doesn't exist yet — treat as empty registry
+    if (e?.response?.status === 404) return res.json([]);
     const status = e?.response?.status ?? 502;
     res.status(status).json({ error: 'Failed to fetch registry', detail: e?.message });
   }
