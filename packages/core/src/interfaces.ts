@@ -47,7 +47,7 @@ export interface StorageProvider extends AgenFKPlugin {
   updateFlow(id: string, updates: Partial<Flow>): Promise<Flow>;
   deleteFlow(id: string): Promise<boolean>;
   getFlow(id: string): Promise<Flow | null>;
-  listFlows(projectId: string): Promise<Flow[]>;
+  listFlows(): Promise<Flow[]>;
 }
 
 export interface TokenTracker extends AgenFKPlugin {

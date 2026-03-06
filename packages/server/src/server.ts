@@ -485,7 +485,7 @@ app.post("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
   // Run card migration if flowId is being set
   if (flowId) {
     const items = await storage.listItems({ projectId: req.params.id });
-    const flows = await storage.listFlows(req.params.id);
+    const flows = await storage.listFlows();
     const activeFlow = getActiveFlow(flowId, flows);
     const oldFlow = (project as any).flowId
       ? (await storage.getFlow((project as any).flowId)) ?? DEFAULT_FLOW
@@ -511,7 +511,7 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
     return res.json(DEFAULT_FLOW);
   }
 
-  const flows = await storage.listFlows(req.params.id);
+  const flows = await storage.listFlows();
   const activeFlow = getActiveFlow((project as any).flowId, flows);
   res.json(activeFlow);
 }));
@@ -523,20 +523,17 @@ app.get("/flows/default", asyncHandler(async (_req: any, res: any) => {
 
 // ── Flows API ─────────────────────────────────────────────────────────────────
 
-app.get("/flows", asyncHandler(async (req: any, res: any) => {
-  const { projectId } = req.query;
-  if (!projectId) return res.status(400).json({ error: "projectId query param is required" });
-  const flows = await storage.listFlows(projectId as string);
+app.get("/flows", asyncHandler(async (_req: any, res: any) => {
+  const flows = await storage.listFlows();
   res.json(flows);
 }));
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
-  const { projectId, name, description, steps } = req.body;
-  if (!projectId || !name) return res.status(400).json({ error: "projectId and name are required" });
+  const { name, description, steps } = req.body;
+  if (!name) return res.status(400).json({ error: "name is required" });
 
   const flow: Flow = {
     id: uuidv4(),
-    projectId,
     name,
     description: description || "",
     steps: steps || [],
@@ -545,7 +542,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
   };
 
   const created = await storage.createFlow(flow);
-  io.emit('flow:updated', { projectId, flowId: created.id });
+  io.emit('flow:updated', { flowId: created.id });
   res.status(201).json(created);
 }));
 
@@ -564,7 +561,7 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
     if (steps !== undefined) updates.steps = steps;
 
     const updated = await storage.updateFlow(req.params.id, updates);
-    io.emit('flow:updated', { projectId: updated.projectId, flowId: updated.id });
+    io.emit('flow:updated', { flowId: updated.id });
     res.json(updated);
   } catch (error) {
     res.status(404).json({ error: "Flow not found" });
@@ -576,7 +573,7 @@ app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
   if (!flow) return res.status(404).json({ error: "Flow not found" });
 
   await storage.deleteFlow(req.params.id);
-  io.emit('flow:updated', { projectId: flow.projectId, flowId: req.params.id, deleted: true });
+  io.emit('flow:updated', { flowId: req.params.id, deleted: true });
   res.status(204).send();
 }));
 
@@ -666,7 +663,6 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       id: uuidv4(),
       name: flowData.name ?? filename.replace('.json', ''),
       description: flowData.description,
-      projectId: '__registry__',
       steps: Array.isArray(flowData.steps) ? flowData.steps.map((s: any, i: number) => ({
         id: uuidv4(),
         name: s.name ?? `step-${i}`,
@@ -1004,7 +1000,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     const projectFlowId = (project as any)?.flowId as string | undefined;
     // Only enforce flow transitions when a custom (non-default) flow is set
     if (projectFlowId) {
-      const projectFlows = await storage.listFlows(currentItem.projectId);
+      const projectFlows = await storage.listFlows();
       const activeFlow = getActiveFlow(projectFlowId, projectFlows);
       const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
       if (!allowed.has(status)) {
@@ -1166,7 +1162,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!item) return res.status(404).json({ error: "Item not found" });
 
   const project = await storage.getProject(item.projectId);
-  const projectFlows = await storage.listFlows(item.projectId);
+  const projectFlows = await storage.listFlows();
   const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
   const sorted = sortedFlowSteps(activeFlow);
   const codingStep = getCodingStep(sorted);

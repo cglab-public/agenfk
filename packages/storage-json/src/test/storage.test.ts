@@ -169,11 +169,10 @@ describe('JSONStorageProvider', () => {
   });
 
   describe('Flow CRUD', () => {
-    const makeFlow = (id: string, projectId = 'proj1'): Flow => ({
+    const makeFlow = (id: string): Flow => ({
       id,
       name: `Flow ${id}`,
       description: 'A test flow',
-      projectId,
       steps: [
         { id: 's1', name: 'todo', label: 'To Do', order: 0 },
         { id: 's2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: 'Code reviewed' },
@@ -197,19 +196,16 @@ describe('JSONStorageProvider', () => {
       expect(await storage.getFlow('missing')).toBeNull();
     });
 
-    it('should list flows by projectId', async () => {
-      await storage.createFlow(makeFlow('f1', 'proj1'));
-      await storage.createFlow(makeFlow('f2', 'proj1'));
-      await storage.createFlow(makeFlow('f3', 'proj2'));
+    it('should list all flows globally', async () => {
+      await storage.createFlow(makeFlow('f1'));
+      await storage.createFlow(makeFlow('f2'));
+      await storage.createFlow(makeFlow('f3'));
 
-      const proj1Flows = await storage.listFlows('proj1');
-      expect(proj1Flows).toHaveLength(2);
-      expect(proj1Flows.map(f => f.id)).toContain('f1');
-      expect(proj1Flows.map(f => f.id)).toContain('f2');
-
-      const proj2Flows = await storage.listFlows('proj2');
-      expect(proj2Flows).toHaveLength(1);
-      expect(proj2Flows[0].id).toBe('f3');
+      const allFlows = await storage.listFlows();
+      expect(allFlows).toHaveLength(3);
+      expect(allFlows.map(f => f.id)).toContain('f1');
+      expect(allFlows.map(f => f.id)).toContain('f2');
+      expect(allFlows.map(f => f.id)).toContain('f3');
     });
 
     it('should update a flow', async () => {
@@ -257,6 +253,26 @@ describe('JSONStorageProvider', () => {
       // Dates should be hydrated as Date objects
       expect(retrieved!.createdAt).toBeInstanceOf(Date);
       expect(retrieved!.updatedAt).toBeInstanceOf(Date);
+    });
+
+    it('should strip projectId from legacy flow entries on load', async () => {
+      // Write a legacy db.json with projectId on flows
+      const fs = await import('fs');
+      const legacyDb = {
+        projects: [], items: [], snapshots: [],
+        flows: [{
+          id: 'legacy-f1', name: 'Legacy Flow', projectId: 'old-project',
+          steps: [], description: '',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        }],
+      };
+      fs.writeFileSync(TEST_DB, JSON.stringify(legacyDb));
+      const storage2 = new JSONStorageProvider();
+      await storage2.init({ path: TEST_DB });
+      const retrieved = await storage2.getFlow('legacy-f1');
+      expect(retrieved).not.toBeNull();
+      expect((retrieved as any).projectId).toBeUndefined();
+      expect(retrieved!.name).toBe('Legacy Flow');
     });
   });
 });

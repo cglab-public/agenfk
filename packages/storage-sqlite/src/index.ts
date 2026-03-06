@@ -77,10 +77,8 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_snapshots_item ON snapshots(item_id);
       CREATE TABLE IF NOT EXISTS flows (
         id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
         data TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
     `);
   }
 
@@ -255,8 +253,8 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async createFlow(flow: Flow): Promise<Flow> {
     this.database.prepare(
-      'INSERT INTO flows (id, project_id, data) VALUES (?, ?, ?)'
-    ).run(flow.id, flow.projectId, JSON.stringify(flow));
+      'INSERT INTO flows (id, data) VALUES (?, ?)'
+    ).run(flow.id, JSON.stringify(flow));
     return flow;
   }
 
@@ -264,8 +262,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     const existing = await this.getFlow(id);
     if (!existing) throw new Error(`Flow ${id} not found`);
     const updated = { ...existing, ...updates, updatedAt: new Date() };
-    this.database.prepare('UPDATE flows SET project_id = ?, data = ? WHERE id = ?').run(
-      updated.projectId, JSON.stringify(updated), id
+    this.database.prepare('UPDATE flows SET data = ? WHERE id = ?').run(
+      JSON.stringify(updated), id
     );
     return updated;
   }
@@ -280,8 +278,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     return row ? this.parseFlow(row.data) : null;
   }
 
-  async listFlows(projectId: string): Promise<Flow[]> {
-    const rows = this.database.prepare('SELECT data FROM flows WHERE project_id = ?').all(projectId) as { data: string }[];
+  async listFlows(): Promise<Flow[]> {
+    const rows = this.database.prepare('SELECT data FROM flows').all() as { data: string }[];
     return rows.map(r => this.parseFlow(r.data));
   }
 }

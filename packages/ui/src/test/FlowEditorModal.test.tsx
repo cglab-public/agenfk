@@ -37,7 +37,6 @@ const DEFAULT_FLOW: Flow = {
   id: 'default-flow-id',
   name: 'Default Flow',
   description: 'Built-in default flow',
-  projectId: PROJECT_ID,
   steps: [
     { id: 'd1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
     { id: 'd2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
@@ -51,7 +50,6 @@ const SAMPLE_FLOW: Flow = {
   id: 'flow-1',
   name: 'My Flow',
   description: 'A sample flow',
-  projectId: PROJECT_ID,
   steps: [
     { id: 's1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
     { id: 's2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined' },
@@ -65,7 +63,6 @@ const SAMPLE_FLOW_2: Flow = {
   id: 'flow-2',
   name: 'Sprint Flow',
   description: '',
-  projectId: PROJECT_ID,
   steps: [
     { id: 's4', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
     { id: 's5', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
@@ -368,7 +365,6 @@ describe('FlowEditorModal', () => {
     await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
     const call = vi.mocked(api.createFlow).mock.calls[0][0];
     expect(call.name).toBe('Sprint Flow');
-    expect(call.projectId).toBe(PROJECT_ID);
     expect(Array.isArray(call.steps)).toBe(true);
   });
 
@@ -670,7 +666,6 @@ const INSTALLED_FLOW: Flow = {
   id: 'installed-flow-id',
   name: 'Engineering Sprint',
   description: 'A standard engineering sprint flow',
-  projectId: PROJECT_ID,
   steps: [
     { id: 'i1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
     { id: 'i2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },

@@ -24,7 +24,6 @@ function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt'
   return {
     name: newName,
     description: source.description,
-    projectId: source.projectId,
     steps: source.steps.map(s => ({ ...s, id: generateUUID() })),
   };
 }
@@ -180,7 +179,6 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        projectId,
         steps: steps.map((s, i) => ({ ...s, order: i })),
       };
       if (flow?.id) {
@@ -205,7 +203,6 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        projectId,
         steps: steps.map((s, i) => ({ ...s, order: i })),
       };
       const created = await api.createFlow(payload);
@@ -710,8 +707,8 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
 
   // ── Query: list all flows ──────────────────────────────────────────────────
   const { data: flows = [] } = useQuery<Flow[]>({
-    queryKey: ['flows', projectId],
-    queryFn: () => api.listFlows(projectId),
+    queryKey: ['flows'],
+    queryFn: () => api.listFlows(),
     enabled: isOpen,
   });
 
@@ -727,7 +724,7 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
   const useDefaultFlowMutation = useMutation({
     mutationFn: () => api.setProjectFlow(projectId, null),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['flows', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['flows'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
   });

@@ -6,7 +6,6 @@ describe('DEFAULT_FLOW', () => {
   it('should have the correct id and name', () => {
     expect(DEFAULT_FLOW.id).toBe('default');
     expect(DEFAULT_FLOW.name).toBe('Default Flow');
-    expect(DEFAULT_FLOW.projectId).toBe('__builtin__');
   });
 
   it('should have exactly 5 steps (platform statuses are not flow steps)', () => {
@@ -75,7 +74,6 @@ describe('getActiveFlow', () => {
   const customFlow: Flow = {
     id: 'custom-flow-1',
     name: 'Custom Flow',
-    projectId: 'proj-abc',
     steps: [
       { id: 's1', name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
       { id: 's2', name: 'DONE', label: 'Done', order: 1, isAnchor: true },
@@ -87,7 +85,6 @@ describe('getActiveFlow', () => {
   const anotherFlow: Flow = {
     id: 'custom-flow-2',
     name: 'Another Flow',
-    projectId: 'proj-xyz',
     steps: [],
     createdAt: new Date('2026-02-15'),
     updatedAt: new Date('2026-02-15'),
