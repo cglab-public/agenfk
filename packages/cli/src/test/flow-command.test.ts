@@ -172,31 +172,17 @@ describe('flow command', () => {
       mockedAxios.post.mockResolvedValue({ data: { ...SAMPLE_FLOW, name: 'My Flow', steps: [{ id: 's1' }] } });
 
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      await program.parseAsync(['node', 'agenfk', 'flow', 'create', 'My Flow', '--project', 'proj-123']);
+      await program.parseAsync(['node', 'agenfk', 'flow', 'create', 'My Flow']);
 
       expect(mockedAxios.post).toHaveBeenCalledWith(
         expect.stringContaining('/flows'),
         expect.objectContaining({
           name: 'My Flow',
-          projectId: 'proj-123',
           description: 'My flow description',
         })
       );
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Created flow'));
       logSpy.mockRestore();
-    });
-
-    it('should error when no project id available', async () => {
-      mockExistsSync.mockReturnValue(false);
-
-      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
-
-      await program.parseAsync(['node', 'agenfk', 'flow', 'create', 'My Flow']);
-
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'));
-      exitSpy.mockRestore();
-      errSpy.mockRestore();
     });
   });
 

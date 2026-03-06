@@ -90,11 +90,14 @@ export class JSONStorageProvider implements StorageProvider {
             resumedAt: s.resumedAt ? new Date(s.resumedAt) : undefined,
         }));
 
-        this.data.flows = (parsed.flows || []).map((f: any) => ({
-            ...f,
+        this.data.flows = (parsed.flows || []).map((f: any) => {
+          const { projectId: _dropped, ...rest } = f;
+          return {
+            ...rest,
             createdAt: new Date(f.createdAt),
             updatedAt: new Date(f.updatedAt),
-        }));
+          };
+        });
       } catch (e) {
         console.error(`[STORAGE] Error parsing ${this.dbPath}. Keeping current in-memory state.`, e);
       }
@@ -346,10 +349,10 @@ export class JSONStorageProvider implements StorageProvider {
     });
   }
 
-  async listFlows(projectId: string): Promise<Flow[]> {
+  async listFlows(): Promise<Flow[]> {
     return this.runLocked(() => {
       this.load();
-      return this.data.flows.filter(f => f.projectId === projectId);
+      return [...this.data.flows];
     });
   }
 }

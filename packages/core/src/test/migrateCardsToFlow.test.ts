@@ -28,7 +28,6 @@ function makeFlow(id: string, steps: Array<{ name: string; order: number; isSpec
   return {
     id,
     name: `Flow ${id}`,
-    projectId: 'proj-1',
     steps: flowSteps,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
@@ -82,7 +81,6 @@ const NEW_FLOW_ALL_SPECIAL = makeFlow('new-all-special', [
 const NEW_FLOW_EMPTY: Flow = {
   id: 'new-empty',
   name: 'Empty Flow',
-  projectId: 'proj-1',
   steps: [],
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),

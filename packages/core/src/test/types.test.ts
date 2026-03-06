@@ -59,14 +59,12 @@ describe('Core Types', () => {
         id: 'flow-1',
         name: 'Default Flow',
         description: 'Standard agile flow',
-        projectId: 'proj-1',
         steps,
         createdAt: new Date('2026-01-01'),
         updatedAt: new Date('2026-01-02'),
       };
       expect(flow.id).toBe('flow-1');
       expect(flow.name).toBe('Default Flow');
-      expect(flow.projectId).toBe('proj-1');
       expect(flow.steps).toHaveLength(2);
       expect(flow.steps[1].isSpecial).toBe(true);
       expect(flow.createdAt).toBeInstanceOf(Date);
@@ -76,7 +74,6 @@ describe('Core Types', () => {
       const flow: Flow = {
         id: 'flow-2',
         name: 'Minimal Flow',
-        projectId: 'proj-2',
         steps: [],
         createdAt: new Date(),
         updatedAt: new Date(),

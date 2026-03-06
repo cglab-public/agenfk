@@ -2203,7 +2203,6 @@ flowCommand
         ID: f.id.substring(0, 8),
         Name: f.name,
         Steps: f.steps ? f.steps.length : 0,
-        Project: f.projectId ? f.projectId.substring(0, 8) : '-',
       })));
     } catch (error: any) {
       console.error(chalk.red('Error listing flows:'), error.response?.data?.error || error.message);
@@ -2218,7 +2217,6 @@ flowCommand
       const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
       console.log(chalk.blue(`\nFlow: ${flow.name}`));
       if (flow.description) console.log(chalk.gray(`Description: ${flow.description}`));
-      console.log(chalk.gray(`Project: ${flow.projectId}`));
       console.log();
       if (!flow.steps || flow.steps.length === 0) {
         console.log(chalk.yellow('No steps defined.'));
@@ -2240,16 +2238,8 @@ flowCommand
 flowCommand
   .command('create <name>')
   .description('Interactively create a new flow')
-  .option('--project <projectId>', 'Project ID to scope this flow to')
-  .action(async (name, options) => {
+  .action(async (name) => {
     try {
-      const projectId = options.project || findProjectId(process.cwd());
-      if (!projectId) {
-        console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
-        process.exit(1);
-        return;
-      }
-
       const inquirer = (await import('inquirer')).default;
 
       const { description } = await inquirer.prompt([
@@ -2289,7 +2279,7 @@ flowCommand
         order++;
       }
 
-      const { data } = await axios.post(`${API_URL}/flows`, { name, description, projectId, steps });
+      const { data } = await axios.post(`${API_URL}/flows`, { name, description, steps });
       console.log(chalk.green(`\nCreated flow: ${data.name} (ID: ${data.id}) with ${data.steps.length} step(s)`));
     } catch (error: any) {
       console.error(chalk.red('Error creating flow:'), error.response?.data?.error || error.message);
@@ -2592,7 +2582,6 @@ flowCommand
   .command('install <filename>')
   .description('Install a flow from the community registry into the local server')
   .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
-  .option('--project <projectId>', 'Project ID to scope this flow to')
   .action(async (filename, options) => {
     try {
       const registry = options.registry || getFlowRegistryRepo();
@@ -2610,12 +2599,9 @@ flowCommand
         return;
       }
 
-      const projectId = options.project || findProjectId(process.cwd()) || undefined;
-
       const newFlow = {
         name: parsed.name,
         description: parsed.description,
-        projectId,
         steps: parsed.steps.map((s: any) => ({
           id: randomUUID(),
           name: s.name,

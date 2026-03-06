@@ -157,7 +157,6 @@ export interface Flow {
   id: string;
   name: string;
   description?: string;
-  projectId: string;      // Flows are scoped to a project
   steps: FlowStep[];
   createdAt: Date;
   updatedAt: Date;

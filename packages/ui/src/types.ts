@@ -86,7 +86,6 @@ export interface Flow {
   id: string;
   name: string;
   description?: string;
-  projectId: string;
   steps: FlowStep[];
   createdAt: string;
   updatedAt: string;

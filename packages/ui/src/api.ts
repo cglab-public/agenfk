@@ -167,9 +167,9 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/api/readme`);
     return data;
   },
-  listFlows: async (projectId?: string): Promise<Flow[]> => {
+  listFlows: async (): Promise<Flow[]> => {
     try {
-      const { data } = await axios.get(`${API_URL}/flows`, { params: projectId ? { projectId } : {} });
+      const { data } = await axios.get(`${API_URL}/flows`);
       return data;
     } catch (e) {
       console.error('API Error listing flows:', e);

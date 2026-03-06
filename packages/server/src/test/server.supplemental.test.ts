@@ -1386,35 +1386,26 @@ describe('archive and unarchive edge cases', () => {
 // ── Flow CRUD API tests ───────────────────────────────────────────────────────
 
 describe('Flows API', () => {
-  let projectId: string;
-
   beforeEach(async () => {
     await initStorage();
-    const p = (await request(app).post('/projects').send({ name: 'FlowProject' })).body;
-    projectId = p.id;
-  });
-
-  it('GET /flows requires projectId query param', async () => {
-    const res = await request(app).get('/flows');
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/projectId/);
   });
 
   it('GET /flows returns empty list initially', async () => {
-    const res = await request(app).get('/flows').query({ projectId });
+    const res = await request(app).get('/flows');
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
 
-  it('POST /flows requires projectId and name', async () => {
-    const res = await request(app).post('/flows').send({ name: 'Missing Project' });
+  it('POST /flows requires name', async () => {
+    const res = await request(app).post('/flows').send({ description: 'No name' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/projectId/);
+    expect(res.body.error).toMatch(/name/);
   });
 
-  it('POST /flows creates a flow', async () => {
+  it('POST /flows does not store projectId', async () => {
+    const p = (await request(app).post('/projects').send({ name: 'FlowProject' })).body;
     const res = await request(app).post('/flows').send({
-      projectId,
+      projectId: p.id,
       name: 'My Flow',
       description: 'A custom flow',
       steps: [
@@ -1425,14 +1416,14 @@ describe('Flows API', () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.name).toBe('My Flow');
-    expect(res.body.projectId).toBe(projectId);
+    expect(res.body.projectId).toBeUndefined();
     expect(res.body.steps).toHaveLength(3);
     expect(res.body.id).toBeDefined();
   });
 
   it('GET /flows/:id returns the flow', async () => {
     const created = (await request(app).post('/flows').send({
-      projectId, name: 'F1', steps: [],
+      name: 'F1', steps: [],
     })).body;
 
     const res = await request(app).get(`/flows/${created.id}`);
@@ -1448,7 +1439,7 @@ describe('Flows API', () => {
 
   it('PUT /flows/:id updates a flow', async () => {
     const created = (await request(app).post('/flows').send({
-      projectId, name: 'Original', steps: [],
+      name: 'Original', steps: [],
     })).body;
 
     const res = await request(app).put(`/flows/${created.id}`).send({
@@ -1467,7 +1458,7 @@ describe('Flows API', () => {
 
   it('DELETE /flows/:id deletes a flow', async () => {
     const created = (await request(app).post('/flows').send({
-      projectId, name: 'ToDelete', steps: [],
+      name: 'ToDelete', steps: [],
     })).body;
 
     const delRes = await request(app).delete(`/flows/${created.id}`);
@@ -1482,16 +1473,25 @@ describe('Flows API', () => {
     expect(res.status).toBe(404);
   });
 
-  it('GET /flows lists all flows for a project', async () => {
-    await request(app).post('/flows').send({ projectId, name: 'F-A', steps: [] });
-    await request(app).post('/flows').send({ projectId, name: 'F-B', steps: [] });
+  it('GET /flows lists all flows globally (across projects)', async () => {
+    const p1 = (await request(app).post('/projects').send({ name: 'P1' })).body;
+    const p2 = (await request(app).post('/projects').send({ name: 'P2' })).body;
+    await request(app).post('/flows').send({ name: 'F-A', steps: [] });
+    await request(app).post('/flows').send({ name: 'F-B', steps: [] });
+    // Flows are global — projectId on POST body is ignored
+    await request(app).post('/flows').send({ projectId: p1.id, name: 'F-C', steps: [] });
+    await request(app).post('/flows').send({ projectId: p2.id, name: 'F-D', steps: [] });
 
-    const res = await request(app).get('/flows').query({ projectId });
+    const res = await request(app).get('/flows');
     expect(res.status).toBe(200);
-    expect(res.body.length).toBeGreaterThanOrEqual(2);
+    expect(res.body.length).toBeGreaterThanOrEqual(4);
     const names = res.body.map((f: any) => f.name);
     expect(names).toContain('F-A');
     expect(names).toContain('F-B');
+    expect(names).toContain('F-C');
+    expect(names).toContain('F-D');
+    // None should have projectId
+    expect(res.body.every((f: any) => f.projectId === undefined)).toBe(true);
   });
 });
 

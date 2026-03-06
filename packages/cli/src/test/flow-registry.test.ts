@@ -54,7 +54,6 @@ const SAMPLE_FLOW = {
   description: 'A standard development flow',
   author: 'testuser',
   version: '1.0.0',
-  projectId: 'proj-uuid-1234',
   steps: [
     { id: 'step-1', name: 'todo', label: 'To Do', order: 1, isSpecial: false },
     { id: 'step-2', name: 'in_progress', label: 'In Progress', order: 2, isSpecial: false },
@@ -379,7 +378,7 @@ describe('flow registry commands', () => {
       mockedAxios.post.mockResolvedValue({ data: { id: 'new-flow-id-xyz', name: 'Standard Dev Flow' } });
 
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow.json', '--project', 'proj-123']);
+      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow.json']);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
         expect.stringContaining('raw.githubusercontent.com/cglab-public/agenfk-flows/main/flows/standard-dev-flow.json')
@@ -390,7 +389,6 @@ describe('flow registry commands', () => {
         expect.objectContaining({
           name: 'Standard Dev Flow',
           description: 'A standard development flow',
-          projectId: 'proj-123',
           steps: expect.arrayContaining([
             expect.objectContaining({ name: 'todo', label: 'To Do', order: 1 }),
             expect.objectContaining({ name: 'done', label: 'Done', order: 3, isSpecial: true }),
@@ -408,7 +406,7 @@ describe('flow registry commands', () => {
       mockedAxios.post.mockResolvedValue({ data: { id: 'new-flow-id-xyz', name: 'Standard Dev Flow' } });
 
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow', '--project', 'proj-123']);
+      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow']);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
         expect.stringContaining('standard-dev-flow.json')
@@ -434,7 +432,7 @@ describe('flow registry commands', () => {
       mockedAxios.post.mockResolvedValue({ data: { id: 'new-id', name: 'Standard Dev Flow' } });
 
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow.json', '--registry', 'my-org/my-flows', '--project', 'proj-123']);
+      await program.parseAsync(['node', 'agenfk', 'flow', 'install', 'standard-dev-flow.json', '--registry', 'my-org/my-flows']);
 
       expect(mockedAxios.get).toHaveBeenCalledWith(
         expect.stringContaining('raw.githubusercontent.com/my-org/my-flows/main/flows/standard-dev-flow.json')
