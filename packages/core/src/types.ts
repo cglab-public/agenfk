@@ -139,6 +139,27 @@ export interface GitHubConfig {
   repos: Record<string, GitHubRepoMapping>; // keyed by projectId
 }
 
+// ── Flow Model ───────────────────────────────────────────────────────────────
+
+export interface FlowStep {
+  id: string;
+  name: string;           // Internal name / key (e.g. "in_progress")
+  label: string;          // Display label (e.g. "In Progress")
+  order: number;          // Sort position in the flow
+  exitCriteria?: string;  // Human-readable criteria to leave this step
+  isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
+}
+
+export interface Flow {
+  id: string;
+  name: string;
+  description?: string;
+  projectId: string;      // Flows are scoped to a project
+  steps: FlowStep[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface PauseSnapshot {
   id: string;
   itemId: string;

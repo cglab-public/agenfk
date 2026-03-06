@@ -8,7 +8,8 @@ import {
   AgenFKItem,
   Status,
   Project,
-  PauseSnapshot
+  PauseSnapshot,
+  Flow
 } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
@@ -74,6 +75,12 @@ export class SQLiteStorageProvider implements StorageProvider {
         data TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_snapshots_item ON snapshots(item_id);
+      CREATE TABLE IF NOT EXISTS flows (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_flows_project ON flows(project_id);
     `);
   }
 
@@ -233,5 +240,48 @@ export class SQLiteStorageProvider implements StorageProvider {
   async deleteSnapshot(id: string): Promise<boolean> {
     const result = this.database.prepare('DELETE FROM snapshots WHERE id = ?').run(id) as { changes: number };
     return result.changes > 0;
+  }
+
+  // ── Flow methods ─────────────────────────────────────────────────────────
+
+  private parseFlow(data: string): Flow {
+    const f = JSON.parse(data);
+    return {
+      ...f,
+      createdAt: new Date(f.createdAt),
+      updatedAt: new Date(f.updatedAt),
+    };
+  }
+
+  async createFlow(flow: Flow): Promise<Flow> {
+    this.database.prepare(
+      'INSERT INTO flows (id, project_id, data) VALUES (?, ?, ?)'
+    ).run(flow.id, flow.projectId, JSON.stringify(flow));
+    return flow;
+  }
+
+  async updateFlow(id: string, updates: Partial<Flow>): Promise<Flow> {
+    const existing = await this.getFlow(id);
+    if (!existing) throw new Error(`Flow ${id} not found`);
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    this.database.prepare('UPDATE flows SET project_id = ?, data = ? WHERE id = ?').run(
+      updated.projectId, JSON.stringify(updated), id
+    );
+    return updated;
+  }
+
+  async deleteFlow(id: string): Promise<boolean> {
+    const result = this.database.prepare('DELETE FROM flows WHERE id = ?').run(id) as { changes: number };
+    return result.changes > 0;
+  }
+
+  async getFlow(id: string): Promise<Flow | null> {
+    const row = this.database.prepare('SELECT data FROM flows WHERE id = ?').get(id) as { data: string } | undefined;
+    return row ? this.parseFlow(row.data) : null;
+  }
+
+  async listFlows(projectId: string): Promise<Flow[]> {
+    const rows = this.database.prepare('SELECT data FROM flows WHERE project_id = ?').all(projectId) as { data: string }[];
+    return rows.map(r => this.parseFlow(r.data));
   }
 }

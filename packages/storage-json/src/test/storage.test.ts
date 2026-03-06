@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSONStorageProvider } from '../index';
-import { ItemType, Status, Project, AgenFKItem } from '@agenfk/core';
+import { ItemType, Status, Project, AgenFKItem, Flow, FlowStep } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -159,12 +159,104 @@ describe('JSONStorageProvider', () => {
 
   describe('Lock Mechanism', () => {
     it('should handle concurrent operations sequentially', async () => {
-      const ops = Array.from({ length: 10 }, (_, i) => 
+      const ops = Array.from({ length: 10 }, (_, i) =>
         storage.createProject({ id: `p${i}`, name: `P${i}`, createdAt: new Date(), updatedAt: new Date() })
       );
       await Promise.all(ops);
       const projects = await storage.listProjects();
       expect(projects).toHaveLength(10);
+    });
+  });
+
+  describe('Flow CRUD', () => {
+    const makeFlow = (id: string, projectId = 'proj1'): Flow => ({
+      id,
+      name: `Flow ${id}`,
+      description: 'A test flow',
+      projectId,
+      steps: [
+        { id: 's1', name: 'todo', label: 'To Do', order: 0 },
+        { id: 's2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: 'Code reviewed' },
+        { id: 's3', name: 'done', label: 'Done', order: 2, isSpecial: true },
+      ] as FlowStep[],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    it('should create and retrieve a flow', async () => {
+      const flow = makeFlow('f1');
+      await storage.createFlow(flow);
+      const retrieved = await storage.getFlow('f1');
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.id).toBe('f1');
+      expect(retrieved!.name).toBe('Flow f1');
+      expect(retrieved!.steps).toHaveLength(3);
+    });
+
+    it('should return null for non-existent flow', async () => {
+      expect(await storage.getFlow('missing')).toBeNull();
+    });
+
+    it('should list flows by projectId', async () => {
+      await storage.createFlow(makeFlow('f1', 'proj1'));
+      await storage.createFlow(makeFlow('f2', 'proj1'));
+      await storage.createFlow(makeFlow('f3', 'proj2'));
+
+      const proj1Flows = await storage.listFlows('proj1');
+      expect(proj1Flows).toHaveLength(2);
+      expect(proj1Flows.map(f => f.id)).toContain('f1');
+      expect(proj1Flows.map(f => f.id)).toContain('f2');
+
+      const proj2Flows = await storage.listFlows('proj2');
+      expect(proj2Flows).toHaveLength(1);
+      expect(proj2Flows[0].id).toBe('f3');
+    });
+
+    it('should update a flow', async () => {
+      await storage.createFlow(makeFlow('f1'));
+      const updated = await storage.updateFlow('f1', { name: 'Renamed Flow' });
+      expect(updated.name).toBe('Renamed Flow');
+      const retrieved = await storage.getFlow('f1');
+      expect(retrieved!.name).toBe('Renamed Flow');
+    });
+
+    it('should update flow steps', async () => {
+      await storage.createFlow(makeFlow('f1'));
+      const newSteps: FlowStep[] = [
+        { id: 's1', name: 'backlog', label: 'Backlog', order: 0 },
+        { id: 's2', name: 'done', label: 'Done', order: 1, isSpecial: true },
+      ];
+      const updated = await storage.updateFlow('f1', { steps: newSteps });
+      expect(updated.steps).toHaveLength(2);
+      expect(updated.steps[0].name).toBe('backlog');
+    });
+
+    it('should throw when updating non-existent flow', async () => {
+      await expect(storage.updateFlow('missing', { name: 'X' })).rejects.toThrow('Flow missing not found');
+    });
+
+    it('should delete a flow', async () => {
+      await storage.createFlow(makeFlow('f1'));
+      const deleted = await storage.deleteFlow('f1');
+      expect(deleted).toBe(true);
+      expect(await storage.getFlow('f1')).toBeNull();
+    });
+
+    it('should return false when deleting non-existent flow', async () => {
+      expect(await storage.deleteFlow('missing')).toBe(false);
+    });
+
+    it('should persist flows across re-init', async () => {
+      await storage.createFlow(makeFlow('f1'));
+      // Re-initialize from same file
+      const storage2 = new JSONStorageProvider();
+      await storage2.init({ path: TEST_DB });
+      const retrieved = await storage2.getFlow('f1');
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.id).toBe('f1');
+      // Dates should be hydrated as Date objects
+      expect(retrieved!.createdAt).toBeInstanceOf(Date);
+      expect(retrieved!.updatedAt).toBeInstanceOf(Date);
     });
   });
 });
