@@ -36,9 +36,9 @@ const DEFAULT_FLOW: Flow = {
   description: 'Built-in default flow',
   projectId: PROJECT_ID,
   steps: [
-    { id: 'd1', name: 'todo', label: 'To Do', order: 0, exitCriteria: '', isSpecial: false },
-    { id: 'd2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '', isSpecial: false },
-    { id: 'd3', name: 'done', label: 'Done', order: 2, exitCriteria: '', isSpecial: true },
+    { id: 'd1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+    { id: 'd2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 'd3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -50,8 +50,9 @@ const SAMPLE_FLOW: Flow = {
   description: 'A sample flow',
   projectId: PROJECT_ID,
   steps: [
-    { id: 's1', name: 'todo', label: 'To Do', order: 0, exitCriteria: 'Ticket refined', isSpecial: false },
-    { id: 's2', name: 'done', label: 'Done', order: 1, exitCriteria: '', isSpecial: true },
+    { id: 's1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+    { id: 's2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined' },
+    { id: 's3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -63,9 +64,9 @@ const SAMPLE_FLOW_2: Flow = {
   description: '',
   projectId: PROJECT_ID,
   steps: [
-    { id: 's3', name: 'todo', label: 'To Do', order: 0, exitCriteria: '', isSpecial: false },
-    { id: 's4', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '', isSpecial: false },
-    { id: 's5', name: 'done', label: 'Done', order: 2, exitCriteria: '', isSpecial: true },
+    { id: 's4', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+    { id: 's5', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 's6', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -261,24 +262,25 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
     await waitFor(() => screen.getByTestId('step-row-0'));
+    // SAMPLE_FLOW has 3 steps: TODO (anchor), in_review (middle), DONE (anchor)
     expect(screen.getByTestId('step-row-0')).toBeDefined();
     expect(screen.getByTestId('step-row-1')).toBeDefined();
-    expect(screen.queryByTestId('step-row-2')).toBeNull();
+    expect(screen.getByTestId('step-row-2')).toBeDefined();
+    expect(screen.queryByTestId('step-row-3')).toBeNull();
   });
 
-  it('seeds step fields from the selected flow', async () => {
+  it('seeds step fields from the selected flow (middle step only — anchors have no editable fields)', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-name-0'));
-    expect((screen.getByTestId('step-name-0') as HTMLInputElement).value).toBe('todo');
-    expect((screen.getByTestId('step-label-0') as HTMLInputElement).value).toBe('To Do');
-    expect((screen.getByTestId('step-exit-criteria-0') as HTMLTextAreaElement).value).toBe('Ticket refined');
-    expect((screen.getByTestId('step-is-special-0') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByTestId('step-is-special-1') as HTMLInputElement).checked).toBe(true);
+    // index 1 is the middle step (in_review)
+    await waitFor(() => screen.getByTestId('step-name-1'));
+    expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('in_review');
+    expect((screen.getByTestId('step-label-1') as HTMLInputElement).value).toBe('In Review');
+    expect((screen.getByTestId('step-exit-criteria-1') as HTMLTextAreaElement).value).toBe('Ticket refined');
   });
 
   it('adds a blank step when Add Step is clicked', async () => {
@@ -297,29 +299,48 @@ describe('FlowEditorModal', () => {
     expect(screen.getByTestId('step-row-1')).toBeDefined();
   });
 
-  it('removes a non-special step when Delete is clicked', async () => {
+  it('removes a middle (non-anchor) step when Delete is clicked', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-row-1'));
-    fireEvent.click(screen.getByTestId('delete-step-0'));
-    expect(screen.queryByTestId('step-row-1')).toBeNull();
+    // SAMPLE_FLOW: [TODO(anchor,0), in_review(middle,1), DONE(anchor,2)] — 3 rows
+    await waitFor(() => screen.getByTestId('step-row-2'));
+    // Delete the middle step (index 1)
+    fireEvent.click(screen.getByTestId('delete-step-1'));
+    // After deletion only 2 rows remain (TODO and DONE anchors)
     expect(screen.getByTestId('step-row-0')).toBeDefined();
+    expect(screen.getByTestId('step-row-1')).toBeDefined();
+    expect(screen.queryByTestId('step-row-2')).toBeNull();
   });
 
-  it('delete step button is disabled for special steps', async () => {
+  it('anchor step rows have no delete button', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('delete-step-1'));
-    const deleteSpecialBtn = screen.getByTestId('delete-step-1') as HTMLButtonElement;
-    expect(deleteSpecialBtn.disabled).toBe(true);
+    await waitFor(() => screen.getByTestId('step-row-0'));
+    // Anchor rows (index 0 = TODO, index 2 = DONE) should have no delete button
+    expect(screen.queryByTestId('delete-step-0')).toBeNull();
+    expect(screen.queryByTestId('delete-step-2')).toBeNull();
+    // Middle step (index 1) should have a delete button
+    expect(screen.getByTestId('delete-step-1')).toBeDefined();
+  });
+
+  it('anchor step rows have a lock icon and no drag handle', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-anchor-lock-0'));
+    expect(screen.getByTestId('step-anchor-lock-0')).toBeDefined();
+    expect(screen.getByTestId('step-anchor-lock-2')).toBeDefined();
   });
 
   // ── Save ──────────────────────────────────────────────────────────────────
@@ -336,8 +357,8 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('flow-name-input'));
 
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Sprint Flow' } });
-    fireEvent.change(screen.getByTestId('step-name-0'), { target: { value: 'todo' } });
-    fireEvent.change(screen.getByTestId('step-label-0'), { target: { value: 'To Do' } });
+    fireEvent.change(screen.getByTestId('step-name-0'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-0'), { target: { value: 'In Progress' } });
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
 
@@ -461,31 +482,51 @@ describe('FlowEditorModal', () => {
 
   // ── Step field editing ────────────────────────────────────────────────────
 
-  it('updates step name field when user types', async () => {
+  it('updates step name field when user types a non-reserved name', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-name-0'));
-    const nameInput = screen.getByTestId('step-name-0') as HTMLInputElement;
-    fireEvent.change(nameInput, { target: { value: 'in_review' } });
-    expect(nameInput.value).toBe('in_review');
+    // index 1 is the middle (non-anchor) step
+    await waitFor(() => screen.getByTestId('step-name-1'));
+    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'qa_review' } });
+    expect(nameInput.value).toBe('qa_review');
+    // No reserved name error
+    expect(screen.queryByTestId('step-reserved-error-1')).toBeNull();
   });
 
-  it('toggles isSpecial checkbox for a non-special step', async () => {
+  it('shows Reserved name error and disables Save when a reserved name is typed', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-is-special-0'));
-    const checkbox = screen.getByTestId('step-is-special-0') as HTMLInputElement;
-    expect(checkbox.checked).toBe(false);
-    fireEvent.click(checkbox);
-    expect(checkbox.checked).toBe(true);
+    await waitFor(() => screen.getByTestId('step-name-1'));
+    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'BLOCKED' } });
+    await waitFor(() => screen.getByTestId('step-reserved-error-1'));
+    expect(screen.getByTestId('step-reserved-error-1').textContent).toBe('Reserved name');
+    // Save button should be disabled
+    const saveBtn = screen.getByTestId('save-flow-btn') as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+  });
+
+  it('shows Reserved name error for case-insensitive match (e.g. "blocked")', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-name-1'));
+    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'blocked' } });
+    await waitFor(() => screen.getByTestId('step-reserved-error-1'));
+    expect(screen.getByTestId('step-reserved-error-1')).toBeDefined();
   });
 
   // ── Legacy props compatibility ────────────────────────────────────────────
@@ -528,8 +569,8 @@ describe('FlowEditorModal', () => {
       const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
       expect(nameInput.disabled).toBe(true);
     });
-    // Step inputs should also be disabled
-    const stepName = screen.getByTestId('step-name-0') as HTMLInputElement;
+    // Middle step inputs should also be disabled (anchors have no editable name input)
+    const stepName = screen.getByTestId('step-name-1') as HTMLInputElement;
     expect(stepName.disabled).toBe(true);
     // Save button should NOT be visible in read-only mode
     expect(screen.queryByTestId('save-flow-btn')).toBeNull();
