@@ -75,15 +75,24 @@ export interface MigrationResult {
 }
 
 /**
+ * Platform-fixed statuses that are never part of a flow definition.
+ * Cards in these statuses are skipped during flow migration and left untouched.
+ */
+const PLATFORM_STATUSES = new Set([
+  'BLOCKED', 'PAUSED', 'ARCHIVED', 'IDEAS', 'TRASHED',
+]);
+
+/**
  * Map a single card's current status to a step in the new flow.
  *
  * Strategy (in priority order):
+ * 0. Skip — platform-fixed statuses (BLOCKED, PAUSED, ARCHIVED, IDEAS, TRASHED) are never migrated
  * 1. Exact name match — find a step in newFlow whose `name` matches oldStatus (case-insensitive)
  * 2. Positional match — use the same index in newFlow as the card's step in oldFlow
- * 3. Fallback — first non-special step in newFlow, or IDEAS if all are special
+ * 3. Fallback — first non-special step in newFlow, or TODO if all are special
  *
  * Special steps (isSpecial: true) in oldFlow are first tried with exact name match in newFlow.
- * If no match is found they fall back to IDEAS.
+ * If no match is found they fall back to the first non-special step.
  */
 export function migrateCardsToFlow(
   items: AgenFKItem[],
@@ -104,6 +113,9 @@ export function migrateCardsToFlow(
 
   for (const item of items) {
     const oldStatus = item.status as string;
+
+    // Skip platform-fixed statuses — they are not flow steps and must not be migrated
+    if (PLATFORM_STATUSES.has(oldStatus.toUpperCase())) continue;
 
     // Find this card's step in the old flow (case-insensitive name match)
     const oldStep = oldStepsSorted.find(

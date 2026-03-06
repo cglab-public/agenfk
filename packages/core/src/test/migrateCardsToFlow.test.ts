@@ -178,34 +178,16 @@ describe('migrateCardsToFlow', () => {
   });
 
   describe('Special steps handling', () => {
-    it('should exact-match special steps when they exist in newFlow by name', () => {
-      // BLOCKED is special in OLD_FLOW. NEW_FLOW_SAME_NAMES has BLOCKED too → exact match
+    it('should skip BLOCKED (platform-fixed status) — not included in results', () => {
       const items = [makeItem('a', 'BLOCKED')];
       const results = migrateCardsToFlow(items, OLD_FLOW, NEW_FLOW_SAME_NAMES);
-
-      expect(results[0].reason).toBe('exact-match');
-      expect(results[0].newStatus).toBe('BLOCKED');
+      expect(results).toHaveLength(0);
     });
 
-    it('should fallback special step with no name match to IDEAS', () => {
-      // BLOCKED is special in OLD_FLOW. NEW_FLOW_DIFFERENT_NAMES has no BLOCKED step.
-      // Since BLOCKED is special and no exact match → fallback to IDEAS (which is BACKLOG here)
-      const items = [makeItem('a', 'BLOCKED')];
-      const results = migrateCardsToFlow(items, OLD_FLOW, NEW_FLOW_DIFFERENT_NAMES);
-
-      expect(results[0].reason).toBe('fallback');
-      // fallback is IDEAS step in new flow → 'BACKLOG' (marked isSpecial, but it's the IDEAS equivalent)
-      // Actually: fallback is first non-special in newFlow = SELECTED
-      // The "IDEAS" fallback means: find step named IDEAS, else find first non-special
-      expect(['BACKLOG', 'SELECTED']).toContain(results[0].newStatus);
-    });
-
-    it('should move IDEAS-status special step to IDEAS in newFlow via exact match', () => {
+    it('should skip IDEAS (platform-fixed status) — not included in results', () => {
       const items = [makeItem('a', 'IDEAS')];
       const results = migrateCardsToFlow(items, OLD_FLOW, NEW_FLOW_SAME_NAMES);
-
-      expect(results[0].reason).toBe('exact-match');
-      expect(results[0].newStatus).toBe('IDEAS');
+      expect(results).toHaveLength(0);
     });
   });
 
@@ -241,17 +223,21 @@ describe('migrateCardsToFlow', () => {
       expect(results[0].oldStatus).toBe('TODO');
     });
 
-    it('should return one result per item', () => {
+    it('skips platform-fixed statuses (IDEAS, BLOCKED, PAUSED, ARCHIVED, TRASHED) — only flow steps are migrated', () => {
       const items = [
         makeItem('a', 'TODO'),
         makeItem('b', 'IN_PROGRESS'),
         makeItem('c', 'REVIEW'),
-        makeItem('d', 'IDEAS'),
-        makeItem('e', 'BLOCKED'),
+        makeItem('d', 'IDEAS'),      // platform — skipped
+        makeItem('e', 'BLOCKED'),    // platform — skipped
+        makeItem('f', 'PAUSED'),     // platform — skipped
+        makeItem('g', 'ARCHIVED'),   // platform — skipped
+        makeItem('h', 'TRASHED'),    // platform — skipped
       ];
       const results = migrateCardsToFlow(items, OLD_FLOW, NEW_FLOW_SAME_NAMES);
-      expect(results).toHaveLength(5);
-      expect(results.map((r) => r.itemId)).toEqual(['a', 'b', 'c', 'd', 'e']);
+      // Only flow-step items (a, b, c) are in results
+      expect(results).toHaveLength(3);
+      expect(results.map((r) => r.itemId)).toEqual(['a', 'b', 'c']);
     });
   });
 });
