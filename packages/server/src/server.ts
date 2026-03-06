@@ -1176,7 +1176,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
   if (currentFlowStep.step.isAnchor) {
-    return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
+    if (currentFlowStep.index !== 0) {
+      return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
+    }
+    // First anchor (TODO): advance to coding step without running a command.
+    // Exit criteria are surfaced for the agent to acknowledge but not mechanically enforced.
+    if (!codingStep) {
+      return res.status(400).json({ error: `Cannot advance from ${item.status}: no coding step found in flow.` });
+    }
+    const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
+    const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
+    await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    io.emit('items_updated');
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${exitCriteria ? `\n\n**Exit criteria**: ${exitCriteria}` : ''}` });
   }
 
   const resolvedCommand = command || (project as any)?.verifyCommand;
