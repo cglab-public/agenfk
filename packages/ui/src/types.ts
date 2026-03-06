@@ -77,6 +77,8 @@ export interface FlowStep {
   label: string;
   order: number;
   exitCriteria?: string;
+  isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
+  /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;
 }
 

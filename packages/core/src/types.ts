@@ -148,6 +148,8 @@ export interface FlowStep {
   label: string;          // Display label (e.g. "In Progress")
   order: number;          // Sort position in the flow
   exitCriteria?: string;  // Human-readable criteria to leave this step
+  isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
+  /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
 }
 

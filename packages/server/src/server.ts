@@ -268,39 +268,44 @@ const asyncHandler = (fn: any) => (req: any, res: any, next: any) =>
 // ── Flow-aware transition resolver ───────────────────────────────────────────
 
 /**
- * Special statuses that can always be entered/exited regardless of flow step order.
+ * Platform-level statuses that exist outside any flow definition.
+ * They are always reachable from ANY status, and any status is reachable from them (bidirectional).
+ * These are never part of a flow's step list.
  */
-const SPECIAL_STATUSES = new Set([
+const PLATFORM_STATUSES = new Set([
   Status.BLOCKED,
   Status.PAUSED,
   Status.ARCHIVED,
   Status.TRASHED,
+  Status.IDEAS,
 ]);
 
 /**
  * Build the set of statuses reachable from `fromStatus` given the active Flow.
  * Rules:
- *  - Each non-special step can transition to the next non-special step (and back).
- *  - Any status can transition to/from any special status.
- *  - DONE is reachable only via the verify pipeline (enforced separately).
+ *  - PLATFORM_STATUSES (BLOCKED, PAUSED, ARCHIVED, TRASHED, IDEAS) are always reachable
+ *    from any status, and any flow step is reachable from them (bidirectional).
+ *  - Flow steps define the main progression: each step can move to the adjacent step.
+ *  - TODO (order 0, anchor) → first non-anchor step is always allowed.
+ *  - Last non-anchor step → DONE (highest order, anchor) is always allowed.
  */
-function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean }> }): Set<string> {
+function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> }): Set<string> {
   const allowed = new Set<string>();
 
-  // Special statuses are always reachable from/to any step
-  for (const s of SPECIAL_STATUSES) {
+  // Platform statuses are always reachable from any step
+  for (const s of PLATFORM_STATUSES) {
     allowed.add(s);
   }
 
-  // If coming from a special status, allow transitioning to any non-special step
-  if (SPECIAL_STATUSES.has(fromStatus as Status)) {
+  // If coming from a platform status, allow transitioning to any flow step
+  if (PLATFORM_STATUSES.has(fromStatus as Status)) {
     for (const step of flow.steps) {
       allowed.add(step.name);
     }
     return allowed;
   }
 
-  // Non-special: find neighbours in the sorted step list
+  // Sort flow steps by order
   const sorted = [...flow.steps].sort((a, b) => a.order - b.order);
   const currentIdx = sorted.findIndex(s => s.name === fromStatus);
 
@@ -310,7 +315,7 @@ function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name
     return allowed;
   }
 
-  // Allow forward and backward one step (and all special steps already added)
+  // Allow forward and backward one step
   if (currentIdx > 0) allowed.add(sorted[currentIdx - 1].name);
   if (currentIdx < sorted.length - 1) allowed.add(sorted[currentIdx + 1].name);
   // Also allow staying in the same status (idempotent updates)

@@ -2,8 +2,17 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Flow, FlowStep } from '../types';
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock } from 'lucide-react';
 import { clsx } from 'clsx';
+
+/**
+ * Names that are reserved and cannot be used as custom step names.
+ * TODO and DONE are anchor steps (always first/last in every flow).
+ * The rest are platform-level statuses that exist outside flow definitions.
+ */
+const RESERVED_NAMES = new Set([
+  'TODO', 'DONE', 'BLOCKED', 'PAUSED', 'IDEAS', 'ARCHIVED', 'TRASHED',
+]);
 
 const BUILTIN_ID = '__builtin__';
 
@@ -53,7 +62,6 @@ function makeBlankStep(order: number): FlowStep {
     label: '',
     order,
     exitCriteria: '',
-    isSpecial: false,
   };
 }
 
@@ -89,7 +97,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     if (flow) {
       setName(flow.name);
       setDescription(flow.description ?? '');
-      setSteps([...flow.steps].sort((a, b) => a.order - b.order));
+      // Filter out platform statuses — they are never part of flow definitions
+      const flowSteps = [...flow.steps]
+        .filter(s => {
+          const upper = s.name.toUpperCase();
+          return upper === 'TODO' || upper === 'DONE' || !RESERVED_NAMES.has(upper);
+        })
+        .sort((a, b) => a.order - b.order);
+      setSteps(flowSteps);
     } else {
       setName('');
       setDescription('');
@@ -97,6 +112,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     }
     setSaved(false);
   }, [flow]);
+
+  // Validate: any non-anchor step name that matches a reserved name is invalid
+  const reservedNameError = steps.some(s => {
+    if (s.isAnchor) return false;
+    const upper = s.name.toUpperCase();
+    return RESERVED_NAMES.has(upper);
+  });
 
   // ── Drag-to-reorder (native HTML5 DnD) ──────────────────────────────────────
   const dragIndexRef = useRef<number | null>(null);
@@ -202,6 +224,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     (saveMutation.error as Error | null)?.message ??
     (useFlowMutation.error as Error | null)?.message ??
     null;
+  const isSaveDisabled = isBusy || !name.trim() || reservedNameError;
 
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
@@ -286,119 +309,153 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           </div>
 
           <div className="space-y-2" data-testid="steps-list">
-            {steps.map((step, index) => (
-              <div
-                key={step.id}
-                data-testid={`step-row-${index}`}
-                draggable={!isReadOnly}
-                onDragStart={() => handleDragStart(index)}
-                onDragOver={e => handleDragOver(e, index)}
-                onDrop={e => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
-                className={clsx(
-                  'rounded-xl border p-3 bg-slate-50 dark:bg-slate-800/50 transition-all',
-                  dragOverIndex === index
-                    ? 'border-indigo-400 shadow-md'
-                    : 'border-slate-200 dark:border-slate-700'
-                )}
-              >
-                <div className="flex items-start gap-2">
-                  {/* Drag handle */}
-                  <div
-                    className="cursor-grab active:cursor-grabbing mt-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 shrink-0"
-                    title="Drag to reorder"
-                  >
-                    <GripVertical size={16} />
-                  </div>
+            {steps.map((step, index) => {
+              const isAnchor = !!step.isAnchor;
+              const isStepLocked = isReadOnly || isAnchor;
+              // Check if this non-anchor step has a reserved name
+              const stepNameUpper = step.name.toUpperCase();
+              const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
 
-                  <div className="flex-1 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      {/* Name */}
-                      <div>
-                        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                          Name (key)
-                        </label>
-                        <input
-                          data-testid={`step-name-${index}`}
-                          type="text"
-                          value={step.name}
-                          onChange={e => updateStep(index, { name: e.target.value })}
-                          placeholder="e.g. in_progress"
-                          disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
-                        />
-                      </div>
-                      {/* Label */}
-                      <div>
-                        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                          Label (display)
-                        </label>
-                        <input
-                          data-testid={`step-label-${index}`}
-                          type="text"
-                          value={step.label}
-                          onChange={e => updateStep(index, { label: e.target.value })}
-                          placeholder="e.g. In Progress"
-                          disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Exit criteria */}
-                    <div>
-                      <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                        Exit Criteria
-                      </label>
-                      <textarea
-                        data-testid={`step-exit-criteria-${index}`}
-                        value={step.exitCriteria ?? ''}
-                        onChange={e => updateStep(index, { exitCriteria: e.target.value })}
-                        rows={2}
-                        placeholder="What must be true before leaving this step?"
-                        disabled={isReadOnly}
-                        className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60"
-                      />
-                    </div>
-
-                    {/* Is Special */}
-                    <label className="flex items-center gap-2 cursor-pointer w-fit">
-                      <input
-                        data-testid={`step-is-special-${index}`}
-                        type="checkbox"
-                        checked={!!step.isSpecial}
-                        onChange={e => updateStep(index, { isSpecial: e.target.checked })}
-                        disabled={isReadOnly}
-                        className="w-3.5 h-3.5 rounded accent-indigo-600 disabled:opacity-60"
-                      />
-                      <span className="text-xs text-slate-600 dark:text-slate-400 select-none">
-                        Special (terminal / non-active)
-                      </span>
-                    </label>
-                  </div>
-
-                  {/* Delete step */}
-                  {!isReadOnly && (
-                    <button
-                      data-testid={`delete-step-${index}`}
-                      type="button"
-                      disabled={!!step.isSpecial}
-                      onClick={() => removeStep(index)}
-                      title={step.isSpecial ? 'Cannot delete special steps' : 'Remove step'}
-                      className={clsx(
-                        'mt-1 p-1 rounded-lg transition-colors shrink-0',
-                        step.isSpecial
-                          ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                          : 'text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20'
-                      )}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+              return (
+                <div
+                  key={step.id}
+                  data-testid={`step-row-${index}`}
+                  draggable={!isStepLocked}
+                  onDragStart={() => !isStepLocked && handleDragStart(index)}
+                  onDragOver={e => !isStepLocked && handleDragOver(e, index)}
+                  onDrop={e => !isStepLocked && handleDrop(e, index)}
+                  onDragEnd={handleDragEnd}
+                  className={clsx(
+                    'rounded-xl border p-3 transition-all',
+                    isAnchor
+                      ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
+                      : dragOverIndex === index
+                      ? 'bg-slate-50 dark:bg-slate-800/50 border-indigo-400 shadow-md'
+                      : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
+                >
+                  <div className="flex items-start gap-2">
+                    {/* Drag handle or lock icon */}
+                    {isAnchor ? (
+                      <div
+                        data-testid={`step-anchor-lock-${index}`}
+                        className="mt-2 text-slate-400 dark:text-slate-500 shrink-0"
+                        title="Anchor step — cannot be moved or deleted"
+                      >
+                        <Lock size={14} />
+                      </div>
+                    ) : (
+                      <div
+                        className={clsx(
+                          'mt-2 shrink-0',
+                          isReadOnly
+                            ? 'text-slate-300 dark:text-slate-600'
+                            : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                        )}
+                        title={isReadOnly ? undefined : 'Drag to reorder'}
+                      >
+                        <GripVertical size={16} />
+                      </div>
+                    )}
+
+                    <div className="flex-1 space-y-2">
+                      {isAnchor && (
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            {step.label}
+                          </span>
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium">
+                            anchor
+                          </span>
+                        </div>
+                      )}
+                      {!isAnchor && (
+                        <>
+                          <div className="grid grid-cols-2 gap-2">
+                            {/* Name */}
+                            <div>
+                              <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                                Name (key)
+                              </label>
+                              <input
+                                data-testid={`step-name-${index}`}
+                                type="text"
+                                value={step.name}
+                                onChange={e => updateStep(index, { name: e.target.value })}
+                                placeholder="e.g. in_progress"
+                                disabled={isStepLocked}
+                                className={clsx(
+                                  'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
+                                  hasReservedName
+                                    ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
+                                    : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-indigo-500'
+                                )}
+                              />
+                              {hasReservedName && (
+                                <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                                  Reserved name
+                                </p>
+                              )}
+                            </div>
+                            {/* Label */}
+                            <div>
+                              <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                                Label (display)
+                              </label>
+                              <input
+                                data-testid={`step-label-${index}`}
+                                type="text"
+                                value={step.label}
+                                onChange={e => updateStep(index, { label: e.target.value })}
+                                placeholder="e.g. In Progress"
+                                disabled={isStepLocked}
+                                className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Exit criteria */}
+                          <div>
+                            <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                              Exit Criteria
+                            </label>
+                            <textarea
+                              data-testid={`step-exit-criteria-${index}`}
+                              value={step.exitCriteria ?? ''}
+                              onChange={e => updateStep(index, { exitCriteria: e.target.value })}
+                              rows={2}
+                              placeholder="What must be true before leaving this step?"
+                              disabled={isStepLocked}
+                              className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Delete step — hidden for anchors */}
+                    {!isReadOnly && !isAnchor && (
+                      <button
+                        data-testid={`delete-step-${index}`}
+                        type="button"
+                        onClick={() => removeStep(index)}
+                        title="Remove step"
+                        className="mt-1 p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
+          {/* Reserved name global error */}
+          {reservedNameError && (
+            <p data-testid="reserved-name-error" className="text-sm text-red-600 dark:text-red-400 mt-1">
+              One or more step names use a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED).
+            </p>
+          )}
         </div>
 
         {/* Error */}
@@ -437,7 +494,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           <button
             data-testid="save-flow-btn"
             type="button"
-            disabled={isBusy || !name.trim()}
+            disabled={isSaveDisabled}
             onClick={() => saveMutation.mutate()}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
           >
@@ -448,7 +505,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           <button
             data-testid="use-flow-btn"
             type="button"
-            disabled={isBusy || !name.trim()}
+            disabled={isSaveDisabled}
             onClick={() => useFlowMutation.mutate()}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
           >

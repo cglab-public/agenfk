@@ -9,49 +9,59 @@ describe('DEFAULT_FLOW', () => {
     expect(DEFAULT_FLOW.projectId).toBe('__builtin__');
   });
 
-  it('should have exactly 10 steps', () => {
-    expect(DEFAULT_FLOW.steps).toHaveLength(10);
+  it('should have exactly 5 steps (platform statuses are not flow steps)', () => {
+    expect(DEFAULT_FLOW.steps).toHaveLength(5);
   });
 
   it('should have steps in correct order', () => {
     const orders = DEFAULT_FLOW.steps.map((s) => s.order);
-    expect(orders).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(orders).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('should have steps with correct names in order', () => {
     const names = DEFAULT_FLOW.steps.map((s) => s.name);
     expect(names).toEqual([
-      'IDEAS',
       'TODO',
       'IN_PROGRESS',
       'REVIEW',
       'TEST',
       'DONE',
-      'BLOCKED',
-      'PAUSED',
-      'ARCHIVED',
-      'TRASHED',
     ]);
   });
 
-  it('should mark IDEAS as isSpecial', () => {
-    const ideas = DEFAULT_FLOW.steps.find((s) => s.name === 'IDEAS');
-    expect(ideas?.isSpecial).toBe(true);
-  });
-
-  it('should NOT mark TODO, IN_PROGRESS, REVIEW, TEST, DONE as isSpecial', () => {
-    const regularSteps = ['TODO', 'IN_PROGRESS', 'REVIEW', 'TEST', 'DONE'];
-    for (const name of regularSteps) {
+  it('should NOT include platform statuses as flow steps', () => {
+    const platformStatuses = ['IDEAS', 'BLOCKED', 'PAUSED', 'ARCHIVED', 'TRASHED'];
+    for (const name of platformStatuses) {
       const step = DEFAULT_FLOW.steps.find((s) => s.name === name);
-      expect(step?.isSpecial).toBeFalsy();
+      expect(step).toBeUndefined();
     }
   });
 
-  it('should mark BLOCKED, PAUSED, ARCHIVED, TRASHED as isSpecial', () => {
-    const specialSteps = ['BLOCKED', 'PAUSED', 'ARCHIVED', 'TRASHED'];
-    for (const name of specialSteps) {
+  it('should mark TODO as isAnchor with order 0', () => {
+    const todo = DEFAULT_FLOW.steps.find((s) => s.name === 'TODO');
+    expect(todo).toBeDefined();
+    expect(todo?.isAnchor).toBe(true);
+    expect(todo?.order).toBe(0);
+  });
+
+  it('should mark DONE as isAnchor with the highest order', () => {
+    const done = DEFAULT_FLOW.steps.find((s) => s.name === 'DONE');
+    expect(done).toBeDefined();
+    expect(done?.isAnchor).toBe(true);
+    expect(done?.order).toBe(4);
+  });
+
+  it('should NOT mark middle steps (IN_PROGRESS, REVIEW, TEST) as isAnchor', () => {
+    const middleSteps = ['IN_PROGRESS', 'REVIEW', 'TEST'];
+    for (const name of middleSteps) {
       const step = DEFAULT_FLOW.steps.find((s) => s.name === name);
-      expect(step?.isSpecial).toBe(true);
+      expect(step?.isAnchor).toBeFalsy();
+    }
+  });
+
+  it('should NOT mark any step as isSpecial (deprecated field)', () => {
+    for (const step of DEFAULT_FLOW.steps) {
+      expect(step.isSpecial).toBeFalsy();
     }
   });
 
@@ -67,8 +77,8 @@ describe('getActiveFlow', () => {
     name: 'Custom Flow',
     projectId: 'proj-abc',
     steps: [
-      { id: 's1', name: 'TODO', label: 'To Do', order: 0 },
-      { id: 's2', name: 'DONE', label: 'Done', order: 1, isSpecial: true },
+      { id: 's1', name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { id: 's2', name: 'DONE', label: 'Done', order: 1, isAnchor: true },
     ],
     createdAt: new Date('2026-02-01'),
     updatedAt: new Date('2026-02-01'),
