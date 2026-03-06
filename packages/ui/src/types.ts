@@ -90,6 +90,15 @@ export interface Flow {
   updatedAt: string;
 }
 
+export interface RegistryFlow {
+  filename: string;
+  name: string;
+  author?: string;
+  version?: string;
+  stepCount: number;
+  description?: string;
+}
+
 export interface AgenFKItem {
   id: string;
   projectId: string;

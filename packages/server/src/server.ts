@@ -543,6 +543,174 @@ app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
   res.status(204).send();
 }));
 
+// ── Flow Registry Proxy ───────────────────────────────────────────────────────
+
+const REGISTRY_OWNER = process.env.AGENFK_REGISTRY_OWNER ?? 'agenfk-flows';
+const REGISTRY_REPO = process.env.AGENFK_REGISTRY_REPO ?? 'registry';
+const REGISTRY_BRANCH = process.env.AGENFK_REGISTRY_BRANCH ?? 'main';
+const GITHUB_API = 'https://api.github.com';
+
+interface RegistryFlowEntry {
+  filename: string;
+  name: string;
+  author?: string;
+  version?: string;
+  stepCount: number;
+  description?: string;
+}
+
+app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
+  const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows?ref=${REGISTRY_BRANCH}`;
+  try {
+    const { data: entries } = await axios.get(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'agenfk-server',
+      },
+    });
+
+    if (!Array.isArray(entries)) {
+      return res.json([]);
+    }
+
+    const jsonFiles: { name: string; download_url: string }[] = entries.filter(
+      (e: any) => e.type === 'file' && e.name.endsWith('.json')
+    );
+
+    const flows: RegistryFlowEntry[] = await Promise.all(
+      jsonFiles.map(async (file) => {
+        try {
+          const { data: content } = await axios.get(file.download_url, { headers: { 'User-Agent': 'agenfk-server' } });
+          return {
+            filename: file.name,
+            name: content.name ?? file.name.replace('.json', ''),
+            author: content.author,
+            version: content.version,
+            stepCount: Array.isArray(content.steps) ? content.steps.length : 0,
+            description: content.description,
+          };
+        } catch {
+          return {
+            filename: file.name,
+            name: file.name.replace('.json', ''),
+            stepCount: 0,
+          };
+        }
+      })
+    );
+
+    res.json(flows);
+  } catch (e: any) {
+    const status = e?.response?.status ?? 502;
+    res.status(status).json({ error: 'Failed to fetch registry', detail: e?.message });
+  }
+}));
+
+app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
+  const { filename } = req.body;
+  if (!filename) return res.status(400).json({ error: 'filename is required' });
+
+  const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}?ref=${REGISTRY_BRANCH}`;
+  try {
+    const { data: fileInfo } = await axios.get(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'agenfk-server',
+      },
+    });
+
+    const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
+    const flowData = JSON.parse(rawContent);
+
+    // Create flow in local storage (no projectId — registry flows are global)
+    const newFlow = await storage.createFlow({
+      id: uuidv4(),
+      name: flowData.name ?? filename.replace('.json', ''),
+      description: flowData.description,
+      projectId: '__registry__',
+      steps: Array.isArray(flowData.steps) ? flowData.steps.map((s: any, i: number) => ({
+        id: uuidv4(),
+        name: s.name ?? `step-${i}`,
+        label: s.label ?? s.name ?? `Step ${i + 1}`,
+        order: i,
+        exitCriteria: s.exitCriteria ?? '',
+        isSpecial: s.isSpecial ?? false,
+      })) : [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    res.json(newFlow);
+  } catch (e: any) {
+    const status = e?.response?.status ?? 502;
+    res.status(status).json({ error: 'Failed to install flow', detail: e?.message });
+  }
+}));
+
+app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
+  const { flowId, token } = req.body;
+  if (!flowId || !token) return res.status(400).json({ error: 'flowId and token are required' });
+
+  const flow = await storage.getFlow(flowId);
+  if (!flow) return res.status(404).json({ error: 'Flow not found' });
+
+  const filename = `${flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}.json`;
+  const content = JSON.stringify(
+    {
+      name: flow.name,
+      description: flow.description,
+      version: '1.0.0',
+      steps: flow.steps.map(s => ({
+        name: s.name,
+        label: s.label,
+        exitCriteria: s.exitCriteria,
+        isSpecial: s.isSpecial,
+      })),
+    },
+    null,
+    2
+  );
+
+  const encoded = Buffer.from(content).toString('base64');
+  const apiUrl = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}`;
+
+  try {
+    // Check if file exists to get sha for update
+    let sha: string | undefined;
+    try {
+      const { data: existing } = await axios.get(apiUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'agenfk-server',
+        },
+      });
+      sha = existing.sha;
+    } catch {
+      // File does not exist yet — that's fine
+    }
+
+    const payload: any = {
+      message: sha ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`,
+      content: encoded,
+    };
+    if (sha) payload.sha = sha;
+
+    const { data: result } = await axios.put(apiUrl, payload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'agenfk-server',
+      },
+    });
+
+    res.json({ url: result.content?.html_url ?? `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}` });
+  } catch (e: any) {
+    const status = e?.response?.status ?? 502;
+    res.status(status).json({ error: 'Failed to publish flow', detail: e?.response?.data?.message ?? e?.message });
+  }
+}));
+
 // Flow Migration API
 app.post("/projects/:id/flow/migrate", asyncHandler(async (req: any, res: any) => {
   const { id: projectId } = req.params;

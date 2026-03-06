@@ -10,7 +10,7 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput, GitBranch
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch, Globe
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -24,6 +24,7 @@ import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal } from './FlowEditorModal';
+import { FlowRegistryModal } from './FlowRegistryModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
@@ -402,6 +403,7 @@ export const KanbanBoard: React.FC = () => {
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
+  const [isFlowRegistryOpen, setIsFlowRegistryOpen] = useState(false);
 
   const { data: versionData } = useQuery({
     queryKey: ['version'],
@@ -1211,6 +1213,16 @@ export const KanbanBoard: React.FC = () => {
               )}
 
               <button
+                data-testid="community-flows-btn"
+                onClick={() => setIsFlowRegistryOpen(true)}
+                title="Community Flows"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+              >
+                <Globe size={14} />
+                <span className="hidden xl:inline">Community</span>
+              </button>
+
+              <button
                 onClick={toggleTheme}
                 className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-indigo-500 transition-all"
                 title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
@@ -1657,6 +1669,11 @@ export const KanbanBoard: React.FC = () => {
           projectId={selectedProjectId}
         />
       )}
+
+      <FlowRegistryModal
+        open={isFlowRegistryOpen}
+        onClose={() => setIsFlowRegistryOpen(false)}
+      />
     </div>
   );
 };
