@@ -32,10 +32,24 @@ If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 
 3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
 
+### Flow-Aware Status Check — MANDATORY at session start
+
+At the beginning of every session, check the active workflow flow for the project:
+
+**Via MCP:** The `workflow_gatekeeper` response includes `activeFlow` with the ordered steps. Use those step names as the valid statuses for this project.
+
+**Via REST:**
+```bash
+curl -s http://localhost:3000/projects/<projectId>/flow
+```
+Or via CLI: `agenfk flow show --project <projectId>`
+
+**Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow. Always use the flow's actual step `name` values when calling `update_item({ status })`. The gatekeeper will reject invalid transitions.
+
 After completing changes — using MCP tools:
-- `update_item(id, {status: "REVIEW"})` — move to REVIEW when coding is done.
-- `review_changes(itemId, command)` — build gate, REVIEW → TEST on success.
-- `test_changes(itemId)` — runs project verifyCommand, TEST → DONE. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
+- `update_item(id, {status: "<next-flow-step>"})` — move to the next step in the active flow when coding is done (typically REVIEW in the default flow).
+- `review_changes(itemId, command)` — build gate, advances to the next flow step on success.
+- `test_changes(itemId)` — runs project verifyCommand, advances to the terminal flow step (DONE). If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
