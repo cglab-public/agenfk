@@ -1663,10 +1663,10 @@ export const KanbanBoard: React.FC = () => {
 
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
-          open={isFlowEditorOpen}
+          isOpen={isFlowEditorOpen}
           onClose={() => setIsFlowEditorOpen(false)}
-          flow={activeFlow ?? null}
           projectId={selectedProjectId}
+          activeFlowId={activeFlow?.id}
         />
       )}
 
