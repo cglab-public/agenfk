@@ -545,21 +545,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
             }
           }
 
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}${flowStepsSummary}` }] };
         }
 
         if (role === 'review') {
           const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
           if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${effectiveProjectId}].` }] };
           const task = activeReviewItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
         }
 
         if (role === 'testing') {
           const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
           if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${effectiveProjectId}].` }] };
           const task = activeTestItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized
@@ -570,7 +570,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const defaultTask = itemId ? inProgressItems.find((i: any) => i.id === itemId) : inProgressItems[0];
         if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not IN_PROGRESS or does not belong to project [${effectiveProjectId}].` }] };
 
-        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${effectiveProjectId}]\nIntent: "${intent}"` }] };
+        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${effectiveProjectId}]\nIntent: "${intent}"${flowStepsSummary}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
