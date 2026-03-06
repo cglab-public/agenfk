@@ -10,7 +10,7 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X
+  ChevronUp, ChevronDown, X, FolderInput
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -69,6 +69,7 @@ const statusIcons: Record<Status, React.ReactNode> = {
 interface KanbanCardProps {
   item: AgenFKItem;
   items?: AgenFKItem[];
+  projects?: Project[];
   highlightedId: string | null;
   dragId: string | null;
   dropTargetId: string | null;
@@ -83,15 +84,17 @@ interface KanbanCardProps {
   onDoubleClick: () => void;
   onDrillDown: (item: AgenFKItem) => void;
   onArchive: (id: string) => void;
+  onMoveToProject: (id: string, targetProjectId: string) => void;
   onCopyId: (id: string) => void;
   disableLayoutAnimation?: boolean;
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
-  item, items, highlightedId, dragId, dropTargetId, dropPosition,
+  item, items, projects, highlightedId, dragId, dropTargetId, dropPosition,
   copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
-  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onCopyId, disableLayoutAnimation
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, disableLayoutAnimation
 }) => {
+  const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
   const [isFlying, setIsFlying] = useState(false);
   const cardRef = React.useRef<HTMLDivElement>(null);
   const lastStatus = React.useRef(item.status);
@@ -228,9 +231,39 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             </button>
           )}
         </div>
-        <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
-          <Archive size={11} />
-        </button>
+        <div className="flex items-center gap-0.5">
+          {projects && projects.filter(p => p.id !== item.projectId).length > 0 && (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-indigo-500 dark:hover:text-indigo-400 transition-colors"
+                title="Move to project"
+              >
+                <FolderInput size={11} />
+              </button>
+              {isMoveMenuOpen && (
+                <div
+                  className="absolute right-0 top-5 z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Move to project</p>
+                  {projects.filter(p => p.id !== item.projectId).map(p => (
+                    <button
+                      key={p.id}
+                      className="w-full text-left px-2 py-1 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-700 dark:hover:text-indigo-300 truncate"
+                      onClick={() => { setIsMoveMenuOpen(false); onMoveToProject(item.id, p.id); }}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+            <Archive size={11} />
+          </button>
+        </div>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
       {!item.parentId && (item.branchName || item.prUrl) && (
@@ -564,6 +597,14 @@ export const KanbanBoard: React.FC = () => {
 
   const trashArchivedMutation = useMutation({
     mutationFn: (projectId: string) => api.trashArchivedItems(projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['items'] });
+    }
+  });
+
+  const moveMutation = useMutation({
+    mutationFn: ({ id, targetProjectId }: { id: string; targetProjectId: string }) =>
+      api.moveItem(id, targetProjectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
     }
@@ -1225,6 +1266,8 @@ export const KanbanBoard: React.FC = () => {
                             onDoubleClick={() => setSelectedItem(item)}
                             onDrillDown={handleDrillDown}
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                            projects={projects}
+                            onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
                             onCopyId={handleCopyId}
                           />
                         ))}
@@ -1289,6 +1332,8 @@ export const KanbanBoard: React.FC = () => {
                         /* v8 ignore start */
                         onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                         /* v8 ignore stop */
+                        projects={projects}
+                        onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
                         onCopyId={handleCopyId}
                         disableLayoutAnimation={easterEggsEnabled}
                       />
@@ -1337,6 +1382,8 @@ export const KanbanBoard: React.FC = () => {
                             onDoubleClick={() => setSelectedItem(item)}
                             onDrillDown={handleDrillDown}
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                            projects={projects}
+                            onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
@@ -1377,6 +1424,8 @@ export const KanbanBoard: React.FC = () => {
                             onDoubleClick={() => setSelectedItem(item)}
                             onDrillDown={handleDrillDown}
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
+                            projects={projects}
+                            onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
@@ -1433,6 +1482,8 @@ export const KanbanBoard: React.FC = () => {
                           onDoubleClick={() => setSelectedItem(item)}
                           onDrillDown={handleDrillDown}
                           onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
+                          projects={projects}
+                          onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
                           onCopyId={handleCopyId}
                           disableLayoutAnimation={easterEggsEnabled}
                         />

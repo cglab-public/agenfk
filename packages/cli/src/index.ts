@@ -1018,6 +1018,31 @@ program
   });
 
 program
+  .command('move <id> <targetProjectId>')
+  .description('Move an item and all its children to another project')
+  .action(async (id, targetProjectId) => {
+    try {
+      let targetId = id;
+      if (id.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const found = allItems.filter((i: any) => i.id.startsWith(id));
+        if (found.length === 0) {
+          console.error(chalk.red(`Item starting with ${id} not found.`));
+          return;
+        }
+        targetId = found[0].id;
+      }
+
+      const { data } = await axios.post(`${API_URL}/items/${targetId}/move`, { targetProjectId });
+      const { item, movedCount } = data;
+      console.log(chalk.green(`✓ Moved "${item.title}" and ${movedCount - 1} child item(s) to project ${targetProjectId}`));
+    } catch (error: any) {
+      const msg = error.response?.data?.error || error.message;
+      console.error(chalk.red('Error moving item:'), msg);
+    }
+  });
+
+program
   .command('health')
   .description('Verify framework health and configuration')
   .action(async () => {

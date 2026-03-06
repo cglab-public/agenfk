@@ -347,6 +347,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "move_item",
+        description: "Move an item and all its children recursively to a different project.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string", description: "The ID of the item to move." },
+            targetProjectId: { type: "string", description: "The ID of the destination project." },
+          },
+          required: ["itemId", "targetProjectId"],
+        },
+      },
+      {
         name: "pause_work",
         description: "Pause work on an item, saving a snapshot of the current context so another agent can resume later. Sets the item to PAUSED status.",
         inputSchema: {
@@ -660,6 +672,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         });
         await api.put(`/items/${itemId}`, { comments });
         return { content: [{ type: "text", text: "Comment added." }] };
+      }
+      case "move_item": {
+        const { itemId, targetProjectId } = z.object({
+          itemId: z.string(),
+          targetProjectId: z.string(),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/move`, { targetProjectId });
+          return {
+            content: [{
+              type: "text",
+              text: `✅ Moved "${data.item.title}" and ${data.movedCount - 1} child item(s) to project [${targetProjectId}]. Total moved: ${data.movedCount}.`
+            }]
+          };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to move item: ${msg}` }] };
+        }
       }
       case "pause_work": {
         const { itemId, summary, filesModified, resumeInstructions, gitDiff } = z.object({

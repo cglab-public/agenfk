@@ -653,6 +653,47 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
+// ── Move item (and children) to another project ──────────────────────────────
+
+const moveToProjectRecursively = async (id: string, targetProjectId: string): Promise<number> => {
+  await storage.updateItem(id, { projectId: targetProjectId });
+  const children = await storage.listItems({ parentId: id });
+  let count = 1;
+  for (const child of children) {
+    count += await moveToProjectRecursively(child.id, targetProjectId);
+  }
+  return count;
+};
+
+app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
+  const { targetProjectId } = req.body;
+  if (!targetProjectId) {
+    return res.status(400).json({ error: "Missing required field: targetProjectId" });
+  }
+
+  const item = await storage.getItem(req.params.id);
+  if (!item) {
+    return res.status(404).json({ error: "Item not found" });
+  }
+
+  const targetProject = await storage.getProject(targetProjectId);
+  if (!targetProject) {
+    return res.status(404).json({ error: "Target project not found" });
+  }
+
+  const sourceProjectId = item.projectId;
+  const movedCount = await moveToProjectRecursively(req.params.id, targetProjectId);
+
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] [API_MOVE] Moved ${movedCount} item(s) from project ${sourceProjectId} to ${targetProjectId}`);
+
+  // Notify both source and target project boards
+  io.emit('items_updated');
+
+  const moved = await storage.getItem(req.params.id);
+  res.json({ item: moved, movedCount });
+}));
+
 // ── Verify Endpoint ──────────────────────────────────────────────────────────
 
 // ── review_changes: REVIEW → TEST (agent picks the command) ──────────────────
