@@ -68,17 +68,20 @@ const SAMPLE_FLOW = {
 };
 
 describe('flow command', () => {
+  function resetCommanderOptions(cmd: any) {
+    const options = (cmd as any).options || [];
+    options.forEach((opt: any) => {
+      cmd.setOptionValue(opt.attributeName(), undefined);
+    });
+    (cmd.commands || []).forEach(resetCommanderOptions);
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockExistsSync.mockReturnValue(false);
     mockReadFileSync.mockReturnValue('{}');
-    // Reset commander option state
-    program.commands.forEach(cmd => {
-      const options = (cmd as any).options || [];
-      options.forEach((opt: any) => {
-        cmd.setOptionValue(opt.attributeName(), undefined);
-      });
-    });
+    // Reset commander option state including subcommands
+    program.commands.forEach(resetCommanderOptions);
   });
 
   it('should have flow command registered', () => {
@@ -191,7 +194,7 @@ describe('flow command', () => {
 
       await program.parseAsync(['node', 'agenfk', 'flow', 'create', 'My Flow']);
 
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'), expect.any(String));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'));
       exitSpy.mockRestore();
       errSpy.mockRestore();
     });
@@ -277,7 +280,7 @@ describe('flow command', () => {
 
       await program.parseAsync(['node', 'agenfk', 'flow', 'use', 'flow-uuid-1234-5678']);
 
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'), expect.any(String));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'));
       exitSpy.mockRestore();
       errSpy.mockRestore();
     });
@@ -316,7 +319,7 @@ describe('flow command', () => {
 
       await program.parseAsync(['node', 'agenfk', 'flow', 'reset']);
 
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'), expect.any(String));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'));
       exitSpy.mockRestore();
       errSpy.mockRestore();
     });
