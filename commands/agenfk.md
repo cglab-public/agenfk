@@ -55,7 +55,7 @@ Before creating any item, evaluate the request against these signals:
    - Run `git branch --show-current` to check the current branch.
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`) followed by `git pull` first.
    - This prevents new feature branches from being based on stale/unrelated feature branches and ensures you have the latest upstream changes.
-1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0) and immediately set it to `IN_PROGRESS` with `update_item`.
+1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0), then call `validate_progress(id)` to advance from TODO to the coding step (enforces TODO exit criteria).
 2. Call `workflow_gatekeeper(intent, role="coding", itemId)` before making any file changes.
 3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
 
@@ -69,28 +69,20 @@ Before creating any item, evaluate the request against these signals:
 
 ---
 
-## Phase 2 — Advance to next step
-
-- Call `update_item(itemId, {status: "<next-flow-step>"})` to signal implementation is complete and move to the flow's next step (e.g. REVIEW in the default flow).
-- Continue immediately to Phase 3.
-
----
-
-## Phase 3 — Self-Review + Validate Gate
+## Phase 2 — Self-Review + Validate Gate
 
 Since there is no separate review agent in Standard Mode, perform the review yourself:
 
 1. Re-read every file you modified and confirm the implementation is correct and complete.
 2. Call `workflow_gatekeeper(itemId, role="validating")` — the response includes the current step's **exit criteria** if defined.
 3. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
-4. If fixes are needed, call `update_item(itemId, {status: "<coding-step>"})`, fix, then repeat from Phase 2.
-5. Once satisfied, call `validate_progress(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
-   - Success: advances to the next flow step. Repeat Phase 3 for each remaining intermediate step.
-   - Failure: moves back to the coding step. Fix and repeat from Phase 2.
+4. Once satisfied, call `validate_progress(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
+   - Success: advances to the next flow step. Repeat Phase 2 for each remaining intermediate step.
+   - Failure: moves back to the coding step automatically. Fix and repeat from Phase 1.
 
 ---
 
-## Phase 4 — Final Validation (→ DONE)
+## Phase 3 — Final Validation (→ DONE)
 
 1. When the item is in the last intermediate step before DONE, call `validate_progress(itemId)` — omit `command` to use the project's `verifyCommand` automatically.
 2. If no `verifyCommand` is configured, the tool returns `NO_VERIFY_COMMAND`. **Auto-detect** the project's stack instead of asking the developer:
@@ -112,7 +104,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
 
 ---
 
-## Phase 5 — Close
+## Phase 4 — Close
 
 1. Call `log_token_usage(itemId, input, output, model)` with approximate token counts for this session.
 2. Call `add_comment(itemId, "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>")`.
