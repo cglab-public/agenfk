@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgenFKItem, ItemType, Status, Flow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgenFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -216,6 +216,33 @@ export const api = {
       return data;
     } catch (e) {
       console.error(`API Error getting flow for project ${projectId}:`, e);
+      throw e;
+    }
+  },
+  browseRegistry: async (): Promise<RegistryFlow[]> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/registry/flows`);
+      return data;
+    } catch (e) {
+      console.error('API Error browsing flow registry:', e);
+      throw e;
+    }
+  },
+  installFromRegistry: async (filename: string): Promise<Flow> => {
+    try {
+      const { data } = await axios.post(`${API_URL}/registry/flows/install`, { filename });
+      return data;
+    } catch (e) {
+      console.error(`API Error installing flow from registry (${filename}):`, e);
+      throw e;
+    }
+  },
+  publishToRegistry: async (flowId: string, token: string): Promise<{ url: string }> => {
+    try {
+      const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId, token });
+      return data;
+    } catch (e) {
+      console.error(`API Error publishing flow ${flowId} to registry:`, e);
       throw e;
     }
   },
