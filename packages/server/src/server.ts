@@ -489,6 +489,11 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
   res.json(activeFlow);
 }));
 
+// ── Built-in default flow (always the hardcoded DEFAULT_FLOW, project-independent) ──
+app.get("/flows/default", asyncHandler(async (_req: any, res: any) => {
+  res.json(DEFAULT_FLOW);
+}));
+
 // ── Flows API ─────────────────────────────────────────────────────────────────
 
 app.get("/flows", asyncHandler(async (req: any, res: any) => {
