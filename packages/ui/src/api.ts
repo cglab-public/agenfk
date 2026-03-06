@@ -90,6 +90,15 @@ export const api = {
       throw e;
     }
   },
+  moveItem: async (id: string, targetProjectId: string): Promise<{ item: AgenFKItem; movedCount: number }> => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${id}/move`, { targetProjectId });
+      return data;
+    } catch (e) {
+      console.error(`API Error moving item ${id} to project ${targetProjectId}:`, e);
+      throw e;
+    }
+  },
   trashArchivedItems: async (projectId: string) => {
     try {
       const { data } = await axios.post(`${API_URL}/items/trash-archived`, { projectId });
