@@ -462,6 +462,74 @@ process.exit(0);
         }
     }
 
+    // 8b. Install agenfk-flow skill for all platforms
+    console.log(`${GREEN}[8b/14] Installing agenfk-flow skill...${NC}`);
+
+    // Claude Code: ~/.claude/skills/agenfk-flow/SKILL.md
+    if (shouldRun('claude')) {
+        const claudeFlowSkillSource = path.join(rootDir, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
+        if (existsSync(claudeFlowSkillSource)) {
+            const claudeFlowSkillDir = path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow');
+            await fs.mkdir(claudeFlowSkillDir, { recursive: true });
+            await fs.copyFile(claudeFlowSkillSource, path.join(claudeFlowSkillDir, 'SKILL.md'));
+            console.log(`  Installed: ${path.join(claudeFlowSkillDir, 'SKILL.md')}`);
+        } else if (!onlyPlatform) {
+            console.log(`  ${YELLOW}Warning: skills/claude-code/agenfk-flow/SKILL.md not found. Skipping.${NC}`);
+        }
+    }
+
+    // Opencode: ~/.config/opencode/skills/agenfk-flow/SKILL.md
+    if (shouldRun('opencode')) {
+        const opencodeFlowSkillSource = path.join(rootDir, 'skills', 'opencode', 'agenfk-flow', 'SKILL.md');
+        if (existsSync(opencodeFlowSkillSource)) {
+            const opencodeFlowSkillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow');
+            await fs.mkdir(opencodeFlowSkillDir, { recursive: true });
+            await fs.copyFile(opencodeFlowSkillSource, path.join(opencodeFlowSkillDir, 'SKILL.md'));
+            console.log(`  Installed: ${path.join(opencodeFlowSkillDir, 'SKILL.md')}`);
+        } else if (!onlyPlatform) {
+            console.log(`  ${YELLOW}Warning: skills/opencode/agenfk-flow/SKILL.md not found. Skipping.${NC}`);
+        }
+    }
+
+    // Cursor: ~/.cursor/rules/agenfk-flow.mdc (or platform-appropriate path)
+    if (shouldRun('cursor')) {
+        const cursorFlowSkillSource = path.join(rootDir, 'skills', 'cursor', 'agenfk-flow.mdc');
+        if (existsSync(cursorFlowSkillSource)) {
+            const cursorRulesDir = getCursorRulesDir();
+            await fs.mkdir(cursorRulesDir, { recursive: true });
+            await fs.copyFile(cursorFlowSkillSource, path.join(cursorRulesDir, 'agenfk-flow.mdc'));
+            console.log(`  Installed: ${path.join(cursorRulesDir, 'agenfk-flow.mdc')}`);
+        } else if (!onlyPlatform) {
+            console.log(`  ${YELLOW}Warning: skills/cursor/agenfk-flow.mdc not found. Skipping.${NC}`);
+        }
+    }
+
+    // Codex: ~/.codex/agenfk-flow.md
+    if (shouldRun('codex')) {
+        const codexFlowSkillSource = path.join(rootDir, 'skills', 'codex', 'agenfk-flow.md');
+        if (existsSync(codexFlowSkillSource)) {
+            const codexDir = path.join(os.homedir(), '.codex');
+            await fs.mkdir(codexDir, { recursive: true });
+            await fs.copyFile(codexFlowSkillSource, path.join(codexDir, 'agenfk-flow.md'));
+            console.log(`  Installed: ${path.join(codexDir, 'agenfk-flow.md')}`);
+        } else if (!onlyPlatform) {
+            console.log(`  ${YELLOW}Warning: skills/codex/agenfk-flow.md not found. Skipping.${NC}`);
+        }
+    }
+
+    // Gemini CLI: ~/.gemini/agenfk-flow.md
+    if (shouldRun('gemini')) {
+        const geminiFlowSkillSource = path.join(rootDir, 'skills', 'gemini', 'agenfk-flow.md');
+        if (existsSync(geminiFlowSkillSource)) {
+            const geminiDir = path.join(os.homedir(), '.gemini');
+            await fs.mkdir(geminiDir, { recursive: true });
+            await fs.copyFile(geminiFlowSkillSource, path.join(geminiDir, 'agenfk-flow.md'));
+            console.log(`  Installed: ${path.join(geminiDir, 'agenfk-flow.md')}`);
+        } else if (!onlyPlatform) {
+            console.log(`  ${YELLOW}Warning: skills/gemini/agenfk-flow.md not found. Skipping.${NC}`);
+        }
+    }
+
     // 9. Symlink CLI to ~/.local/bin
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');

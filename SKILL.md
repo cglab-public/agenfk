@@ -75,8 +75,9 @@ If MCP tools are not available in your context, surface the connectivity problem
         4. **MANDATORY**: Ask the user if they want to use an existing project (by name/ID) or create a new one (recommended).
         5. If creating a new one, use the current directory name as the default project name unless the user specifies otherwise.
         6. Create/link the project by creating `.agenfk/project.json` with the `{ "projectId": "..." }`.
-        7. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. BE THOROUGH AND COMPLETE. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
-        8. Fetch all items via `list_items(projectId)` and render the **Board Report** as described below.
+        7. **Flow-Aware Status Check (MANDATORY)**: Immediately after identifying the project, call `GET /projects/<projectId>/flow` (via REST or `agenfk flow show --project <projectId>` via CLI) to discover the active workflow flow. The `workflow_gatekeeper` response also includes `activeFlow`. **Use the flow's step `name` values as the valid statuses for this project** — do NOT assume the default TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline is active. The project may have a custom flow with different steps and ordering.
+        8. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. BE THOROUGH AND COMPLETE. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
+        9. Fetch all items via `list_items(projectId)` and render the **Board Report** as described below.
     *   **Board Report Format**:
         *   **Cycle Time Calculation**: For each item, compute cycle time by finding the time it first entered `IN_PROGRESS` (or similar active state) to the time it entered `DONE`/`ARCHIVED`. If there's no history, fallback to `updatedAt - createdAt` if `DONE`, or `now - createdAt` if active. For items that never started (e.g. `TODO`), cycle time is N/A or 0. Format durations as `HH:MM:SS`.
         *   **Per-card display**: Include a `Cycle Time` column in every status group table.
@@ -117,34 +118,34 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `review_changes`, `test_changes`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
 5.  **Mandatory Automated Testing (Agent Driven)**
-    *   **Action**: Moving an item to the `TEST` column (status: `TEST`) is a signal that the Agent (Opencode/Claude) must now perform deep verification.
+    *   **Action**: Moving an item to the test/verification step in the active flow (the step before DONE, typically `TEST`) is a signal that the Agent must now perform deep verification.
     *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
     *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
-    *   **Workflow**:
-        *   `update_item(itemId, { status: "REVIEW" })` moves items from IN_PROGRESS → REVIEW when coding is complete.
-        *   `review_changes(itemId, command)` runs a build/lint command in REVIEW and moves to TEST on success (back to IN_PROGRESS on failure).
-        *   The Agent verifies coverage and regressions in `TEST`.
-        *   Success: Agent calls `test_changes(itemId)` from TEST status — this runs the project's `verifyCommand` and moves to DONE. If `test_changes` returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
-        *   Failure: Agent moves item back to `IN_PROGRESS`.
-    *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `review_changes` or `test_changes` call validates the code for all siblings. After one passes, move remaining siblings directly to TEST via `update_item` (skipping individual `review_changes`), then call `test_changes` on each to reach DONE.
+    *   **Workflow** (use the active flow's step names — check `activeFlow` from `workflow_gatekeeper` response):
+        *   `update_item(itemId, { status: "<review-step>" })` moves items from the active coding step to the review step when coding is complete (default: `REVIEW`).
+        *   `review_changes(itemId, command)` runs a build/lint command in the review step and advances to the test step on success (back to the coding step on failure).
+        *   The Agent verifies coverage and regressions in the test step.
+        *   Success: Agent calls `test_changes(itemId)` from the test step — this runs the project's `verifyCommand` and moves to the terminal step (DONE). If `test_changes` returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
+        *   Failure: Agent moves item back to the active coding step (default: `IN_PROGRESS`).
+    *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `review_changes` or `test_changes` call validates the code for all siblings. After one passes, move remaining siblings directly to the test step via `update_item` (skipping individual `review_changes`), then call `test_changes` on each to reach DONE.
 
 6.  **Final Verification (Review Tool)**
-    *   **Action**: After self-review in REVIEW, the Agent **MUST** use `review_changes(itemId, command)` with a build/lint command to gate the transition to TEST.
+    *   **Action**: After self-review in the review step (check active flow — default: `REVIEW`), the Agent **MUST** use `review_changes(itemId, command)` with a build/lint command to gate the transition to the test step.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `update_project`) defines the mandatory test command. `test_changes` always uses it — agents cannot override or bypass it.
     *   **Transition Logic (Automated by Tool)**:
-        1. The agent moves the item to `REVIEW` via `update_item`.
+        1. The agent moves the item to the review step (default: `REVIEW`) via `update_item`.
         2. The agent performs self-review (re-reads files, checks correctness).
         3. The agent calls `review_changes` which executes the build command.
-        4. Success: Moves to `TEST`. Failure: Moves back to `IN_PROGRESS`.
+        4. Success: Advances to the test step (default: `TEST`). Failure: Moves back to the coding step (default: `IN_PROGRESS`).
 
 7.  **Measurement & Tracking**
     *   **Reporting Requirements**: The Agent **MUST** call `log_token_usage(itemId, input, output, model)` immediately after marking an item as `DONE` (e.g., following a successful `test_changes`), or at the end of a significant session of work for an `IN_PROGRESS` item.
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
-    *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up:
-        1. Close all child TASKs first: `update_item({ status: "REVIEW" })`, self-review, `review_changes` (REVIEW→TEST), then `test_changes` from TEST (TEST→DONE).
-           - **Sibling shortcut**: If one child's `review_changes` already passed, remaining siblings can skip to TEST via `update_item({ status: "TEST" })`. Then call `test_changes` on each — subsequent calls pass immediately since the code is already verified.
+    *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up. Use the active flow's step names (check `activeFlow` in `workflow_gatekeeper` response):
+        1. Close all child TASKs first: `update_item({ status: "<review-step>" })`, self-review, `review_changes` (review→test step), then `test_changes` from the test step (test→terminal/DONE).
+           - **Sibling shortcut**: If one child's `review_changes` already passed, remaining siblings can skip to the test step via `update_item({ status: "<test-step>" })`. Then call `test_changes` on each — subsequent calls pass immediately since the code is already verified.
         2. Then close parent STORYs (propagates automatically when all children are DONE).
         3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in REVIEW. If `review_changes` moves an item to REVIEW, you are responsible for progressing it through TEST → DONE. A card in REVIEW is NOT "done".
