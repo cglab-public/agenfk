@@ -16,6 +16,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { execSync, spawnSync, spawn } from "child_process";
+import { getCodingStepName, getCodingStepItems } from "./gatekeeper-utils";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -515,20 +516,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY' || i.type === 'EPIC')
         );
 
-        const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
-
-        // Compute intermediate flow steps (non-anchor steps) from the active flow.
-        // These are the steps where review_changes / test_changes operate.
+        // Compute flow step metadata first so codingStepName is available for all checks.
         const sortedFlowSteps: any[] = activeFlow
           ? [...activeFlow.steps].sort((a: any, b: any) => a.order - b.order)
           : [];
         const intermediateFlowStatuses: Set<string> = activeFlow
           ? new Set(sortedFlowSteps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()))
           : new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
-        // Coding step = first non-anchor step (where coding happens)
-        const codingStepName: string = (activeFlow
-          ? sortedFlowSteps.find((s: any) => !s.isAnchor)?.name
-          : 'IN_PROGRESS') ?? 'IN_PROGRESS';
+        // Coding step = first non-anchor step (where coding happens).
+        // Uses the active flow's step name, not the hardcoded literal 'IN_PROGRESS'.
+        const codingStepName: string = getCodingStepName(activeFlow);
+
+        // Items currently in the coding step (flow-aware, not hardcoded to 'IN_PROGRESS').
+        const codingStepItems = getCodingStepItems(activeItems, codingStepName);
 
         // Items in any intermediate step beyond the coding step (candidates for review_changes / test_changes)
         const intermediateItems = activeItems.filter((i: any) =>
@@ -551,15 +551,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
 
         if (role === 'coding') {
-          if (inProgressItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in IN_PROGRESS status in project [${effectiveProjectId}].` }] };
-          
+          if (codingStepItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in the coding step ('${codingStepName}') in project [${effectiveProjectId}].` }] };
+
           let task;
           if (itemId) {
-            task = inProgressItems.find((i: any) => i.id === itemId);
-            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not IN_PROGRESS or does not belong to project [${effectiveProjectId}].` }] };
+            task = codingStepItems.find((i: any) => i.id === itemId);
+            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in the coding step ('${codingStepName}') or does not belong to project [${effectiveProjectId}].` }] };
           } else {
-            if (inProgressItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are IN_PROGRESS in project [${effectiveProjectId}]. Please provide 'itemId' to disambiguate.` }] };
-            task = inProgressItems[0];
+            if (codingStepItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are in the coding step ('${codingStepName}') in project [${effectiveProjectId}]. Please provide 'itemId' to disambiguate.` }] };
+            task = codingStepItems[0];
           }
 
           if (task.type === 'EPIC' || task.type === 'STORY') {
@@ -599,13 +599,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { content: [{ type: "text", text: `✅ AUTHORIZED (${roleLabel}).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}${exitCriteriaHint}${flowStepsSummary}` }] };
         }
 
-        // Default to checking for IN_PROGRESS if role is generic or unrecognized
-        if (inProgressItems.length === 0) {
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently IN_PROGRESS in project [${effectiveProjectId}].` }] };
+        // Default to checking for the coding step if role is generic or unrecognized
+        if (codingStepItems.length === 0) {
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently in the coding step ('${codingStepName}') in project [${effectiveProjectId}].` }] };
         }
-        
-        const defaultTask = itemId ? inProgressItems.find((i: any) => i.id === itemId) : inProgressItems[0];
-        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not IN_PROGRESS or does not belong to project [${effectiveProjectId}].` }] };
+
+        const defaultTask = itemId ? codingStepItems.find((i: any) => i.id === itemId) : codingStepItems[0];
+        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not in the coding step ('${codingStepName}') or does not belong to project [${effectiveProjectId}].` }] };
 
         return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${effectiveProjectId}]\nIntent: "${intent}"${flowStepsSummary}` }] };
       }

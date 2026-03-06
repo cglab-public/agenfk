@@ -55,9 +55,14 @@ function isInsideAgenFKProject(filePath) {
     return false;
 }
 
+// Statuses that are never considered "active coding" regardless of flow name.
+const INACTIVE_STATUSES = new Set(['TODO', 'DONE', 'BLOCKED', 'PAUSED', 'IDEAS', 'ARCHIVED', 'TRASHED']);
+
 async function checkInProgress() {
     return new Promise((resolve) => {
-        const req = http.get(`${API_URL}/items?status=IN_PROGRESS`, { timeout: 2000 }, (res) => {
+        // Fetch all items without a status filter so custom coding-step names
+        // (e.g. 'create_unit_tests' in a TDD flow) are recognised as active.
+        const req = http.get(`${API_URL}/items`, { timeout: 2000 }, (res) => {
             if (res.statusCode !== 200) {
                 resolve(true); // Graceful skip on API issues
                 return;
@@ -68,7 +73,9 @@ async function checkInProgress() {
             res.on('end', () => {
                 try {
                     const items = JSON.parse(data);
-                    const hasActive = Array.isArray(items) && items.some(i => i.status === 'IN_PROGRESS');
+                    const hasActive = Array.isArray(items) && items.some(
+                        i => !INACTIVE_STATUSES.has((i.status ?? '').toUpperCase())
+                    );
                     resolve(hasActive);
                 } catch (e) {
                     resolve(true); // Graceful skip on parse error
@@ -108,7 +115,7 @@ const hasInProgress = await checkInProgress();
 
 if (!hasInProgress) {
     const toolName = toolIntent?.tool || 'unknown tool';
-    const reason = `AgenFK WORKFLOW VIOLATION: No task is IN_PROGRESS while attempting to use ${toolName}.\n\nBefore modifying files you must:\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk update <id> --status IN_PROGRESS\n\nThen retry your change.`;
+    const reason = `AgenFK WORKFLOW VIOLATION: No task is actively being worked on while attempting to use ${toolName}.\n\nBefore modifying files you must have a task in an active coding step (e.g. IN_PROGRESS, create_unit_tests, or your flow's first working step).\n\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk verify <id>  (advances from TODO to the coding step)\n\nThen retry your change.`;
 
     process.stdout.write(JSON.stringify({
         decision: 'block',
