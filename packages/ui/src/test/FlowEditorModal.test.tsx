@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
     setProjectFlow: vi.fn(),
     deleteFlow: vi.fn(),
     listFlows: vi.fn(),
+    getProjectFlow: vi.fn(),
   },
 }));
 
@@ -28,6 +29,20 @@ const wrapper =
   );
 
 const PROJECT_ID = 'proj-abc';
+
+const DEFAULT_FLOW: Flow = {
+  id: 'default-flow-id',
+  name: 'Default Flow',
+  description: 'Built-in default flow',
+  projectId: PROJECT_ID,
+  steps: [
+    { id: 'd1', name: 'todo', label: 'To Do', order: 0, exitCriteria: '', isSpecial: false },
+    { id: 'd2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '', isSpecial: false },
+    { id: 'd3', name: 'done', label: 'Done', order: 2, exitCriteria: '', isSpecial: true },
+  ],
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
 
 const SAMPLE_FLOW: Flow = {
   id: 'flow-1',
@@ -60,6 +75,7 @@ describe('FlowEditorModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW);
   });
 
   afterEach(() => {
@@ -495,5 +511,79 @@ describe('FlowEditorModal', () => {
     await waitFor(() => {
       expect((screen.getByTestId('flow-name-input') as HTMLInputElement).value).toBe('My Flow');
     });
+  });
+
+  // ── DEFAULT flow loading ───────────────────────────────────────────────────
+
+  it('clicking DEFAULT row loads it into read-only panel (inputs disabled)', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    // Wait for the default flow query to resolve
+    await waitFor(() => expect(api.getProjectFlow).toHaveBeenCalledWith(PROJECT_ID));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => {
+      const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
+      expect(nameInput.disabled).toBe(true);
+    });
+    // Step inputs should also be disabled
+    const stepName = screen.getByTestId('step-name-0') as HTMLInputElement;
+    expect(stepName.disabled).toBe(true);
+    // Save button should NOT be visible in read-only mode
+    expect(screen.queryByTestId('save-flow-btn')).toBeNull();
+    // Clone to Edit button should be visible
+    expect(screen.getByTestId('clone-to-edit-btn')).toBeDefined();
+  });
+
+  it('"Clone to Edit" on DEFAULT creates editable copy named "Copy of Default Flow"', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => expect(api.getProjectFlow).toHaveBeenCalledWith(PROJECT_ID));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => screen.getByTestId('clone-to-edit-btn'));
+    fireEvent.click(screen.getByTestId('clone-to-edit-btn'));
+    await waitFor(() => {
+      const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
+      expect(nameInput.value).toBe('Copy of Default Flow');
+      expect(nameInput.disabled).toBe(false);
+    });
+    // Save button should now be visible and enabled
+    expect(screen.getByTestId('save-flow-btn')).toBeDefined();
+  });
+
+  it('Clone button on a user flow creates editable copy with "Copy of <name>"', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('clone-flow-btn-flow-1'));
+    fireEvent.click(screen.getByTestId('clone-flow-btn-flow-1'));
+    await waitFor(() => {
+      const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
+      expect(nameInput.value).toBe('Copy of My Flow');
+      expect(nameInput.disabled).toBe(false);
+    });
+  });
+
+  it('cloned flow has no id — Save calls createFlow', async () => {
+    vi.mocked(api.createFlow).mockResolvedValue({ ...SAMPLE_FLOW, id: 'new-clone-id', name: 'Copy of My Flow' });
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('clone-flow-btn-flow-1'));
+    fireEvent.click(screen.getByTestId('clone-flow-btn-flow-1'));
+    await waitFor(() => screen.getByTestId('save-flow-btn'));
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(api.createFlow).mock.calls[0][0];
+    expect(call.name).toBe('Copy of My Flow');
+    // No id should be passed in the payload
+    expect((call as any).id).toBeUndefined();
   });
 });
