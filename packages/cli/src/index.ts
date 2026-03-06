@@ -1660,6 +1660,30 @@ configSetCommand
     }
   });
 
+configSetCommand
+  .command('flowRegistry <owner/repo>')
+  .description('Set the community flow registry repo (e.g. agenfk-flows/registry)')
+  .action((value: string) => {
+    if (!value.includes('/')) {
+      console.error(chalk.red('Error: value must be in "owner/repo" format'));
+      process.exit(1);
+      return;
+    }
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      config.flowRegistry = value;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      console.log(chalk.green(`Flow registry set to: ${value}`));
+    } catch (err: any) {
+      console.error(chalk.red('Error updating config:'), err.message);
+      process.exit(1);
+    }
+  });
+
 // ── MCP FALLBACK COMMANDS ─────────────────────────────────────────────────────
 // These commands provide CLI parity with MCP tools for use when MCP is unavailable.
 
@@ -2424,6 +2448,188 @@ flowCommand
       console.log(chalk.green(`Project ${projectId} flow reset to default.`));
     } catch (error: any) {
       console.error(chalk.red('Error resetting flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+// ── Flow Registry Helpers ──────────────────────────────────────────────────────
+
+function getFlowRegistryRepo(): string {
+  const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+  try {
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (config.flowRegistry) return config.flowRegistry;
+    }
+  } catch { /* ignore */ }
+  return 'agenfk-flows/registry';
+}
+
+function serializeFlowToRegistry(flow: any): object {
+  const sorted = [...(flow.steps || [])].sort((a: any, b: any) => a.order - b.order);
+  return {
+    schemaVersion: '1',
+    name: flow.name,
+    description: flow.description || undefined,
+    author: flow.author || undefined,
+    version: flow.version || '1.0.0',
+    steps: sorted.map((s: any) => ({
+      name: s.name,
+      label: s.label,
+      order: s.order,
+      isSpecial: s.isSpecial || false,
+      exitCriteria: s.exitCriteria || undefined,
+    })),
+  };
+}
+
+// ── Flow Registry Commands ─────────────────────────────────────────────────────
+
+flowCommand
+  .command('publish <id>')
+  .description('Publish a flow to the community registry (requires AGENFK_REGISTRY_TOKEN)')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .action(async (id, options) => {
+    try {
+      const token = process.env.AGENFK_REGISTRY_TOKEN;
+      if (!token) {
+        console.error(chalk.red('Error: AGENFK_REGISTRY_TOKEN environment variable is required.'));
+        console.error(chalk.gray('Set it to a GitHub personal access token with repo write access.'));
+        process.exit(1);
+        return;
+      }
+
+      const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
+      const registry = options.registry || getFlowRegistryRepo();
+      const [owner, repo] = registry.split('/');
+      const filename = `${flow.name.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}.json`;
+      const filePath = `flows/${filename}`;
+      const payload = serializeFlowToRegistry(flow);
+      const content = Buffer.from(JSON.stringify(payload, null, 2)).toString('base64');
+
+      // Check if file already exists to get its SHA (required for updates)
+      let sha: string | undefined;
+      try {
+        const { data: existing } = await axios.get(
+          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+          { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }
+        );
+        sha = existing.sha;
+      } catch { /* file doesn't exist yet, create it */ }
+
+      const body: any = {
+        message: `Add/update flow: ${flow.name}`,
+        content,
+      };
+      if (sha) body.sha = sha;
+
+      const { data: result } = await axios.put(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+        body,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }
+      );
+
+      const fileUrl = result.content?.html_url ||
+        `https://github.com/${owner}/${repo}/blob/main/${filePath}`;
+      console.log(chalk.green(`\nFlow published successfully!`));
+      console.log(chalk.blue(`URL: ${fileUrl}`));
+    } catch (error: any) {
+      console.error(chalk.red('Error publishing flow:'), error.response?.data?.message || error.message);
+    }
+  });
+
+flowCommand
+  .command('browse')
+  .description('Browse flows available in the community registry')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .action(async (options) => {
+    try {
+      const registry = options.registry || getFlowRegistryRepo();
+      const [owner, repo] = registry.split('/');
+
+      const { data: files } = await axios.get(
+        `https://api.github.com/repos/${owner}/${repo}/contents/flows`,
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+
+      if (!Array.isArray(files) || files.length === 0) {
+        console.log(chalk.yellow('No flows found in the registry.'));
+        return;
+      }
+
+      const rows: any[] = [];
+      for (const file of files) {
+        if (!file.name.endsWith('.json')) continue;
+        try {
+          const { data: raw } = await axios.get(
+            `https://raw.githubusercontent.com/${owner}/${repo}/main/flows/${file.name}`
+          );
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          rows.push({
+            File: file.name,
+            Name: parsed.name || '-',
+            Author: parsed.author || '-',
+            Version: parsed.version || '-',
+            Steps: Array.isArray(parsed.steps) ? parsed.steps.length : 0,
+          });
+        } catch {
+          rows.push({ File: file.name, Name: '(error)', Author: '-', Version: '-', Steps: 0 });
+        }
+      }
+
+      if (rows.length === 0) {
+        console.log(chalk.yellow('No valid flow files found in the registry.'));
+        return;
+      }
+
+      console.log(chalk.blue(`\nFlows in ${registry}:\n`));
+      console.table(rows);
+    } catch (error: any) {
+      console.error(chalk.red('Error browsing registry:'), error.response?.data?.message || error.message);
+    }
+  });
+
+flowCommand
+  .command('install <filename>')
+  .description('Install a flow from the community registry into the local server')
+  .option('--registry <owner/repo>', 'Registry repo (default: from config or agenfk-flows/registry)')
+  .option('--project <projectId>', 'Project ID to scope this flow to')
+  .action(async (filename, options) => {
+    try {
+      const registry = options.registry || getFlowRegistryRepo();
+      const [owner, repo] = registry.split('/');
+      const fname = filename.endsWith('.json') ? filename : `${filename}.json`;
+
+      const { data: raw } = await axios.get(
+        `https://raw.githubusercontent.com/${owner}/${repo}/main/flows/${fname}`
+      );
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+
+      if (!parsed.schemaVersion || !parsed.name || !Array.isArray(parsed.steps)) {
+        console.error(chalk.red('Error: Invalid flow file — missing required fields (schemaVersion, name, steps).'));
+        process.exit(1);
+        return;
+      }
+
+      const projectId = options.project || findProjectId(process.cwd()) || undefined;
+
+      const newFlow = {
+        name: parsed.name,
+        description: parsed.description,
+        projectId,
+        steps: parsed.steps.map((s: any) => ({
+          id: randomUUID(),
+          name: s.name,
+          label: s.label,
+          order: s.order,
+          isSpecial: s.isSpecial || false,
+          exitCriteria: s.exitCriteria || undefined,
+        })),
+      };
+
+      const { data: created } = await axios.post(`${API_URL}/flows`, newFlow);
+      console.log(chalk.green(`\nFlow installed: ${created.name} (ID: ${created.id})`));
+    } catch (error: any) {
+      console.error(chalk.red('Error installing flow:'), error.response?.data?.error || error.message);
     }
   });
 
