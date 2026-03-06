@@ -20,10 +20,10 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 ## Sibling Propagation Rule
 
-When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
+When child items of the same parent share the same source code (same branch/workspace), a single `validate_progress` call validates the code for **all** siblings:
 
-- After `review_changes` passes on **one** sibling (moving it REVIEW → TEST), move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
-- After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
+- After `validate_progress` passes on **one** sibling (advancing it to the next step), move remaining siblings to that same step via `update_item({ status: "<nextStep>" })` — no individual `validate_progress` calls needed.
+- For the final step (→ DONE): call `validate_progress` on each remaining sibling — the server's sibling propagation will skip execution and pass immediately.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
 

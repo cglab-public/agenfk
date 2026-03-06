@@ -163,7 +163,7 @@ When GitHub sync is configured, the Kanban toolbar automatically shows:
 AgenFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
 
 *   **API Server (The Owner)**: The heart of the framework. Built with Node.js and Express. It is the exclusive manager of the `db.json` storage. It actively watches the disk for changes and broadcasts real-time updates to all connected clients via **WebSockets**.
-*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgenFK tools (`create_item`, `review_changes`, `test_changes`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
+*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgenFK tools (`create_item`, `validate_progress`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
 *   **CLI (The Interface)**: A unified command-line tool (`./agenfk`) written in TypeScript. It allows both humans and agents to manage the backlog and framework state. Like the MCP server, it acts as a client to the API Server.
 *   **Web Dashboard (The UI)**: A modern React/Vite application utilizing TanStack Query for state management. It provides a hierarchical Kanban board, token metrics, real-time progress logs (comments), detailed test results, and seamless context switching.
 *   **Storage (The Memory)**: Uses an atomic, file-based JSON storage plugin by default for maximum portability. The plugin uses temporary file swapping (`fs.renameSync`) to ensure atomic writes and prevent database corruption during concurrent operations.
@@ -182,7 +182,7 @@ graph TD
     E -->|No Active Task| F[Pause: Select/Create Task]
     F --> E
     E -->|Authorized| G["Execute Code Changes<br/>/agenfk-code · Coding Agent"]
-    G --> H["review_changes · /agenfk-code<br/>Build/Compile only"]
+    G --> H["validate_progress · /agenfk-code<br/>Build/Compile only"]
     H -->|Build Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
     I --> G
     H -->|Build OK| J["/agenfk-review · REVIEW Agent<br/>Compile check · Security · Requirements"]
@@ -203,7 +203,7 @@ graph TD
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
 4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
 5.  **Implementation Logging**: Agents log every significant step as a **Comment** on the card, providing a real-time audit trail in the UI.
-6.  **Build Verify**: The `review_changes` tool runs a **build/compile command only** to gate the transition from `REVIEW` to `TEST`. Tests are never run at this stage.
+6.  **Build Verify**: `validate_progress` runs a **build/compile command** to gate each intermediate step transition. The agent picks the command. On the final step, the project's `verifyCommand` is enforced (agent cannot override).
 7.  **Review**: The Review Agent checks compilation, security vulnerabilities, and requirements traceability. If issues are found, the item returns to `IN_PROGRESS`.
 8.  **Test**: The Testing Agent writes any missing tests, runs the full suite with coverage, and records results with `log_test_result` — populating the **Test Results** tab on the card. Coverage must meet the 80% threshold.
 9.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.

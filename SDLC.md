@@ -11,7 +11,7 @@ This document describes the complete development lifecycle enforced by the AgenF
 **Hard Block Rules**:
 1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
 2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
-3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `review_changes` and `test_changes`.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `validate_progress`.
 4. **MEASURE EVERYTHING**: Every task MUST have token usage logged via `log_token_usage` before completion.
 
 Bypassing these rules is a critical operational failure and degrades the project's measurability and reliability.
@@ -82,37 +82,22 @@ Each transition has specific rules and enforcement:
 - This is a direct transition — no tool gate required.
 - The agent signals that coding is done and the item is ready for review.
 
-### REVIEW → TEST (via `review_changes`)
+### Intermediate Steps → Next Step (via `validate_progress`)
 
-The agent (or review agent in multi-agent mode) performs a self-review, then calls:
-
-```
-review_changes({ itemId, command: "npm run build" })
-```
-
-- First, the agent re-reads modified files and checks correctness, security, and requirements alignment.
-- If issues are found: `update_item({ id, status: "IN_PROGRESS" })` and fix.
-- Once satisfied, `review_changes` runs the build gate:
-  - The **agent picks the command** — build, lint, type-check, whatever makes sense.
-  - If the command passes (exit code 0): item moves to `TEST`.
-  - If it fails: item moves back to `IN_PROGRESS`.
-  - A comment is logged with the command output.
-
-### TEST → DONE (via `test_changes`)
-
-The agent calls:
+The agent calls `validate_progress` at each intermediate flow step to advance to the next:
 
 ```
-test_changes({ itemId })
+validate_progress({ itemId, command: "npm run build" })
 ```
 
-- **No command parameter** — the project's `verifyCommand` is always used.
-- The agent cannot override or bypass the test suite.
-- If `verifyCommand` is not configured: the tool returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. If nothing can be detected, the agent asks the developer as a last resort.
-- If the command passes: item moves to `DONE`, auto-git-commit is triggered.
-- If it fails: item moves back to `IN_PROGRESS`.
-- A test record is logged on the item.
-- Direct `update_item({ status: "DONE" })` is **blocked by the server**.
+- `command` is optional. If omitted, the project's `verifyCommand` is used.
+- The **agent picks the command** for intermediate steps (build, lint, type-check, etc.).
+- On the **final intermediate step** (the last step before DONE), `verifyCommand` is enforced and an auto-git-commit is triggered on success.
+- If the command passes (exit code 0): item advances to the next flow step.
+- If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
+- A comment is logged with the command output.
+
+**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, role="validating", itemId)`. The gatekeeper response includes the current flow step's `exitCriteria` text — the agent must satisfy those criteria before advancing.
 
 ### Project verifyCommand
 
@@ -128,14 +113,20 @@ Examples by stack:
 - Python: `pytest`
 - Go: `go build ./... && go test ./...`
 
-The `verifyCommand` is stored on the **Project entity** and used by `test_changes` for every TEST → DONE transition. Agents cannot supply their own command.
+The `verifyCommand` is stored on the **Project entity** and enforced on the final step transition (→ DONE). If not configured, `validate_progress` returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Agents cannot supply their own command on the final step.
+
+Direct `update_item({ status: "DONE" })` is **blocked by the server**.
+
+### Deprecated Aliases
+
+`review_changes` and `test_changes` are retained as deprecated aliases for backward compatibility. Both route to `validate_progress` internally. New code should use `validate_progress` directly.
 
 ### Sibling Propagation Rule
 
-When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
+When child items of the same parent share the same source code (same branch/workspace), a single `validate_progress` call validates the code for **all** siblings:
 
-- After `review_changes` passes on **one** sibling, move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
-- After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
+- After `validate_progress` passes on **one** sibling at an intermediate step, move remaining siblings directly to the next step via `update_item({ status: "<nextStep>" })` — no individual calls needed.
+- After `validate_progress` passes on **one** sibling at the final step (→ DONE), call `validate_progress` on remaining siblings — the same verified code will pass immediately via sibling propagation.
 
 This avoids redundant build and test runs when the underlying code changes are shared across sibling items.
 
@@ -223,15 +214,17 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 5. [Agent implements the fix]
 6. update_item({ status: "REVIEW" })
 7. [Agent self-reviews: re-reads files, checks correctness]
-8. review_changes({ itemId, command: "npm run build" })
+8. workflow_gatekeeper({ intent: "Self-review", role: "validating", itemId })
+   → Response includes exitCriteria for the current step
+9. validate_progress({ itemId, command: "npm run build" })
    → Passes → item moves to TEST
-9. test_changes({ itemId })
+10. validate_progress({ itemId })
    → Runs project verifyCommand (npm run build && npm test)
-   → Passes → item moves to DONE
-10. [Developer] git push -u origin fix/login-crash-on-empty-email
-11. [Developer] gh pr create (or /agenfk-pr)
-12. [Developer reviews and merges PR]
-13. /agenfk-release → creates release
+   → Passes → item moves to DONE, auto-git-commit triggered
+11. [Developer] git push -u origin fix/login-crash-on-empty-email
+12. [Developer] gh pr create (or /agenfk-pr)
+13. [Developer reviews and merges PR]
+14. /agenfk-release → creates release
 ```
 
 ### Feature Task
@@ -242,9 +235,10 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 3. workflow_gatekeeper({ intent: "Add toggle", role: "coding" })
 4. [Agent implements the feature]
 5. update_item({ status: "REVIEW" })
-6. [Self-review] → review_changes({ itemId, command: "npm run build" })
+6. [Self-review] → workflow_gatekeeper({ intent: "Self-review", role: "validating", itemId })
+7. validate_progress({ itemId, command: "npm run build" })
    → Passes → TEST
-7. test_changes({ itemId })
+8. validate_progress({ itemId })
    → Passes → DONE
 ```
 
@@ -256,9 +250,10 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 
 | Tool | Purpose | Params |
 |---|---|---|
-| `workflow_gatekeeper` | Pre-flight auth before file edits | `intent`, `role`, `itemId?` |
-| `review_changes` | Agent-chosen build command, REVIEW → TEST | `itemId`, `command` |
-| `test_changes` | Project verifyCommand, TEST → DONE | `itemId` |
+| `workflow_gatekeeper` | Pre-flight auth before file edits or validation | `intent`, `role`, `itemId?` |
+| `validate_progress` | Advance item to next flow step via build/test gate | `itemId`, `command?` |
+| `review_changes` | **Deprecated** — alias for `validate_progress` | `itemId`, `command` |
+| `test_changes` | **Deprecated** — alias for `validate_progress` | `itemId` |
 
 ### Project Tools
 
@@ -295,9 +290,9 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 | Rule | Enforced by |
 |---|---|
 | Must have IN_PROGRESS task before editing files | `workflow_gatekeeper` + PreToolUse hooks |
-| REVIEW requires build gate for TEST | `review_changes` runs build command to advance REVIEW → TEST |
+| Intermediate steps require a build/run gate | `validate_progress` runs agent-chosen command to advance |
 | Cannot set DONE directly | Server rejects `update_item({ status: "DONE" })` |
-| Test suite must run for DONE | `test_changes` uses project `verifyCommand`, not agent command |
+| Final step enforces project verifyCommand | `validate_progress` uses `verifyCommand` on last intermediate step; agent cannot override |
 | Fixes must be BUG items | Enforced in CLAUDE.md, SKILL.md, skill files |
 | Branches managed by developer | No automatic branch creation; developer creates and links branches manually |
 | MCP-first, not CLI | PreToolUse hooks block direct DB/API access |

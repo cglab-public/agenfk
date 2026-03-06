@@ -13,10 +13,10 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ## Sibling Propagation Rule
 
-When child items of the same parent share the same source code (same branch/workspace), a single `review_changes` or `test_changes` call validates the code for **all** siblings:
+When child items of the same parent share the same source code (same branch/workspace), a single `validate_progress` call validates the code for **all** siblings:
 
-- After `review_changes` passes on **one** sibling (moving it REVIEW → TEST), move remaining siblings directly to TEST via `update_item({ status: "TEST" })` — no individual `review_changes` calls needed.
-- After `test_changes` passes on **one** sibling, call `test_changes` on remaining siblings in TEST — the same verified code will pass immediately.
+- After `validate_progress` passes on **one** sibling (advancing it to the next step), move remaining siblings to that same step via `update_item({ status: "<nextStep>" })` — no individual `validate_progress` calls needed.
+- For the final step (→ DONE): call `validate_progress` on each remaining sibling — the server's sibling propagation will skip execution and pass immediately.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
 
@@ -69,30 +69,30 @@ Before creating any item, evaluate the request against these signals:
 
 ---
 
-## Phase 2 — Move to Review
+## Phase 2 — Advance to next step
 
-- Call `update_item(itemId, {status: "REVIEW"})` to signal implementation is complete.
+- Call `update_item(itemId, {status: "<next-flow-step>"})` to signal implementation is complete and move to the flow's next step (e.g. REVIEW in the default flow).
 - Continue immediately to Phase 3.
 
 ---
 
-## Phase 3 — Self-Review + Build Gate (REVIEW → TEST)
+## Phase 3 — Self-Review + Validate Gate
 
 Since there is no separate review agent in Standard Mode, perform the review yourself:
 
 1. Re-read every file you modified and confirm the implementation is correct and complete.
-2. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
-3. If fixes are needed, call `update_item(itemId, {status: "IN_PROGRESS"})`, fix, then repeat from Phase 2.
-4. Once satisfied, call `review_changes(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
-   - **NEVER pass a test command here** — tests belong exclusively to Phase 4.
-   - Success: moves to TEST. Continue to Phase 4.
-   - Failure: moves back to IN_PROGRESS. Fix and repeat from Phase 2.
+2. Call `workflow_gatekeeper(itemId, role="validating")` — the response includes the current step's **exit criteria** if defined.
+3. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
+4. If fixes are needed, call `update_item(itemId, {status: "<coding-step>"})`, fix, then repeat from Phase 2.
+5. Once satisfied, call `validate_progress(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
+   - Success: advances to the next flow step. Repeat Phase 3 for each remaining intermediate step.
+   - Failure: moves back to the coding step. Fix and repeat from Phase 2.
 
 ---
 
-## Phase 4 — Test (TEST → DONE)
+## Phase 4 — Final Validation (→ DONE)
 
-1. Call `test_changes(itemId)` — this runs the project's `verifyCommand` automatically. No command parameter needed.
+1. When the item is in the last intermediate step before DONE, call `validate_progress(itemId)` — omit `command` to use the project's `verifyCommand` automatically.
 2. If no `verifyCommand` is configured, the tool returns `NO_VERIFY_COMMAND`. **Auto-detect** the project's stack instead of asking the developer:
    1. Read the project root for config files: `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`, `Makefile`, `*.csproj`/`*.sln`.
    2. Detect the stack and compose the idiomatic build+test command:
@@ -105,9 +105,9 @@ Since there is no separate review agent in Standard Mode, perform the review you
       - **.NET** (`*.csproj` or `*.sln`): `dotnet build && dotnet test`
       - **Make** (`Makefile`): `make test`
    3. Call `update_project({ id, verifyCommand: "<detected>" })` to persist the command.
-   4. Retry `test_changes(itemId)`.
+   4. Retry `validate_progress(itemId)`.
    5. If no config files are found and the stack cannot be detected, **then** ask the developer as a last resort.
-3. On success, the item moves to DONE automatically. On failure, it moves back to IN_PROGRESS.
+3. On success, the item moves to DONE automatically. On failure, it moves back to the coding step.
 4. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
 
 ---

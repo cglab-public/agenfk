@@ -8,7 +8,7 @@ This report compares the **CAR Group AI Coding Guidelines (Claude Code)** with t
 | :--- | :--- | :--- | :--- |
 | **Planning** | Shift+Tab Plan Mode, `.claude/plans/`, mandatory plan review by Senior/Tech Lead for complex tasks | `analyze_request`, `implementationPlan` field, Deep Mode decomposition with mandatory PAUSE for human approval | **Covered** (AgenFK mechanically enforces plan-before-code; Guidelines rely on human discipline) |
 | **Workflow Phases** | 4 use-case-specific workflows (see Section 2C) | Strict state machine: TODO &rarr; IN_PROGRESS &rarr; REVIEW &rarr; TEST &rarr; DONE | **Covered** (Strong alignment; AgenFK is more uniform) |
-| **Verification** | "Review all changes", "Run full test suite", PR review | Mandatory `review_changes` + `test_changes` tools, automated REVIEW &rarr; TEST &rarr; DONE transitions, 80% coverage enforcement via `enforce-coverage.ts` | **Covered** (AgenFK is more prescriptive) |
+| **Verification** | "Review all changes", "Run full test suite", PR review | Mandatory `validate_progress` tool with per-step exit criteria, automated intermediate step transitions to DONE, 80% coverage enforcement via `enforce-coverage.ts` | **Covered** (AgenFK is more prescriptive) |
 | **Cost/Usage** | `/cost`, `/usage`, session-usage pricing model, weekly limits | `log_token_usage` per item, Board Report metrics (Token totals, Cycle Time, Averages) | **Covered** (Different focus: Guidelines advise cost *optimisation*; AgenFK tracks cost *metrics*) |
 | **Configuration** | `CLAUDE.md` (3-level hierarchy: global, project, personal override), `.claudeignore` | `AFK_PROJECT_SCOPE.md`, `AFK_ARCHITECTURE.md`, `.agenfk/project.json`, `SKILL.md` | **Covered** (Different filenames, same intent) |
 | **Complexity Classification** | Strategic / Complex / Simple (tied to seniority gates) | TASK / STORY / EPIC (with signal-based classification rules in Step 0) | **Covered** (Parallel concepts, different taxonomies) |
@@ -19,7 +19,7 @@ This report compares the **CAR Group AI Coding Guidelines (Claude Code)** with t
 ### A. Enforcement vs. Guidance
 
 - **Guidelines**: Describe *best practices* for using the Claude Code CLI (e.g., Shift+Tab for planning, `/clear` for session hygiene). They include human review gates (Senior/Tech Lead plan review) but rely on team discipline to follow them.
-- **AgenFK**: Mechanically enforces the workflow. The `workflow_gatekeeper` rejects code changes unless a task is `IN_PROGRESS` and the agent's role matches the current phase. `review_changes` and `test_changes` prevent items reaching DONE without passing build and test gates. A PreToolUse hook in CLAUDE.md provides an additional enforcement layer.
+- **AgenFK**: Mechanically enforces the workflow. The `workflow_gatekeeper` rejects code changes unless a task is `IN_PROGRESS` and the agent's role matches the current phase. `validate_progress` prevents items reaching DONE without passing build and test gates at each intermediate step. A PreToolUse hook in CLAUDE.md provides an additional enforcement layer.
 
 ### B. Planning Artifacts
 
@@ -68,7 +68,7 @@ This report compares the **CAR Group AI Coding Guidelines (Claude Code)** with t
 | **Metrification** | Detailed per-item tracking of Cycle Time and Token Usage, aggregated at Story/Epic levels with Board Report summaries. | Guidelines have no equivalent project-wide metrics or reporting. |
 | **Mechanical Gatekeeper** | Role-based authorization (`planning`, `coding`, `review`, `testing`, `closing`) enforced via MCP tool before every code change. | Guidelines rely on developer discipline; AgenFK prevents unauthorized changes mechanically. |
 | **Multi-Agent Orchestration** | Deep Mode spawns specialized sub-agents (Planning, Coding, Review, Testing, Closing) with automated handover and parallel execution. | Guidelines assume a single developer-agent pair. |
-| **Coverage Enforcement** | Strict 80% coverage threshold enforced by `enforce-coverage.ts` and `test_changes`, with per-file and overall checks. | Guidelines say "ensure tests" but define no numerical threshold. |
+| **Coverage Enforcement** | Strict 80% coverage threshold enforced by `enforce-coverage.ts` and `validate_progress` (final step), with per-file and overall checks. | Guidelines say "ensure tests" but define no numerical threshold. |
 | **Real-Time Visualization** | Kanban board with WebSocket-driven live updates, drag-and-drop prioritisation, and hierarchical item views. | Guidelines are text-only with no visual project oversight. |
 | **Progress Audit Trail** | Mandatory `add_comment` logging for every significant agent step, visible in real-time on the Kanban board. | Guidelines have no equivalent step-by-step logging mechanism. |
 | **Conventional Commits** | Enforces standard prefixes (`fix:`, `feat:`, `chore:`, etc.) with item ID references. | Guidelines don't prescribe commit message conventions. |

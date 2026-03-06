@@ -1267,6 +1267,18 @@ export const KanbanBoard: React.FC = () => {
             </div>
             */}
 
+            {activeFlow && (
+              <div className="flex flex-col items-end">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
+                  <GitBranch size={10} className="text-indigo-500" />
+                  Flow
+                </div>
+                <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none truncate max-w-[120px]" title={activeFlow.name}>
+                  {activeFlow.name}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
                 <Clock size={10} className="text-emerald-500" />
