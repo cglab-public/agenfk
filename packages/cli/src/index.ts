@@ -2219,13 +2219,14 @@ flowCommand
   .option('--project <projectId>', 'Project ID to scope this flow to')
   .action(async (name, options) => {
     try {
-      const inquirer = (await import('inquirer')).default;
-
       const projectId = options.project || findProjectId(process.cwd());
       if (!projectId) {
         console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
         process.exit(1);
+        return;
       }
+
+      const inquirer = (await import('inquirer')).default;
 
       const { description } = await inquirer.prompt([
         { type: 'input', name: 'description', message: 'Flow description (optional):' },
@@ -2398,6 +2399,7 @@ flowCommand
       if (!projectId) {
         console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
         process.exit(1);
+        return;
       }
       await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId: id });
       console.log(chalk.green(`Flow ${id} activated for project ${projectId}.`));
@@ -2416,6 +2418,7 @@ flowCommand
       if (!projectId) {
         console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
         process.exit(1);
+        return;
       }
       await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId: null });
       console.log(chalk.green(`Project ${projectId} flow reset to default.`));
