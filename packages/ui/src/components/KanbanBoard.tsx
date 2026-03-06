@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence, LayoutGroup, useAnimation } from 'framer-motion';
 import { api } from '../api';
-import { AgenFKItem, ItemType, Status, Project } from '../types';
+import { AgenFKItem, ItemType, Status, Project, Flow, FlowStep } from '../types';
 import { clsx } from 'clsx';
 import {
   Plus, Loader2, AlertCircle,
@@ -10,7 +10,7 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch
 } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { CardDetailModal } from './CardDetailModal';
@@ -23,18 +23,23 @@ import { GitHubImportModal } from './GitHubImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
+import { FlowEditorModal } from './FlowEditorModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 
-const statuses = [
+// Fallback column list used when the flow fetch fails or is loading
+const FALLBACK_STATUSES = [
   Status.TODO,
   Status.IN_PROGRESS,
   Status.REVIEW,
   Status.TEST,
   Status.DONE
 ];
+
+// Special statuses that are always shown in sidebar sections, never in main columns
+const SIDEBAR_STATUSES = new Set([Status.IDEAS, Status.PAUSED, Status.BLOCKED, Status.ARCHIVED]);
 
 interface NavItem {
   id: string;
@@ -396,6 +401,7 @@ export const KanbanBoard: React.FC = () => {
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
+  const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
 
   const { data: versionData } = useQuery({
     queryKey: ['version'],
@@ -437,11 +443,34 @@ export const KanbanBoard: React.FC = () => {
     }
   }, [projects, isLoadingProjects, selectedProjectId]);
 
-  const { data: items, isLoading } = useQuery({ 
-    queryKey: ['items', selectedProjectId], 
+  const { data: items, isLoading } = useQuery({
+    queryKey: ['items', selectedProjectId],
     queryFn: () => api.listItems({ includeArchived: true, projectId: selectedProjectId || undefined }),
     enabled: !!selectedProjectId
   });
+
+  const { data: activeFlow, isLoading: isLoadingFlow, isError: isFlowError } = useQuery<Flow>({
+    queryKey: ['flow', selectedProjectId],
+    queryFn: () => api.getProjectFlow(selectedProjectId!),
+    enabled: !!selectedProjectId,
+    staleTime: 30_000,
+  });
+
+  // Derive the main (non-sidebar) column statuses from the active flow, sorted by order.
+  // Falls back to FALLBACK_STATUSES if the flow hasn't loaded yet or errored.
+  const mainColumnStatuses: Status[] = React.useMemo(() => {
+    if (!activeFlow || isFlowError) return FALLBACK_STATUSES;
+    return activeFlow.steps
+      .filter((step: FlowStep) => !step.isSpecial)
+      .sort((a: FlowStep, b: FlowStep) => a.order - b.order)
+      .map((step: FlowStep) => step.name as Status);
+  }, [activeFlow, isFlowError]);
+
+  // Map from status name → FlowStep for quick label/order lookups
+  const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
+    if (!activeFlow) return {};
+    return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
+  }, [activeFlow]);
   
   const { data: pricesData } = useQuery({
     queryKey: ['prices'],
@@ -530,6 +559,11 @@ export const KanbanBoard: React.FC = () => {
       console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+    });
+
+    socket.on('flow:updated', ({ projectId }: { projectId?: string }) => {
+      console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #6366f1; font-weight: bold', 'color: inherit');
+      queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
     });
 
     socket.on('server_restarting', () => {
@@ -729,6 +763,20 @@ export const KanbanBoard: React.FC = () => {
 
     const draggedItem = items.find((i: AgenFKItem) => i.id === id);
     if (!draggedItem) return;
+
+    // Flow transition validation: block invalid moves when a flow is loaded
+    if (activeFlow && draggedItem.status !== status) {
+      const fromStep = flowStepByStatus[draggedItem.status];
+      const toStep = flowStepByStatus[status];
+      if (fromStep && toStep && !fromStep.isSpecial && !toStep.isSpecial) {
+        const orderDiff = Math.abs(toStep.order - fromStep.order);
+        if (orderDiff > 1) {
+          // Invalid transition: revert (do nothing — drag is already cancelled visually)
+          console.warn(`[FLOW] Blocked transition ${draggedItem.status} → ${status} (order diff ${orderDiff})`);
+          return;
+        }
+      }
+    }
 
     // Reorder within same column or move to specific position in another column
     if (currentDropTargetId && currentDropTargetId !== id) {
@@ -1150,8 +1198,20 @@ export const KanbanBoard: React.FC = () => {
 
               <ReleaseReminder />
 
-              <button 
-                onClick={toggleTheme} 
+              {selectedProjectId && (
+                <button
+                  data-testid="manage-flow-btn"
+                  onClick={() => setIsFlowEditorOpen(true)}
+                  title="Manage Flow"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                >
+                  <GitBranch size={14} />
+                  <span className="hidden xl:inline">Flow</span>
+                </button>
+              )}
+
+              <button
+                onClick={toggleTheme}
                 className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-indigo-500 transition-all"
                 title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               >
@@ -1283,7 +1343,7 @@ export const KanbanBoard: React.FC = () => {
               )}
             </div>}
 
-          {statuses.map(status => (
+          {mainColumnStatuses.map(status => (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
                 <div className="flex items-center gap-2">
@@ -1578,6 +1638,15 @@ export const KanbanBoard: React.FC = () => {
 
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
+
+      {isFlowEditorOpen && selectedProjectId && (
+        <FlowEditorModal
+          open={isFlowEditorOpen}
+          onClose={() => setIsFlowEditorOpen(false)}
+          flow={activeFlow ?? null}
+          projectId={selectedProjectId}
+        />
+      )}
     </div>
   );
 };

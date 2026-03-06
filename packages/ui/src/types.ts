@@ -71,6 +71,25 @@ export interface CommentRecord {
   timestamp: string;
 }
 
+export interface FlowStep {
+  id: string;
+  name: string;
+  label: string;
+  order: number;
+  exitCriteria?: string;
+  isSpecial?: boolean;
+}
+
+export interface Flow {
+  id: string;
+  name: string;
+  description?: string;
+  projectId: string;
+  steps: FlowStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AgenFKItem {
   id: string;
   projectId: string;

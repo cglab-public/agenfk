@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgenFKItem, ItemType, Status } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgenFKItem, ItemType, Status, Flow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -166,5 +166,57 @@ export const api = {
   getReadme: async (): Promise<{ content: string }> => {
     const { data } = await axios.get(`${API_URL}/api/readme`);
     return data;
+  },
+  listFlows: async (): Promise<Flow[]> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/flows`);
+      return data;
+    } catch (e) {
+      console.error('API Error listing flows:', e);
+      throw e;
+    }
+  },
+  createFlow: async (flowData: Partial<Flow>): Promise<Flow> => {
+    try {
+      const { data } = await axios.post(`${API_URL}/flows`, flowData);
+      return data;
+    } catch (e) {
+      console.error('API Error creating flow:', e);
+      throw e;
+    }
+  },
+  updateFlow: async (id: string, flowData: Partial<Flow>): Promise<Flow> => {
+    try {
+      const { data } = await axios.put(`${API_URL}/flows/${id}`, flowData);
+      return data;
+    } catch (e) {
+      console.error(`API Error updating flow ${id}:`, e);
+      throw e;
+    }
+  },
+  deleteFlow: async (id: string): Promise<void> => {
+    try {
+      await axios.delete(`${API_URL}/flows/${id}`);
+    } catch (e) {
+      console.error(`API Error deleting flow ${id}:`, e);
+      throw e;
+    }
+  },
+  setProjectFlow: async (projectId: string, flowId: string | null): Promise<void> => {
+    try {
+      await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId });
+    } catch (e) {
+      console.error(`API Error setting flow for project ${projectId}:`, e);
+      throw e;
+    }
+  },
+  getProjectFlow: async (projectId: string): Promise<Flow> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/projects/${projectId}/flow`);
+      return data;
+    } catch (e) {
+      console.error(`API Error getting flow for project ${projectId}:`, e);
+      throw e;
+    }
   },
 };

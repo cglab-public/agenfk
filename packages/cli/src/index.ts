@@ -2159,6 +2159,271 @@ prCmd
     }
   });
 
+// ── Flow Commands ─────────────────────────────────────────────────────────────
+
+const flowCommand = program
+  .command('flow')
+  .description('Manage workflow flows (list, show, create, edit, use, reset)');
+
+flowCommand
+  .command('list')
+  .description('List all flows')
+  .action(async () => {
+    try {
+      const { data: flows } = await axios.get(`${API_URL}/flows`);
+      if (flows.length === 0) {
+        console.log(chalk.yellow('No flows found.'));
+        return;
+      }
+      console.table(flows.map((f: any) => ({
+        ID: f.id.substring(0, 8),
+        Name: f.name,
+        Steps: f.steps ? f.steps.length : 0,
+        Project: f.projectId ? f.projectId.substring(0, 8) : '-',
+      })));
+    } catch (error: any) {
+      console.error(chalk.red('Error listing flows:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('show <id>')
+  .description('Show a flow and its steps in order')
+  .action(async (id) => {
+    try {
+      const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
+      console.log(chalk.blue(`\nFlow: ${flow.name}`));
+      if (flow.description) console.log(chalk.gray(`Description: ${flow.description}`));
+      console.log(chalk.gray(`Project: ${flow.projectId}`));
+      console.log();
+      if (!flow.steps || flow.steps.length === 0) {
+        console.log(chalk.yellow('No steps defined.'));
+        return;
+      }
+      const sorted = [...flow.steps].sort((a: any, b: any) => a.order - b.order);
+      console.table(sorted.map((s: any) => ({
+        Order: s.order,
+        Name: s.name,
+        Label: s.label,
+        Special: s.isSpecial ? 'yes' : 'no',
+        'Exit Criteria': s.exitCriteria ? s.exitCriteria.substring(0, 50) : '-',
+      })));
+    } catch (error: any) {
+      console.error(chalk.red('Error showing flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('create <name>')
+  .description('Interactively create a new flow')
+  .option('--project <projectId>', 'Project ID to scope this flow to')
+  .action(async (name, options) => {
+    try {
+      const inquirer = (await import('inquirer')).default;
+
+      const projectId = options.project || findProjectId(process.cwd());
+      if (!projectId) {
+        console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
+        process.exit(1);
+      }
+
+      const { description } = await inquirer.prompt([
+        { type: 'input', name: 'description', message: 'Flow description (optional):' },
+      ]);
+
+      const steps: any[] = [];
+      let addMore = true;
+      let order = 1;
+
+      console.log(chalk.blue('\nAdd steps to the flow (leave name blank to finish):'));
+
+      while (addMore) {
+        const stepAnswers = await inquirer.prompt([
+          { type: 'input', name: 'stepName', message: `Step ${order} name (or blank to finish):` },
+        ]);
+
+        if (!stepAnswers.stepName.trim()) {
+          addMore = false;
+          break;
+        }
+
+        const stepDetails = await inquirer.prompt([
+          { type: 'input', name: 'label', message: 'Display label:', default: stepAnswers.stepName },
+          { type: 'input', name: 'exitCriteria', message: 'Exit criteria (optional):' },
+          { type: 'confirm', name: 'isSpecial', message: 'Is this a terminal/special step?', default: false },
+        ]);
+
+        steps.push({
+          id: randomUUID(),
+          name: stepAnswers.stepName.trim(),
+          label: stepDetails.label.trim() || stepAnswers.stepName.trim(),
+          order,
+          exitCriteria: stepDetails.exitCriteria.trim() || undefined,
+          isSpecial: stepDetails.isSpecial,
+        });
+        order++;
+      }
+
+      const { data } = await axios.post(`${API_URL}/flows`, { name, description, projectId, steps });
+      console.log(chalk.green(`\nCreated flow: ${data.name} (ID: ${data.id}) with ${data.steps.length} step(s)`));
+    } catch (error: any) {
+      console.error(chalk.red('Error creating flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('edit <id>')
+  .description('Interactively edit an existing flow')
+  .action(async (id) => {
+    try {
+      const inquirer = (await import('inquirer')).default;
+
+      const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
+      let steps: any[] = [...(flow.steps || [])].sort((a: any, b: any) => a.order - b.order);
+
+      let done = false;
+      while (!done) {
+        const stepList = steps.map((s: any, i: number) => `${i + 1}. [${s.order}] ${s.name} (${s.label})`).join('\n') || '  (no steps)';
+        console.log(chalk.blue(`\nFlow: ${flow.name}\nSteps:\n${stepList}\n`));
+
+        const { action } = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'action',
+            message: 'What would you like to do?',
+            choices: [
+              { name: 'Add step', value: 'add' },
+              { name: 'Remove step', value: 'remove' },
+              { name: 'Reorder step', value: 'reorder' },
+              { name: 'Edit step', value: 'edit' },
+              { name: 'Save and exit', value: 'save' },
+              { name: 'Cancel', value: 'cancel' },
+            ],
+          },
+        ]);
+
+        if (action === 'cancel') {
+          console.log(chalk.yellow('Edit cancelled.'));
+          return;
+        }
+
+        if (action === 'save') {
+          done = true;
+          break;
+        }
+
+        if (action === 'add') {
+          const ans = await inquirer.prompt([
+            { type: 'input', name: 'name', message: 'Step name:' },
+            { type: 'input', name: 'label', message: 'Display label:' },
+            { type: 'input', name: 'exitCriteria', message: 'Exit criteria (optional):' },
+            { type: 'confirm', name: 'isSpecial', message: 'Is this a terminal/special step?', default: false },
+          ]);
+          const maxOrder = steps.reduce((m: number, s: any) => Math.max(m, s.order), 0);
+          steps.push({
+            id: randomUUID(),
+            name: ans.name.trim(),
+            label: ans.label.trim() || ans.name.trim(),
+            order: maxOrder + 1,
+            exitCriteria: ans.exitCriteria.trim() || undefined,
+            isSpecial: ans.isSpecial,
+          });
+        } else if (action === 'remove') {
+          if (steps.length === 0) { console.log(chalk.yellow('No steps to remove.')); continue; }
+          const { stepToRemove } = await inquirer.prompt([
+            {
+              type: 'list',
+              name: 'stepToRemove',
+              message: 'Select step to remove:',
+              choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),
+            },
+          ]);
+          steps = steps.filter((s: any) => s.id !== stepToRemove);
+        } else if (action === 'reorder') {
+          if (steps.length < 2) { console.log(chalk.yellow('Need at least 2 steps to reorder.')); continue; }
+          const { stepToMove } = await inquirer.prompt([
+            {
+              type: 'list',
+              name: 'stepToMove',
+              message: 'Select step to move:',
+              choices: steps.map((s: any) => ({ name: `${s.name} (order: ${s.order})`, value: s.id })),
+            },
+          ]);
+          const { newOrder } = await inquirer.prompt([
+            { type: 'number', name: 'newOrder', message: 'New order number:' },
+          ]);
+          steps = steps.map((s: any) => s.id === stepToMove ? { ...s, order: newOrder } : s)
+            .sort((a: any, b: any) => a.order - b.order);
+        } else if (action === 'edit') {
+          if (steps.length === 0) { console.log(chalk.yellow('No steps to edit.')); continue; }
+          const { stepToEdit } = await inquirer.prompt([
+            {
+              type: 'list',
+              name: 'stepToEdit',
+              message: 'Select step to edit:',
+              choices: steps.map((s: any) => ({ name: `${s.name} (${s.label})`, value: s.id })),
+            },
+          ]);
+          const step = steps.find((s: any) => s.id === stepToEdit);
+          const ans = await inquirer.prompt([
+            { type: 'input', name: 'name', message: 'Step name:', default: step.name },
+            { type: 'input', name: 'label', message: 'Display label:', default: step.label },
+            { type: 'input', name: 'exitCriteria', message: 'Exit criteria:', default: step.exitCriteria || '' },
+            { type: 'confirm', name: 'isSpecial', message: 'Terminal/special step?', default: step.isSpecial || false },
+          ]);
+          steps = steps.map((s: any) => s.id === stepToEdit ? {
+            ...s,
+            name: ans.name.trim(),
+            label: ans.label.trim(),
+            exitCriteria: ans.exitCriteria.trim() || undefined,
+            isSpecial: ans.isSpecial,
+          } : s);
+        }
+      }
+
+      const { data: updated } = await axios.put(`${API_URL}/flows/${id}`, { ...flow, steps });
+      console.log(chalk.green(`\nSaved flow: ${updated.name} (${updated.steps.length} step(s))`));
+    } catch (error: any) {
+      console.error(chalk.red('Error editing flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('use <id>')
+  .description('Activate a flow for a project')
+  .option('--project <projectId>', 'Project ID (defaults to current project)')
+  .action(async (id, options) => {
+    try {
+      const projectId = options.project || findProjectId(process.cwd());
+      if (!projectId) {
+        console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
+        process.exit(1);
+      }
+      await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId: id });
+      console.log(chalk.green(`Flow ${id} activated for project ${projectId}.`));
+    } catch (error: any) {
+      console.error(chalk.red('Error activating flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('reset')
+  .description('Reset project flow to the default')
+  .option('--project <projectId>', 'Project ID (defaults to current project)')
+  .action(async (options) => {
+    try {
+      const projectId = options.project || findProjectId(process.cwd());
+      if (!projectId) {
+        console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
+        process.exit(1);
+      }
+      await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId: null });
+      console.log(chalk.green(`Project ${projectId} flow reset to default.`));
+    } catch (error: any) {
+      console.error(chalk.red('Error resetting flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
 }
