@@ -6,7 +6,7 @@ import { FlowEditorModal } from '../components/FlowEditorModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
-import { Flow } from '../types';
+import { Flow, RegistryFlow } from '../types';
 
 vi.mock('../api', () => ({
   api: {
@@ -16,6 +16,8 @@ vi.mock('../api', () => ({
     deleteFlow: vi.fn(),
     listFlows: vi.fn(),
     getProjectFlow: vi.fn(),
+    browseRegistry: vi.fn(),
+    installFromRegistry: vi.fn(),
   },
 }));
 
@@ -626,5 +628,175 @@ describe('FlowEditorModal', () => {
     expect(call.name).toBe('Copy of My Flow');
     // No id should be passed in the payload
     expect((call as any).id).toBeUndefined();
+  });
+});
+
+// ── Community tab ─────────────────────────────────────────────────────────────
+
+const REGISTRY_FLOW_1: RegistryFlow = {
+  filename: 'engineering-sprint.json',
+  name: 'Engineering Sprint',
+  author: 'acme-corp',
+  version: '1.0.0',
+  stepCount: 5,
+  description: 'A standard engineering sprint flow',
+};
+
+const REGISTRY_FLOW_2: RegistryFlow = {
+  filename: 'design-review.json',
+  name: 'Design Review',
+  author: 'design-team',
+  version: '2.0.0',
+  stepCount: 3,
+  description: 'Design review process',
+};
+
+const INSTALLED_FLOW: Flow = {
+  id: 'installed-flow-id',
+  name: 'Engineering Sprint',
+  description: 'A standard engineering sprint flow',
+  projectId: PROJECT_ID,
+  steps: [
+    { id: 'i1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+    { id: 'i2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 'i3', name: 'DONE', label: 'Done', order: 4, exitCriteria: '', isAnchor: true },
+  ],
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+describe('FlowEditorModal — Community tab', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW]);
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.browseRegistry).mockResolvedValue([REGISTRY_FLOW_1, REGISTRY_FLOW_2]);
+    vi.mocked(api.installFromRegistry).mockResolvedValue(INSTALLED_FLOW);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders My Flows and Community tabs', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    expect(screen.getByTestId('tab-my-flows')).toBeDefined();
+    expect(screen.getByTestId('tab-community')).toBeDefined();
+  });
+
+  it('switching to Community tab shows search input and loads registry flows', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    expect(screen.getByTestId('community-search-input')).toBeDefined();
+    await waitFor(() => expect(api.browseRegistry).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByTestId('community-flow-item-0')).toBeDefined());
+    expect(screen.getByTestId('community-flow-item-1')).toBeDefined();
+  });
+
+  it('community search filters by name', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.change(screen.getByTestId('community-search-input'), { target: { value: 'Design' } });
+    await waitFor(() => expect(screen.queryByTestId('community-flow-item-1')).toBeNull());
+    expect(screen.getByTestId('community-flow-item-0')).toBeDefined();
+    // Name shown should be Design Review
+    expect(screen.getByTestId('community-flow-item-0').textContent).toContain('Design Review');
+  });
+
+  it('community search filters by author', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.change(screen.getByTestId('community-search-input'), { target: { value: 'acme-corp' } });
+    await waitFor(() => expect(screen.queryByTestId('community-flow-item-1')).toBeNull());
+    expect(screen.getByTestId('community-flow-item-0').textContent).toContain('Engineering Sprint');
+  });
+
+  it('clicking a community flow shows the preview panel', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    expect(screen.getByTestId('community-install-btn')).toBeDefined();
+    expect(screen.getByTestId('community-clone-btn')).toBeDefined();
+  });
+
+  it('Install button calls installFromRegistry and switches to My Flows tab', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-install-btn'));
+    fireEvent.click(screen.getByTestId('community-install-btn'));
+    await waitFor(() =>
+      expect(api.installFromRegistry).toHaveBeenCalledWith('engineering-sprint.json')
+    );
+    // Should switch to My Flows tab after install
+    await waitFor(() => expect(screen.queryByTestId('community-preview-panel')).toBeNull());
+    expect(screen.getByTestId('flow-list')).toBeDefined();
+  });
+
+  it('Clone to Edit installs the flow and opens it as an editable copy', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-clone-btn'));
+    fireEvent.click(screen.getByTestId('community-clone-btn'));
+    await waitFor(() =>
+      expect(api.installFromRegistry).toHaveBeenCalledWith('engineering-sprint.json')
+    );
+    // Should switch to My Flows tab with editable clone
+    await waitFor(() => {
+      const nameInput = screen.queryByTestId('flow-name-input') as HTMLInputElement | null;
+      expect(nameInput).not.toBeNull();
+      expect(nameInput!.disabled).toBe(false);
+    });
+  });
+
+  it('empty state shown when no community flow is selected', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    // No flow selected yet — preview panel should not exist
+    expect(screen.queryByTestId('community-preview-panel')).toBeNull();
+  });
+
+  it('switching back to My Flows shows the flow list', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-search-input'));
+    fireEvent.click(screen.getByTestId('tab-my-flows'));
+    expect(screen.getByTestId('flow-list')).toBeDefined();
+    expect(screen.getByTestId('new-flow-btn')).toBeDefined();
   });
 });

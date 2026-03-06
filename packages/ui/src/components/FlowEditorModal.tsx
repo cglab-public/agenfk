@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
-import { Flow, FlowStep } from '../types';
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock } from 'lucide-react';
+import { Flow, FlowStep, RegistryFlow } from '../types';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download } from 'lucide-react';
 import { clsx } from 'clsx';
 
 /**
@@ -545,6 +545,109 @@ const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) =>
   </span>
 );
 
+// ── Community preview panel (right panel for community flows) ─────────────────
+
+interface CommunityPreviewPanelProps {
+  flow: RegistryFlow;
+  onInstalled: (flow: Flow) => void;
+  onCloneToEdit: (flow: Flow) => void;
+}
+
+const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
+  flow,
+  onInstalled,
+  onCloneToEdit,
+}) => {
+  const actionRef = useRef<'install' | 'clone'>('install');
+
+  const installMutation = useMutation({
+    mutationFn: (filename: string) => api.installFromRegistry(filename),
+    onSuccess: (installed: Flow) => {
+      if (actionRef.current === 'install') {
+        onInstalled(installed);
+      } else {
+        onCloneToEdit(installed);
+      }
+    },
+  });
+
+  return (
+    <div className="flex flex-col h-full" data-testid="community-preview-panel">
+      <div className="px-6 pt-6 pb-4 shrink-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
+            Community
+          </span>
+        </div>
+        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">{flow.name}</h3>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          {flow.author && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Author</p>
+              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.author}</p>
+            </div>
+          )}
+          {flow.version && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Version</p>
+              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.version}</p>
+            </div>
+          )}
+          <div>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Steps</p>
+            <p className="text-sm text-slate-700 dark:text-slate-200">{flow.stepCount}</p>
+          </div>
+        </div>
+
+        {flow.description && (
+          <div>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Description</p>
+            <p className="text-sm text-slate-600 dark:text-slate-400">{flow.description}</p>
+          </div>
+        )}
+
+        <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
+          <p className="text-xs text-slate-500 italic">
+            Step details will be available after installation.
+          </p>
+        </div>
+
+        {installMutation.isError && (
+          <p data-testid="community-install-error" className="text-sm text-red-600 dark:text-red-400">
+            {(installMutation.error as Error)?.message ?? 'Installation failed'}
+          </p>
+        )}
+      </div>
+
+      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3">
+        <button
+          data-testid="community-install-btn"
+          type="button"
+          disabled={installMutation.isPending}
+          onClick={() => { actionRef.current = 'install'; installMutation.mutate(flow.filename); }}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+        >
+          {installMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+          Install
+        </button>
+        <button
+          data-testid="community-clone-btn"
+          type="button"
+          disabled={installMutation.isPending}
+          onClick={() => { actionRef.current = 'clone'; installMutation.mutate(flow.filename); }}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+        >
+          <CopyPlus size={15} />
+          Clone to Edit
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // ── Main modal ────────────────────────────────────────────────────────────────
 
 export const FlowEditorModal: React.FC<Props> = (props) => {
@@ -561,6 +664,7 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
   const queryClient = useQueryClient();
 
   // ── Sidebar state ──────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'my-flows' | 'community'>('my-flows');
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(
     initialFlowId ?? null
   );
@@ -568,11 +672,14 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   // clonedFlow holds a not-yet-saved clone being edited
   const [clonedFlow, setClonedFlow] = useState<(Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined }) | null>(null);
+  // Community tab state
+  const [selectedRegistryFlow, setSelectedRegistryFlow] = useState<RegistryFlow | null>(null);
+  const [communitySearch, setCommunitySearch] = useState('');
 
   // ── Query: list all flows ──────────────────────────────────────────────────
   const { data: flows = [] } = useQuery<Flow[]>({
-    queryKey: ['flows'],
-    queryFn: () => api.listFlows(),
+    queryKey: ['flows', projectId],
+    queryFn: () => api.listFlows(projectId),
     enabled: isOpen,
   });
 
@@ -582,6 +689,20 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
     queryFn: () => api.getProjectFlow(projectId),
     enabled: isOpen,
   });
+
+  // ── Query: community registry flows ───────────────────────────────────────
+  const { data: registryFlows = [], isLoading: isRegistryLoading, isError: isRegistryError } = useQuery<RegistryFlow[]>({
+    queryKey: ['registry-flows'],
+    queryFn: () => api.browseRegistry(),
+    enabled: isOpen && activeTab === 'community',
+    retry: 1,
+  });
+
+  const filteredRegistryFlows = registryFlows.filter(f =>
+    !communitySearch ||
+    f.name.toLowerCase().includes(communitySearch.toLowerCase()) ||
+    (f.author ?? '').toLowerCase().includes(communitySearch.toLowerCase())
+  );
 
   // Derive selected flow object
   const selectedFlow = isNewFlow
@@ -635,6 +756,23 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
     setClonedFlow(null);
   };
 
+  const handleCommunityInstall = (installed: Flow) => {
+    queryClient.invalidateQueries({ queryKey: ['flows'] });
+    setActiveTab('my-flows');
+    setSelectedFlowId(installed.id);
+    setIsNewFlow(false);
+    setClonedFlow(null);
+  };
+
+  const handleCommunityClone = (installed: Flow) => {
+    queryClient.invalidateQueries({ queryKey: ['flows'] });
+    const copy = cloneFlow(installed, installed.name);
+    setActiveTab('my-flows');
+    setClonedFlow(copy);
+    setIsNewFlow(false);
+    setSelectedFlowId(null);
+  };
+
   const effectiveActiveFlowId = activeFlowId;
 
   const isReadOnly = selectedFlowId === BUILTIN_ID && !clonedFlow;
@@ -679,6 +817,92 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
             </button>
           </div>
 
+          {/* Tab bar */}
+          <div className="flex border-b border-slate-200 dark:border-slate-700 shrink-0">
+            <button
+              data-testid="tab-my-flows"
+              onClick={() => setActiveTab('my-flows')}
+              className={clsx(
+                'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
+                activeTab === 'my-flows'
+                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+              )}
+            >
+              My Flows
+            </button>
+            <button
+              data-testid="tab-community"
+              onClick={() => setActiveTab('community')}
+              className={clsx(
+                'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
+                activeTab === 'community'
+                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+              )}
+            >
+              Community
+            </button>
+          </div>
+
+          {/* Community tab content */}
+          {activeTab === 'community' && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="px-3 py-2 shrink-0">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    data-testid="community-search-input"
+                    type="text"
+                    placeholder="Search by name or author…"
+                    value={communitySearch}
+                    onChange={e => setCommunitySearch(e.target.value)}
+                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  />
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto px-2 pb-2" data-testid="community-flow-list">
+                {isRegistryLoading ? (
+                  <div className="flex flex-col items-center justify-center py-8 gap-2 text-slate-500">
+                    <Loader2 size={20} className="animate-spin" />
+                    <span className="text-xs">Loading…</span>
+                  </div>
+                ) : isRegistryError ? (
+                  <div className="flex flex-col items-center justify-center py-8 gap-2 px-3 text-center">
+                    <AlertCircle size={20} className="text-red-500" />
+                    <p className="text-xs text-red-600 dark:text-red-400">Failed to load registry.</p>
+                  </div>
+                ) : filteredRegistryFlows.length === 0 ? (
+                  <p className="text-xs text-slate-500 text-center py-8">
+                    {communitySearch ? 'No flows match.' : 'No community flows found.'}
+                  </p>
+                ) : (
+                  filteredRegistryFlows.map((rf, idx) => (
+                    <div
+                      key={rf.filename}
+                      data-testid={`community-flow-item-${idx}`}
+                      onClick={() => setSelectedRegistryFlow(rf)}
+                      className={clsx(
+                        'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
+                        selectedRegistryFlow?.filename === rf.filename
+                          ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      )}
+                    >
+                      <p className="text-sm font-medium truncate">{rf.name}</p>
+                      <p className="text-xs text-slate-400 dark:text-slate-500">
+                        {rf.author ? `${rf.author} · ` : ''}{rf.stepCount} step{rf.stepCount !== 1 ? 's' : ''}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* My Flows tab content */}
+          {activeTab === 'my-flows' && (
+          <>
           {/* Flow list */}
           <div className="flex-1 overflow-y-auto px-2 pb-2" data-testid="flow-list">
             {/* Built-in default flow row */}
@@ -822,11 +1046,27 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
               New Flow
             </button>
           </div>
+          </>
+          )}
         </div>
 
         {/* ── RIGHT PANEL ───────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {selectedFlowId !== null || isNewFlow || isEditingClone ? (
+          {activeTab === 'community' ? (
+            selectedRegistryFlow ? (
+              <CommunityPreviewPanel
+                key={selectedRegistryFlow.filename}
+                flow={selectedRegistryFlow}
+                onInstalled={handleCommunityInstall}
+                onCloneToEdit={handleCommunityClone}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+                <Globe size={40} className="opacity-30" />
+                <p className="text-sm">Select a community flow to preview it.</p>
+              </div>
+            )
+          ) : selectedFlowId !== null || isNewFlow || isEditingClone ? (
             <EditorPanel
               key={isEditingClone ? '__clone__' : isNewFlow ? '__new__' : selectedFlowId}
               flow={selectedFlow}
