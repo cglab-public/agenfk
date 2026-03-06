@@ -483,6 +483,87 @@ describe('GET /releases/latest', () => {
   });
 });
 
+// ── validate_progress: command-only-on-final-step ─────────────────────────────
+
+describe('POST /items/:id/validate — command required only on final step', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('advances intermediate step (REVIEW→TEST) with no command, without running anything', async () => {
+    if (!verifyToken) return;
+    const p = (await request(app).post('/projects').send({ name: 'PV1' })).body;
+    // No verifyCommand set on project
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV1', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({});  // no command
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('TEST');
+  });
+
+  it('advances intermediate step (IN_PROGRESS→REVIEW) with no command', async () => {
+    if (!verifyToken) return;
+    const p = (await request(app).post('/projects').send({ name: 'PV2' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV2', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({});  // no command
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('REVIEW');
+  });
+
+  it('still returns NO_VERIFY_COMMAND when on final step (TEST→DONE) with no command and no verifyCommand', async () => {
+    if (!verifyToken) return;
+    const p = (await request(app).post('/projects').send({ name: 'PV3' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV3', projectId: p.id })).body;
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', verifyToken)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({});  // no command, no verifyCommand
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('NO_VERIFY_COMMAND');
+  });
+
+  it('runs verifyCommand on final step (TEST→DONE) when no explicit command given', async () => {
+    if (!verifyToken) return;
+    const p = (await request(app).post('/projects').send({ name: 'PV4' })).body;
+    await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo verify-ok' });
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV4', projectId: p.id })).body;
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', verifyToken)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({});  // no command — should use verifyCommand
+
+    expect([200, 422]).toContain(res.status);
+    if (res.status === 200) expect(res.body.status).toBe('DONE');
+  });
+});
+
 // ── Review success path ───────────────────────────────────────────────────────
 
 describe('POST /items/:id/review success paths', () => {

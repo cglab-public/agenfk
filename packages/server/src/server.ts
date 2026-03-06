@@ -1192,17 +1192,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${exitCriteria ? `\n\n**Exit criteria**: ${exitCriteria}` : ''}` });
   }
 
-  const resolvedCommand = command || (project as any)?.verifyCommand;
-  if (!resolvedCommand) {
+  const nextStep = sorted[currentFlowStep.index + 1];
+  const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
+  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+
+  // A command is only required for the final step (→ DONE). For intermediate
+  // steps the command is optional — omitting it advances without running anything.
+  const isFinalStep = nextStatus === Status.DONE;
+  const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
+  if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
       error: "NO_VERIFY_COMMAND",
       message: "No command provided and no verifyCommand configured for this project. Provide a command or set one with update_project({ id, verifyCommand })."
     });
   }
-
-  const nextStep = sorted[currentFlowStep.index + 1];
-  const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
-  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
 
   // ── Sibling propagation ───────────────────────────────────────────────────
@@ -1239,6 +1242,16 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.`, output: 'Sibling propagation' });
       }
     }
+  }
+
+  // No command on an intermediate step — advance directly without running anything.
+  if (!resolvedCommand) {
+    const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
+    const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), comment] });
+    io.emit('items_updated');
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.\n\nContinue calling validate_progress to advance through remaining steps.` });
   }
 
   const projectRoot = findProjectRoot(process.cwd());
