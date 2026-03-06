@@ -494,12 +494,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         );
 
         const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
-        const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
-        const testItems = activeItems.filter((i: any) => i.status === 'TEST');
+
+        // Compute intermediate flow steps (non-anchor steps) from the active flow.
+        // These are the steps where review_changes / test_changes operate.
+        const sortedFlowSteps: any[] = activeFlow
+          ? [...activeFlow.steps].sort((a: any, b: any) => a.order - b.order)
+          : [];
+        const intermediateFlowStatuses: Set<string> = activeFlow
+          ? new Set(sortedFlowSteps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()))
+          : new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
+        // Coding step = first non-anchor step (where coding happens)
+        const codingStepName: string = (activeFlow
+          ? sortedFlowSteps.find((s: any) => !s.isAnchor)?.name
+          : 'IN_PROGRESS') ?? 'IN_PROGRESS';
+
+        // Items in any intermediate step beyond the coding step (candidates for review_changes / test_changes)
+        const intermediateItems = activeItems.filter((i: any) =>
+          intermediateFlowStatuses.has(i.status.toUpperCase()) && i.status.toUpperCase() !== codingStepName.toUpperCase()
+        );
 
         // Build a human-readable flow steps summary for inclusion in responses
         const flowStepsSummary = activeFlow
-          ? `\nActive Flow: "${activeFlow.name}" — Steps: ${[...activeFlow.steps].sort((a: any, b: any) => a.order - b.order).map((s: any) => s.name).join(' → ')}`
+          ? `\nActive Flow: "${activeFlow.name}" — Steps: ${sortedFlowSteps.map((s: any) => s.name).join(' → ')}`
           : '';
 
         // Enforcement Logic
@@ -549,17 +565,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
 
         if (role === 'review') {
-          const activeReviewItems = itemId ? reviewItems.filter((i: any) => i.id === itemId) : reviewItems;
-          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in REVIEW status in project [${effectiveProjectId}].` }] };
+          const activeReviewItems = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
+          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].join(', ')}.` }] };
           const task = activeReviewItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${flowStepsSummary}` }] };
         }
 
         if (role === 'testing') {
-          const activeTestItems = itemId ? testItems.filter((i: any) => i.id === itemId) : testItems;
-          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in TEST status in project [${effectiveProjectId}].` }] };
+          const activeTestItems = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
+          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].join(', ')}.` }] };
           const task = activeTestItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${flowStepsSummary}` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized
@@ -613,12 +629,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         // Fetch current item to check status for state machine transitions
         const { data: currentItem } = await api.get(`/items/${id}`);
 
-        // Enforce REVIEW/TEST workflow: block direct transitions to DONE unless from TEST
+        // Enforce workflow: block direct transitions to DONE — must use test_changes
         if (updates.status === "DONE") {
-          if (currentItem.status !== "TEST") {
+          // Fetch active flow to determine valid pre-DONE steps
+          let preDoneSteps = new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
+          try {
+            const { data: itemFlow } = await api.get(`/projects/${currentItem.projectId}/flow`).catch(() => ({ data: null }));
+            if (itemFlow?.steps) {
+              preDoneSteps = new Set(itemFlow.steps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()));
+            }
+          } catch { /* use defaults */ }
+          if (!preDoneSteps.has(currentItem.status.toUpperCase())) {
             return {
               isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Move the item to TEST first, then call test_changes(itemId) to run the project's test suite.` }],
+              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Use test_changes(itemId) to run the project's test suite and advance to DONE.` }],
             };
           }
           // Allow TEST -> DONE, using verify token to bypass server guard

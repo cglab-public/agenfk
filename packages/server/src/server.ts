@@ -324,6 +324,33 @@ function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name
   return allowed;
 }
 
+// ── Flow step helpers (used by review_changes / test_changes) ────────────────
+
+type FlowStepInfo = { name: string; order: number; isAnchor?: boolean };
+
+/** Returns steps sorted by order, excluding platform-only statuses. */
+function sortedFlowSteps(flow: { steps: FlowStepInfo[] }): FlowStepInfo[] {
+  return [...flow.steps].sort((a, b) => a.order - b.order);
+}
+
+/**
+ * The "coding" step: the first non-anchor step in the flow.
+ * In the default flow this is IN_PROGRESS. Custom flows may use any name.
+ */
+function getCodingStep(sorted: FlowStepInfo[]): FlowStepInfo | undefined {
+  return sorted.find(s => !s.isAnchor);
+}
+
+/**
+ * Returns the step in the flow that matches the item's current status (case-insensitive).
+ * Returns undefined if the status is not in the flow (e.g. platform status or unknown).
+ */
+function findCurrentFlowStep(sorted: FlowStepInfo[], status: string): { step: FlowStepInfo; index: number } | undefined {
+  const idx = sorted.findIndex(s => s.name.toUpperCase() === status.toUpperCase());
+  if (idx === -1) return undefined;
+  return { step: sorted[idx], index: idx };
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get("/", (req, res) => {
@@ -1131,7 +1158,7 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
 
 // ── Verify Endpoint ──────────────────────────────────────────────────────────
 
-// ── review_changes: REVIEW → TEST (agent picks the command) ──────────────────
+// ── review_changes: advances to the next flow step (flow-aware) ──────────────
 app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify) {
@@ -1147,17 +1174,35 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  if (item.status !== Status.REVIEW) {
-    return res.status(400).json({ error: `review_changes requires item to be in REVIEW. Current status: ${item.status}` });
+
+  // ── Flow-aware status validation ──────────────────────────────────────────
+  const project = await storage.getProject(item.projectId);
+  const projectFlows = await storage.listFlows(item.projectId);
+  const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
+  const sorted = sortedFlowSteps(activeFlow);
+  const codingStep = getCodingStep(sorted); // first non-anchor = failure target
+  const currentFlowStep = findCurrentFlowStep(sorted, item.status);
+
+  if (!currentFlowStep) {
+    return res.status(400).json({ error: `review_changes requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
+  }
+  if (currentFlowStep.step.isAnchor) {
+    return res.status(400).json({ error: `review_changes requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
   }
 
-  // ── Sibling propagation: skip build if a sibling already passed review ──────
+  const nextStep = sorted[currentFlowStep.index + 1];
+  const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
+  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+
+  // ── Sibling propagation: skip build if a sibling already passed this step ──
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
-    const passedSibling = siblings.find(s =>
-      s.id !== item.id &&
-      (s.status === Status.TEST || s.status === Status.DONE)
-    );
+    const passedSibling = siblings.find(s => {
+      if (s.id === item.id) return false;
+      if (s.status === Status.DONE) return true;
+      const sibStep = findCurrentFlowStep(sorted, s.status);
+      return sibStep !== undefined && sibStep.index > currentFlowStep.index;
+    });
     if (passedSibling) {
       const sibComment = {
         id: uuidv4(),
@@ -1165,10 +1210,10 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
         content: `### Review PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`,
         timestamp: new Date(),
       };
-      const updated = await storage.updateItem(req.params.id, { status: Status.TEST, comments: [...(item.comments || []), sibComment] });
+      const updated = await storage.updateItem(req.params.id, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
-      return res.json({ status: Status.TEST, message: `✅ Review Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to TEST column.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: 'Sibling propagation' });
+      return res.json({ status: nextStatus, message: `✅ Review Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to ${nextStatus}.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: 'Sibling propagation' });
     }
   }
 
@@ -1193,18 +1238,18 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   }];
 
   if (passed) {
-    const updated = await storage.updateItem(req.params.id, { status: Status.TEST, comments });
+    const updated = await storage.updateItem(req.params.id, { status: nextStatus, comments });
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: Status.TEST, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to TEST column.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: truncated });
+    return res.json({ status: nextStatus, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to ${nextStatus}.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: truncated });
   } else {
-    await storage.updateItem(req.params.id, { status: Status.IN_PROGRESS, comments });
+    await storage.updateItem(req.params.id, { status: failureStatus, comments });
     io.emit('items_updated');
-    return res.status(422).json({ status: Status.IN_PROGRESS, message: `❌ Review Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
+    return res.status(422).json({ status: failureStatus, message: `❌ Review Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
   }
 }));
 
-// ── test_changes: TEST → DONE (enforces project verifyCommand) ───────────────
+// ── test_changes: any intermediate flow step → DONE (flow-aware) ─────────────
 app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   if (!isInternalVerify) {
@@ -1215,9 +1260,6 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  if (item.status !== Status.TEST) {
-    return res.status(400).json({ error: `test_changes requires item to be in TEST status. Current status: ${item.status}` });
-  }
 
   const project = await storage.getProject(item.projectId);
   if (!project?.verifyCommand) {
@@ -1226,6 +1268,22 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
       message: "No verifyCommand configured for this project. Ask the developer what command should be used to build and test the project, then set it with update_project({ id, verifyCommand }). Example: 'npm run build && npm test'"
     });
   }
+
+  // ── Flow-aware status validation ──────────────────────────────────────────
+  const projectFlows = await storage.listFlows(item.projectId);
+  const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
+  const sorted = sortedFlowSteps(activeFlow);
+  const codingStep = getCodingStep(sorted); // first non-anchor = failure target
+  const currentFlowStep = findCurrentFlowStep(sorted, item.status);
+
+  if (!currentFlowStep) {
+    return res.status(400).json({ error: `test_changes requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
+  }
+  if (currentFlowStep.step.isAnchor) {
+    return res.status(400).json({ error: `test_changes requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
+  }
+
+  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
 
   const command = project.verifyCommand;
   const projectRoot = findProjectRoot(process.cwd());
@@ -1294,13 +1352,13 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
     return res.json({ status: Status.DONE, message: `✅ Test Suite Passed!\n\nCommand: \`${command}\`\nItem moved to DONE.`, output: truncated });
   } else {
     const updates: any = {
-      status: Status.IN_PROGRESS,
+      status: failureStatus,
       comments,
       tests: [...(item.tests || []), { id: uuidv4(), command, output: truncated, status: 'FAILED', executedAt: new Date() }],
     };
     await storage.updateItem(req.params.id, updates);
     io.emit('items_updated');
-    return res.status(422).json({ status: Status.IN_PROGRESS, message: `❌ Test Suite Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
+    return res.status(422).json({ status: failureStatus, message: `❌ Test Suite Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
   }
 }));
 
