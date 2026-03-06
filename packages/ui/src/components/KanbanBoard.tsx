@@ -1343,22 +1343,31 @@ export const KanbanBoard: React.FC = () => {
               )}
             </div>}
 
-          {mainColumnStatuses.map(status => (
+          {isLoadingFlow && !activeFlow && (
+            <div className="flex items-center justify-center flex-1 min-h-[200px]">
+              <Loader2 size={24} className="animate-spin text-indigo-400" />
+            </div>
+          )}
+
+          {(!isLoadingFlow || activeFlow) && mainColumnStatuses.map(status => {
+            const flowStep = flowStepByStatus[status];
+            const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
+            return (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
-              <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status])}>
+              <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status] ?? "border-t-slate-400")}>
                 <div className="flex items-center gap-2">
                   <div className={clsx(
                     "p-1 rounded-md",
-                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" : 
+                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" :
                     status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
                     status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
                     status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
                     status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
                     "text-slate-500 bg-slate-50 dark:bg-slate-800"
                   )}>
-                    {statusIcons[status as Status]}
+                    {statusIcons[status as Status] ?? <Briefcase size={14} />}
                   </div>
-                  <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{status.replace('_', ' ')}</h2>
+                  <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{columnLabel}</h2>
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
                   </button>
@@ -1367,7 +1376,7 @@ export const KanbanBoard: React.FC = () => {
                   {getItemsByStatus(status as Status).length}
                 </span>
               </div>
-              
+
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
                     {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
@@ -1401,11 +1410,12 @@ export const KanbanBoard: React.FC = () => {
                     ))}
                   </AnimatePresence>
                 <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
-                  <Plus size={16} /> Add {status.toLowerCase()}
+                  <Plus size={16} /> Add {columnLabel.toLowerCase()}
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {/* Paused + Blocked + Archived — hidden in drill-down view */}
           {navPath.length === 0 && (

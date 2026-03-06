@@ -40,6 +40,26 @@ if (typeof window !== 'undefined') {
   window.HTMLElement.prototype.scrollTo = vi.fn();
 }
 
+// Default flow used in tests — uses Status names as labels to keep column header assertions stable
+const DEFAULT_FLOW_MOCK = {
+  id: 'default',
+  name: 'Default Flow',
+  projectId: '__builtin__',
+  steps: [
+    { id: 's-ideas', name: 'IDEAS', label: 'IDEAS', order: 0, isSpecial: true },
+    { id: 's-todo', name: 'TODO', label: 'TODO', order: 1 },
+    { id: 's-ip', name: 'IN_PROGRESS', label: 'IN PROGRESS', order: 2 },
+    { id: 's-review', name: 'REVIEW', label: 'REVIEW', order: 3 },
+    { id: 's-test', name: 'TEST', label: 'TEST', order: 4 },
+    { id: 's-done', name: 'DONE', label: 'DONE', order: 5 },
+    { id: 's-blocked', name: 'BLOCKED', label: 'BLOCKED', order: 6, isSpecial: true },
+    { id: 's-paused', name: 'PAUSED', label: 'PAUSED', order: 7, isSpecial: true },
+    { id: 's-archived', name: 'ARCHIVED', label: 'ARCHIVED', order: 8, isSpecial: true },
+  ],
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
 vi.mock('../api', () => ({
   api: {
     listProjects: vi.fn(() => Promise.resolve([])),
@@ -55,6 +75,8 @@ vi.mock('../api', () => ({
     getJiraStatus: vi.fn(() => Promise.resolve({ configured: false, connected: false })),
     getLatestRelease: vi.fn(() => Promise.resolve(null)),
     getVersion: vi.fn(() => Promise.resolve({ version: '1.0.0' })),
+    getProjectFlow: vi.fn(() => Promise.resolve(DEFAULT_FLOW_MOCK)),
+    getGitHubStatus: vi.fn(() => Promise.resolve({ configured: false })),
   }
 }));
 
@@ -474,7 +496,7 @@ describe('KanbanBoard', () => {
 
     fireEvent.dragStart(taskCard, { dataTransfer });
 
-    // Drop onto the IN_PROGRESS column (rendered as "IN PROGRESS" with space)
+    // Drop onto the IN_PROGRESS column (rendered as "IN PROGRESS")
     const inProgressCol = screen.getByText('IN PROGRESS').closest('.flex-col')!;
     fireEvent.drop(inProgressCol, { dataTransfer });
 
@@ -693,5 +715,93 @@ describe('KanbanBoard', () => {
     // Close via Escape — covers () => setSelectedItem(null) at line 1296
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(document.querySelector('.fixed.inset-0')).toBeNull());
+  });
+
+  describe('Dynamic Flow Columns', () => {
+    it('should render columns from the active flow steps in order', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const customFlow = {
+        ...DEFAULT_FLOW_MOCK,
+        steps: [
+          { id: 's-todo', name: 'TODO', label: 'Backlog', order: 0 },
+          { id: 's-ip', name: 'IN_PROGRESS', label: 'Doing', order: 1 },
+          { id: 's-done', name: 'DONE', label: 'Shipped', order: 2 },
+          { id: 's-blocked', name: 'BLOCKED', label: 'Blocked', order: 3, isSpecial: true },
+        ],
+      };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      vi.mocked(api.getProjectFlow).mockResolvedValue(customFlow as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      // Non-special steps should appear as column headers
+      await waitFor(() => {
+        expect(screen.getByText('Backlog')).toBeDefined();
+        expect(screen.getByText('Doing')).toBeDefined();
+        expect(screen.getByText('Shipped')).toBeDefined();
+      });
+
+      // Special step should NOT appear in main columns (it's in the sidebar)
+      expect(screen.queryByRole('heading', { name: /^Blocked$/i })).toBeNull();
+    });
+
+    it('should call getProjectFlow with the selected project id', async () => {
+      const project = { id: 'proj-abc', name: 'Flow Project', createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      localStorage.setItem('agenfk_project_id', 'proj-abc');
+
+      render(<KanbanBoard />, { wrapper });
+      await screen.findByText('TODO');
+
+      await waitFor(() => {
+        expect(api.getProjectFlow).toHaveBeenCalledWith('proj-abc');
+      });
+    });
+
+    it('should fall back to default columns when getProjectFlow fails', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      vi.mocked(api.getProjectFlow).mockRejectedValue(new Error('Network error'));
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      // Fallback columns should still render
+      await waitFor(() => {
+        expect(screen.getByText('TODO')).toBeDefined();
+        expect(screen.getByText('IN PROGRESS')).toBeDefined();
+        expect(screen.getByText('DONE')).toBeDefined();
+      });
+    });
+
+    it('should render cards in the correct dynamic column', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const items = [
+        { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Flow Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] },
+      ];
+      const customFlow = {
+        ...DEFAULT_FLOW_MOCK,
+        steps: [
+          { id: 's-todo', name: 'TODO', label: 'Queue', order: 0 },
+          { id: 's-done', name: 'DONE', label: 'Finished', order: 1 },
+        ],
+      };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue(items as any);
+      vi.mocked(api.getProjectFlow).mockResolvedValue(customFlow as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      // Card should appear under the "Queue" column (mapped from TODO)
+      const card = await screen.findByText('Flow Task');
+      expect(card).toBeDefined();
+      // Column header should use the flow label
+      expect(screen.getByText('Queue')).toBeDefined();
+    });
   });
 });
