@@ -311,6 +311,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           <div className="space-y-2" data-testid="steps-list">
             {steps.map((step, index) => {
               const isAnchor = !!step.isAnchor;
+              const isTodoAnchor = isAnchor && step.name.toUpperCase() === 'TODO';
               const isStepLocked = isReadOnly || isAnchor;
               // Check if this non-anchor step has a reserved name
               const stepNameUpper = step.name.toUpperCase();
@@ -360,14 +361,32 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
                     <div className="flex-1 space-y-2">
                       {isAnchor && (
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                            {step.label}
-                          </span>
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium">
-                            anchor
-                          </span>
-                        </div>
+                        <>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                              {step.label}
+                            </span>
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium">
+                              anchor
+                            </span>
+                          </div>
+                          {isTodoAnchor && (
+                            <div>
+                              <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
+                                Exit Criteria
+                              </label>
+                              <textarea
+                                data-testid={`step-exit-criteria-${index}`}
+                                value={step.exitCriteria ?? ''}
+                                onChange={e => updateStep(index, { exitCriteria: e.target.value })}
+                                rows={2}
+                                placeholder="What must be true before leaving this step?"
+                                disabled={isReadOnly}
+                                className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60"
+                              />
+                            </div>
+                          )}
+                        </>
                       )}
                       {!isAnchor && (
                         <>
