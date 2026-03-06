@@ -791,17 +791,20 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     });
   }
 
-  // Flow-aware transition validation
+  // Flow-aware transition validation (only active when a custom flow is assigned)
   if (status !== undefined && status !== currentItem.status && !isInternalVerify) {
     const project = await storage.getProject(currentItem.projectId);
     const projectFlowId = (project as any)?.flowId as string | undefined;
-    const projectFlows = project ? await storage.listFlows(currentItem.projectId) : [];
-    const activeFlow = getActiveFlow(projectFlowId, projectFlows);
-    const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
-    if (!allowed.has(status)) {
-      return res.status(400).json({
-        error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}.`
-      });
+    // Only enforce flow transitions when a custom (non-default) flow is set
+    if (projectFlowId) {
+      const projectFlows = await storage.listFlows(currentItem.projectId);
+      const activeFlow = getActiveFlow(projectFlowId, projectFlows);
+      const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
+      if (!allowed.has(status)) {
+        return res.status(400).json({
+          error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}.`
+        });
+      }
     }
   }
 

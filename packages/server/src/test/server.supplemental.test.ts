@@ -1301,3 +1301,316 @@ describe('archive and unarchive edge cases', () => {
     expect(res.body.status).toBe('IN_PROGRESS');
   });
 });
+
+// ── Flow CRUD API tests ───────────────────────────────────────────────────────
+
+describe('Flows API', () => {
+  let projectId: string;
+
+  beforeEach(async () => {
+    await initStorage();
+    const p = (await request(app).post('/projects').send({ name: 'FlowProject' })).body;
+    projectId = p.id;
+  });
+
+  it('GET /flows requires projectId query param', async () => {
+    const res = await request(app).get('/flows');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/projectId/);
+  });
+
+  it('GET /flows returns empty list initially', async () => {
+    const res = await request(app).get('/flows').query({ projectId });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it('POST /flows requires projectId and name', async () => {
+    const res = await request(app).post('/flows').send({ name: 'Missing Project' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/projectId/);
+  });
+
+  it('POST /flows creates a flow', async () => {
+    const res = await request(app).post('/flows').send({
+      projectId,
+      name: 'My Flow',
+      description: 'A custom flow',
+      steps: [
+        { id: 'step-1', name: 'TODO', label: 'To Do', order: 1 },
+        { id: 'step-2', name: 'IN_PROGRESS', label: 'In Progress', order: 2 },
+        { id: 'step-3', name: 'DONE', label: 'Done', order: 3 },
+      ],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.name).toBe('My Flow');
+    expect(res.body.projectId).toBe(projectId);
+    expect(res.body.steps).toHaveLength(3);
+    expect(res.body.id).toBeDefined();
+  });
+
+  it('GET /flows/:id returns the flow', async () => {
+    const created = (await request(app).post('/flows').send({
+      projectId, name: 'F1', steps: [],
+    })).body;
+
+    const res = await request(app).get(`/flows/${created.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(created.id);
+    expect(res.body.name).toBe('F1');
+  });
+
+  it('GET /flows/:id returns 404 for unknown flow', async () => {
+    const res = await request(app).get('/flows/nonexistent-id');
+    expect(res.status).toBe(404);
+  });
+
+  it('PUT /flows/:id updates a flow', async () => {
+    const created = (await request(app).post('/flows').send({
+      projectId, name: 'Original', steps: [],
+    })).body;
+
+    const res = await request(app).put(`/flows/${created.id}`).send({
+      name: 'Updated',
+      description: 'Now with description',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe('Updated');
+    expect(res.body.description).toBe('Now with description');
+  });
+
+  it('PUT /flows/:id returns 404 for unknown flow', async () => {
+    const res = await request(app).put('/flows/nonexistent-id').send({ name: 'X' });
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE /flows/:id deletes a flow', async () => {
+    const created = (await request(app).post('/flows').send({
+      projectId, name: 'ToDelete', steps: [],
+    })).body;
+
+    const delRes = await request(app).delete(`/flows/${created.id}`);
+    expect(delRes.status).toBe(204);
+
+    const getRes = await request(app).get(`/flows/${created.id}`);
+    expect(getRes.status).toBe(404);
+  });
+
+  it('DELETE /flows/:id returns 404 for unknown flow', async () => {
+    const res = await request(app).delete('/flows/nonexistent-id');
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /flows lists all flows for a project', async () => {
+    await request(app).post('/flows').send({ projectId, name: 'F-A', steps: [] });
+    await request(app).post('/flows').send({ projectId, name: 'F-B', steps: [] });
+
+    const res = await request(app).get('/flows').query({ projectId });
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThanOrEqual(2);
+    const names = res.body.map((f: any) => f.name);
+    expect(names).toContain('F-A');
+    expect(names).toContain('F-B');
+  });
+});
+
+// ── Project Flow assignment tests ─────────────────────────────────────────────
+
+describe('Project Flow assignment', () => {
+  let projectId: string;
+
+  beforeEach(async () => {
+    await initStorage();
+    const p = (await request(app).post('/projects').send({ name: 'FlowProject2' })).body;
+    projectId = p.id;
+  });
+
+  it('GET /projects/:id/flow returns DEFAULT_FLOW when no flowId set', async () => {
+    const res = await request(app).get(`/projects/${projectId}/flow`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe('default');
+    expect(res.body.name).toBe('Default Flow');
+  });
+
+  it('GET /projects/:id/flow returns 404 for unknown project', async () => {
+    const res = await request(app).get('/projects/nonexistent/flow');
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/flow requires flowId', async () => {
+    const res = await request(app).post(`/projects/${projectId}/flow`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/flowId/);
+  });
+
+  it('POST /projects/:id/flow returns 404 for unknown flow', async () => {
+    const res = await request(app).post(`/projects/${projectId}/flow`).send({ flowId: 'nonexistent' });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /projects/:id/flow sets the active flow', async () => {
+    const flow = (await request(app).post('/flows').send({
+      projectId,
+      name: 'Custom Flow',
+      steps: [
+        { id: 's1', name: 'TODO', label: 'To Do', order: 1 },
+        { id: 's2', name: 'IN_PROGRESS', label: 'In Progress', order: 2 },
+        { id: 's3', name: 'DONE', label: 'Done', order: 3 },
+        { id: 's4', name: 'BLOCKED', label: 'Blocked', order: 4, isSpecial: true },
+        { id: 's5', name: 'PAUSED', label: 'Paused', order: 5, isSpecial: true },
+        { id: 's6', name: 'ARCHIVED', label: 'Archived', order: 6, isSpecial: true },
+        { id: 's7', name: 'TRASHED', label: 'Trashed', order: 7, isSpecial: true },
+      ],
+    })).body;
+
+    const res = await request(app).post(`/projects/${projectId}/flow`).send({ flowId: flow.id });
+    expect(res.status).toBe(200);
+    expect((res.body as any).flowId).toBe(flow.id);
+  });
+
+  it('GET /projects/:id/flow returns the assigned flow after setting it', async () => {
+    const flow = (await request(app).post('/flows').send({
+      projectId,
+      name: 'Active Flow',
+      steps: [
+        { id: 's1', name: 'TODO', label: 'To Do', order: 1 },
+        { id: 's2', name: 'DONE', label: 'Done', order: 2 },
+        { id: 's3', name: 'BLOCKED', label: 'Blocked', order: 3, isSpecial: true },
+        { id: 's4', name: 'PAUSED', label: 'Paused', order: 4, isSpecial: true },
+        { id: 's5', name: 'ARCHIVED', label: 'Archived', order: 5, isSpecial: true },
+        { id: 's6', name: 'TRASHED', label: 'Trashed', order: 6, isSpecial: true },
+      ],
+    })).body;
+
+    await request(app).post(`/projects/${projectId}/flow`).send({ flowId: flow.id });
+
+    const res = await request(app).get(`/projects/${projectId}/flow`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(flow.id);
+    expect(res.body.name).toBe('Active Flow');
+  });
+
+  it('POST /projects/:id/flow returns 404 for unknown project', async () => {
+    const res = await request(app).post('/projects/nonexistent/flow').send({ flowId: 'any' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── Flow-aware transition validation tests ────────────────────────────────────
+
+describe('Flow-aware status transition validation', () => {
+  let projectId: string;
+  let flowId: string;
+
+  beforeEach(async () => {
+    await initStorage();
+    const p = (await request(app).post('/projects').send({ name: 'TransitionProject' })).body;
+    projectId = p.id;
+
+    // Create a simple custom flow: TODO -> STEP_A -> STEP_B (plus special steps)
+    const flow = (await request(app).post('/flows').send({
+      projectId,
+      name: 'Simple Flow',
+      steps: [
+        { id: 'f-todo', name: 'TODO', label: 'To Do', order: 1 },
+        { id: 'f-a', name: 'IN_PROGRESS', label: 'In Progress', order: 2 },
+        { id: 'f-b', name: 'REVIEW', label: 'Review', order: 3 },
+        { id: 'f-done', name: 'DONE', label: 'Done', order: 4 },
+        { id: 'f-blocked', name: 'BLOCKED', label: 'Blocked', order: 5, isSpecial: true },
+        { id: 'f-paused', name: 'PAUSED', label: 'Paused', order: 6, isSpecial: true },
+        { id: 'f-archived', name: 'ARCHIVED', label: 'Archived', order: 7, isSpecial: true },
+        { id: 'f-trashed', name: 'TRASHED', label: 'Trashed', order: 8, isSpecial: true },
+      ],
+    })).body;
+    flowId = flow.id;
+
+    // Assign the custom flow to the project
+    await request(app).post(`/projects/${projectId}/flow`).send({ flowId });
+  });
+
+  it('allows valid forward transition (TODO -> IN_PROGRESS)', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T1', projectId, status: 'TODO',
+    })).body;
+
+    const res = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('IN_PROGRESS');
+  });
+
+  it('allows valid backward transition (IN_PROGRESS -> TODO)', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T2', projectId, status: 'TODO',
+    })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app).put(`/items/${item.id}`).send({ status: 'TODO' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('TODO');
+  });
+
+  it('allows transition to special status BLOCKED from any step', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T3', projectId, status: 'TODO',
+    })).body;
+
+    const res = await request(app).put(`/items/${item.id}`).send({ status: 'BLOCKED' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('BLOCKED');
+  });
+
+  it('allows transition from special status BLOCKED to any step', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T4', projectId, status: 'TODO',
+    })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'BLOCKED' });
+
+    const res = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('IN_PROGRESS');
+  });
+
+  it('rejects invalid skip transition (TODO -> REVIEW, skipping IN_PROGRESS)', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T5', projectId, status: 'TODO',
+    })).body;
+
+    const res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/FLOW VIOLATION/);
+  });
+
+  it('allows DONE transition via internal token (bypasses flow validation)', async () => {
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T6', projectId, status: 'TODO',
+    })).body;
+
+    // Internal token bypasses both DONE guard and flow validation
+    const res = await request(app)
+      .put(`/items/${item.id}`)
+      .set('x-agenfk-internal', verifyToken)
+      .send({ status: 'DONE' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('DONE');
+  });
+
+  it('project using DEFAULT_FLOW allows all standard transitions', async () => {
+    // Create a project without custom flow (uses DEFAULT_FLOW)
+    const p2 = (await request(app).post('/projects').send({ name: 'DefaultFlowProject' })).body;
+    const item = (await request(app).post('/items').send({
+      type: 'TASK', title: 'T7', projectId: p2.id, status: 'TODO',
+    })).body;
+
+    // TODO -> IN_PROGRESS allowed
+    let res = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect(res.status).toBe(200);
+
+    // IN_PROGRESS -> REVIEW allowed
+    res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    expect(res.status).toBe(200);
+
+    // REVIEW -> TEST allowed
+    res = await request(app).put(`/items/${item.id}`).send({ status: 'TEST' });
+    expect(res.status).toBe(200);
+  });
+});
