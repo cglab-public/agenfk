@@ -12,15 +12,14 @@
 ### Hard Block Rules
 1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, you must STOP and create one.
 2. **NO GATE = NO CODE**: You must call `workflow_gatekeeper` before the first edit of every session.
-3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent the `review_changes` and `test_changes` tools.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent the `validate_progress` tool.
 
 Before modifying ANY file, you MUST:
 1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
 2. Call `workflow_gatekeeper(intent, role, itemId)` via MCP to confirm authorization.
    - Use `role="coding"` for file edits and implementation work.
    - Use `role="planning"` when decomposing EPICs or STORYs.
-   - Use `role="review"` when auditing code in REVIEW status.
-   - Use `role="testing"` when running the test suite in TEST status.
+   - Use `role="validating"` when calling validate_progress (any intermediate flow step past the coding step).
    - Pass `itemId` whenever multiple tasks are IN_PROGRESS simultaneously.
 
 If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
@@ -48,8 +47,7 @@ Or via CLI: `agenfk flow show --project <projectId>`
 
 After completing changes — using MCP tools:
 - `update_item(id, {status: "<next-flow-step>"})` — move to the next step in the active flow when coding is done (typically REVIEW in the default flow).
-- `review_changes(itemId, command)` — build gate, advances to the next flow step on success.
-- `test_changes(itemId)` — runs project verifyCommand, advances to the terminal flow step (DONE). If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
+- `validate_progress(itemId, command?)` — validates exit criteria for the current flow step and advances to the next step. `command` is optional: if omitted, uses `project.verifyCommand`. Call `workflow_gatekeeper(role="validating")` first — the response includes the step's exit criteria. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
@@ -79,10 +77,9 @@ CLI equivalents via Bash:
 | `list_items(projectId)` | `agenfk list --project <id> --json` |
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
-| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `test_changes` instead) |
+| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (not for DONE — use `validate_progress` instead) |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
-| `review_changes(id, command)` | `agenfk verify <id> "<command>"` (from REVIEW: moves to TEST) |
-| `test_changes(id)` | `agenfk verify <id>` (from TEST: moves to DONE, uses project verifyCommand) |
+| `validate_progress(id, command?)` | `agenfk verify <id> "<command>"` (advances to next step) or `agenfk verify <id>` (uses verifyCommand) |
 | `log_token_usage(id, in, out, model)` | `agenfk log-tokens <id> --input N --output N --model M` |
 | `log_test_result(id, cmd, out, status)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED` |
 
