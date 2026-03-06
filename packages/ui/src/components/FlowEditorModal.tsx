@@ -75,6 +75,7 @@ interface EditorPanelProps {
   onSaved: (flow: Flow) => void;
   onClose: () => void;
   onClone?: () => void;
+  onUseDefault?: () => void;    // only provided for the builtin default flow row
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -85,6 +86,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onSaved,
   onClose,
   onClone,
+  onUseDefault,
 }) => {
   const queryClient = useQueryClient();
 
@@ -487,7 +489,18 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
       {/* Footer — sticky bottom */}
       {isReadOnly ? (
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3">
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3 flex-wrap">
+          {onUseDefault && (
+            <button
+              data-testid="use-default-flow-btn"
+              type="button"
+              onClick={onUseDefault}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
+            >
+              <GitBranch size={15} />
+              Use this Flow
+            </button>
+          )}
           {onClone && (
             <button
               data-testid="clone-to-edit-btn"
@@ -702,11 +715,21 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
     enabled: isOpen,
   });
 
-  // ── Query: default (builtin) flow ──────────────────────────────────────────
-  const { data: defaultFlow } = useQuery<Flow>({
-    queryKey: ['flow', projectId],
-    queryFn: () => api.getProjectFlow(projectId),
+  // ── Query: builtin DEFAULT_FLOW (always the hardcoded default, never the project's active flow) ──
+  const { data: builtinFlow } = useQuery<Flow>({
+    queryKey: ['flow-default'],
+    queryFn: () => api.getDefaultFlow(),
     enabled: isOpen,
+    staleTime: Infinity, // never changes
+  });
+
+  // ── Mutation: switch project back to default (builtin) flow ────────────────
+  const useDefaultFlowMutation = useMutation({
+    mutationFn: () => api.setProjectFlow(projectId, null),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['flows', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
   });
 
   // ── Query: community registry flows ───────────────────────────────────────
@@ -729,7 +752,7 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
     : clonedFlow
     ? (clonedFlow as unknown as Flow)
     : selectedFlowId === BUILTIN_ID
-    ? (defaultFlow ?? null)
+    ? (builtinFlow ?? null)
     : flows.find(f => f.id === selectedFlowId) ?? null;
 
   // If this is a legacy-props invocation the passed `flow` wins as initial selection
@@ -943,8 +966,8 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
                     type="button"
                     onClick={e => {
                       e.stopPropagation();
-                      if (defaultFlow) {
-                        handleClone(defaultFlow, defaultFlow.name ?? 'Default Flow');
+                      if (builtinFlow) {
+                        handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow');
                       }
                     }}
                     title="Clone flow"
@@ -1095,8 +1118,13 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
               onSaved={handleFlowSaved}
               onClose={onClose}
               onClone={
-                isReadOnly && defaultFlow
-                  ? () => handleClone(defaultFlow, defaultFlow.name ?? 'Default Flow')
+                isReadOnly && builtinFlow
+                  ? () => handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow')
+                  : undefined
+              }
+              onUseDefault={
+                isReadOnly
+                  ? () => useDefaultFlowMutation.mutate()
                   : undefined
               }
             />

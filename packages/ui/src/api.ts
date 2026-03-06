@@ -219,6 +219,15 @@ export const api = {
       throw e;
     }
   },
+  getDefaultFlow: async (): Promise<Flow> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/flows/default`);
+      return data;
+    } catch (e) {
+      console.error('API Error getting default flow:', e);
+      throw e;
+    }
+  },
   browseRegistry: async (): Promise<RegistryFlow[]> => {
     try {
       const { data } = await axios.get(`${API_URL}/registry/flows`);

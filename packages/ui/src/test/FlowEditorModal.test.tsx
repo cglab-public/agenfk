@@ -16,6 +16,7 @@ vi.mock('../api', () => ({
     deleteFlow: vi.fn(),
     listFlows: vi.fn(),
     getProjectFlow: vi.fn(),
+    getDefaultFlow: vi.fn(),
     browseRegistry: vi.fn(),
     installFromRegistry: vi.fn(),
   },
@@ -78,7 +79,7 @@ describe('FlowEditorModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
-    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
   });
 
   afterEach(() => {
@@ -565,7 +566,7 @@ describe('FlowEditorModal', () => {
     );
     await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
     // Wait for the default flow query to resolve
-    await waitFor(() => expect(api.getProjectFlow).toHaveBeenCalledWith(PROJECT_ID));
+    await waitFor(() => expect(api.getDefaultFlow).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
     await waitFor(() => {
       const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
@@ -580,13 +581,27 @@ describe('FlowEditorModal', () => {
     expect(screen.getByTestId('clone-to-edit-btn')).toBeDefined();
   });
 
+  it('"Use this Flow" on DEFAULT calls setProjectFlow with null to revert to default', async () => {
+    vi.mocked(api.setProjectFlow).mockResolvedValue(undefined);
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => expect(api.getDefaultFlow).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => screen.getByTestId('use-default-flow-btn'));
+    fireEvent.click(screen.getByTestId('use-default-flow-btn'));
+    await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalledWith(PROJECT_ID, null));
+  });
+
   it('"Clone to Edit" on DEFAULT creates editable copy named "Copy of Default Flow"', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
     );
     await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
-    await waitFor(() => expect(api.getProjectFlow).toHaveBeenCalledWith(PROJECT_ID));
+    await waitFor(() => expect(api.getDefaultFlow).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
     await waitFor(() => screen.getByTestId('clone-to-edit-btn'));
     fireEvent.click(screen.getByTestId('clone-to-edit-btn'));
@@ -669,7 +684,7 @@ describe('FlowEditorModal — Community tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW]);
-    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
     vi.mocked(api.browseRegistry).mockResolvedValue([REGISTRY_FLOW_1, REGISTRY_FLOW_2]);
     vi.mocked(api.installFromRegistry).mockResolvedValue(INSTALLED_FLOW);
   });
