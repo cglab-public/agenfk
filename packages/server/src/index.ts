@@ -294,7 +294,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: { 
             intent: { type: "string" },
-            role: { type: "string", enum: ["planning", "coding", "review", "testing", "closing"], description: "The specialized role of the current agent." },
+            role: { type: "string", enum: ["planning", "coding", "validating", "closing"], description: "The specialized role of the current agent. Use 'validating' before calling validate_progress." },
             itemId: { type: "string", description: "Optional: The specific item ID to authorize against. Required if multiple items are IN_PROGRESS." }
           },
           required: ["intent", "role"],
@@ -310,8 +310,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "validate_progress",
+        description: "Validates exit criteria for the current flow step and advances the item to the next step. If command is provided, runs it as a build/test gate. If omitted, uses the project's verifyCommand. On success, advances to the next flow step (or DONE if last). On failure, moves back to the coding step. Call workflow_gatekeeper(role='validating') first — the response includes the current step's exit criteria.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used." },
+          },
+          required: ["itemId"],
+        },
+      },
+      {
         name: "review_changes",
-        description: "Runs an agent-chosen command to verify the implementation and moves the item from REVIEW → TEST. Use any command that makes sense (build, lint, type-check, etc.). If the command fails, the item moves back to IN_PROGRESS.",
+        description: "DEPRECATED: Use validate_progress instead. Runs a build command and advances to the next flow step.",
         inputSchema: {
           type: "object",
           properties: {
@@ -323,7 +335,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "test_changes",
-        description: "Runs the project's verifyCommand (test suite) and moves the item from TEST → DONE. No command parameter — the project's verifyCommand is always used. If no verifyCommand is configured, returns an error — ask the developer to set one via update_project.",
+        description: "DEPRECATED: Use validate_progress instead. Runs the project's verifyCommand and advances to the next flow step.",
         inputSchema: {
           type: "object",
           properties: {
@@ -428,11 +440,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { isError: true, content: [{ type: "text", text: `❌ Failed to log test result: ${error.message}` }] };
         }
       }
+      case "validate_progress": {
+        const { itemId, command } = z.object({ itemId: z.string(), command: z.string().optional() }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: data.message }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: msg }] };
+        }
+      }
       case "review_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/review`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
-          return { content: [{ type: "text", text: data.message }] };
+          const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: msg }] };
@@ -441,17 +463,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "test_changes": {
         const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/test`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
-          return { content: [{ type: "text", text: data.message }] };
+          const { data } = await api.post(`/items/${itemId}/validate`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: msg }] };
         }
       }
       case "workflow_gatekeeper": {
-        const { intent, role, itemId } = z.object({ 
-          intent: z.string(), 
-          role: z.enum(["planning", "coding", "review", "testing", "closing"]),
+        const { intent, role, itemId } = z.object({
+          intent: z.string(),
+          role: z.enum(["planning", "coding", "validating", "review", "testing", "closing"]),
           itemId: z.string().optional()
         }).parse(request.params.arguments);
 
@@ -564,18 +586,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}${flowStepsSummary}` }] };
         }
 
-        if (role === 'review') {
-          const activeReviewItems = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
-          if (activeReviewItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Review role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].join(', ')}.` }] };
-          const task = activeReviewItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (REVIEW).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${flowStepsSummary}` }] };
-        }
-
-        if (role === 'testing') {
-          const activeTestItems = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
-          if (activeTestItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Testing role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].join(', ')}.` }] };
-          const task = activeTestItems[0];
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (TESTING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${flowStepsSummary}` }] };
+        if (role === 'validating' || role === 'review' || role === 'testing') {
+          const candidates = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
+          if (candidates.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Validating role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].filter(s => s !== codingStepName.toUpperCase()).join(', ')}.` }] };
+          const task = candidates[0];
+          // Surface the current step's exit criteria so the agent knows what to satisfy
+          const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
+          const exitCriteriaHint = currentStep?.exitCriteria
+            ? `\nExit criteria: "${currentStep.exitCriteria}"\n→ Satisfy the above before calling validate_progress.`
+            : '\n→ Call validate_progress(itemId, command?) to advance to the next step.';
+          const roleLabel = role === 'validating' ? 'VALIDATING' : role.toUpperCase();
+          return { content: [{ type: "text", text: `✅ AUTHORIZED (${roleLabel}).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}${exitCriteriaHint}${flowStepsSummary}` }] };
         }
 
         // Default to checking for IN_PROGRESS if role is generic or unrecognized

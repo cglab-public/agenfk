@@ -1156,70 +1156,81 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
   res.json({ item: moved, movedCount });
 }));
 
-// ── Verify Endpoint ──────────────────────────────────────────────────────────
+// ── Verify Endpoints ─────────────────────────────────────────────────────────
 
-// ── review_changes: advances to the next flow step (flow-aware) ──────────────
-app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
-  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
-  if (!isInternalVerify) {
-    return res.status(403).json({ error: "Forbidden: review endpoint requires internal token." });
-  }
+// ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
+// command is optional; if omitted, project.verifyCommand is used.
+// Advances item to the next flow step. On failure, moves back to the coding step.
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any) {
+  const item = await storage.getItem(itemId);
+  if (!item) return res.status(404).json({ error: "Item not found" });
 
-  const { command } = req.body;
-  if (!command || typeof command !== 'string') {
-    return res.status(400).json({ error: "Missing required field: command" });
-  }
-
-  const item = await storage.getItem(req.params.id);
-  if (!item) {
-    return res.status(404).json({ error: "Item not found" });
-  }
-
-  // ── Flow-aware status validation ──────────────────────────────────────────
   const project = await storage.getProject(item.projectId);
   const projectFlows = await storage.listFlows(item.projectId);
   const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
   const sorted = sortedFlowSteps(activeFlow);
-  const codingStep = getCodingStep(sorted); // first non-anchor = failure target
+  const codingStep = getCodingStep(sorted);
   const currentFlowStep = findCurrentFlowStep(sorted, item.status);
 
   if (!currentFlowStep) {
-    return res.status(400).json({ error: `review_changes requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
+    return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
   if (currentFlowStep.step.isAnchor) {
-    return res.status(400).json({ error: `review_changes requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
+    return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
+  }
+
+  const resolvedCommand = command || (project as any)?.verifyCommand;
+  if (!resolvedCommand) {
+    return res.status(400).json({
+      error: "NO_VERIFY_COMMAND",
+      message: "No command provided and no verifyCommand configured for this project. Provide a command or set one with update_project({ id, verifyCommand })."
+    });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
   const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
   const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+  const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
 
-  // ── Sibling propagation: skip build if a sibling already passed this step ──
+  // ── Sibling propagation ───────────────────────────────────────────────────
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
-    const passedSibling = siblings.find(s => {
-      if (s.id === item.id) return false;
-      if (s.status === Status.DONE) return true;
-      const sibStep = findCurrentFlowStep(sorted, s.status);
-      return sibStep !== undefined && sibStep.index > currentFlowStep.index;
-    });
-    if (passedSibling) {
-      const sibComment = {
-        id: uuidv4(),
-        author: 'ReviewTool',
-        content: `### Review PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`,
-        timestamp: new Date(),
-      };
-      const updated = await storage.updateItem(req.params.id, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
-      io.emit('items_updated');
-      if (updated.parentId) await syncParentStatus(updated.parentId);
-      return res.json({ status: nextStatus, message: `✅ Review Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to ${nextStatus}.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: 'Sibling propagation' });
+    // For final step (→ DONE), check siblings already DONE with same verifyCommand
+    if (nextStatus === Status.DONE) {
+      const passedSibling = siblings.find(s =>
+        s.id !== item.id &&
+        s.status === Status.DONE &&
+        s.tests?.some((t: any) => t.status === 'PASSED' && t.command === resolvedCommand)
+      );
+      if (passedSibling) {
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        const updates: any = { status: Status.DONE, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }] };
+        const updated = await storage.updateItem(itemId, updates);
+        io.emit('items_updated');
+        if (updated.parentId) await syncParentStatus(updated.parentId);
+        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, findProjectRoot(process.cwd()));
+        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.`, output: 'Sibling propagation' });
+      }
+    } else {
+      const passedSibling = siblings.find(s => {
+        if (s.id === item.id) return false;
+        if (s.status === Status.DONE) return true;
+        const sibStep = findCurrentFlowStep(sorted, s.status);
+        return sibStep !== undefined && sibStep.index > currentFlowStep.index;
+      });
+      if (passedSibling) {
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
+        io.emit('items_updated');
+        if (updated.parentId) await syncParentStatus(updated.parentId);
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.`, output: 'Sibling propagation' });
+      }
     }
   }
 
   const projectRoot = findProjectRoot(process.cwd());
   const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
-    const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
     child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
@@ -1229,137 +1240,60 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
 
   const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
   const passed = code === 0;
+  const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
   const comments = [...(item.comments || []), {
     id: uuidv4(),
-    author: 'ReviewTool',
-    content: `### Review ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
+    author: 'ValidateTool',
+    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${item.status} → ${passed ? nextStatus : failureStatus}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
     timestamp: new Date(),
   }];
 
   if (passed) {
-    const updated = await storage.updateItem(req.params.id, { status: nextStatus, comments });
+    const updates: any = { status: nextStatus, comments };
+    if (nextStatus === Status.DONE) {
+      updates.tests = [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: truncated, status: 'PASSED', executedAt: new Date() }];
+    }
+    const updated = await storage.updateItem(itemId, updates);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Review Passed!\n\nCommand: \`${command}\`\nItem moved to ${nextStatus}.\n\nStandard Mode: continue to tests. Multi-Agent Mode: yield to the Testing Agent.`, output: truncated });
+    if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${nextStatus !== Status.DONE ? '\n\nContinue calling validate_progress to advance through remaining steps.' : ''}`, output: truncated });
   } else {
-    await storage.updateItem(req.params.id, { status: failureStatus, comments });
+    const updates: any = { status: failureStatus, comments };
+    if (nextStatus === Status.DONE) {
+      updates.tests = [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: truncated, status: 'FAILED', executedAt: new Date() }];
+    }
+    await storage.updateItem(itemId, updates);
     io.emit('items_updated');
-    return res.status(422).json({ status: failureStatus, message: `❌ Review Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
+    return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
   }
+}
+
+app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
+  }
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res);
 }));
 
-// ── test_changes: any intermediate flow step → DONE (flow-aware) ─────────────
+// ── review_changes: DEPRECATED — delegates to validate_progress ──────────────
+app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: "Forbidden: review endpoint requires internal token." });
+  }
+  if (!req.body.command || typeof req.body.command !== 'string') {
+    return res.status(400).json({ error: "Missing required field: command" });
+  }
+  return handleValidateProgress(req.params.id, req.body.command, res);
+}));
+
+// ── test_changes: DEPRECATED — delegates to validate_progress (no command = uses verifyCommand)
 app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
-  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
-  if (!isInternalVerify) {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: test endpoint requires internal token." });
   }
-
-  const item = await storage.getItem(req.params.id);
-  if (!item) {
-    return res.status(404).json({ error: "Item not found" });
-  }
-
-  const project = await storage.getProject(item.projectId);
-  if (!project?.verifyCommand) {
-    return res.status(400).json({
-      error: "NO_VERIFY_COMMAND",
-      message: "No verifyCommand configured for this project. Ask the developer what command should be used to build and test the project, then set it with update_project({ id, verifyCommand }). Example: 'npm run build && npm test'"
-    });
-  }
-
-  // ── Flow-aware status validation ──────────────────────────────────────────
-  const projectFlows = await storage.listFlows(item.projectId);
-  const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
-  const sorted = sortedFlowSteps(activeFlow);
-  const codingStep = getCodingStep(sorted); // first non-anchor = failure target
-  const currentFlowStep = findCurrentFlowStep(sorted, item.status);
-
-  if (!currentFlowStep) {
-    return res.status(400).json({ error: `test_changes requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
-  }
-  if (currentFlowStep.step.isAnchor) {
-    return res.status(400).json({ error: `test_changes requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
-  }
-
-  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
-
-  const command = project.verifyCommand;
-  const projectRoot = findProjectRoot(process.cwd());
-
-  // ── Sibling propagation: skip test execution if a sibling already passed ────
-  if (item.parentId) {
-    const siblings = await storage.listItems({ parentId: item.parentId });
-    const passedSibling = siblings.find(s =>
-      s.id !== item.id &&
-      s.status === Status.DONE &&
-      s.tests?.some((t: any) => t.status === 'PASSED' && t.command === command)
-    );
-    if (passedSibling) {
-      const sibComment = {
-        id: uuidv4(),
-        author: 'TestTool',
-        content: `### Test Suite PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`,
-        timestamp: new Date(),
-      };
-      const updates: any = {
-        status: Status.DONE,
-        comments: [...(item.comments || []), sibComment],
-        tests: [...(item.tests || []), { id: uuidv4(), command, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }],
-      };
-      const updated = await storage.updateItem(req.params.id, updates);
-      io.emit('items_updated');
-      if (updated.parentId) await syncParentStatus(updated.parentId);
-      if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-        autoGitCommit(updated, projectRoot);
-      }
-      return res.json({ status: Status.DONE, message: `✅ Test Suite Passed (sibling propagation)!\n\nSkipped execution — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\nItem moved to DONE.`, output: 'Sibling propagation' });
-    }
-  }
-
-  const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
-    const child = spawn(command, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
-    let out = '';
-    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
-    child.on('close', (c) => resolve({ output: out, code: c }));
-    child.on('error', (err) => resolve({ output: err.message, code: 1 }));
-  });
-
-  const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
-  const passed = code === 0;
-
-  const comments = [...(item.comments || []), {
-    id: uuidv4(),
-    author: 'TestTool',
-    content: `### Test Suite ${passed ? 'PASSED' : 'FAILED'}\n\n**Command**: \`${command}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
-    timestamp: new Date(),
-  }];
-
-  if (passed) {
-    const updates: any = {
-      status: Status.DONE,
-      comments,
-      tests: [...(item.tests || []), { id: uuidv4(), command, output: truncated, status: 'PASSED', executedAt: new Date() }],
-    };
-    const updated = await storage.updateItem(req.params.id, updates);
-    io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
-    if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-      autoGitCommit(updated, projectRoot);
-    }
-    return res.json({ status: Status.DONE, message: `✅ Test Suite Passed!\n\nCommand: \`${command}\`\nItem moved to DONE.`, output: truncated });
-  } else {
-    const updates: any = {
-      status: failureStatus,
-      comments,
-      tests: [...(item.tests || []), { id: uuidv4(), command, output: truncated, status: 'FAILED', executedAt: new Date() }],
-    };
-    await storage.updateItem(req.params.id, updates);
-    io.emit('items_updated');
-    return res.status(422).json({ status: failureStatus, message: `❌ Test Suite Failed!\n\nCommand: \`${command}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
-  }
+  return handleValidateProgress(req.params.id, undefined, res);
 }));
 
 // ── Pause / Resume ───────────────────────────────────────────────────────────
