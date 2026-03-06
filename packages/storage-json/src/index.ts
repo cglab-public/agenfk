@@ -12,20 +12,22 @@ import {
   TokenUsage,
   ContextItem,
   Project,
-  PauseSnapshot
+  PauseSnapshot,
+  Flow
 } from "@agenfk/core";
 
 interface JSONData {
   projects: Project[];
   items: AgenFKItem[];
   snapshots: PauseSnapshot[];
+  flows: Flow[];
 }
 
 export class JSONStorageProvider implements StorageProvider {
   name = "json-storage";
   version = "1.0.0";
   public dbPath: string = "";
-  private data: JSONData = { projects: [], items: [], snapshots: [] };
+  private data: JSONData = { projects: [], items: [], snapshots: [], flows: [] };
   private lock: Promise<any> = Promise.resolve();
 
   async init(config: PluginConfig): Promise<void> {
@@ -36,7 +38,7 @@ export class JSONStorageProvider implements StorageProvider {
     }
 
     // Reset data to ensure clean state if re-initialized with a different path (e.g. in tests)
-    this.data = { projects: [], items: [], snapshots: [] };
+    this.data = { projects: [], items: [], snapshots: [], flows: [] };
 
     return this.runLocked(() => {
       this.load();
@@ -86,6 +88,12 @@ export class JSONStorageProvider implements StorageProvider {
             ...s,
             pausedAt: new Date(s.pausedAt),
             resumedAt: s.resumedAt ? new Date(s.resumedAt) : undefined,
+        }));
+
+        this.data.flows = (parsed.flows || []).map((f: any) => ({
+            ...f,
+            createdAt: new Date(f.createdAt),
+            updatedAt: new Date(f.updatedAt),
         }));
       } catch (e) {
         console.error(`[STORAGE] Error parsing ${this.dbPath}. Keeping current in-memory state.`, e);
@@ -295,6 +303,53 @@ export class JSONStorageProvider implements StorageProvider {
       this.data.snapshots.splice(index, 1);
       this.save();
       return true;
+    });
+  }
+
+  // Flow Methods
+  async createFlow(flow: Flow): Promise<Flow> {
+    return this.runLocked(() => {
+      this.load();
+      this.data.flows.push(flow);
+      this.save();
+      return flow;
+    });
+  }
+
+  async updateFlow(id: string, updates: Partial<Flow>): Promise<Flow> {
+    return this.runLocked(() => {
+      this.load();
+      const index = this.data.flows.findIndex(f => f.id === id);
+      if (index === -1) throw new Error(`Flow ${id} not found`);
+      const updated = { ...this.data.flows[index], ...updates, updatedAt: new Date() };
+      this.data.flows[index] = updated;
+      this.save();
+      return updated;
+    });
+  }
+
+  async deleteFlow(id: string): Promise<boolean> {
+    return this.runLocked(() => {
+      this.load();
+      const index = this.data.flows.findIndex(f => f.id === id);
+      if (index === -1) return false;
+      this.data.flows.splice(index, 1);
+      this.save();
+      return true;
+    });
+  }
+
+  async getFlow(id: string): Promise<Flow | null> {
+    return this.runLocked(() => {
+      this.load();
+      return this.data.flows.find(f => f.id === id) || null;
+    });
+  }
+
+  async listFlows(projectId: string): Promise<Flow[]> {
+    return this.runLocked(() => {
+      this.load();
+      return this.data.flows.filter(f => f.projectId === projectId);
     });
   }
 }

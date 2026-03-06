@@ -1,4 +1,4 @@
-import { AgenFKItem, ItemType, Status, Project, PauseSnapshot } from './types';
+import { AgenFKItem, ItemType, Status, Project, PauseSnapshot, Flow } from './types';
 
 export interface PluginConfig {
   [key: string]: any;
@@ -41,6 +41,13 @@ export interface StorageProvider extends AgenFKPlugin {
   getSnapshot(id: string): Promise<PauseSnapshot | null>;
   getSnapshotByItemId(itemId: string): Promise<PauseSnapshot | null>;
   deleteSnapshot(id: string): Promise<boolean>;
+
+  // Flows
+  createFlow(flow: Flow): Promise<Flow>;
+  updateFlow(id: string, updates: Partial<Flow>): Promise<Flow>;
+  deleteFlow(id: string): Promise<boolean>;
+  getFlow(id: string): Promise<Flow | null>;
+  listFlows(projectId: string): Promise<Flow[]>;
 }
 
 export interface TokenTracker extends AgenFKPlugin {
