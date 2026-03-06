@@ -31,5 +31,5 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 - If failed:
     - Call `log_test_result(id, "<test-command>", "<full captured output>", "FAILED")` to record the failure.
     - Call `add_comment(id, "TESTS FAILED: ... [65% Coverage]")` and log the coverage gaps.
-    - Call `update_item(id, {status: "IN_PROGRESS"})` to send it back for fixes.
+    - Call `update_item(id, {status: "<coding-step>"})` to send it back for fixes (backward rollback — valid use of `update_item`).
     - STOP and YIELD.
