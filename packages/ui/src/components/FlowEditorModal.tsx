@@ -2,10 +2,23 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Flow, FlowStep } from '../types';
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const BUILTIN_ID = '__builtin__';
+
+function generateUUID(): string {
+  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+}
+
+function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined } {
+  return {
+    name: newName,
+    description: source.description,
+    projectId: source.projectId,
+    steps: source.steps.map(s => ({ ...s, id: generateUUID() })),
+  };
+}
 
 interface FlowEditorModalProps {
   isOpen: boolean;
@@ -53,6 +66,7 @@ interface EditorPanelProps {
   activeFlowId: string | undefined;
   onSaved: (flow: Flow) => void;
   onClose: () => void;
+  onClone?: () => void;
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -62,6 +76,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   activeFlowId,
   onSaved,
   onClose,
+  onClone,
 }) => {
   const queryClient = useQueryClient();
 
@@ -395,7 +410,29 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       </div>
 
       {/* Footer — sticky bottom */}
-      {!isReadOnly && (
+      {isReadOnly ? (
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3">
+          {onClone && (
+            <button
+              data-testid="clone-to-edit-btn"
+              type="button"
+              onClick={onClone}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
+            >
+              <CopyPlus size={15} />
+              Clone to Edit
+            </button>
+          )}
+          <button
+            data-testid="cancel-panel-btn"
+            type="button"
+            onClick={onClose}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      ) : (
         <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between gap-3">
           <button
             data-testid="save-flow-btn"
@@ -472,6 +509,8 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
   );
   const [isNewFlow, setIsNewFlow] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  // clonedFlow holds a not-yet-saved clone being edited
+  const [clonedFlow, setClonedFlow] = useState<(Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined }) | null>(null);
 
   // ── Query: list all flows ──────────────────────────────────────────────────
   const { data: flows = [] } = useQuery<Flow[]>({
@@ -480,9 +519,20 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
     enabled: isOpen,
   });
 
+  // ── Query: default (builtin) flow ──────────────────────────────────────────
+  const { data: defaultFlow } = useQuery<Flow>({
+    queryKey: ['flow', projectId],
+    queryFn: () => api.getProjectFlow(projectId),
+    enabled: isOpen,
+  });
+
   // Derive selected flow object
   const selectedFlow = isNewFlow
     ? null
+    : clonedFlow
+    ? (clonedFlow as unknown as Flow)
+    : selectedFlowId === BUILTIN_ID
+    ? (defaultFlow ?? null)
     : flows.find(f => f.id === selectedFlowId) ?? null;
 
   // If this is a legacy-props invocation the passed `flow` wins as initial selection
@@ -525,11 +575,20 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
   const handleFlowSaved = (flow: Flow) => {
     setSelectedFlowId(flow.id);
     setIsNewFlow(false);
+    setClonedFlow(null);
   };
 
   const effectiveActiveFlowId = activeFlowId;
 
-  const isReadOnly = selectedFlowId === BUILTIN_ID;
+  const isReadOnly = selectedFlowId === BUILTIN_ID && !clonedFlow;
+  const isEditingClone = clonedFlow !== null;
+
+  const handleClone = (source: Flow, sourceName: string) => {
+    const copy = cloneFlow(source, `Copy of ${sourceName}`);
+    setClonedFlow(copy);
+    setIsNewFlow(false);
+    setSelectedFlowId(null);
+  };
 
   return (
     <div
@@ -566,27 +625,43 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
           {/* Flow list */}
           <div className="flex-1 overflow-y-auto px-2 pb-2" data-testid="flow-list">
             {/* Built-in default flow row */}
-            <button
+            <div
               data-testid="flow-item-__builtin__"
-              onClick={() => { setSelectedFlowId(BUILTIN_ID); setIsNewFlow(false); }}
+              onClick={() => { setSelectedFlowId(BUILTIN_ID); setIsNewFlow(false); setClonedFlow(null); }}
               className={clsx(
-                'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group',
-                selectedFlowId === BUILTIN_ID && !isNewFlow
+                'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
+                selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
                   ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               )}
             >
               <div className="flex items-center justify-between gap-1">
                 <span className="text-sm font-medium truncate flex-1">Default Flow</span>
-                <span className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 shrink-0">
-                  DEFAULT
-                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    data-testid="clone-flow-btn-__builtin__"
+                    type="button"
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (defaultFlow) {
+                        handleClone(defaultFlow, defaultFlow.name ?? 'Default Flow');
+                      }
+                    }}
+                    title="Clone flow"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                  >
+                    <CopyPlus size={13} />
+                  </button>
+                  <span className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+                    DEFAULT
+                  </span>
+                </div>
               </div>
-            </button>
+            </div>
 
             {flows.map(flow => {
               const isActive = flow.id === effectiveActiveFlowId;
-              const isSelected = selectedFlowId === flow.id && !isNewFlow;
+              const isSelected = selectedFlowId === flow.id && !isNewFlow && !isEditingClone;
               const isPendingDelete = confirmDeleteId === flow.id;
 
               return (
@@ -603,6 +678,7 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
                     if (!isPendingDelete) {
                       setSelectedFlowId(flow.id);
                       setIsNewFlow(false);
+                      setClonedFlow(null);
                     }
                   }}
                 >
@@ -630,24 +706,39 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
                         </span>
                       )}
                     </div>
-                    {/* Delete button */}
-                    <button
-                      data-testid={`delete-flow-btn-${flow.id}`}
-                      disabled={isActive}
-                      onClick={e => {
-                        e.stopPropagation();
-                        if (!isActive) setConfirmDeleteId(flow.id);
-                      }}
-                      title={isActive ? 'Cannot delete active flow' : 'Delete flow'}
-                      className={clsx(
-                        'shrink-0 p-1 rounded transition-colors',
-                        isActive
-                          ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                          : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
-                      )}
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      {/* Clone button */}
+                      <button
+                        data-testid={`clone-flow-btn-${flow.id}`}
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation();
+                          handleClone(flow, flow.name);
+                        }}
+                        title="Clone flow"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                      >
+                        <CopyPlus size={13} />
+                      </button>
+                      {/* Delete button */}
+                      <button
+                        data-testid={`delete-flow-btn-${flow.id}`}
+                        disabled={isActive}
+                        onClick={e => {
+                          e.stopPropagation();
+                          if (!isActive) setConfirmDeleteId(flow.id);
+                        }}
+                        title={isActive ? 'Cannot delete active flow' : 'Delete flow'}
+                        className={clsx(
+                          'shrink-0 p-1 rounded transition-colors',
+                          isActive
+                            ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                            : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                        )}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -661,6 +752,7 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
               onClick={() => {
                 setIsNewFlow(true);
                 setSelectedFlowId(null);
+                setClonedFlow(null);
               }}
               className={clsx(
                 'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
@@ -677,22 +769,27 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
 
         {/* ── RIGHT PANEL ───────────────────────────────────────────────────── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {selectedFlowId !== null || isNewFlow ? (
+          {selectedFlowId !== null || isNewFlow || isEditingClone ? (
             <EditorPanel
-              key={isNewFlow ? '__new__' : selectedFlowId}
+              key={isEditingClone ? '__clone__' : isNewFlow ? '__new__' : selectedFlowId}
               flow={selectedFlow}
               isReadOnly={isReadOnly}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}
               onClose={onClose}
+              onClone={
+                isReadOnly && defaultFlow
+                  ? () => handleClone(defaultFlow, defaultFlow.name ?? 'Default Flow')
+                  : undefined
+              }
             />
           ) : (
             <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
               <GitBranch size={40} className="opacity-30" />
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button
-                onClick={() => setIsNewFlow(true)}
+                onClick={() => { setIsNewFlow(true); setClonedFlow(null); }}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
               >
                 <Plus size={14} />
