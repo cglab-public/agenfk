@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.2.4)'
+        required: true
+
+jobs:
+  release:
+    name: Bump, Build & Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Bump version in all package.json files
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          node -e "
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            const files = execSync(
+              'find . -name package.json -not -path \"*/node_modules/*\" -not -path \"*/dist/*\"',
+              { encoding: 'utf8' }
+            ).trim().split('\n');
+            files.forEach(f => {
+              const pkg = JSON.parse(fs.readFileSync(f, 'utf8'));
+              pkg.version = process.env.VERSION;
+              fs.writeFileSync(f, JSON.stringify(pkg, null, 2) + '\n');
+            });
+          "
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json packages/*/package.json
+          git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+          git push
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package distributable
+        run: node scripts/package-dist.mjs
+
+      - name: Create tag and GitHub release
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+          gh release create "v${VERSION}" agenfk-dist.tar.gz \
+            --title "v${VERSION}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
