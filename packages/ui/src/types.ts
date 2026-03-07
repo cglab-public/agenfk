@@ -79,6 +79,7 @@ export interface FlowStep {
   order: number;
   exitCriteria?: string;
   color?: string;         // Optional hex color for the step (e.g. "#3b82f6")
+  icon?: string;          // Optional icon key (e.g. "zap", "check") for display in the Kanban column header
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;

@@ -803,5 +803,48 @@ describe('KanbanBoard', () => {
       // Column header should use the flow label
       expect(screen.getByText('Queue')).toBeDefined();
     });
+
+    it('should apply step color as inline border style on column header', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const customFlow = {
+        ...DEFAULT_FLOW_MOCK,
+        steps: [
+          { id: 's-todo', name: 'TODO', label: 'Backlog', order: 0, color: '#ff0000' },
+          { id: 's-done', name: 'DONE', label: 'Done', order: 1, color: '#00ff00' },
+        ],
+      };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      vi.mocked(api.getProjectFlow).mockResolvedValue(customFlow as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      await waitFor(() => screen.getByTestId('column-header-TODO'));
+      const todoHeader = screen.getByTestId('column-header-TODO') as HTMLElement;
+      expect(todoHeader.style.borderTopColor).toBe('rgb(255, 0, 0)');
+    });
+
+    it('uses a default color when step has no color field', async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      const customFlow = {
+        ...DEFAULT_FLOW_MOCK,
+        steps: [
+          { id: 's-todo', name: 'TODO', label: 'Backlog', order: 0 },
+          { id: 's-done', name: 'DONE', label: 'Done', order: 1 },
+        ],
+      };
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      vi.mocked(api.getProjectFlow).mockResolvedValue(customFlow as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      render(<KanbanBoard />, { wrapper });
+
+      await waitFor(() => screen.getByTestId('column-header-TODO'));
+      const todoHeader = screen.getByTestId('column-header-TODO') as HTMLElement;
+      // Should have a non-empty borderTopColor (the default fallback)
+      expect(todoHeader.style.borderTopColor).toBeTruthy();
+    });
   });
 });

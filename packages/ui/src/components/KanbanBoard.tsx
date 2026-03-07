@@ -23,7 +23,7 @@ import { GitHubImportModal } from './GitHubImportModal';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
-import { FlowEditorModal } from './FlowEditorModal';
+import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
@@ -57,6 +57,19 @@ const statusBorderColors: Record<Status, string> = {
   [Status.BLOCKED]: "border-t-red-500",
   [Status.PAUSED]: "border-t-orange-400",
   [Status.ARCHIVED]: "border-t-gray-300",
+};
+
+// Default hex colors for main flow columns — used when a FlowStep has no color set
+const DEFAULT_STEP_COLORS: Record<string, string> = {
+  [Status.TODO]: '#94a3b8',
+  [Status.IN_PROGRESS]: '#3b82f6',
+  [Status.REVIEW]: '#f59e0b',
+  [Status.TEST]: '#a855f7',
+  [Status.DONE]: '#10b981',
+  [Status.BLOCKED]: '#ef4444',
+  [Status.PAUSED]: '#fb923c',
+  [Status.ARCHIVED]: '#d1d5db',
+  [Status.IDEAS]: '#818cf8',
 };
 
 const statusIcons: Record<Status, React.ReactNode> = {
@@ -563,7 +576,12 @@ export const KanbanBoard: React.FC = () => {
 
     socket.on('flow:updated', ({ projectId }: { projectId?: string }) => {
       console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #6366f1; font-weight: bold', 'color: inherit');
-      queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
+      } else {
+        // Flow created/updated without projectId — invalidate all flow queries
+        queryClient.invalidateQueries({ queryKey: ['flow'] });
+      }
     });
 
     socket.on('server_restarting', () => {
@@ -1366,18 +1384,14 @@ export const KanbanBoard: React.FC = () => {
             const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
             return (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
-              <div className={clsx("flex items-center justify-between mb-3 px-1 border-t-4 pt-2", statusBorderColors[status as Status] ?? "border-t-slate-400")}>
+              <div
+                data-testid={`column-header-${status}`}
+                className="flex items-center justify-between mb-3 px-1 border-t-4 pt-2"
+                style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? '#6366f1' }}
+              >
                 <div className="flex items-center gap-2">
-                  <div className={clsx(
-                    "p-1 rounded-md",
-                    status === Status.TEST ? "text-purple-500 bg-purple-50 dark:bg-purple-900/20" :
-                    status === Status.IN_PROGRESS ? "text-blue-500 bg-blue-50 dark:bg-blue-900/20" :
-                    status === Status.REVIEW ? "text-amber-500 bg-amber-50 dark:bg-amber-900/20" :
-                    status === Status.DONE ? "text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" :
-                    status === Status.BLOCKED ? "text-red-500 bg-red-50 dark:bg-red-900/20" :
-                    "text-slate-500 bg-slate-50 dark:bg-slate-800"
-                  )}>
-                    {statusIcons[status as Status] ?? <Briefcase size={14} />}
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? '#6366f1' }}>
+                    {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{columnLabel}</h2>
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">

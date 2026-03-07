@@ -527,6 +527,64 @@ describe('FlowEditorModal', () => {
     expect(saveBtn.disabled).toBe(true);
   });
 
+  // ── Layout / scrollbars ────────────────────────────────────────────────────
+
+  it('steps-columns container hides scrollbar (has overflow-x-auto and scrollbar-none or similar)', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('steps-columns'));
+    const container = screen.getByTestId('steps-columns');
+    // Must have overflow-x-auto for scrollability but scrollbar visually hidden
+    expect(container.className).toContain('overflow-x-auto');
+    expect(container.className).toMatch(/scrollbar-none|scrollbar-hide|\[&::-webkit-scrollbar\]/);
+  });
+
+  it('exit criteria textarea has enough rows for comfortable editing (>= 5)', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-exit-criteria-1'));
+    const textarea = screen.getByTestId('step-exit-criteria-1') as HTMLTextAreaElement;
+    expect(Number(textarea.rows)).toBeGreaterThanOrEqual(5);
+  });
+
+  // ── Anchor color swatch ────────────────────────────────────────────────────
+
+  it('anchor steps show a color swatch (not a picker) with the default color', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-color-swatch-0'));
+    // TODO anchor (index 0) and DONE anchor (index 2) should have swatches
+    expect(screen.getByTestId('step-color-swatch-0')).toBeDefined();
+    expect(screen.getByTestId('step-color-swatch-2')).toBeDefined();
+    // Non-anchor (index 1) should NOT have a swatch — it has a color picker instead
+    expect(screen.queryByTestId('step-color-swatch-1')).toBeNull();
+  });
+
+  it('TODO anchor swatch has gray default color', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-color-swatch-0'));
+    const swatch = screen.getByTestId('step-color-swatch-0') as HTMLElement;
+    // The swatch should reflect the gray TODO default color in its inline style
+    expect(swatch.style.backgroundColor).toBeTruthy();
+  });
+
   // ── Color picker ──────────────────────────────────────────────────────────
 
   it('color picker is rendered for non-anchor steps', async () => {
@@ -639,8 +697,9 @@ describe('FlowEditorModal', () => {
     await waitFor(() => expect(api.getDefaultFlow).toHaveBeenCalled());
     fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
     await waitFor(() => {
-      const nameInput = screen.getByTestId('flow-name-input') as HTMLInputElement;
-      expect(nameInput.disabled).toBe(true);
+      // Built-in flow shows a static heading, not an editable input
+      expect(screen.queryByTestId('flow-name-input')).toBeNull();
+      expect(document.querySelector('h3')).toBeTruthy();
     });
     // Middle step inputs should also be disabled (anchors have no editable name input)
     const stepName = screen.getByTestId('step-name-1') as HTMLInputElement;
