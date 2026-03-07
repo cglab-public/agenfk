@@ -114,6 +114,53 @@ function killPattern(pattern: string) {
   } catch (e) {}
 }
 
+async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
+  // Try GitHub REST API first — no auth required for public repos
+  try {
+    if (beta) {
+      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=1`, {
+        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
+        timeout: 10000,
+      });
+      const tag = resp.data?.[0]?.tag_name;
+      if (tag) return tag;
+    } else {
+      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
+        timeout: 10000,
+      });
+      const tag = resp.data?.tag_name;
+      if (tag) return tag;
+    }
+  } catch {
+    // Fall through to gh CLI
+  }
+  // Fallback: gh CLI (requires gh auth login)
+  if (beta) {
+    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  }
+  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
+function downloadReleaseAsset(repo: string, tag: string, pattern: string, outputPath: string): void {
+  const directUrl = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
+  // Try curl first — no auth required for public repos
+  try {
+    execSync(`curl -fsSL "${directUrl}" -o "${outputPath}"`, { stdio: 'inherit' });
+    return;
+  } catch {
+    // Fall through to gh CLI
+  }
+  // Fallback: gh release download (requires gh auth login)
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+}
+
 function resolveIntegrationPlatform(platform: string): string {
   const normalized = platform.trim().toLowerCase();
   const resolved = INTEGRATION_ALIASES[normalized];
@@ -177,12 +224,9 @@ program
     // Check for updates silently
     try {
       const REPO = 'cglab-public/agenfk';
-      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'] 
-      }).trim();
+      const latestTag = await fetchLatestReleaseTag(REPO, false);
       const latestVersion = latestTag.replace(/^v/, '');
-      
+
       if (latestVersion !== CURRENT_VERSION) {
         console.log(chalk.yellow(`\nUpdate available: ${latestVersion} (current: ${CURRENT_VERSION})`));
         console.log(chalk.gray(`Run 'agenfk upgrade' to update.`));
@@ -244,24 +288,12 @@ program
         // Services not running
       }
 
-      // Use gh CLI to fetch the latest release tag
+      // Fetch latest release tag via GitHub REST API (no auth), falling back to gh CLI
       let latestTag = '';
       try {
-        if (options.beta) {
-          // Get the most recent release (could be a pre-release)
-          latestTag = execSync(`gh release list --repo ${REPO} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { 
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'] 
-          }).trim();
-        } else {
-          // Get the latest stable release
-          latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'] 
-          }).trim();
-        }
+        latestTag = await fetchLatestReleaseTag(REPO, options.beta);
       } catch (e) {
-        throw new Error(`Failed to fetch latest ${options.beta ? 'beta ' : ''}release from GitHub. Ensure "gh" CLI is authenticated.`);
+        throw new Error(`Failed to fetch latest ${options.beta ? 'beta ' : ''}release from GitHub. Check your network connection or install the "gh" CLI and run "gh auth login".`);
       }
       
       const latestVersion = latestTag.replace(/^v/, '');
@@ -285,8 +317,8 @@ program
             const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
             fs.mkdirSync(tempDir, { recursive: true });
             
-            // Download the tarball
-            execSync(`gh release download ${latestTag} --repo ${REPO} --pattern 'agenfk-dist.tar.gz' --output "${path.join(tempDir, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+            // Download the tarball (curl first, gh fallback)
+            downloadReleaseAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
             
             // Extract the tarball
             console.log(chalk.gray('Extracting update...'));
