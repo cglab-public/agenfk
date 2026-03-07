@@ -80,6 +80,25 @@ export class SQLiteStorageProvider implements StorageProvider {
         data TEXT NOT NULL
       );
     `);
+    this.migrateFlowsTable();
+  }
+
+  /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
+  private migrateFlowsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(flows)').all() as { name: string }[]
+    ).map((c) => c.name);
+
+    if (!columns.includes('project_id')) return;
+
+    this.database.exec(`
+      BEGIN;
+      CREATE TABLE flows_new (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      INSERT INTO flows_new (id, data) SELECT id, data FROM flows;
+      DROP TABLE flows;
+      ALTER TABLE flows_new RENAME TO flows;
+      COMMIT;
+    `);
   }
 
   private parseProject(data: string): Project {
