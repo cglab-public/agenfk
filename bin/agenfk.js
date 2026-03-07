@@ -120,7 +120,7 @@ if (isNpxCache) {
 
 // Final reminder — always shown so it's visible at the end of install output
 if (process.platform !== 'win32') {
-  const shell = process.env.SHELL ? require('path').basename(process.env.SHELL) : '';
+  const shell = process.env.SHELL ? path.basename(process.env.SHELL) : '';
   const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
     : shell === 'bash' ? 'source ~/.bashrc'
     : shell === 'fish' ? 'source ~/.config/fish/config.fish'
