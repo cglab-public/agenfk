@@ -114,3 +114,20 @@ if (isNpxCache) {
 
   execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
+
+// Final reminder — always shown so it's visible at the end of install output
+if (process.platform !== 'win32') {
+  const shell = process.env.SHELL ? require('path').basename(process.env.SHELL) : '';
+  const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
+    : shell === 'bash' ? 'source ~/.bashrc'
+    : shell === 'fish' ? 'source ~/.config/fish/config.fish'
+    : 'source your shell rc file';
+  console.log(`\n${BLUE}╔══════════════════════════════════════════════════════╗`);
+  console.log(`║  ✅ AgEnFK installation complete!                    ║`);
+  console.log(`║                                                      ║`);
+  console.log(`║  To use the 'agenfk' command in this terminal, run: ║`);
+  console.log(`║    ${sourceHint.padEnd(49)}║`);
+  console.log(`║                                                      ║`);
+  console.log(`║  Then start services with: agenfk up                ║`);
+  console.log(`╚══════════════════════════════════════════════════════╝${RESET}\n`);
+}

@@ -1093,22 +1093,16 @@ program
       issues++;
     }
 
-    // 2. Configuration & DB Check
+    // 2. Database Check — query the running API server (source of truth)
     process.stdout.write('Checking Database... ');
-    const rootDir = path.resolve(__dirname, '../../..');
-    const dbPath = process.env.AGENFK_DB_PATH || path.join(rootDir, '.agenfk', 'db.json');
-    if (fs.existsSync(dbPath)) {
+    try {
+      const { data } = await axios.get(`${API_URL}/db/status`);
       console.log(chalk.green('OK'));
-      console.log(chalk.gray(`   - Path: ${dbPath}`));
-      try {
-        const db = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-        console.log(chalk.gray(`   - Items: ${db.items.length}`));
-      } catch (e) {
-        console.log(chalk.red('   - Error: Could not parse db.json'));
-        issues++;
-      }
-    } else {
-      console.log(chalk.red('MISSING'));
+      console.log(chalk.gray(`   - Path: ${data.dbPath}`));
+      console.log(chalk.gray(`   - Type: ${data.dbType}`));
+    } catch (e: any) {
+      console.log(chalk.red('FAILED'));
+      console.log(chalk.yellow(`   - Could not reach ${API_URL}/db/status`));
       issues++;
     }
 
