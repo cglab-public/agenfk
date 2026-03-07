@@ -228,7 +228,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to Community ─────────────────────────────────────────────────
-  const [publishUrl, setPublishUrl] = useState<string | null>(null);
+  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   const publishMutation = useMutation({
@@ -236,8 +236,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       if (!flow?.id) throw new Error('Flow must be saved before publishing.');
       return api.publishToRegistry(flow.id);
     },
-    onSuccess: ({ url }) => {
-      setPublishUrl(url);
+    onSuccess: (data) => {
+      setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
       setPublishError(null);
     },
     onError: (e: Error) => {
@@ -556,7 +556,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   data-testid="publish-flow-btn"
                   type="button"
                   disabled={publishMutation.isPending}
-                  onClick={() => { setPublishUrl(null); setPublishError(null); publishMutation.mutate(); }}
+                  onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
                   className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
@@ -576,16 +576,16 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </div>
           </div>
 
-          {publishUrl && (
+          {publishResult && (
             <a
               data-testid="publish-success-link"
-              href={publishUrl}
+              href={publishResult.url}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
             >
               <ExternalLink size={12} />
-              Published! View on registry
+              {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
             </a>
           )}
           {publishError && (
