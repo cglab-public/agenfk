@@ -213,7 +213,7 @@ const initStorage = async () => {
     }
     if (!dbPath) {
       const root = findProjectRoot(process.cwd());
-      dbPath = path.join(root, ".agenfk", "db.json");
+      dbPath = path.join(root, ".agenfk", "db.sqlite");
     }
   }
 
