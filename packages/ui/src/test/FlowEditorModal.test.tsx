@@ -982,3 +982,55 @@ describe('FlowEditorModal — Community tab', () => {
     expect(screen.getByTestId('new-flow-btn')).toBeDefined();
   });
 });
+
+describe('FlowEditorModal — version badge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+  });
+
+  afterEach(() => { cleanup(); });
+
+  it('shows version badge when flow has a version', async () => {
+    const flowWithVersion: Flow = { ...SAMPLE_FLOW, version: '1.2.3' };
+    vi.mocked(api.listFlows).mockResolvedValue([flowWithVersion, SAMPLE_FLOW_2]);
+
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('flow-version-badge'));
+    expect(screen.getByTestId('flow-version-badge').textContent).toContain('1.2.3');
+  });
+
+  it('does not show version badge when flow has no version', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('flow-name-input'));
+    expect(screen.queryByTestId('flow-version-badge')).toBeNull();
+  });
+
+  it('version badge has no editable input', async () => {
+    const flowWithVersion: Flow = { ...SAMPLE_FLOW, version: '2.0.0' };
+    vi.mocked(api.listFlows).mockResolvedValue([flowWithVersion, SAMPLE_FLOW_2]);
+
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('flow-version-badge'));
+    expect(screen.queryByTestId('flow-version-input')).toBeNull();
+  });
+});

@@ -2466,61 +2466,22 @@ function serializeFlowToRegistry(flow: any): object {
 
 flowCommand
   .command('publish <id>')
-  .description('Publish a flow to the community registry (requires AGENFK_REGISTRY_TOKEN)')
+  .description('Publish a flow to the community registry (requires gh auth login)')
   .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
   .action(async (id, options) => {
     try {
-      const token = process.env.AGENFK_REGISTRY_TOKEN;
-      if (!token) {
-        console.error(chalk.red('Error: AGENFK_REGISTRY_TOKEN environment variable is required.'));
-        console.error(chalk.gray('Set it to a GitHub personal access token with repo write access.'));
-        process.exit(1);
-        return;
-      }
-
-      const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
-
-      if (!flow.author) {
-        try {
-          flow.author = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-        } catch { /* gh not available — leave author unset */ }
-      }
-
       const registry = options.registry || getFlowRegistryRepo();
-      const [owner, repo] = registry.split('/');
-      const filename = `${flow.name.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}.json`;
-      const filePath = `flows/${filename}`;
-      const payload = serializeFlowToRegistry(flow);
-      const content = Buffer.from(JSON.stringify(payload, null, 2)).toString('base64');
-
-      // Check if file already exists to get its SHA (required for updates)
-      let sha: string | undefined;
-      try {
-        const { data: existing } = await axios.get(
-          `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-          { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }
-        );
-        sha = existing.sha;
-      } catch { /* file doesn't exist yet, create it */ }
-
-      const body: any = {
-        message: `Add/update flow: ${flow.name}`,
-        content,
-      };
-      if (sha) body.sha = sha;
-
-      const { data: result } = await axios.put(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
-        body,
-        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' } }
-      );
-
-      const fileUrl = result.content?.html_url ||
-        `https://github.com/${owner}/${repo}/blob/main/${filePath}`;
+      const body: any = { flowId: id };
+      if (registry) body.registry = registry;
+      const { data } = await axios.post(`${API_URL}/registry/flows/publish`, body);
       console.log(chalk.green(`\nFlow published successfully!`));
-      console.log(chalk.blue(`URL: ${fileUrl}`));
+      if (data.version) console.log(chalk.gray(`Version: ${data.version}`));
+      console.log(chalk.blue(`URL: ${data.url}`));
+      if (data.kind === 'pr') console.log(chalk.yellow(`Pull request opened — awaiting review.`));
     } catch (error: any) {
-      console.error(chalk.red('Error publishing flow:'), error.response?.data?.message || error.message);
+      const errData = error.response?.data;
+      console.error(chalk.red('Error publishing flow:'), errData?.error || errData?.message || error.message);
+      if (errData?.detail) console.error(chalk.gray(errData.detail));
     }
   });
 

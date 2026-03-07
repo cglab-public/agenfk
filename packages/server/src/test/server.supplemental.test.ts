@@ -1489,6 +1489,32 @@ describe('Flows API', () => {
     expect(res.status).toBe(404);
   });
 
+  it('POST /flows defaults version to 1.0.0', async () => {
+    const res = await request(app).post('/flows').send({ name: 'VersionTest', steps: [] });
+    expect(res.status).toBe(201);
+    expect(res.body.version).toBe('1.0.0');
+  });
+
+  it('POST /flows accepts a custom version', async () => {
+    const res = await request(app).post('/flows').send({ name: 'VersionTest2', version: '2.1.0', steps: [] });
+    expect(res.status).toBe(201);
+    expect(res.body.version).toBe('2.1.0');
+  });
+
+  it('PUT /flows/:id persists version update', async () => {
+    const created = (await request(app).post('/flows').send({ name: 'VersionPut', steps: [] })).body;
+    const res = await request(app).put(`/flows/${created.id}`).send({ version: '1.0.1' });
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe('1.0.1');
+  });
+
+  it('GET /flows/:id returns version', async () => {
+    const created = (await request(app).post('/flows').send({ name: 'VersionGet', version: '3.0.0', steps: [] })).body;
+    const res = await request(app).get(`/flows/${created.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe('3.0.0');
+  });
+
   it('DELETE /flows/:id deletes a flow', async () => {
     const created = (await request(app).post('/flows').send({
       name: 'ToDelete', steps: [],
