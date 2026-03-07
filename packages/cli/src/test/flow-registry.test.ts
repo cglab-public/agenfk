@@ -45,6 +45,7 @@ vi.mock('figlet', () => ({
 
 import { program } from '../index';
 import axios from 'axios';
+import * as childProcess from 'child_process';
 
 const mockedAxios = vi.mocked(axios, true);
 
@@ -239,6 +240,71 @@ describe('flow registry commands', () => {
         expect.stringContaining('Network error')
       );
       errSpy.mockRestore();
+    });
+
+    it('should auto-detect author from gh api user when flow has no author', async () => {
+      process.env.AGENFK_REGISTRY_TOKEN = 'ghp_testtoken';
+      const flowWithoutAuthor = { ...SAMPLE_FLOW, author: undefined };
+
+      vi.mocked(childProcess.execSync).mockReturnValue('gh-user\n' as any);
+
+      mockedAxios.get.mockImplementation(async (url: string) => {
+        if (url.includes('localhost')) return { data: flowWithoutAuthor };
+        throw { response: { status: 404 } };
+      });
+      mockedAxios.put.mockResolvedValue({ data: { content: { html_url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/standard-dev-flow.json' } } });
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+
+      const putCall = mockedAxios.put.mock.calls[0];
+      const decoded = JSON.parse(Buffer.from((putCall[1] as any).content, 'base64').toString('utf8'));
+      expect(decoded.author).toBe('gh-user');
+
+      logSpy.mockRestore();
+    });
+
+    it('should leave author undefined when gh is not available and flow has no author', async () => {
+      process.env.AGENFK_REGISTRY_TOKEN = 'ghp_testtoken';
+      const flowWithoutAuthor = { ...SAMPLE_FLOW, author: undefined };
+
+      vi.mocked(childProcess.execSync).mockImplementation(() => { throw new Error('gh not found'); });
+
+      mockedAxios.get.mockImplementation(async (url: string) => {
+        if (url.includes('localhost')) return { data: flowWithoutAuthor };
+        throw { response: { status: 404 } };
+      });
+      mockedAxios.put.mockResolvedValue({ data: { content: { html_url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/standard-dev-flow.json' } } });
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+
+      const putCall = mockedAxios.put.mock.calls[0];
+      const decoded = JSON.parse(Buffer.from((putCall[1] as any).content, 'base64').toString('utf8'));
+      expect(decoded.author).toBeUndefined();
+
+      logSpy.mockRestore();
+    });
+
+    it('should prefer existing flow author over gh api detection', async () => {
+      process.env.AGENFK_REGISTRY_TOKEN = 'ghp_testtoken';
+
+      vi.mocked(childProcess.execSync).mockReturnValue('gh-user\n' as any);
+
+      mockedAxios.get.mockImplementation(async (url: string) => {
+        if (url.includes('localhost')) return { data: SAMPLE_FLOW }; // has author: 'testuser'
+        throw { response: { status: 404 } };
+      });
+      mockedAxios.put.mockResolvedValue({ data: { content: { html_url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/standard-dev-flow.json' } } });
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+
+      const putCall = mockedAxios.put.mock.calls[0];
+      const decoded = JSON.parse(Buffer.from((putCall[1] as any).content, 'base64').toString('utf8'));
+      expect(decoded.author).toBe('testuser');
+
+      logSpy.mockRestore();
     });
   });
 
