@@ -558,6 +558,45 @@ describe('POST /items/:id/validate — command required only on final step', () 
   });
 });
 
+// ── validate_progress: evidence logging ──────────────────────────────────────
+
+describe('POST /items/:id/validate — evidence comment logging', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('logs evidence as a tagged comment before advancing', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'EV1' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV1', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ evidence: 'Wrote unit tests covering edge cases' });
+
+    expect(res.status).toBe(200);
+    const updated = (await request(app).get(`/items/${item.id}`)).body;
+    const evidenceComment = updated.comments.find((c: any) => c.content.includes('Wrote unit tests covering edge cases'));
+    expect(evidenceComment).toBeDefined();
+    expect(evidenceComment.step).toBe('IN_PROGRESS');
+  });
+
+  it('still advances without evidence when omitted', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'EV2' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV2', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('REVIEW');
+  });
+});
+
 // ── Review success path ───────────────────────────────────────────────────────
 
 describe('POST /items/:id/review success paths', () => {
