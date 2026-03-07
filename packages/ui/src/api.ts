@@ -246,9 +246,9 @@ export const api = {
       throw e;
     }
   },
-  publishToRegistry: async (flowId: string, token: string): Promise<{ url: string }> => {
+  publishToRegistry: async (flowId: string): Promise<{ url: string }> => {
     try {
-      const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId, token });
+      const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId });
       return data;
     } catch (e) {
       console.error(`API Error publishing flow ${flowId} to registry:`, e);
