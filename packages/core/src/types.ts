@@ -160,6 +160,7 @@ export interface Flow {
   id: string;
   name: string;
   description?: string;
+  version?: string;
   steps: FlowStep[];
   createdAt: Date;
   updatedAt: Date;
