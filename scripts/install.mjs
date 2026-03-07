@@ -580,15 +580,15 @@ process.exit(0);
                         }
                     } catch { /* skip unwritable files */ }
                 }
-                // Always warn — even if rc files already referenced .local/bin,
-                // the current session doesn't have it yet.
-                const shell = path.basename(process.env.SHELL || '');
-                const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
-                    : shell === 'bash' ? 'source ~/.bashrc'
-                    : shell === 'fish' ? 'source ~/.config/fish/config.fish'
-                    : 'source your shell rc file';
-                console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
             }
+            // Always show the source hint — even if ~/.local/bin is already in PATH,
+            // the current shell session won't see the new symlink without a restart.
+            const shell = path.basename(process.env.SHELL || '');
+            const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
+                : shell === 'bash' ? 'source ~/.bashrc'
+                : shell === 'fish' ? 'source ~/.config/fish/config.fish'
+                : 'source your shell rc file';
+            console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
         }
     }
 
