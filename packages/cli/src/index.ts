@@ -2515,6 +2515,13 @@ flowCommand
       }
 
       const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
+
+      if (!flow.author) {
+        try {
+          flow.author = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        } catch { /* gh not available — leave author unset */ }
+      }
+
       const registry = options.registry || getFlowRegistryRepo();
       const [owner, repo] = registry.split('/');
       const filename = `${flow.name.replace(/[^a-z0-9_-]/gi, '-').toLowerCase()}.json`;
