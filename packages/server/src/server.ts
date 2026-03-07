@@ -658,19 +658,30 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
     const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
     const flowData = JSON.parse(rawContent);
 
+    // Build steps: strip anchor steps from the registry JSON and add fresh standard anchors.
+    const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
+    const middle = rawSteps
+      .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
+      .map((s: any, i: number) => ({
+        id: uuidv4(),
+        name: s.name ?? `step-${i}`,
+        label: s.label ?? s.name ?? `Step ${i + 1}`,
+        order: i + 1,
+        exitCriteria: s.exitCriteria ?? '',
+        isSpecial: s.isSpecial ?? false,
+      }));
+    const steps = [
+      { id: uuidv4(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+      ...middle,
+      { id: uuidv4(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
+    ];
+
     // Create flow in local storage (no projectId — registry flows are global)
     const newFlow = await storage.createFlow({
       id: uuidv4(),
       name: flowData.name ?? filename.replace('.json', ''),
       description: flowData.description,
-      steps: Array.isArray(flowData.steps) ? flowData.steps.map((s: any, i: number) => ({
-        id: uuidv4(),
-        name: s.name ?? `step-${i}`,
-        label: s.label ?? s.name ?? `Step ${i + 1}`,
-        order: i,
-        exitCriteria: s.exitCriteria ?? '',
-        isSpecial: s.isSpecial ?? false,
-      })) : [],
+      steps,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

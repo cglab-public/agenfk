@@ -640,6 +640,45 @@ describe('FlowEditorModal', () => {
     // No id should be passed in the payload
     expect((call as any).id).toBeUndefined();
   });
+
+  it('cloned flow uses fresh standard TODO/DONE anchors even when source has non-standard anchor data', async () => {
+    // Source flow with anchors that have non-standard exitCriteria and label
+    const sourceWithCustomAnchors: Flow = {
+      ...SAMPLE_FLOW,
+      steps: [
+        { id: 's1', name: 'TODO', label: 'Start Here', order: 0, exitCriteria: 'Must triage first', isAnchor: true },
+        { id: 's2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined' },
+        { id: 's3', name: 'DONE', label: 'Shipped!', order: 2, exitCriteria: 'All deployed', isAnchor: true },
+      ],
+    };
+    vi.mocked(api.listFlows).mockResolvedValue([sourceWithCustomAnchors, SAMPLE_FLOW_2]);
+    vi.mocked(api.createFlow).mockResolvedValue({ ...SAMPLE_FLOW, id: 'new-clone-id', name: 'Copy of My Flow' });
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('clone-flow-btn-flow-1'));
+    fireEvent.click(screen.getByTestId('clone-flow-btn-flow-1'));
+    await waitFor(() => screen.getByTestId('save-flow-btn'));
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(api.createFlow).mock.calls[0][0];
+    const steps = call.steps ?? [];
+
+    const todo = steps.find((s: any) => s.name === 'TODO');
+    const done = steps.find((s: any) => s.name === 'DONE');
+
+    // Standard anchor labels and empty exitCriteria — not copied from source
+    expect(todo?.label).toBe('To Do');
+    expect(todo?.exitCriteria).toBe('');
+    expect(done?.label).toBe('Done');
+    expect(done?.exitCriteria).toBe('');
+
+    // Middle steps are preserved
+    const middle = steps.filter((s: any) => !s.isAnchor);
+    expect(middle).toHaveLength(1);
+    expect(middle[0].name).toBe('in_review');
+  });
 });
 
 // ── Community tab ─────────────────────────────────────────────────────────────

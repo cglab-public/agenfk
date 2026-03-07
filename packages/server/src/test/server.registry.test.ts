@@ -123,3 +123,100 @@ describe('POST /registry/flows/publish', () => {
     expect(res.body.error).toContain('gh CLI');
   });
 });
+
+// ── POST /registry/flows/install ─────────────────────────────────────────────
+
+import axios from 'axios';
+
+const INSTALL_DB = path.resolve('./server-registry-install-test-db.json');
+
+function makeRegistryFlowContent(steps: object[]) {
+  return Buffer.from(JSON.stringify({
+    name: 'Community Flow',
+    description: 'A flow from the registry',
+    steps,
+  })).toString('base64');
+}
+
+describe('POST /registry/flows/install — anchor handling', () => {
+  beforeAll(async () => {
+    process.env.AGENFK_DB_PATH = INSTALL_DB;
+    if (fs.existsSync(INSTALL_DB)) fs.unlinkSync(INSTALL_DB);
+    await initStorage();
+  });
+
+  afterAll(() => {
+    if (fs.existsSync(INSTALL_DB)) fs.unlinkSync(INSTALL_DB);
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('strips TODO/DONE anchor steps from imported registry flow and adds fresh ones', async () => {
+    vi.mocked(axios.get).mockResolvedValue({
+      data: {
+        content: makeRegistryFlowContent([
+          { name: 'TODO', label: 'To Do', order: 0, isAnchor: true, exitCriteria: '' },
+          { name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: 'All tasks done' },
+          { name: 'DONE', label: 'Done', order: 2, isAnchor: true, exitCriteria: '' },
+        ]),
+      },
+    });
+
+    const res = await request(app)
+      .post('/registry/flows/install')
+      .send({ filename: 'community-flow.json' });
+
+    expect(res.status).toBe(200);
+    const steps: any[] = res.body.steps;
+
+    // Fresh TODO anchor must be present
+    const todo = steps.find((s: any) => s.name === 'TODO');
+    expect(todo).toBeDefined();
+    expect(todo.isAnchor).toBe(true);
+
+    // Fresh DONE anchor must be present
+    const done = steps.find((s: any) => s.name === 'DONE');
+    expect(done).toBeDefined();
+    expect(done.isAnchor).toBe(true);
+
+    // Middle step preserved
+    const middle = steps.filter((s: any) => !s.isAnchor);
+    expect(middle).toHaveLength(1);
+    expect(middle[0].name).toBe('in_progress');
+    expect(middle[0].exitCriteria).toBe('All tasks done');
+
+    // TODO must be first, DONE must be last
+    expect(steps[0].name).toBe('TODO');
+    expect(steps[steps.length - 1].name).toBe('DONE');
+  });
+
+  it('adds TODO/DONE anchors when registry flow has none', async () => {
+    vi.mocked(axios.get).mockResolvedValue({
+      data: {
+        content: makeRegistryFlowContent([
+          { name: 'design', label: 'Design', order: 0, exitCriteria: 'Design approved' },
+          { name: 'build', label: 'Build', order: 1, exitCriteria: 'Build passing' },
+        ]),
+      },
+    });
+
+    const res = await request(app)
+      .post('/registry/flows/install')
+      .send({ filename: 'design-flow.json' });
+
+    expect(res.status).toBe(200);
+    const steps: any[] = res.body.steps;
+
+    expect(steps[0].name).toBe('TODO');
+    expect(steps[0].isAnchor).toBe(true);
+    expect(steps[steps.length - 1].name).toBe('DONE');
+    expect(steps[steps.length - 1].isAnchor).toBe(true);
+
+    const middle = steps.filter((s: any) => !s.isAnchor);
+    expect(middle).toHaveLength(2);
+    expect(middle[0].name).toBe('design');
+    expect(middle[1].name).toBe('build');
+  });
+});

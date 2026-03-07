@@ -20,11 +20,23 @@ function generateUUID(): string {
   return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
 }
 
+function makeFreshAnchors(): [FlowStep, FlowStep] {
+  return [
+    { id: generateUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+    { id: generateUUID(), name: 'DONE', label: 'Done', order: 0, exitCriteria: '', isAnchor: true },
+  ];
+}
+
 function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined } {
+  const [todo, done] = makeFreshAnchors();
+  const middle = source.steps
+    .filter(s => !s.isAnchor)
+    .map((s, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
+  done.order = middle.length + 1;
   return {
     name: newName,
     description: source.description,
-    steps: source.steps.map(s => ({ ...s, id: generateUUID() })),
+    steps: [todo, ...middle, done],
   };
 }
 
