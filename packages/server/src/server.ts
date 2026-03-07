@@ -1205,7 +1205,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
     }
     // First anchor (TODO): advance to coding step without running a command.
-    // Exit criteria are surfaced for the agent to acknowledge but not mechanically enforced.
     if (!codingStep) {
       return res.status(400).json({ error: `Cannot advance from ${item.status}: no coding step found in flow.` });
     }
@@ -1214,12 +1213,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
     await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
     io.emit('items_updated');
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${exitCriteria ? `\n\n**Exit criteria**: ${exitCriteria}` : ''}` });
+    const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
+    const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}` });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
   const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
   const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+  // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
+  const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
+  const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
+    ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
+    : '';
 
   // A command is only required for the final step (→ DONE). For intermediate
   // steps the command is optional — omitting it advances without running anything.
@@ -1264,7 +1270,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: 'Sibling propagation' });
       }
     }
   }
@@ -1276,7 +1282,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), comment] });
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.\n\nContinue calling validate_progress to advance through remaining steps.` });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
   }
 
   const projectRoot = findProjectRoot(process.cwd());
@@ -1309,7 +1315,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${nextStatus !== Status.DONE ? '\n\nContinue calling validate_progress to advance through remaining steps.' : ''}`, output: truncated });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: truncated });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {

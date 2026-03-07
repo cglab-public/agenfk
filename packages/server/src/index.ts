@@ -312,7 +312,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Validates exit criteria for the current flow step and advances the item to the next step. If command is provided, runs it as a build/test gate. If omitted, uses the project's verifyCommand. On success, advances to the next flow step (or DONE if last). On failure, moves back to the coding step. Call workflow_gatekeeper(role='validating') first — the response includes the current step's exit criteria.",
+        description: "Validates exit criteria for the current flow step and advances the item to the next step. If command is provided, runs it as a build/test gate. If omitted, uses the project's verifyCommand. On success, advances to the next flow step (or DONE if last) and returns MANDATORY EXIT CRITERIA for the new current step — you MUST complete those instructions before calling validate_progress again. On failure, moves back to the coding step.",
         inputSchema: {
           type: "object",
           properties: {
