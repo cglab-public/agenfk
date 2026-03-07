@@ -59,7 +59,9 @@ function downloadAsset(repo, tag, pattern, outputPath) {
 }
 
 if (isNpxCache) {
-  if (fs.existsSync(INSTALL_DIR)) {
+  const isUpdate = fs.existsSync(INSTALL_DIR);
+
+  if (isUpdate) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
     // Overlay new files from the npx cache onto the existing install
     if (fs.cpSync) {
@@ -77,7 +79,8 @@ if (isNpxCache) {
   }
 
   const distMissing = !fs.existsSync(path.join(INSTALL_DIR, 'packages/cli/dist')) || !fs.existsSync(path.join(INSTALL_DIR, 'packages/server/dist'));
-  if (!shouldRebuild && distMissing) {
+  // Always download on update (to replace stale binaries); on fresh install only if dist missing
+  if (!shouldRebuild && (isUpdate || distMissing)) {
     const REPO = 'cglab-public/agenfk';
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
