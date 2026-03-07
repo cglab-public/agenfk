@@ -38,18 +38,43 @@ if (gitCheck.status !== 0) {
 const shouldRebuild = process.argv.includes('--rebuild');
 const REPO_NAME = 'cglab-public/agenfk';
 
+// Fetch latest release tag — curl (no auth) first, gh CLI as fallback
+function fetchLatestTag(repo) {
+  try {
+    const json = execSync(
+      `curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    const tag = JSON.parse(json).tag_name;
+    if (tag) return tag;
+  } catch {}
+  // Fallback: gh CLI
+  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+}
+
+// Download release asset — direct curl URL (no auth) first, gh CLI as fallback
+function downloadAsset(repo, tag, pattern, outputPath) {
+  const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
+  try {
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    return;
+  } catch {}
+  // Fallback: gh CLI
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+}
+
 if (fs.existsSync(INSTALL_DIR)) {
   console.log(`${GREEN}AgenFK already installed at ${INSTALL_DIR}${RESET}`);
   const isGitRepo = fs.existsSync(path.join(INSTALL_DIR, '.git'));
-  
+
   if (isGitRepo) {
     console.log('Pulling latest changes...');
     execSync('git pull', { cwd: INSTALL_DIR, stdio: 'inherit' });
   } else if (!shouldRebuild) {
     console.log(`${GREEN}Updating pre-built binary from GitHub...${RESET}`);
     try {
-      const latestTag = execSync(`gh release view --repo ${REPO_NAME} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
-      execSync(`gh release download ${latestTag} --repo ${REPO_NAME} --pattern 'agenfk-dist.tar.gz' --output "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+      const latestTag = fetchLatestTag(REPO_NAME);
+      downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
       execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
@@ -61,8 +86,8 @@ if (fs.existsSync(INSTALL_DIR)) {
     console.log(`Installing pre-built AgenFK to ${INSTALL_DIR} ...`);
     fs.mkdirSync(INSTALL_DIR, { recursive: true });
     try {
-      const latestTag = execSync(`gh release view --repo ${REPO_NAME} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
-      execSync(`gh release download ${latestTag} --repo ${REPO_NAME} --pattern 'agenfk-dist.tar.gz' --output "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}"`, { stdio: 'inherit' });
+      const latestTag = fetchLatestTag(REPO_NAME);
+      downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
       execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
