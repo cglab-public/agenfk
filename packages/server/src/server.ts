@@ -727,14 +727,22 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     2
   );
 
-  // Fork the registry (idempotent — gh skips if fork already exists)
-  execSync(`gh repo fork ${REGISTRY_OWNER}/${REGISTRY_REPO} --clone=false`, { stdio: 'pipe' });
+  const isOwner = ghUser === REGISTRY_OWNER;
+
+  // Non-owners publish via a fork; owners push directly
+  if (!isOwner) {
+    execSync(`gh repo fork ${REGISTRY_OWNER}/${REGISTRY_REPO} --clone=false`, { stdio: 'pipe' });
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
-    // Shallow-clone the upstream to check for name clashes, then switch push remote to fork
+    // Shallow-clone the upstream to check for name clashes
     execSync(`git clone --depth 1 --quiet https://oauth2:${ghToken}@github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git ${tmpDir}`, { stdio: 'pipe' });
-    execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${REGISTRY_REPO}.git`, { stdio: 'pipe' });
+
+    // Non-owners switch the push remote to their fork
+    if (!isOwner) {
+      execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${REGISTRY_REPO}.git`, { stdio: 'pipe' });
+    }
 
     const flowsDir = path.join(tmpDir, 'flows');
     if (!fs.existsSync(flowsDir)) fs.mkdirSync(flowsDir, { recursive: true });
@@ -751,23 +759,33 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       });
     }
 
-    const branchName = `flow/${slug}-${Date.now()}`;
-    execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
-    fs.writeFileSync(targetPath, content + '\n');
-
     const commitMsg = fileExists ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`;
+
+    // Non-owners commit on a feature branch; owners commit directly on the cloned main
+    const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
+    if (branchName) {
+      execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
+    }
+
+    fs.writeFileSync(targetPath, content + '\n');
     execSync(`git -C ${tmpDir} add flows/${filename}`, { stdio: 'pipe' });
     execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { stdio: 'pipe' });
-    execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
 
-    // Open PR from fork branch → upstream main
-    const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
-    const prUrl = execSync(
-      `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
-      { stdio: 'pipe' }
-    ).toString().trim();
-
-    res.json({ url: prUrl, kind: 'pr' });
+    if (isOwner) {
+      // Push directly to upstream main — no PR needed
+      execSync(`git -C ${tmpDir} push origin main`, { stdio: 'pipe' });
+      const fileUrl = `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}`;
+      res.json({ url: fileUrl, kind: 'direct' });
+    } else {
+      // Push feature branch to fork, then open a PR against upstream main
+      execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
+      const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
+      const prUrl = execSync(
+        `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+      res.json({ url: prUrl, kind: 'pr' });
+    }
   } catch (e: any) {
     res.status(502).json({ error: 'Failed to publish flow', detail: e?.message });
   } finally {
