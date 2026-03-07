@@ -571,25 +571,23 @@ process.exit(0);
                     path.join(os.homedir(), '.bashrc'),
                     path.join(os.homedir(), '.profile'),
                 ];
-                let added = false;
                 for (const rc of rcFiles) {
                     try {
                         const existing = existsSync(rc) ? readFileSync(rc, 'utf8') : '';
                         if (!existing.includes('.local/bin')) {
                             await fs.appendFile(rc, exportLine, 'utf8');
                             console.log(`  Added ~/.local/bin to PATH in ${path.basename(rc)}`);
-                            added = true;
                         }
                     } catch { /* skip unwritable files */ }
                 }
-                if (added) {
-                    const shell = path.basename(process.env.SHELL || '');
-                    const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
-                        : shell === 'bash' ? 'source ~/.bashrc'
-                        : shell === 'fish' ? 'source ~/.config/fish/config.fish'
-                        : 'source your shell rc file';
-                    console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
-                }
+                // Always warn — even if rc files already referenced .local/bin,
+                // the current session doesn't have it yet.
+                const shell = path.basename(process.env.SHELL || '');
+                const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
+                    : shell === 'bash' ? 'source ~/.bashrc'
+                    : shell === 'fish' ? 'source ~/.config/fish/config.fish'
+                    : 'source your shell rc file';
+                console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
             }
         }
     }
