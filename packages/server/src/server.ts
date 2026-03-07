@@ -529,13 +529,14 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
 }));
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
-  const { name, description, steps } = req.body;
+  const { name, description, version, steps } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const flow: Flow = {
     id: uuidv4(),
     name,
     description: description || "",
+    version: version || "1.0.0",
     steps: steps || [],
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -554,10 +555,11 @@ app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
 
 app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
   try {
-    const { name, description, steps } = req.body;
+    const { name, description, version, steps } = req.body;
     const updates: Partial<Flow> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
+    if (version !== undefined) updates.version = version;
     if (steps !== undefined) updates.steps = steps;
 
     const updated = await storage.updateFlow(req.params.id, updates);
@@ -694,7 +696,7 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
-  const { flowId } = req.body;
+  const { flowId, registry } = req.body;
   if (!flowId) return res.status(400).json({ error: 'flowId is required' });
 
   const flow = await storage.getFlow(flowId);
@@ -705,10 +707,10 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
   }
 
-  // gh must already be authenticated — get current user login
+  // gh must already be authenticated — get current user login (= author)
   let ghUser: string;
   try {
-    ghUser = execSync('gh api user -q .login', { stdio: 'pipe' }).toString().trim();
+    ghUser = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     return res.status(503).json({ error: 'gh CLI is not authenticated. Run `gh auth login` on the server.' });
   }
@@ -716,43 +718,28 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   // Get token from gh for git operations
   const ghToken = execSync('gh auth token', { stdio: 'pipe' }).toString().trim();
 
+  const [registryOwner, registryRepo] = registry
+    ? (registry as string).split('/')
+    : [REGISTRY_OWNER, REGISTRY_REPO];
+
   const slug = flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const filename = `${slug}.json`;
-  const content = JSON.stringify(
-    {
-      name: flow.name,
-      description: flow.description ?? '',
-      version: '1.0.0',
-      steps: flow.steps
-        .sort((a: any, b: any) => a.order - b.order)
-        .map((s: any) => ({
-          name: s.name,
-          label: s.label,
-          exitCriteria: s.exitCriteria,
-          isSpecial: s.isSpecial,
-          isAnchor: s.isAnchor,
-          order: s.order,
-        })),
-    },
-    null,
-    2
-  );
 
-  const isOwner = ghUser === REGISTRY_OWNER;
+  const isOwner = ghUser === registryOwner;
 
   // Non-owners publish via a fork; owners push directly
   if (!isOwner) {
-    execSync(`gh repo fork ${REGISTRY_OWNER}/${REGISTRY_REPO} --clone=false`, { stdio: 'pipe' });
+    execSync(`gh repo fork ${registryOwner}/${registryRepo} --clone=false`, { stdio: 'pipe' });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
     // Shallow-clone the upstream to check for name clashes
-    execSync(`git clone --depth 1 --quiet https://oauth2:${ghToken}@github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git ${tmpDir}`, { stdio: 'pipe' });
+    execSync(`git clone --depth 1 --quiet https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git ${tmpDir}`, { stdio: 'pipe' });
 
     // Non-owners switch the push remote to their fork
     if (!isOwner) {
-      execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${REGISTRY_REPO}.git`, { stdio: 'pipe' });
+      execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`, { stdio: 'pipe' });
     }
 
     const flowsDir = path.join(tmpDir, 'flows');
@@ -761,42 +748,71 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     const targetPath = path.join(flowsDir, filename);
     const fileExists = fs.existsSync(targetPath);
 
+    // Auto-increment patch version on re-publish; persist updated version back to local flow
+    let version = (flow as any).version || '1.0.0';
+    if (fileExists) {
+      const parts = version.split('.').map(Number);
+      parts[2] = (parts[2] || 0) + 1;
+      version = parts.join('.');
+      await storage.updateFlow(flowId, { version } as any);
+    }
+
+    const content = JSON.stringify(
+      {
+        name: flow.name,
+        description: flow.description ?? '',
+        author: ghUser,
+        version,
+        steps: flow.steps
+          .sort((a: any, b: any) => a.order - b.order)
+          .map((s: any) => ({
+            name: s.name,
+            label: s.label,
+            exitCriteria: s.exitCriteria,
+            isSpecial: s.isSpecial,
+            isAnchor: s.isAnchor,
+            order: s.order,
+          })),
+      },
+      null,
+      2
+    );
+
     // Name clash: identical content → already published, skip
-    if (fileExists && fs.readFileSync(targetPath, 'utf8').trim() === content.trim()) {
-      return res.json({
-        url: `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}`,
-        kind: 'existing',
-        note: 'Already published — no changes detected.',
-      });
+    if (!fileExists || fs.readFileSync(targetPath, 'utf8').trim() !== content.trim()) {
+      const commitMsg = fileExists ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`;
+
+      // Non-owners commit on a feature branch; owners commit directly on the cloned main
+      const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
+      if (branchName) {
+        execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
+      }
+
+      fs.writeFileSync(targetPath, content + '\n');
+      execSync(`git -C ${tmpDir} add flows/${filename}`, { stdio: 'pipe' });
+      execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { stdio: 'pipe' });
+
+      if (isOwner) {
+        execSync(`git -C ${tmpDir} push origin main`, { stdio: 'pipe' });
+        const fileUrl = `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`;
+        return res.json({ url: fileUrl, kind: 'direct', version });
+      } else {
+        execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
+        const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
+        const prUrl = execSync(
+          `gh pr create --repo ${registryOwner}/${registryRepo} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
+          { stdio: 'pipe' }
+        ).toString().trim();
+        return res.json({ url: prUrl, kind: 'pr', version });
+      }
     }
 
-    const commitMsg = fileExists ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`;
-
-    // Non-owners commit on a feature branch; owners commit directly on the cloned main
-    const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
-    if (branchName) {
-      execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
-    }
-
-    fs.writeFileSync(targetPath, content + '\n');
-    execSync(`git -C ${tmpDir} add flows/${filename}`, { stdio: 'pipe' });
-    execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { stdio: 'pipe' });
-
-    if (isOwner) {
-      // Push directly to upstream main — no PR needed
-      execSync(`git -C ${tmpDir} push origin main`, { stdio: 'pipe' });
-      const fileUrl = `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}`;
-      res.json({ url: fileUrl, kind: 'direct' });
-    } else {
-      // Push feature branch to fork, then open a PR against upstream main
-      execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
-      const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
-      const prUrl = execSync(
-        `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
-        { stdio: 'pipe' }
-      ).toString().trim();
-      res.json({ url: prUrl, kind: 'pr' });
-    }
+    return res.json({
+      url: `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`,
+      kind: 'existing',
+      note: 'Already published — no changes detected.',
+      version,
+    });
   } catch (e: any) {
     res.status(502).json({ error: 'Failed to publish flow', detail: e?.message });
   } finally {
