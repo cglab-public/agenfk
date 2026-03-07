@@ -140,7 +140,7 @@ function runIntegrationScript(scriptName: string, args: string[]) {
 if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
   console.log(
     chalk.cyan(
-      figlet.textSync('AgEnFK', { horizontalLayout: 'full' })
+      figlet.textSync('AgEnFK', { font: 'Big' })
     )
   );
 }
