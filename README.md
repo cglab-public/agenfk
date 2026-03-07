@@ -186,6 +186,8 @@ Everything in between is yours to define. A TDD-focused developer might use `TOD
 
 Open the **Flow Editor** from the Kanban toolbar to manage your flows visually:
 
+![Flow Editor](docs/flow-editor.png)
+
 - **Create** a new flow from scratch or **clone** an existing one as a starting point.
 - **Drag to reorder** steps and edit the name and exit criteria inline.
 - **Set as active** to switch your project to that flow — cards are automatically migrated to the nearest equivalent step.
