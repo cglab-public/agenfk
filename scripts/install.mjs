@@ -103,10 +103,15 @@ async function run() {
     }
 
     if (!onlyPlatform) {
-        console.log(`${GREEN}[1/14] Building project...${NC}`);
-        spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-        cleanDists();
-        runBuild();
+        const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+        if (shouldRebuild || missingDists.length > 0) {
+            console.log(`${GREEN}[1/14] Building project...${NC}`);
+            spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
+            if (shouldRebuild) cleanDists();
+            runBuild();
+        } else {
+            console.log(`${GREEN}[1/14] Build artifacts found, skipping rebuild.${NC}`);
+        }
     } else {
         const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
         if (missingDists.length > 0) {
