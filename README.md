@@ -54,7 +54,7 @@ This will:
 *   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
 *   Configure the **`start:services`** Node script to launch the API and Web UI.
 
-> **Requirements**: Node.js 18+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
+> **Requirements**: Node.js 22.5+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
 **To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup.
 

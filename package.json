@@ -36,6 +36,9 @@
     "type": "git",
     "url": "https://github.com/cglab-public/agenfk.git"
   },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "type": "module",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
