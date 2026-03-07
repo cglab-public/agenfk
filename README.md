@@ -324,6 +324,52 @@ This writes `"telemetry": false` to `~/.agenfk/config.json` and permanently disa
 
 ---
 
+## FAQ
+
+### Does AgEnFK substitute agile management tools such as JIRA, Monday, ClickUp, etc.?
+
+No — and it is not meant to. AgEnFK operates at a completely different level of granularity.
+
+Tools like JIRA, Monday, or ClickUp manage work at the **team and product level**: sprints, epics, roadmaps, cross-team dependencies, stakeholder visibility. They answer questions like *"What is the team shipping this quarter?"* and *"Is this feature on track?"*
+
+AgEnFK operates **inside** a single developer's workflow, specifically within the steps those tools mark as *"In Progress"*, *"Developing"*, or *"In Development"*. It answers a different question: *"How is the AI agent executing this specific task — and is it doing so correctly?"*
+
+Think of it as the developer's own, customisable, **Agentic Engineering flow automation and enforcement tool**. When a ticket moves to *In Progress* in JIRA, that is where AgEnFK takes over — decomposing the work into granular steps, enforcing a TDD or custom flow, gating transitions with build/test verification, and producing a measurable audit trail of exactly what the AI agent did and why. When the work is done, AgEnFK closes its sub-workflow and the parent ticket advances in JIRA as normal.
+
+In short: **JIRA manages the sprint. AgEnFK manages the agent.**
+
+---
+
+### Does AgEnFK work with any AI coding platform?
+
+AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, Google Gemini CLI, and OpenAI Codex CLI (all fully supported via MCP + workflow rules), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
+
+---
+
+### Do I need an internet connection?
+
+No. AgEnFK runs entirely on your local machine — the API server, Kanban UI, and database are all local. An internet connection is only needed for `agenfk upgrade` (fetching a new release from GitHub) and optional telemetry (which can be disabled).
+
+---
+
+### What happens if the AgEnFK server is not running?
+
+The AI agent will be unable to call MCP tools (`create_item`, `validate_progress`, etc.) and the workflow gatekeeper will block edits. Run `agenfk up` to start the services before beginning a session.
+
+---
+
+### Can I use AgEnFK across multiple projects?
+
+Yes. Projects are independent records in the database. You can switch between them freely — the Kanban board shows all projects, and the CLI and MCP tools all accept a `--project` flag or read from a local `.agenfk/project.json` file.
+
+---
+
+### Is my code or project data sent anywhere?
+
+No. Your source code and project data never leave your machine. The only outbound data is anonymous usage telemetry (see [Telemetry](#telemetry)), which can be disabled with `agenfk config set telemetry false`.
+
+---
+
 ![AgEnFK Dashboard](./docs/dashboard-screenshot.png)
 
 ---
