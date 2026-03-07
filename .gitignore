@@ -3,9 +3,11 @@ dist/
 build/
 .agenfk/
 *.log
-scripts/start-services.mjs
 .DS_Store
 .env
 coverage/
 .opencode/
 *.tar.gz
+.claude/
+tmp.*.json
+*-test-db.json
