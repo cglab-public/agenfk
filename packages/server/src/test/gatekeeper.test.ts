@@ -1,105 +1,92 @@
 /**
- * Unit tests for workflow_gatekeeper coding-role logic with custom flows.
- * Covers the bug where getCodingStepName / getCodingStepItems used the literal
- * string 'IN_PROGRESS' instead of the active flow's first non-anchor step.
+ * Unit tests for the simplified workflow_gatekeeper utilities.
+ * The gatekeeper no longer enforces role/step coupling — it verifies any active
+ * task exists in any non-anchor, non-terminal step and returns context.
  */
 import { describe, it, expect } from 'vitest';
-import { getCodingStepName, getCodingStepItems, GatekeeperFlow, GatekeeperItem } from '../gatekeeper-utils';
+import { getActiveStepItems, GatekeeperFlow, GatekeeperItem } from '../gatekeeper-utils';
 
-// ── getCodingStepName ─────────────────────────────────────────────────────────
+const DEFAULT_FLOW: GatekeeperFlow = {
+  steps: [
+    { name: 'TODO', order: 0, isAnchor: true },
+    { name: 'IN_PROGRESS', order: 1 },
+    { name: 'REVIEW', order: 2 },
+    { name: 'DONE', order: 3, isAnchor: true },
+  ],
+};
 
-describe('getCodingStepName', () => {
-  it('returns IN_PROGRESS when activeFlow is null (default flow)', () => {
-    expect(getCodingStepName(null)).toBe('IN_PROGRESS');
-  });
+const TDD_FLOW: GatekeeperFlow = {
+  steps: [
+    { name: 'TODO', order: 0, isAnchor: true },
+    { name: 'create_unit_tests', order: 1 },
+    { name: 'IN_PROGRESS', order: 2 },
+    { name: 'REVIEW', order: 3 },
+    { name: 'DONE', order: 4, isAnchor: true },
+  ],
+};
 
-  it('returns IN_PROGRESS when flow has no non-anchor steps', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'DONE', order: 99, isAnchor: true },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('IN_PROGRESS');
-  });
+// ── getActiveStepItems ────────────────────────────────────────────────────────
 
-  it('returns the first non-anchor step name from a default-style flow', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'IN_PROGRESS', order: 1 },
-        { name: 'REVIEW', order: 2 },
-        { name: 'DONE', order: 3, isAnchor: true },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('IN_PROGRESS');
-  });
-
-  it('returns custom coding step name from TDD flow (create_unit_tests)', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'create_unit_tests', order: 1 },
-        { name: 'IN_PROGRESS', order: 2 },
-        { name: 'REVIEW', order: 3 },
-        { name: 'DONE', order: 4, isAnchor: true },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('create_unit_tests');
-  });
-
-  it('handles unsorted steps — picks the lowest order non-anchor', () => {
-    const flow: GatekeeperFlow = {
-      steps: [
-        { name: 'REVIEW', order: 3 },
-        { name: 'TODO', order: 0, isAnchor: true },
-        { name: 'coding', order: 1 },
-        { name: 'DONE', order: 99, isAnchor: true },
-      ],
-    };
-    expect(getCodingStepName(flow)).toBe('coding');
-  });
-});
-
-// ── getCodingStepItems ────────────────────────────────────────────────────────
-
-describe('getCodingStepItems', () => {
+describe('getActiveStepItems', () => {
   const items: GatekeeperItem[] = [
     { id: '1', status: 'TODO', type: 'TASK' },
     { id: '2', status: 'IN_PROGRESS', type: 'TASK' },
     { id: '3', status: 'create_unit_tests', type: 'TASK' },
     { id: '4', status: 'REVIEW', type: 'TASK' },
     { id: '5', status: 'DONE', type: 'TASK' },
+    { id: '6', status: 'BLOCKED', type: 'TASK' },
+    { id: '7', status: 'PAUSED', type: 'TASK' },
   ];
 
-  it('returns items in IN_PROGRESS for default flow', () => {
-    const result = getCodingStepItems(items, 'IN_PROGRESS');
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('2');
+  it('returns items in any non-anchor working step (default flow)', () => {
+    const result = getActiveStepItems(items, DEFAULT_FLOW);
+    const ids = result.map((i: GatekeeperItem) => i.id);
+    expect(ids).toContain('2'); // IN_PROGRESS
+    expect(ids).toContain('4'); // REVIEW
+    expect(ids).not.toContain('1'); // TODO is anchor
+    expect(ids).not.toContain('5'); // DONE is anchor
   });
 
-  it('returns items in create_unit_tests for TDD flow — NOT IN_PROGRESS', () => {
-    const result = getCodingStepItems(items, 'create_unit_tests');
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('3');
+  it('returns items in ALL working steps for TDD flow — both create_unit_tests and IN_PROGRESS', () => {
+    const result = getActiveStepItems(items, TDD_FLOW);
+    const ids = result.map((i: GatekeeperItem) => i.id);
+    expect(ids).toContain('2'); // IN_PROGRESS
+    expect(ids).toContain('3'); // create_unit_tests
+    expect(ids).toContain('4'); // REVIEW
+    expect(ids).not.toContain('1'); // TODO
+    expect(ids).not.toContain('5'); // DONE
   });
 
-  it('does NOT include literal IN_PROGRESS items when coding step is create_unit_tests', () => {
-    const result = getCodingStepItems(items, 'create_unit_tests');
-    const ids = result.map(i => i.id);
-    expect(ids).not.toContain('2'); // IN_PROGRESS should not match
+  it('excludes BLOCKED and PAUSED items', () => {
+    const result = getActiveStepItems(items, DEFAULT_FLOW);
+    const ids = result.map((i: GatekeeperItem) => i.id);
+    expect(ids).not.toContain('6'); // BLOCKED
+    expect(ids).not.toContain('7'); // PAUSED
+  });
+
+  it('returns all non-anchor working step items when flow is null (fallback)', () => {
+    const result = getActiveStepItems(items, null);
+    const ids = result.map((i: GatekeeperItem) => i.id);
+    expect(ids).toContain('2'); // IN_PROGRESS
+    expect(ids).toContain('4'); // REVIEW
+    expect(ids).not.toContain('1'); // TODO
+    expect(ids).not.toContain('5'); // DONE
+  });
+
+  it('returns empty array when no items are in active steps', () => {
+    const onlyTodo: GatekeeperItem[] = [
+      { id: 'a', status: 'TODO', type: 'TASK' },
+      { id: 'b', status: 'DONE', type: 'TASK' },
+    ];
+    expect(getActiveStepItems(onlyTodo, DEFAULT_FLOW)).toHaveLength(0);
   });
 
   it('is case-insensitive', () => {
-    const mixedItems: GatekeeperItem[] = [
-      { id: 'a', status: 'In_Progress', type: 'TASK' },
+    const mixed: GatekeeperItem[] = [
+      { id: 'x', status: 'in_progress', type: 'TASK' },
     ];
-    const result = getCodingStepItems(mixedItems, 'IN_PROGRESS');
+    const result = getActiveStepItems(mixed, DEFAULT_FLOW);
     expect(result).toHaveLength(1);
-  });
-
-  it('returns empty array when no items match the coding step', () => {
-    const result = getCodingStepItems(items, 'some_other_step');
-    expect(result).toHaveLength(0);
+    expect(result[0].id).toBe('x');
   });
 });

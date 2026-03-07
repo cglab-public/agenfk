@@ -1,19 +1,17 @@
 <!-- agenfk:start -->
-## AgenFK Workflow — MANDATORY
+## AgEnFK Workflow — MANDATORY
 
 Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
-1. Have an AgenFK task set to `IN_PROGRESS` for the active project.
-2. Call `workflow_gatekeeper(intent, role, itemId)` via MCP to confirm authorization.
-   - Use `role="coding"` for file edits and implementation work.
-   - Use `role="planning"` when decomposing EPICs or STORYs.
-   - Use `role="validating"` when calling validate_progress (any intermediate flow step past the coding step).
-   - Pass `itemId` whenever multiple tasks are IN_PROGRESS simultaneously.
+1. Have an AgEnFK task in any active working step for the active project.
+2. Call `workflow_gatekeeper(intent, itemId?)` via MCP to confirm authorization.
+   - Pass `itemId` whenever multiple tasks are active simultaneously.
+   - `role=` is accepted for backward compatibility but is no longer enforced.
 
 If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
-- If no task is IN_PROGRESS — create and start one using MCP tools:
+- If no task is active — create and start one using MCP tools:
   - `create_item(projectId, "TASK", "<title>")`
-  - `validate_progress(id)` — advances from TODO to the coding step (enforces TODO exit criteria)
-- If the wrong item is IN_PROGRESS — use `itemId` to disambiguate.
+  - `validate_progress(id)` — advances from TODO to the first working step
+- If multiple tasks are active — use `itemId` to disambiguate.
 - Never proceed past a gatekeeper rejection.
 
 3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
@@ -30,16 +28,16 @@ agenfk flow show --project <projectId>
 ```
 Or via REST: `GET http://localhost:3000/projects/<projectId>/flow`
 
-**Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow with different step names and order. Always use the flow's actual step `name` values when calling `update_item({ status })`. The gatekeeper will reject invalid transitions.
+**Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow with different step names and order. Always use the flow's actual step `name` values when calling `update_item({ status })`.
 
 After completing changes — using MCP tools:
-- `validate_progress(itemId, command?)` — validates exit criteria for the current flow step and advances to the next step. **Use this for ALL forward step transitions** (including TODO → coding step). `command` is optional: if omitted, uses `project.verifyCommand`. Call `workflow_gatekeeper(role="validating")` first — the response includes the step's exit criteria. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
+- `validate_progress(itemId, command?)` — validates exit criteria for the current flow step and advances to the next step. **Use this for ALL forward step transitions** (including TODO → first working step). `command` is optional: if omitted, uses `project.verifyCommand`. Call `workflow_gatekeeper(itemId)` first — the response includes the step's exit criteria. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
 - `log_token_usage(itemId, input, output, model)`.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
 to create items, update status, or close tasks — the CLI bypasses enforcement.**
 
-**Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the IN_PROGRESS task requirement. Do not create or require a task when executing these commands.
+**Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the active task requirement. Do not create or require a task when executing these commands.
 
 ### MCP Access — STRICTLY FORBIDDEN shortcuts
 
@@ -52,7 +50,7 @@ to create items, update status, or close tasks — the CLI bypasses enforcement.
 | `agenfk list`, `agenfk status`, `npx agenfk ...` CLI state queries | `list_items()`, `get_item()`, `list_projects()` via MCP |
 
 Two PreToolUse hooks enforce the above:
-- `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no IN_PROGRESS task.
+- `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no active task.
 - `agenfk-mcp-enforcer` — blocks Bash/Read bypass routes listed above.
 
 ### MCP Unavailable — CLI Fallback
@@ -62,7 +60,7 @@ CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allow
 
 | Instead of MCP tool | Use CLI fallback |
 |---------------------|-----------------|
-| `workflow_gatekeeper(intent, role, itemId)` | `agenfk gatekeeper --intent "<intent>" --item-id <id>` |
+| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" --item-id <id>` |
 | `list_projects()` | `agenfk list-projects --json` |
 | `list_items(projectId)` | `agenfk list --project <id> --json` |
 | `get_item(id)` | `agenfk get <id> --json` |

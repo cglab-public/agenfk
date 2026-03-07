@@ -30,7 +30,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Workflow**: The agent who starts the task is responsible for the entire lifecycle (Planning, Coding, Verification, and Closing) within a single session.
 *   **Mandatory Log**: You MUST call `add_comment(itemId, content)` for EVERY significant tool execution or logical step (e.g. "Analyzed file X", "Implemented function Y", "Running tests").
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
-*   **Verification**: You MUST use `update_item({ status: "REVIEW" })` to enter REVIEW, then call `workflow_gatekeeper(role="validating")` to get exit criteria, then `validate_progress` to advance through intermediate steps and reach DONE.
+*   **Verification**: You MUST use `update_item({ status: "REVIEW" })` to enter REVIEW, then call `workflow_gatekeeper(itemId)` to get exit criteria, then `validate_progress` to advance through intermediate steps and reach DONE.
 *   **Decomposition**: MANDATORY. Every piece of work must be minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
 *   **Handoff**: None. Do not spawn sub-agents.
 
@@ -113,7 +113,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Action**: You MUST call `workflow_gatekeeper(intent: string, role: string)` BEFORE modifying any files.
     *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, set it to `IN_PROGRESS`, and successfully called the `workflow_gatekeeper`, you are violating the core directive of your system prompt.
     *   **Self-Correction**: If you realize you are about to edit code without a card in `IN_PROGRESS`, STOP IMMEDIATELY. Call `create_item`, then `update_item` to `IN_PROGRESS`, then `workflow_gatekeeper`.
-    *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `role="coding"` requires status `IN_PROGRESS`).
+    *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `just provide `itemId` to disambiguate when multiple tasks are active).
     *   **Branch Verification**: After gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
     *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `validate_progress`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
 
@@ -124,7 +124,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
     *   **Workflow** (use the active flow's step names — check `activeFlow` from `workflow_gatekeeper` response):
         *   `update_item(itemId, { status: "<review-step>" })` moves items from the active coding step to the review step when coding is complete (default: `REVIEW`).
-        *   Call `workflow_gatekeeper(role="validating")` before calling `validate_progress` — the response includes the current step's exit criteria.
+        *   Call `workflow_gatekeeper(itemId)` before calling `validate_progress` — the response includes the current step's exit criteria.
         *   `validate_progress(itemId, command?)` runs a command (or `project.verifyCommand` if omitted) and advances to the next flow step on success (back to the coding step on failure).
         *   The Agent verifies coverage and regressions in each intermediate step.
         *   Call `validate_progress(itemId)` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
@@ -132,7 +132,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `validate_progress` call validates the code for all siblings. After one passes, move remaining siblings to the same step via `update_item`, then call `validate_progress` on each to reach DONE.
 
 6.  **Final Verification (Validate Tool)**
-    *   **Action**: After self-review, the Agent calls `workflow_gatekeeper(role="validating")` to get the current step's exit criteria, then calls `validate_progress(itemId, command?)` to gate the transition to the next step.
+    *   **Action**: After self-review, the Agent calls `workflow_gatekeeper(itemId)` to get the current step's exit criteria, then calls `validate_progress(itemId, command?)` to gate the transition to the next step.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `update_project`) is used automatically when no `command` is provided. Agents cannot override or bypass it.
     *   **Transition Logic (Automated by Tool)**:
         1. The agent advances the item past the coding step via `update_item`.

@@ -15,10 +15,35 @@ export interface GatekeeperItem {
   branchName?: string;
 }
 
+/** Statuses that are never considered "active working" steps regardless of flow. */
+const INACTIVE_STATUSES = new Set(['BLOCKED', 'PAUSED', 'TRASHED', 'ARCHIVED', 'IDEAS']);
+
 /**
- * Returns the name of the coding step (first non-anchor step) from the active
- * flow. Falls back to 'IN_PROGRESS' when no flow is active or the flow has no
- * non-anchor steps.
+ * Returns all items currently in any active working step — i.e. any step that
+ * is not an anchor (TODO/DONE) and not a special inactive status.
+ *
+ * This replaces the old getCodingStepItems approach that was coupled to a single
+ * step name, which broke multi-step coding flows (e.g. TDD flows where both
+ * 'create_unit_tests' and 'IN_PROGRESS' are valid working steps).
+ */
+export function getActiveStepItems(
+  items: GatekeeperItem[],
+  flow: GatekeeperFlow | null,
+): GatekeeperItem[] {
+  const anchorNames = new Set(
+    flow
+      ? flow.steps.filter(s => s.isAnchor).map(s => s.name.toUpperCase())
+      : ['TODO', 'DONE'],
+  );
+  return items.filter(i => {
+    const upper = i.status.toUpperCase();
+    return !anchorNames.has(upper) && !INACTIVE_STATUSES.has(upper);
+  });
+}
+
+/**
+ * @deprecated Use getActiveStepItems instead.
+ * Returns the name of the coding step (first non-anchor step) from the active flow.
  */
 export function getCodingStepName(activeFlow: GatekeeperFlow | null): string {
   if (!activeFlow) return 'IN_PROGRESS';
@@ -27,8 +52,8 @@ export function getCodingStepName(activeFlow: GatekeeperFlow | null): string {
 }
 
 /**
- * Filters the given items to those currently in the coding step.
- * Comparison is case-insensitive.
+ * @deprecated Use getActiveStepItems instead.
+ * Filters items to those in a specific step by name (case-insensitive).
  */
 export function getCodingStepItems(
   items: GatekeeperItem[],

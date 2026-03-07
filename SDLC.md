@@ -97,7 +97,7 @@ validate_progress({ itemId, command: "npm run build" })
 - If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
 - A comment is logged with the command output.
 
-**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, role="validating", itemId)`. The gatekeeper response includes the current flow step's `exitCriteria` text — the agent must satisfy those criteria before advancing.
+**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)`. The gatekeeper response includes the current flow step's `exitCriteria` text — the agent must satisfy those criteria before advancing.
 
 ### Project verifyCommand
 
