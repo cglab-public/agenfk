@@ -560,7 +560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
               branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
             }
           } catch {
-            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Create and check out this branch before writing code.`;
+            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Work on the current branch or ask the user to create it.`;
           }
         }
 
