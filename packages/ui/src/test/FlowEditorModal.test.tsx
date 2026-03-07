@@ -254,6 +254,19 @@ describe('FlowEditorModal', () => {
 
   // ── Step editing (within an open editor panel) ─────────────────────────────
 
+  it('steps are rendered in a columns container (not a plain list)', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('steps-columns'));
+    expect(screen.getByTestId('steps-columns')).toBeDefined();
+    // The old steps-list should no longer exist
+    expect(screen.queryByTestId('steps-list')).toBeNull();
+  });
+
   it('renders the correct number of step rows for a selected flow', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
@@ -512,6 +525,67 @@ describe('FlowEditorModal', () => {
     // Save button should be disabled
     const saveBtn = screen.getByTestId('save-flow-btn') as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
+  });
+
+  // ── Color picker ──────────────────────────────────────────────────────────
+
+  it('color picker is rendered for non-anchor steps', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    // Middle step (index 1) should have a color picker
+    await waitFor(() => screen.getByTestId('step-color-1'));
+    expect(screen.getByTestId('step-color-1')).toBeDefined();
+    // Anchor steps (index 0, 2) should NOT have an interactive color picker
+    expect(screen.queryByTestId('step-color-0')).toBeNull();
+    expect(screen.queryByTestId('step-color-2')).toBeNull();
+  });
+
+  it('color change is included in createFlow payload', async () => {
+    vi.mocked(api.createFlow).mockResolvedValue({ ...SAMPLE_FLOW, id: 'new-flow' });
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('new-flow-btn'));
+    fireEvent.click(screen.getByTestId('new-flow-btn'));
+    await waitFor(() => screen.getByTestId('flow-name-input'));
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Colored Flow' } });
+    fireEvent.change(screen.getByTestId('step-name-0'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-0'), { target: { value: 'In Progress' } });
+    fireEvent.change(screen.getByTestId('step-color-0'), { target: { value: '#ff0000' } });
+
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+
+    await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    const call = vi.mocked(api.createFlow).mock.calls[0][0];
+    const middleStep = call.steps?.find((s: any) => !s.isAnchor);
+    expect(middleStep?.color).toBe('#ff0000');
+  });
+
+  it('step color is seeded from loaded flow data', async () => {
+    const flowWithColor: Flow = {
+      ...SAMPLE_FLOW,
+      steps: [
+        { id: 's1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        { id: 's2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined', color: '#3b82f6' },
+        { id: 's3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
+      ],
+    };
+    vi.mocked(api.listFlows).mockResolvedValue([flowWithColor, SAMPLE_FLOW_2]);
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-color-1'));
+    const colorInput = screen.getByTestId('step-color-1') as HTMLInputElement;
+    expect(colorInput.value).toBe('#3b82f6');
   });
 
   it('shows Reserved name error for case-insensitive match (e.g. "blocked")', async () => {
