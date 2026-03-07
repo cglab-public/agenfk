@@ -685,66 +685,97 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
 app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   const { flowId } = req.body;
   if (!flowId) return res.status(400).json({ error: 'flowId is required' });
-  const token = process.env.REGISTRY_TOKEN ?? process.env.GITHUB_TOKEN;
-  if (!token) return res.status(503).json({ error: 'Registry publishing is not configured. Set REGISTRY_TOKEN or GITHUB_TOKEN on the server.' });
 
   const flow = await storage.getFlow(flowId);
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-  const filename = `${flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}.json`;
+  // Require gh CLI
+  try { execSync('gh --version', { stdio: 'pipe' }); } catch {
+    return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
+  }
+
+  const token = process.env.REGISTRY_TOKEN ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  const ghEnv = { ...process.env, ...(token ? { GH_TOKEN: token } : {}) };
+
+  // Verify gh is authenticated
+  try { execSync('gh auth status', { env: ghEnv, stdio: 'pipe' }); } catch {
+    return res.status(503).json({ error: 'gh CLI is not authenticated. Set REGISTRY_TOKEN or GH_TOKEN on the server.' });
+  }
+
+  const slug = flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const filename = `${slug}.json`;
   const content = JSON.stringify(
     {
       name: flow.name,
-      description: flow.description,
+      description: flow.description ?? '',
       version: '1.0.0',
-      steps: flow.steps.map(s => ({
-        name: s.name,
-        label: s.label,
-        exitCriteria: s.exitCriteria,
-        isSpecial: s.isSpecial,
-      })),
+      steps: flow.steps
+        .sort((a: any, b: any) => a.order - b.order)
+        .map((s: any) => ({
+          name: s.name,
+          label: s.label,
+          exitCriteria: s.exitCriteria,
+          isSpecial: s.isSpecial,
+          isAnchor: s.isAnchor,
+          order: s.order,
+        })),
     },
     null,
     2
   );
 
-  const encoded = Buffer.from(content).toString('base64');
-  const apiUrl = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}`;
-
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
-    // Check if file exists to get sha for update
-    let sha: string | undefined;
-    try {
-      const { data: existing } = await axios.get(apiUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'agenfk-server',
-        },
+    // Shallow clone — use token in URL for auth if available
+    const cloneUrl = token
+      ? `https://oauth2:${token}@github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git`
+      : `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git`;
+    execSync(`git clone --depth 1 --quiet ${cloneUrl} ${tmpDir}`, { stdio: 'pipe' });
+
+    const flowsDir = path.join(tmpDir, 'flows');
+    if (!fs.existsSync(flowsDir)) fs.mkdirSync(flowsDir, { recursive: true });
+
+    const targetPath = path.join(flowsDir, filename);
+    const fileExists = fs.existsSync(targetPath);
+
+    // Name clash: identical content → already published, skip
+    if (fileExists && fs.readFileSync(targetPath, 'utf8').trim() === content.trim()) {
+      return res.json({
+        url: `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}`,
+        kind: 'existing',
+        note: 'Already published — no changes detected.',
       });
-      sha = existing.sha;
-    } catch {
-      // File does not exist yet — that's fine
     }
 
-    const payload: any = {
-      message: sha ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`,
-      content: encoded,
+    // Create a unique branch and write the flow file
+    const branchName = `flow/${slug}-${Date.now()}`;
+    execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
+    fs.writeFileSync(targetPath, content + '\n');
+
+    const gitEnv = {
+      ...ghEnv,
+      GIT_AUTHOR_NAME: 'AgEnFK Server',
+      GIT_AUTHOR_EMAIL: 'noreply@agenfk.dev',
+      GIT_COMMITTER_NAME: 'AgEnFK Server',
+      GIT_COMMITTER_EMAIL: 'noreply@agenfk.dev',
     };
-    if (sha) payload.sha = sha;
+    const commitMsg = fileExists ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`;
+    execSync(`git -C ${tmpDir} add flows/${filename}`, { env: gitEnv, stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { env: gitEnv, stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} push origin ${branchName}`, { env: gitEnv, stdio: 'pipe' });
 
-    const { data: result } = await axios.put(apiUrl, payload, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'User-Agent': 'agenfk-server',
-      },
-    });
+    // Open PR via gh
+    const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
+    const prUrl = execSync(
+      `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
+      { env: ghEnv, stdio: 'pipe' }
+    ).toString().trim();
 
-    res.json({ url: result.content?.html_url ?? `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/blob/main/flows/${filename}` });
+    res.json({ url: prUrl, kind: 'pr' });
   } catch (e: any) {
-    const status = e?.response?.status ?? 502;
-    res.status(status).json({ error: 'Failed to publish flow', detail: e?.response?.data?.message ?? e?.message });
+    res.status(502).json({ error: 'Failed to publish flow', detail: e?.message });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }));
 
