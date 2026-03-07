@@ -694,13 +694,16 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
   }
 
-  const token = process.env.REGISTRY_TOKEN ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
-  const ghEnv = { ...process.env, ...(token ? { GH_TOKEN: token } : {}) };
-
-  // Verify gh is authenticated
-  try { execSync('gh auth status', { env: ghEnv, stdio: 'pipe' }); } catch {
-    return res.status(503).json({ error: 'gh CLI is not authenticated. Set REGISTRY_TOKEN or GH_TOKEN on the server.' });
+  // gh must already be authenticated — get current user login
+  let ghUser: string;
+  try {
+    ghUser = execSync('gh api user -q .login', { stdio: 'pipe' }).toString().trim();
+  } catch {
+    return res.status(503).json({ error: 'gh CLI is not authenticated. Run `gh auth login` on the server.' });
   }
+
+  // Get token from gh for git operations
+  const ghToken = execSync('gh auth token', { stdio: 'pipe' }).toString().trim();
 
   const slug = flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const filename = `${slug}.json`;
@@ -724,13 +727,14 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     2
   );
 
+  // Fork the registry (idempotent — gh skips if fork already exists)
+  execSync(`gh repo fork ${REGISTRY_OWNER}/${REGISTRY_REPO} --clone=false`, { stdio: 'pipe' });
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
-    // Shallow clone — use token in URL for auth if available
-    const cloneUrl = token
-      ? `https://oauth2:${token}@github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git`
-      : `https://github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git`;
-    execSync(`git clone --depth 1 --quiet ${cloneUrl} ${tmpDir}`, { stdio: 'pipe' });
+    // Shallow-clone the upstream to check for name clashes, then switch push remote to fork
+    execSync(`git clone --depth 1 --quiet https://oauth2:${ghToken}@github.com/${REGISTRY_OWNER}/${REGISTRY_REPO}.git ${tmpDir}`, { stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${REGISTRY_REPO}.git`, { stdio: 'pipe' });
 
     const flowsDir = path.join(tmpDir, 'flows');
     if (!fs.existsSync(flowsDir)) fs.mkdirSync(flowsDir, { recursive: true });
@@ -747,28 +751,20 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       });
     }
 
-    // Create a unique branch and write the flow file
     const branchName = `flow/${slug}-${Date.now()}`;
     execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
     fs.writeFileSync(targetPath, content + '\n');
 
-    const gitEnv = {
-      ...ghEnv,
-      GIT_AUTHOR_NAME: 'AgEnFK Server',
-      GIT_AUTHOR_EMAIL: 'noreply@agenfk.dev',
-      GIT_COMMITTER_NAME: 'AgEnFK Server',
-      GIT_COMMITTER_EMAIL: 'noreply@agenfk.dev',
-    };
     const commitMsg = fileExists ? `Update flow: ${flow.name}` : `Add flow: ${flow.name}`;
-    execSync(`git -C ${tmpDir} add flows/${filename}`, { env: gitEnv, stdio: 'pipe' });
-    execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { env: gitEnv, stdio: 'pipe' });
-    execSync(`git -C ${tmpDir} push origin ${branchName}`, { env: gitEnv, stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} add flows/${filename}`, { stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { stdio: 'pipe' });
+    execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
 
-    // Open PR via gh
+    // Open PR from fork branch → upstream main
     const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
     const prUrl = execSync(
-      `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
-      { env: ghEnv, stdio: 'pipe' }
+      `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
+      { stdio: 'pipe' }
     ).toString().trim();
 
     res.json({ url: prUrl, kind: 'pr' });
