@@ -2,7 +2,33 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Flow, FlowStep, RegistryFlow } from '../types';
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
+
+// Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
+const STEP_ICON_OPTIONS: { key: string; label: string; node: React.ReactNode }[] = [
+  { key: 'zap',       label: 'Zap',         node: <Zap size={14} /> },
+  { key: 'plus',      label: 'Plus',        node: <Plus size={14} /> },
+  { key: 'check',     label: 'Check',       node: <Check size={14} /> },
+  { key: 'search',    label: 'Search',      node: <Search size={14} /> },
+  { key: 'flask',     label: 'Test',        node: <FlaskConical size={14} /> },
+  { key: 'shield',    label: 'Review',      node: <ShieldCheck size={14} /> },
+  { key: 'eye',       label: 'Eye',         node: <Eye size={14} /> },
+  { key: 'code',      label: 'Code',        node: <Code size={14} /> },
+  { key: 'clock',     label: 'Clock',       node: <Clock size={14} /> },
+  { key: 'book',      label: 'Book',        node: <BookOpen size={14} /> },
+  { key: 'briefcase', label: 'Briefcase',   node: <Briefcase size={14} /> },
+  { key: 'star',      label: 'Star',        node: <Star size={14} /> },
+  { key: 'lightbulb', label: 'Lightbulb',   node: <Lightbulb size={14} /> },
+  { key: 'bug',       label: 'Bug',         node: <Bug size={14} /> },
+  { key: 'git',       label: 'Git Branch',  node: <GitBranch size={14} /> },
+  { key: 'pause',     label: 'Pause',       node: <Pause size={14} /> },
+  { key: 'archive',   label: 'Archive',     node: <Archive size={14} /> },
+];
+
+export function renderStepIcon(iconKey: string | undefined, fallback: React.ReactNode = <Zap size={14} />): React.ReactNode {
+  if (!iconKey) return fallback;
+  return STEP_ICON_OPTIONS.find(o => o.key === iconKey)?.node ?? fallback;
+}
 import { clsx } from 'clsx';
 
 /**
@@ -105,6 +131,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const [description, setDescription] = useState('');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
+  const [openIconPickerIndex, setOpenIconPickerIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (flow) {
@@ -259,14 +286,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full" data-testid="editor-panel">
-      {/* Right panel header */}
-      <div className="px-6 pt-6 pb-4 shrink-0">
-        <div className="flex items-center gap-2 mb-1">
+      {/* Right panel header — inline-editable flow name */}
+      <div className="px-6 pt-5 pb-3 shrink-0">
+        <div className="flex items-center gap-2 mb-1.5">
           {isReadOnly ? (
             <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
               Default (read-only)
             </span>
-          ) : flow ? (
+          ) : (
             <>
               {isActive && (
                 <span
@@ -277,30 +304,24 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 </span>
               )}
             </>
-          ) : null}
+          )}
         </div>
-        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">
-          {isReadOnly ? 'Default Flow' : flow ? flow.name || 'Untitled Flow' : 'New Flow'}
-        </h3>
-      </div>
-
-      {/* Scrollable form body */}
-      <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-5">
-        {/* Name */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
-            Flow Name <span className="text-red-500">*</span>
-          </label>
+        {isReadOnly ? (
+          <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">Default Flow</h3>
+        ) : (
           <input
             data-testid="flow-name-input"
             type="text"
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
-            placeholder="e.g. Engineering Sprint Flow"
-            disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
+            placeholder="Flow name…"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 dark:focus:border-indigo-400 focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
           />
-        </div>
+        )}
+      </div>
+
+      {/* Scrollable form body */}
+      <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-5 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties}>
 
         {/* Description */}
         <div>
@@ -338,14 +359,16 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           </div>
 
           {/* Kanban-style: one column per step, horizontally scrollable */}
-          <div className="flex flex-row gap-3 overflow-x-auto pb-2" data-testid="steps-columns">
+          <div className="flex flex-row gap-3 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties} data-testid="steps-columns">
             {steps.map((step, index) => {
               const isAnchor = !!step.isAnchor;
               const isTodoAnchor = isAnchor && step.name.toUpperCase() === 'TODO';
+              const isDoneAnchor = isAnchor && step.name.toUpperCase() === 'DONE';
               const isStepLocked = isReadOnly || isAnchor;
               const stepNameUpper = step.name.toUpperCase();
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
               const stepColor = step.color ?? '#6366f1';
+              const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
 
               return (
                 <div
@@ -356,7 +379,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   onDragOver={e => !isStepLocked && handleDragOver(e, index)}
                   onDrop={e => !isStepLocked && handleDrop(e, index)}
                   onDragEnd={handleDragEnd}
-                  style={isAnchor ? undefined : { borderTopColor: stepColor, borderTopWidth: 3 }}
+                  style={isAnchor ? { borderTopColor: anchorColor, borderTopWidth: 3 } : { borderTopColor: stepColor, borderTopWidth: 3 }}
                   className={clsx(
                     'rounded-xl border flex flex-col shrink-0 w-52 transition-all',
                     isAnchor
@@ -377,6 +400,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         >
                           <Lock size={14} />
                         </div>
+                        <div
+                          data-testid={`step-color-swatch-${index}`}
+                          className="w-4 h-4 rounded shrink-0 border border-white/30"
+                          style={{ backgroundColor: anchorColor }}
+                          title="Step color (fixed for anchor steps)"
+                        />
                         <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate flex-1">
                           {step.label}
                         </span>
@@ -396,6 +425,39 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           title="Pick step color"
                           className="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 p-0 bg-transparent shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
                         />
+                        {/* Icon picker */}
+                        <div className="relative shrink-0">
+                          <button
+                            data-testid={`step-icon-btn-${index}`}
+                            type="button"
+                            disabled={isReadOnly}
+                            onClick={() => setOpenIconPickerIndex(openIconPickerIndex === index ? null : index)}
+                            title="Pick step icon"
+                            className="w-6 h-6 flex items-center justify-center rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {renderStepIcon(step.icon, <Zap size={12} />)}
+                          </button>
+                          {openIconPickerIndex === index && !isReadOnly && (
+                            <div className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
+                              {STEP_ICON_OPTIONS.map(opt => (
+                                <button
+                                  key={opt.key}
+                                  type="button"
+                                  title={opt.label}
+                                  onClick={() => { updateStep(index, { icon: opt.key }); setOpenIconPickerIndex(null); }}
+                                  className={clsx(
+                                    'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
+                                    step.icon === opt.key
+                                      ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400'
+                                      : 'hover:bg-slate-100 dark:hover:bg-slate-700'
+                                  )}
+                                >
+                                  {opt.node}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                         {/* Drag handle */}
                         <div
                           className={clsx(
@@ -435,10 +497,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           data-testid={`step-exit-criteria-${index}`}
                           value={step.exitCriteria ?? ''}
                           onChange={e => updateStep(index, { exitCriteria: e.target.value })}
-                          rows={3}
+                          rows={5}
                           placeholder="What must be true before leaving this step?"
                           disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60"
+                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
                         />
                       </div>
                     )}
@@ -493,10 +555,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             data-testid={`step-exit-criteria-${index}`}
                             value={step.exitCriteria ?? ''}
                             onChange={e => updateStep(index, { exitCriteria: e.target.value })}
-                            rows={3}
+                            rows={5}
                             placeholder="What must be true before leaving this step?"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
                           />
                         </div>
                       </>
@@ -833,6 +895,9 @@ export const FlowEditorModal: React.FC<Props> = (props) => {
       setIsNewFlow(false);
     } else if (initialFlowId) {
       setSelectedFlowId(initialFlowId);
+      setIsNewFlow(false);
+    } else if (activeFlowId) {
+      setSelectedFlowId(activeFlowId);
       setIsNewFlow(false);
     }
   }, [isOpen]);
