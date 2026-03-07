@@ -140,7 +140,7 @@ function runIntegrationScript(scriptName: string, args: string[]) {
 if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
   console.log(
     chalk.cyan(
-      figlet.textSync('agenfk', { horizontalLayout: 'full' })
+      figlet.textSync('AgEnFK', { horizontalLayout: 'full' })
     )
   );
 }
@@ -160,7 +160,7 @@ try {
 
 program
   .version(CURRENT_VERSION)
-  .description('AgenFK Engineering CLI');
+  .description('AgEnFK Engineering CLI');
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -172,7 +172,7 @@ program.hook('preAction', (thisCommand, actionCommand) => {
 
 program
   .action(async () => {
-    console.log(chalk.blue(`AgenFK CLI v${CURRENT_VERSION}`));
+    console.log(chalk.blue(`AgEnFK CLI v${CURRENT_VERSION}`));
     
     // Check for updates silently
     try {
@@ -196,7 +196,7 @@ program
 
 program
   .command('mcp')
-  .description('Start the AgenFK MCP server (Client stdio mode)')
+  .description('Start the AgEnFK MCP server (Client stdio mode)')
   .action(() => {
     // Determine server path relative to this CLI file
     // CLI is in packages/cli/dist/index.js
@@ -355,12 +355,12 @@ program
 
 program
   .command('up')
-  .description('Bootstrap and start AgenFK Engineering Framework')
+  .description('Bootstrap and start AgEnFK Engineering Framework')
   .option('--rebuild', 'Force a full build from source during bootstrap')
   .option('--easter-eggs', 'Enable easter egg animations')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🚀 Bringing up AgenFK Engineering Framework (agenfk)...'));
+    console.log(chalk.blue('🚀 Bringing up AgEnFK Engineering Framework (agenfk)...'));
 
     // 0. Cleanup zombies
     console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
@@ -406,10 +406,10 @@ program
 
 program
   .command('down')
-  .description('Stop all AgenFK services (API server and UI)')
+  .description('Stop all AgEnFK services (API server and UI)')
   .action(() => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🛑 Bringing down AgenFK services...'));
+    console.log(chalk.blue('🛑 Bringing down AgEnFK services...'));
 
     let stopped = 0;
 
@@ -440,9 +440,9 @@ program
 
 program
   .command('kill')
-  .description('Force kill all AgenFK related processes and ports (aggressive cleanup)')
+  .description('Force kill all AgEnFK related processes and ports (aggressive cleanup)')
   .action(() => {
-    console.log(chalk.red('🧹 Aggressively killing all AgenFK related processes...'));
+    console.log(chalk.red('🧹 Aggressively killing all AgEnFK related processes...'));
 
     // Kill by port
     console.log(chalk.gray('  - Killing processes on port 3000 (API)...'));
@@ -463,10 +463,10 @@ program
 
 program
   .command('restart')
-  .description('Restart all AgenFK services')
+  .description('Restart all AgEnFK services')
   .action(async () => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🔄 Restarting AgenFK services...'));
+    console.log(chalk.blue('🔄 Restarting AgEnFK services...'));
     
     // Call 'down'
     try {
@@ -573,7 +573,7 @@ program
   });
 
 /**
- * Configure Claude Code IDE integration for an AgenFK project directory.
+ * Configure Claude Code IDE integration for an AgEnFK project directory.
  * Registers the agenfk MCP server via `claude mcp add --scope user` (the official
  * Claude Code CLI approach) and updates permissions in settings.local.json.
  * Safe to re-run — removes any existing registration before adding.
@@ -726,12 +726,12 @@ function configureClaudeCodeIde(rootDir: string): boolean {
 
 program
   .command('init [name]')
-  .description('Initialize a new AgenFK project (Note: Ensure API server is running)')
+  .description('Initialize a new AgEnFK project (Note: Ensure API server is running)')
   .option('-d, --description <desc>', 'Project description', '')
   .action(async (name, options) => {
     try {
         const { data: serverInfo } = await axios.get(`${API_URL}/`);
-        console.log(chalk.green('Connected to AgenFK API Server.'));
+        console.log(chalk.green('Connected to AgEnFK API Server.'));
 
         const rootDir = process.cwd();
         const agenfkDir = path.join(rootDir, '.agenfk');
@@ -797,7 +797,7 @@ program
     const projFile = path.join(rootDir, '.agenfk', 'project.json');
 
     if (!fs.existsSync(projFile)) {
-        console.error(chalk.red('Error: No AgenFK project found in the current directory.'));
+        console.error(chalk.red('Error: No AgEnFK project found in the current directory.'));
         console.error(chalk.gray('Run "agenfk init" first to initialize a project here.'));
         process.exit(1);
     }
@@ -1046,7 +1046,7 @@ program
   .command('health')
   .description('Verify framework health and configuration')
   .action(async () => {
-    console.log(chalk.blue('\n🔍 AgenFK Health Check\n'));
+    console.log(chalk.blue('\n🔍 AgEnFK Health Check\n'));
     let issues = 0;
 
     // 1. API Server Check
@@ -1354,7 +1354,7 @@ jiraCommand
         console.log(chalk.gray(`  Client Secret: ${'*'.repeat(Math.min(clientSecret.length, 8))}...`));
         console.log(chalk.gray(`  Redirect URI:  ${redirectUri}`));
         console.log(chalk.blue('\nNext steps:'));
-        console.log(chalk.white('  1. Restart AgenFK services: agenfk restart'));
+        console.log(chalk.white('  1. Restart AgEnFK services: agenfk restart'));
         console.log(chalk.white('  2. Open the Kanban UI and click "Connect JIRA" in the toolbar'));
       }
     );
@@ -1459,7 +1459,7 @@ githubCommand
     // 2. Resolve project ID
     const projectId = findProjectId(process.cwd());
     if (!projectId) {
-      console.error(chalk.red('\nError: No AgenFK project found. Run `agenfk init` first.'));
+      console.error(chalk.red('\nError: No AgEnFK project found. Run `agenfk init` first.'));
       process.exit(1);
     }
 
@@ -1529,7 +1529,7 @@ githubCommand
     console.log(chalk.green(`\nGitHub import configured for project ${projectId}!`));
     console.log(chalk.gray(`  Repository: ${owner}/${repo}`));
     console.log(chalk.blue('\nNext steps:'));
-    console.log(chalk.white('  Import issues from the AgenFK dashboard using the GitHub import button.'));
+    console.log(chalk.white('  Import issues from the AgEnFK dashboard using the GitHub import button.'));
   });
 
 githubCommand
@@ -1558,7 +1558,7 @@ githubCommand
     } else {
       console.log(chalk.yellow('  Configuration: ✗ Not configured'));
       if (!projectId) {
-        console.log(chalk.white('    No AgenFK project found. Run `agenfk init` first.'));
+        console.log(chalk.white('    No AgEnFK project found. Run `agenfk init` first.'));
       } else {
         console.log(chalk.white('    Run: agenfk github setup'));
       }
@@ -1590,7 +1590,7 @@ githubCommand
   .action(async () => {
     const projectId = findProjectId(process.cwd());
     if (!projectId) {
-      console.log(chalk.yellow('No AgenFK project found.'));
+      console.log(chalk.yellow('No AgEnFK project found.'));
       return;
     }
 
@@ -1623,7 +1623,7 @@ githubCommand
 
 const configCommand = program
   .command('config')
-  .description('Manage AgenFK configuration');
+  .description('Manage AgEnFK configuration');
 
 const configSetCommand = configCommand
   .command('set')
@@ -1648,7 +1648,7 @@ configSetCommand
       config.telemetry = enabled;
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
       if (enabled) {
-        console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgenFK.');
+        console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgEnFK.');
         console.log(chalk.gray('  To opt out at any time: agenfk config set telemetry false'));
       } else {
         console.log(chalk.green('Telemetry disabled.') + ' No usage data will be sent.');
@@ -1944,7 +1944,7 @@ program
 
 const branchCmd = program
   .command('branch')
-  .description('Manage git branches for AgenFK items');
+  .description('Manage git branches for AgEnFK items');
 
 branchCmd
   .command('create <itemId>')
@@ -2047,7 +2047,7 @@ function checkGhCli(): boolean {
 
 const prCmd = program
   .command('pr')
-  .description('Manage pull requests for AgenFK items (requires GitHub CLI)');
+  .description('Manage pull requests for AgEnFK items (requires GitHub CLI)');
 
 prCmd
   .command('create <itemId>')

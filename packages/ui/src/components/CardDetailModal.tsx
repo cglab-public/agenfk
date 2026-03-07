@@ -1,5 +1,5 @@
 import React from 'react';
-import { AgenFKItem, ItemType, Status } from '../types';
+import { AgEnFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
@@ -12,14 +12,14 @@ import remarkGfm from 'remark-gfm';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 
 interface CardDetailModalProps {
-  item: AgenFKItem;
-  allItems: AgenFKItem[];
+  item: AgEnFKItem;
+  allItems: AgEnFKItem[];
   pricesData?: any;
   onClose: () => void;
-  onSelectItem: (item: AgenFKItem) => void;
+  onSelectItem: (item: AgEnFKItem) => void;
   onAddItem: (title: string, type: ItemType, status?: Status, description?: string) => Promise<void>;
   onDeleteItem: (id: string) => Promise<void>;
-  onUpdateItem?: (id: string, updates: Partial<AgenFKItem>) => Promise<void>;
+  onUpdateItem?: (id: string, updates: Partial<AgEnFKItem>) => Promise<void>;
 }
 
 type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';

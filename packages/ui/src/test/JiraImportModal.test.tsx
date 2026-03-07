@@ -97,7 +97,7 @@ describe('JiraImportModal', () => {
     }));
   });
 
-  it('renders issue list with correct AgenFK type selects', async () => {
+  it('renders issue list with correct AgEnFK type selects', async () => {
     vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
     vi.mocked(api.listJiraIssues).mockResolvedValue(ISSUES);
     render(
@@ -311,7 +311,7 @@ describe('JiraImportModal', () => {
     expect(screen.getByTestId('next-to-confirm')).toBeDefined();
   });
 
-  it('should handle unknown issueType via mapToAgenFKType fallback', async () => {
+  it('should handle unknown issueType via mapToAgEnFKType fallback', async () => {
     const unknownTypeIssue = [{ id: 'i5', key: 'PROJ-5', summary: 'Custom issue', issueType: 'CustomType', status: 'To Do' }];
     vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);
     vi.mocked(api.listJiraIssues).mockResolvedValue(unknownTypeIssue);

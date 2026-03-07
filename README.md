@@ -9,13 +9,13 @@
         |___/                     
 ```
 
-# AgenFK: Agentic Engineering Framework
+# AgEnFK: Agentic Engineering Framework
 
-Welcome to **AgenFK**, a high-reliability, measurable, and visual framework designed to turn "Vibe Coding" into rigorous **Agentic Engineering**. AgenFK enforces a structured workflow that bridges the gap between autonomous AI agents and professional software engineering practices.
+Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework designed to turn "Vibe Coding" into rigorous **Agentic Engineering**. AgEnFK enforces a structured workflow that bridges the gap between autonomous AI agents and professional software engineering practices.
 
 ## Overview
 
-AgenFK is built on six core mandates to ensure your AI-assisted development is consistent and high-quality:
+AgEnFK is built on six core mandates to ensure your AI-assisted development is consistent and high-quality:
 
 *   **Agile**: Uses Epics, Stories, Tasks, and Bugs as first-class workflow items.
 *   **Measurable**: Automatically tracks input/output tokens and models used for every single unit of work.
@@ -38,7 +38,7 @@ AgenFK is built on six core mandates to ensure your AI-assisted development is c
 
 ## Installation & Setup
 
-AgenFK installs with a single command — no cloning required:
+AgEnFK installs with a single command — no cloning required:
 
 ```bash
 npx github:cglab-PRIVATE/agenfk
@@ -72,12 +72,12 @@ After installation, complete the setup:
     *   `agenfk upgrade`: Fetch the latest release and auto-restart services.
     *   `agenfk upgrade --beta`: Opt-in to pre-release/beta versions.
     *   `agenfk restart`: Quickly cycle both the API and UI.
-    *   `agenfk down`: Stop all running AgenFK processes.
+    *   `agenfk down`: Stop all running AgEnFK processes.
     *   `agenfk health`: Verify configuration, database, and connectivity.
     *   `agenfk integration list`: Show the supported editor and agent integrations.
     *   `agenfk integration install <platform>`: Reinstall one integration without rerunning the full framework installer.
     *   `agenfk integration uninstall <platform>`: Remove one integration without uninstalling the full framework.
-    *   `npm run uninstall:framework`: Fully remove AgenFK from your system.
+    *   `npm run uninstall:framework`: Fully remove AgEnFK from your system.
 4.  **Initialize a project** — go to any repository and type `/agenfk` in your AI editor to link it to the framework.
 
 ### Managing Individual Integrations
@@ -95,7 +95,7 @@ Supported platform IDs are `claude`, `opencode`, `cursor`, `codex`, and `gemini`
 
 ## Multi-Project Support
 
-AgenFK supports managing multiple distinct projects from a single unified backend. 
+AgEnFK supports managing multiple distinct projects from a single unified backend. 
 
 *   **Local Linking**: Each local repository is linked to a database project via a `.agenfk/project.json` file.
 *   **Automatic Context Switching**: When an AI Agent (via MCP) or a developer (via CLI) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
@@ -105,7 +105,7 @@ AgenFK supports managing multiple distinct projects from a single unified backen
 
 ## GitHub Issues Sync
 
-AgenFK supports **bidirectional sync with GitHub Issues**, letting you share your Kanban cards as GitHub Issues and pull external issues back into your board.
+AgEnFK supports **bidirectional sync with GitHub Issues**, letting you share your Kanban cards as GitHub Issues and pull external issues back into your board.
 
 ### Prerequisites
 
@@ -120,7 +120,7 @@ From inside your project repository, run:
 agenfk github setup
 ```
 
-This auto-detects the `owner/repo` from your git remote and links it to the active AgenFK project. The configuration is stored in `~/.agenfk/config.json`.
+This auto-detects the `owner/repo` from your git remote and links it to the active AgEnFK project. The configuration is stored in `~/.agenfk/config.json`.
 
 ### Usage
 
@@ -128,11 +128,11 @@ This auto-detects the `owner/repo` from your git remote and links it to the acti
 
 | Command | Description |
 |---|---|
-| `agenfk github setup` | Link the current repo to AgenFK for sync. |
+| `agenfk github setup` | Link the current repo to AgEnFK for sync. |
 | `agenfk github status` | Show current config, auth state, and last sync time. |
 | `agenfk github sync` | Push and pull all items (default: both directions). |
 | `agenfk github sync --push` | Push local items to GitHub Issues only. |
-| `agenfk github sync --pull` | Pull GitHub Issues into AgenFK only. |
+| `agenfk github sync --pull` | Pull GitHub Issues into AgEnFK only. |
 | `agenfk github sync --item-id <id>` | Sync a single item by ID. |
 | `agenfk github disconnect` | Remove the GitHub link for the current project. |
 
@@ -154,16 +154,16 @@ When GitHub sync is configured, the Kanban toolbar automatically shows:
 
 ### How It Works
 
-*   **Outbound (Push)**: AgenFK items are created/updated as GitHub Issues. Status maps to labels (`status:in-progress`, `status:done`, etc.) and open/closed state. Item type maps to labels (`type:bug`, `type:story`, etc.). Parent-child relationships render as markdown task lists.
-*   **Inbound (Pull)**: GitHub Issues are matched by `externalId` or created as new AgenFK items. Labels are reverse-mapped to AgenFK statuses and types. Conflict detection uses timestamps — local wins when `updatedAt` is newer.
+*   **Outbound (Push)**: AgEnFK items are created/updated as GitHub Issues. Status maps to labels (`status:in-progress`, `status:done`, etc.) and open/closed state. Item type maps to labels (`type:bug`, `type:story`, etc.). Parent-child relationships render as markdown task lists.
+*   **Inbound (Pull)**: GitHub Issues are matched by `externalId` or created as new AgEnFK items. Labels are reverse-mapped to AgEnFK statuses and types. Conflict detection uses timestamps — local wins when `updatedAt` is newer.
 *   **Comments**: Synced bidirectionally with a `<!-- agenfk-sync -->` marker to prevent duplicates.
 
 ## Architecture Deep Dive
 
-AgenFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
+AgEnFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
 
 *   **API Server (The Owner)**: The heart of the framework. Built with Node.js and Express. It is the exclusive manager of the `db.json` storage. It actively watches the disk for changes and broadcasts real-time updates to all connected clients via **WebSockets**.
-*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgenFK tools (`create_item`, `validate_progress`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
+*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgEnFK tools (`create_item`, `validate_progress`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
 *   **CLI (The Interface)**: A unified command-line tool (`./agenfk`) written in TypeScript. It allows both humans and agents to manage the backlog and framework state. Like the MCP server, it acts as a client to the API Server.
 *   **Web Dashboard (The UI)**: A modern React/Vite application utilizing TanStack Query for state management. It provides a hierarchical Kanban board, token metrics, real-time progress logs (comments), detailed test results, and seamless context switching.
 *   **Storage (The Memory)**: Uses an atomic, file-based JSON storage plugin by default for maximum portability. The plugin uses temporary file swapping (`fs.renameSync`) to ensure atomic writes and prevent database corruption during concurrent operations.
@@ -198,7 +198,7 @@ graph TD
     style L fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46
 ```
 
-1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgenFK project. *In Opencode, Claude Code or Gemini, you can simply type `/agenfk` to have the agent set this up for you.*
+1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgEnFK project. *In Opencode, Claude Code or Gemini, you can simply type `/agenfk` to have the agent set this up for you.*
 2.  **Analyze**: Every request is analyzed to determine if it's an Epic, Story, Task, or Bug within the current project's scope.
 3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
 4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
@@ -223,7 +223,7 @@ Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-
 
 ## Operation Modes
 
-AgenFK operates in two distinct modes to balance speed and rigor:
+AgEnFK operates in two distinct modes to balance speed and rigor:
 
 ### Standard Mode (`/agenfk`)
 Designed for daily engineering tasks. The primary agent acts proactively, handling implementation, verification, and closure in a single streamlined session. No mandatory pauses for simple tasks.
@@ -237,7 +237,7 @@ Designed for complex architectural changes. The primary agent acts as a **Superv
 
 ## Telemetry
 
-AgenFK collects **anonymous usage telemetry** to help us understand how the tool is used and prioritise improvements. No personally identifiable information is ever collected.
+AgEnFK collects **anonymous usage telemetry** to help us understand how the tool is used and prioritise improvements. No personally identifiable information is ever collected.
 
 ### What is collected
 
@@ -265,7 +265,7 @@ This writes `"telemetry": false` to `~/.agenfk/config.json` and permanently disa
 
 ---
 
-![AgenFK Dashboard](./docs/dashboard-screenshot.png)
+![AgEnFK Dashboard](./docs/dashboard-screenshot.png)
 
 ---
-*Built with ❤️ by the CG/lab AgenFK Platform Team.*
+*Built with ❤️ by the CG/lab AgEnFK Platform Team.*

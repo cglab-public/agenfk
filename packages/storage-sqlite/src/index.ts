@@ -5,7 +5,7 @@ import {
   StorageProvider,
   PluginConfig,
   StorageQuery,
-  AgenFKItem,
+  AgEnFKItem,
   Status,
   Project,
   PauseSnapshot,
@@ -87,7 +87,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     return { ...p, createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt) };
   }
 
-  private parseItem(data: string): AgenFKItem {
+  private parseItem(data: string): AgEnFKItem {
     const item = JSON.parse(data);
     return {
       ...item,
@@ -97,7 +97,7 @@ export class SQLiteStorageProvider implements StorageProvider {
         ...h,
         timestamp: new Date(h.timestamp),
       })),
-    } as AgenFKItem;
+    } as AgEnFKItem;
   }
 
   // ── Project methods ──────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   // ── Item methods ─────────────────────────────────────────────────────────
 
-  async createItem(item: AgenFKItem): Promise<AgenFKItem> {
+  async createItem(item: AgEnFKItem): Promise<AgEnFKItem> {
     if (!item.history) item.history = [];
     item.history.push({
       id: uuidv4(),
@@ -151,7 +151,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     return item;
   }
 
-  async updateItem(id: string, updates: Partial<AgenFKItem>): Promise<AgenFKItem> {
+  async updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem> {
     const existing = await this.getItem(id);
     if (!existing) throw new Error(`Item ${id} not found`);
 
@@ -166,7 +166,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       updates.history = history;
     }
 
-    const updated = { ...existing, ...updates, updatedAt: new Date() } as AgenFKItem;
+    const updated = { ...existing, ...updates, updatedAt: new Date() } as AgEnFKItem;
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
     ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);
@@ -178,12 +178,12 @@ export class SQLiteStorageProvider implements StorageProvider {
     return result.changes > 0;
   }
 
-  async getItem(id: string): Promise<AgenFKItem | null> {
+  async getItem(id: string): Promise<AgEnFKItem | null> {
     const row = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
     return row ? this.parseItem(row.data) : null;
   }
 
-  async listItems(query?: StorageQuery): Promise<AgenFKItem[]> {
+  async listItems(query?: StorageQuery): Promise<AgEnFKItem[]> {
     let sql = 'SELECT data FROM items WHERE 1=1';
     const params: (string | number)[] = [];
 
@@ -201,7 +201,7 @@ export class SQLiteStorageProvider implements StorageProvider {
     return rows.map(r => this.parseItem(r.data));
   }
 
-  async listChildren(parentId: string): Promise<AgenFKItem[]> {
+  async listChildren(parentId: string): Promise<AgEnFKItem[]> {
     return this.listItems({ parentId });
   }
 

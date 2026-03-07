@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgenFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -184,7 +184,7 @@ const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
-const autoGitCommit = (item: AgenFKItem, projectRoot: string): void => {
+const autoGitCommit = (item: AgEnFKItem, projectRoot: string): void => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
   exec(cmd, { cwd: projectRoot }, (err, stdout) => {
@@ -355,7 +355,7 @@ function findCurrentFlowStep(sorted: FlowStepInfo[], status: string): { step: Fl
 
 app.get("/", (req, res) => {
   res.json({
-    message: "AgenFK Framework API is running",
+    message: "AgEnFK Framework API is running",
     endpoints: {
       projects: "/projects",
       items: "/items",
@@ -872,7 +872,7 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: "ProjectId is required" });
   }
 
-  const newItem: AgenFKItem = {
+  const newItem: AgEnFKItem = {
     id: uuidv4(),
     projectId,
     type: type as ItemType,
@@ -1555,7 +1555,7 @@ const jiraApiRequest = async (
   }
 };
 
-export const mapJiraTypeToAgenFK = (issueTypeName: string): string => {
+export const mapJiraTypeToAgEnFK = (issueTypeName: string): string => {
   const t = issueTypeName.toLowerCase();
   if (t === 'epic') return 'EPIC';
   if (t === 'story') return 'STORY';
@@ -1750,7 +1750,7 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
       key: issue.key,
       summary: issue.fields.summary,
       type: issue.fields.issuetype?.name || 'Task',
-      mappedType: mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task'),
+      mappedType: mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task'),
       status: issue.fields.status?.name,
       statusCategory: issue.fields.status?.statusCategory?.name,
       priority: issue.fields.priority?.name,
@@ -1782,7 +1782,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
         'get',
         `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype`
       );
-      const type = requestedType || mapJiraTypeToAgenFK(issue.fields.issuetype?.name || 'Task');
+      const type = requestedType || mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
       const externalUrl = `${tokenData.cloudUrl}/browse/${issueKey}`;
 
@@ -1829,7 +1829,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
 
           for (const childIssue of childIssues) {
             const childKey = childIssue.key;
-            const childType = mapJiraTypeToAgenFK(childIssue.fields.issuetype?.name || 'Task');
+            const childType = mapJiraTypeToAgEnFK(childIssue.fields.issuetype?.name || 'Task');
             const childDescription = adfToText(childIssue.fields.description);
 
             const childItem: any = {
@@ -1962,7 +1962,7 @@ app.post("/github/import", async (req: any, res: any) => {
         );
         const issue = JSON.parse(result);
 
-        const newItem: AgenFKItem = {
+        const newItem: AgEnFKItem = {
           id: uuidv4(),
           projectId,
           type: type || ItemType.TASK,
@@ -1973,7 +1973,7 @@ app.post("/github/import", async (req: any, res: any) => {
           externalUrl: issue.url,
           createdAt: new Date(),
           updatedAt: new Date(),
-        } as AgenFKItem;
+        } as AgEnFKItem;
         await storage.createItem(newItem);
         imported.push({ issueNumber: issue.number, itemId: newItem.id });
       } catch (err: any) {
@@ -2156,7 +2156,7 @@ const sqlite3Query = (db: string, query: string): any[] => {
   } catch { return []; }
 };
 
-const isAgenFKDir = (dir: string): boolean => {
+const isAgEnFKDir = (dir: string): boolean => {
   if (!dir) return false;
   let d = path.isAbsolute(dir) ? dir : path.resolve(dir);
   const root = path.parse(d).root;
@@ -2174,7 +2174,7 @@ const scrapeOpencodeSessions = async () => {
   const sessions = sqlite3Query(OPENCODE_DB, `SELECT id, directory FROM session WHERE time_created > ${cutoff}`);
 
   for (const session of sessions) {
-    if (!isAgenFKDir(session.directory)) continue;
+    if (!isAgEnFKDir(session.directory)) continue;
 
     // Build task switch timeline from tool call parts, ordered by time
     const allParts = sqlite3Query(OPENCODE_DB, `
@@ -2314,7 +2314,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     process.on('SIGINT', shutdown);
 
     httpServer.listen(PORT, () => {
-      console.log(`AgenFK API Server running on port ${PORT} (with WebSockets)`);
+      console.log(`AgEnFK API Server running on port ${PORT} (with WebSockets)`);
       telemetry.capture('server_started', {
         version: getCurrentVersion(),
         storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json',

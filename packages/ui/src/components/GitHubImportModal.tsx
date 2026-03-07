@@ -240,7 +240,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
           {step === 'confirm' && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                You are about to import <strong>{selectedIssues.size}</strong> issue{selectedIssues.size !== 1 ? 's' : ''} from GitHub into the current AgenFK project.
+                You are about to import <strong>{selectedIssues.size}</strong> issue{selectedIssues.size !== 1 ? 's' : ''} from GitHub into the current AgEnFK project.
               </p>
               <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-2 max-h-40 overflow-y-auto pr-2">
                 {Array.from(selectedIssues.entries()).map(([num, type]) => {

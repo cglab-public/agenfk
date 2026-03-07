@@ -144,12 +144,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "list_projects",
-        description: "List all existing AgenFK projects.",
+        description: "List all existing AgEnFK projects.",
         inputSchema: { type: "object", properties: {} },
       },
       {
         name: "create_project",
-        description: "Create a new AgenFK project.",
+        description: "Create a new AgEnFK project.",
         inputSchema: {
           type: "object",
           properties: {
@@ -175,7 +175,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "create_item",
-        description: "Create a new Epic, Story, Task, or Bug in the AgenFK framework.",
+        description: "Create a new Epic, Story, Task, or Bug in the AgEnFK framework.",
         inputSchema: {
           type: "object",
           properties: {
@@ -285,7 +285,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_server_info",
-        description: "Get information about the AgenFK server.",
+        description: "Get information about the AgEnFK server.",
         inputSchema: { type: "object", properties: {} },
       },
       {
@@ -303,7 +303,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "analyze_request",
-        description: "Analyze a user request to suggest the appropriate AgenFK item type.",
+        description: "Analyze a user request to suggest the appropriate AgEnFK item type.",
         inputSchema: {
           type: "object",
           properties: { request: { type: "string" } },
@@ -495,7 +495,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
 
         if (!effectiveProjectId) {
-           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgenFK project found in the current directory, and no itemId was provided.` }] };
+           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
         // Validate that the project exists in the database
@@ -789,7 +789,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
   } catch (error: any) {
     let errorMessage = error.message;
     if (error.response) errorMessage = `API Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
-    else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgenFK API at ${API_URL}.`;
+    else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgEnFK API at ${API_URL}.`;
     return { content: [{ type: "text", text: `❌ Error: ${errorMessage}` }], isError: true };
   }
 });
@@ -797,7 +797,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("AgenFK MCP Server running on stdio (Client Mode)");
+  console.error("AgEnFK MCP Server running on stdio (Client Mode)");
 }
 
 run().catch((error) => {

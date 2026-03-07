@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { migrateCardsToFlow, MigrationResult } from '../utils';
-import { AgenFKItem, Flow, FlowStep, ItemType, Status } from '../types';
+import { AgEnFKItem, Flow, FlowStep, ItemType, Status } from '../types';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-function makeItem(id: string, status: string): AgenFKItem {
+function makeItem(id: string, status: string): AgEnFKItem {
   return {
     id,
     projectId: 'proj-1',
@@ -14,7 +14,7 @@ function makeItem(id: string, status: string): AgenFKItem {
     status: status as Status,
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
-  } as AgenFKItem;
+  } as AgEnFKItem;
 }
 
 function makeFlow(id: string, steps: Array<{ name: string; order: number; isSpecial?: boolean }>): Flow {

@@ -100,7 +100,7 @@ export interface RegistryFlow {
   description?: string;
 }
 
-export interface AgenFKItem {
+export interface AgEnFKItem {
   id: string;
   projectId: string;
   type: ItemType;

@@ -108,7 +108,7 @@ describe('KanbanBoard', () => {
   it('should show project selector when no project is selected', async () => {
     vi.mocked(api.listProjects).mockResolvedValue([]);
     render(<KanbanBoard />, { wrapper });
-    expect(await screen.findByText(/Welcome to AgenFK/i)).toBeDefined();
+    expect(await screen.findByText(/Welcome to AgEnFK/i)).toBeDefined();
   });
 
   it('should render items in correct columns', async () => {
@@ -535,7 +535,7 @@ describe('KanbanBoard', () => {
     localStorage.removeItem('agenfk_project_id');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText(/Welcome to AgenFK/i);
+    await screen.findByText(/Welcome to AgEnFK/i);
 
     fireEvent.click(screen.getByText('Project One'));
     expect(localStorage.getItem('agenfk_project_id')).toBe('p1');
@@ -614,7 +614,7 @@ describe('KanbanBoard', () => {
     fireEvent.click(switchProjectBtn);
 
     await waitFor(() => {
-      expect(screen.getByText(/Welcome to AgenFK/i)).toBeDefined();
+      expect(screen.getByText(/Welcome to AgEnFK/i)).toBeDefined();
     });
   });
 

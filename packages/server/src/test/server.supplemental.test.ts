@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgenFK } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -58,14 +58,14 @@ afterEach(() => {
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 });
 
-// ── mapJiraTypeToAgenFK unit tests ───────────────────────────────────────────
+// ── mapJiraTypeToAgEnFK unit tests ───────────────────────────────────────────
 
-describe('mapJiraTypeToAgenFK', () => {
-  it('maps epic', () => expect(mapJiraTypeToAgenFK('Epic')).toBe('EPIC'));
-  it('maps story', () => expect(mapJiraTypeToAgenFK('Story')).toBe('STORY'));
-  it('maps bug', () => expect(mapJiraTypeToAgenFK('Bug')).toBe('BUG'));
-  it('defaults to TASK', () => expect(mapJiraTypeToAgenFK('Sub-task')).toBe('TASK'));
-  it('is case-insensitive', () => expect(mapJiraTypeToAgenFK('EPIC')).toBe('EPIC'));
+describe('mapJiraTypeToAgEnFK', () => {
+  it('maps epic', () => expect(mapJiraTypeToAgEnFK('Epic')).toBe('EPIC'));
+  it('maps story', () => expect(mapJiraTypeToAgEnFK('Story')).toBe('STORY'));
+  it('maps bug', () => expect(mapJiraTypeToAgEnFK('Bug')).toBe('BUG'));
+  it('defaults to TASK', () => expect(mapJiraTypeToAgEnFK('Sub-task')).toBe('TASK'));
+  it('is case-insensitive', () => expect(mapJiraTypeToAgEnFK('EPIC')).toBe('EPIC'));
 });
 
 // ── Info / utility routes ─────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ describe('GET /', () => {
   it('returns server info', async () => {
     const res = await request(app).get('/');
     expect(res.status).toBe(200);
-    expect(res.body.message).toContain('AgenFK');
+    expect(res.body.message).toContain('AgEnFK');
     expect(res.body.endpoints).toBeDefined();
   });
 });

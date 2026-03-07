@@ -1,10 +1,10 @@
-import { AgenFKItem, ItemType, Status, Project, PauseSnapshot, Flow } from './types';
+import { AgEnFKItem, ItemType, Status, Project, PauseSnapshot, Flow } from './types';
 
 export interface PluginConfig {
   [key: string]: any;
 }
 
-export interface AgenFKPlugin {
+export interface AgEnFKPlugin {
   name: string;
   version: string;
   init(config: PluginConfig): Promise<void>;
@@ -20,7 +20,7 @@ export interface StorageQuery {
   offset?: number;
 }
 
-export interface StorageProvider extends AgenFKPlugin {
+export interface StorageProvider extends AgEnFKPlugin {
   // Projects
   createProject(project: Project): Promise<Project>;
   updateProject(id: string, updates: Partial<Project>): Promise<Project>;
@@ -29,12 +29,12 @@ export interface StorageProvider extends AgenFKPlugin {
   listProjects(): Promise<Project[]>;
 
   // Items
-  createItem(item: AgenFKItem): Promise<AgenFKItem>;
-  updateItem(id: string, updates: Partial<AgenFKItem>): Promise<AgenFKItem>;
+  createItem(item: AgEnFKItem): Promise<AgEnFKItem>;
+  updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem>;
   deleteItem(id: string): Promise<boolean>;
-  getItem(id: string): Promise<AgenFKItem | null>;
-  listItems(query?: StorageQuery): Promise<AgenFKItem[]>;
-  listChildren(parentId: string): Promise<AgenFKItem[]>;
+  getItem(id: string): Promise<AgEnFKItem | null>;
+  listItems(query?: StorageQuery): Promise<AgEnFKItem[]>;
+  listChildren(parentId: string): Promise<AgEnFKItem[]>;
 
   // Snapshots (pause/resume)
   createSnapshot(snapshot: PauseSnapshot): Promise<PauseSnapshot>;
@@ -50,11 +50,11 @@ export interface StorageProvider extends AgenFKPlugin {
   listFlows(): Promise<Flow[]>;
 }
 
-export interface TokenTracker extends AgenFKPlugin {
+export interface TokenTracker extends AgEnFKPlugin {
   trackUsage(itemId: string, input: number, output: number, model: string): Promise<void>;
   getUsage(itemId: string): Promise<any>; // Define stricter type later
 }
 
-export interface LLMProvider extends AgenFKPlugin {
+export interface LLMProvider extends AgEnFKPlugin {
   generate(prompt: string, context?: any): Promise<string>;
 }
