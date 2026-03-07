@@ -1695,3 +1695,72 @@ describe('Flow-aware status transition validation', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// ── GET /projects/:id/flow — returns full flow with steps and exit criteria ───
+
+describe('GET /projects/:id/flow', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('returns the default flow when no custom flow assigned', async () => {
+    const p = (await request(app).post('/projects').send({ name: 'FlowTest1' })).body;
+    const res = await request(app).get(`/projects/${p.id}/flow`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('steps');
+    expect(Array.isArray(res.body.steps)).toBe(true);
+    expect(res.body.steps.length).toBeGreaterThan(0);
+    // Each step has name and order
+    res.body.steps.forEach((step: any) => {
+      expect(step).toHaveProperty('name');
+      expect(step).toHaveProperty('order');
+    });
+  });
+
+  it('returns 404 for non-existent project', async () => {
+    const res = await request(app).get('/projects/nonexistent-proj/flow');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns steps with exitCriteria when defined', async () => {
+    // Create a flow with exit criteria on a step
+    const flowRes = await request(app).post('/flows').send({
+      name: 'TDD Test Flow',
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'create_unit_tests', order: 1, exitCriteria: 'Write failing tests before any implementation' },
+        { name: 'IN_PROGRESS', order: 2, exitCriteria: 'All tests pass' },
+        { name: 'DONE', order: 3, isAnchor: true },
+      ],
+    });
+    expect(flowRes.status).toBe(201);
+    const flow = flowRes.body;
+
+    const p = (await request(app).post('/projects').send({ name: 'FlowTest2' })).body;
+    await request(app).post(`/projects/${p.id}/flow`).send({ flowId: flow.id });
+
+    const res = await request(app).get(`/projects/${p.id}/flow`);
+    expect(res.status).toBe(200);
+    const testStep = res.body.steps.find((s: any) => s.name === 'create_unit_tests');
+    expect(testStep).toBeDefined();
+    expect(testStep.exitCriteria).toBe('Write failing tests before any implementation');
+  });
+});
+
+// ── comments with step field ──────────────────────────────────────────────────
+
+describe('PUT /items/:id — comment with step field', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('stores and returns a comment with step field', async () => {
+    const p = (await request(app).post('/projects').send({ name: 'CommentStep1' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+
+    const comment = { id: 'c1', author: 'agent', content: 'evidence text', timestamp: new Date().toISOString(), step: 'create_unit_tests' };
+    const res = await request(app).put(`/items/${item.id}`).send({ comments: [comment] });
+    expect(res.status).toBe(200);
+
+    const fetched = (await request(app).get(`/items/${item.id}`)).body;
+    expect(fetched.comments).toHaveLength(1);
+    expect(fetched.comments[0].step).toBe('create_unit_tests');
+    expect(fetched.comments[0].content).toBe('evidence text');
+  });
+});

@@ -27,6 +27,6 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Call `add_comment(id, "IMPLEMENTATION COMPLETE: ...")` to log the final summary of code changes.
 - Call `add_comment(id, "Phase Code complete: Implementation and self-verification finished.")` to log the phase completion.
 - Call `workflow_gatekeeper(id)` — confirms authorization and surfaces exit criteria for the current step.
-- Call `validate_progress(id, "<build_command>")` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `update_item` for forward transitions.
+- Call `validate_progress(id, evidence="<describe what was implemented and how it satisfies the step's exit criteria>", command="<build_command>")` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `update_item` for forward transitions.
 - **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
   - PR creation is the developer's responsibility — do NOT create a PR here.
