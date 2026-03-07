@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, pkceStore, mapJiraTypeToAgenFK, clearJiraValidationCache } from '../server';
-import { Status, ItemType, AgenFKItem } from '@agenfk/core';
+import { app, initStorage, storage, pkceStore, mapJiraTypeToAgEnFK, clearJiraValidationCache } from '../server';
+import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -264,14 +264,14 @@ describe('JIRA Integration', () => {
     }
   });
 
-  // ── mapJiraTypeToAgenFK ──────────────────────────────────────────────────
-  describe('mapJiraTypeToAgenFK', () => {
-    it('maps Epic → EPIC', () => expect(mapJiraTypeToAgenFK('Epic')).toBe('EPIC'));
-    it('maps Story → STORY', () => expect(mapJiraTypeToAgenFK('Story')).toBe('STORY'));
-    it('maps Bug → BUG', () => expect(mapJiraTypeToAgenFK('Bug')).toBe('BUG'));
-    it('maps Task → TASK', () => expect(mapJiraTypeToAgenFK('Task')).toBe('TASK'));
-    it('maps Sub-task → TASK', () => expect(mapJiraTypeToAgenFK('Sub-task')).toBe('TASK'));
-    it('maps unknown → TASK', () => expect(mapJiraTypeToAgenFK('Custom Type')).toBe('TASK'));
+  // ── mapJiraTypeToAgEnFK ──────────────────────────────────────────────────
+  describe('mapJiraTypeToAgEnFK', () => {
+    it('maps Epic → EPIC', () => expect(mapJiraTypeToAgEnFK('Epic')).toBe('EPIC'));
+    it('maps Story → STORY', () => expect(mapJiraTypeToAgEnFK('Story')).toBe('STORY'));
+    it('maps Bug → BUG', () => expect(mapJiraTypeToAgEnFK('Bug')).toBe('BUG'));
+    it('maps Task → TASK', () => expect(mapJiraTypeToAgEnFK('Task')).toBe('TASK'));
+    it('maps Sub-task → TASK', () => expect(mapJiraTypeToAgEnFK('Sub-task')).toBe('TASK'));
+    it('maps unknown → TASK', () => expect(mapJiraTypeToAgEnFK('Custom Type')).toBe('TASK'));
   });
 
   // ── GET /jira/status ─────────────────────────────────────────────────────
@@ -479,7 +479,7 @@ describe('JIRA Integration', () => {
       expect(res.status).toBe(400);
     });
 
-    it('imports issues and creates AgenFK items', async () => {
+    it('imports issues and creates AgEnFK items', async () => {
       fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
       const projRes = await request(app).post('/projects').send({ name: 'JIRA Import Test' });
       const projectId = projRes.body.id;

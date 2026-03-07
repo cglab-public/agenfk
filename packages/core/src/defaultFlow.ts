@@ -41,7 +41,7 @@ const DEFAULT_STEPS: FlowStep[] = [
 export const DEFAULT_FLOW: Flow = {
   id: "default",
   name: "Default Flow",
-  description: "The built-in AgenFK workflow: TODO → IN_PROGRESS → REVIEW → TEST → DONE. Platform statuses (BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED) are always reachable from any step.",
+  description: "The built-in AgEnFK workflow: TODO → IN_PROGRESS → REVIEW → TEST → DONE. Platform statuses (BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED) are always reachable from any step.",
   steps: DEFAULT_STEPS,
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
   updatedAt: new Date("2026-01-01T00:00:00.000Z"),

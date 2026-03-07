@@ -208,7 +208,7 @@ export const ReleaseReminder: React.FC = () => {
                   <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">
                     {updateState.phase === 'success' ? 'Update Complete' :
                      updateState.phase === 'error' ? 'Update Failed' :
-                     updateState.phase === 'running' ? 'Updating AgenFK...' :
+                     updateState.phase === 'running' ? 'Updating AgEnFK...' :
                      'New Release Available'}
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">

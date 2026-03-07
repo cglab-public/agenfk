@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgenFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -55,7 +55,7 @@ export const api = {
       throw e;
     }
   },
-  createItem: async (item: Partial<AgenFKItem>) => {
+  createItem: async (item: Partial<AgEnFKItem>) => {
     try {
       const { data } = await axios.post(`${API_URL}/items`, item);
       return data;
@@ -64,7 +64,7 @@ export const api = {
       throw e;
     }
   },
-  updateItem: async (id: string, updates: Partial<AgenFKItem>) => {
+  updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {
     try {
       const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
       return data;
@@ -73,7 +73,7 @@ export const api = {
       throw e;
     }
   },
-  bulkUpdateItems: async (items: { id: string; updates: Partial<AgenFKItem> }[]) => {
+  bulkUpdateItems: async (items: { id: string; updates: Partial<AgEnFKItem> }[]) => {
     try {
       const { data } = await axios.post(`${API_URL}/items/bulk`, { items });
       return data;
@@ -90,7 +90,7 @@ export const api = {
       throw e;
     }
   },
-  moveItem: async (id: string, targetProjectId: string): Promise<{ item: AgenFKItem; movedCount: number }> => {
+  moveItem: async (id: string, targetProjectId: string): Promise<{ item: AgEnFKItem; movedCount: number }> => {
     try {
       const { data } = await axios.post(`${API_URL}/items/${id}/move`, { targetProjectId });
       return data;

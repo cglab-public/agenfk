@@ -60,7 +60,7 @@ export class TelemetryClient {
         // Flush immediately so short-lived processes (CLI) don't lose events
         flushAt: 1,
         flushInterval: 0,
-        // AgenFK runs on the user's machine, so their IP is valid for geolocation
+        // AgEnFK runs on the user's machine, so their IP is valid for geolocation
         disableGeoip: false,
       });
     }

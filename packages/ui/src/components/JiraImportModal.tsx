@@ -21,7 +21,7 @@ const AGENFK_TYPE_MAP: Record<string, string> = {
   'Sub-task': 'TASK',
 };
 
-const mapToAgenFKType = (issueType: string): string =>
+const mapToAgEnFKType = (issueType: string): string =>
   AGENFK_TYPE_MAP[issueType] ?? 'TASK';
 
 const TYPE_COLORS: Record<string, string> = {
@@ -129,7 +129,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
       if (next.has(key)) {
         next.delete(key);
       } else {
-        next.set(key, mapToAgenFKType(issueType));
+        next.set(key, mapToAgEnFKType(issueType));
       }
       return next;
     });
@@ -151,7 +151,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
       setSelectedIssues(new Map());
     } else {
       const next = new Map();
-      issues.forEach(i => next.set(i.key, mapToAgenFKType(i.issueType)));
+      issues.forEach(i => next.set(i.key, mapToAgEnFKType(i.issueType)));
       setSelectedIssues(next);
     }
   };
@@ -343,7 +343,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                       <li className="px-4 py-3 text-sm text-slate-400 italic">No issues found.</li>
                     )}
                     {issues.map(issue => {
-                      const afkType = mapToAgenFKType(issue.issueType);
+                      const afkType = mapToAgEnFKType(issue.issueType);
                       const currentType = selectedIssues.get(issue.key) || afkType;
                       return (
                         <li key={issue.key}>
@@ -389,7 +389,7 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
           {step === 'confirm' && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-slate-300" data-testid="confirm-summary">
-                You are about to import <strong>{selectedIssues.size}</strong> issue{selectedIssues.size !== 1 ? 's' : ''} from <strong>{selectedProjectName}</strong> into the current AgenFK project.
+                You are about to import <strong>{selectedIssues.size}</strong> issue{selectedIssues.size !== 1 ? 's' : ''} from <strong>{selectedProjectName}</strong> into the current AgEnFK project.
               </p>
               <ul className="text-xs text-slate-500 dark:text-slate-400 space-y-2 max-h-40 overflow-y-auto pr-2">
                 {Array.from(selectedIssues.entries()).map(([key, type]) => (

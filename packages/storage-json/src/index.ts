@@ -5,7 +5,7 @@ import {
   StorageProvider,
   PluginConfig,
   StorageQuery,
-  AgenFKItem,
+  AgEnFKItem,
   Status,
   ItemType,
   BaseItem,
@@ -18,7 +18,7 @@ import {
 
 interface JSONData {
   projects: Project[];
-  items: AgenFKItem[];
+  items: AgEnFKItem[];
   snapshots: PauseSnapshot[];
   flows: Flow[];
 }
@@ -167,7 +167,7 @@ export class JSONStorageProvider implements StorageProvider {
   }
 
   // Item Methods
-  async createItem(item: AgenFKItem): Promise<AgenFKItem> {
+  async createItem(item: AgEnFKItem): Promise<AgEnFKItem> {
     return this.runLocked(() => {
       this.load();
       
@@ -190,7 +190,7 @@ export class JSONStorageProvider implements StorageProvider {
     });
   }
 
-  async updateItem(id: string, updates: Partial<AgenFKItem>): Promise<AgenFKItem> {
+  async updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem> {
     return this.runLocked(() => {
       this.load();
       const index = this.data.items.findIndex(i => i.id === id);
@@ -212,9 +212,9 @@ export class JSONStorageProvider implements StorageProvider {
 
       const updatedItem = { ...currentItem, ...updates, updatedAt: new Date() };
       
-      this.data.items[index] = updatedItem as AgenFKItem;
+      this.data.items[index] = updatedItem as AgEnFKItem;
       this.save();
-      return updatedItem as AgenFKItem;
+      return updatedItem as AgEnFKItem;
     });
   }
 
@@ -230,7 +230,7 @@ export class JSONStorageProvider implements StorageProvider {
     });
   }
 
-  async getItem(id: string): Promise<AgenFKItem | null> {
+  async getItem(id: string): Promise<AgEnFKItem | null> {
     return this.runLocked(() => {
       this.load();
       const item = this.data.items.find(i => i.id === id);
@@ -238,7 +238,7 @@ export class JSONStorageProvider implements StorageProvider {
     });
   }
 
-  async listItems(query?: StorageQuery): Promise<AgenFKItem[]> {
+  async listItems(query?: StorageQuery): Promise<AgEnFKItem[]> {
     return this.runLocked(() => {
       this.load();
       let items = this.data.items;
@@ -268,7 +268,7 @@ export class JSONStorageProvider implements StorageProvider {
     });
   }
 
-  async listChildren(parentId: string): Promise<AgenFKItem[]> {
+  async listChildren(parentId: string): Promise<AgEnFKItem[]> {
       return this.listItems({ parentId });
   }
 

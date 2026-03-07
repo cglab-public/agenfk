@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JSONStorageProvider } from '../index';
-import { ItemType, Status, Project, AgenFKItem, Flow, FlowStep } from '@agenfk/core';
+import { ItemType, Status, Project, AgEnFKItem, Flow, FlowStep } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -68,7 +68,7 @@ describe('JSONStorageProvider', () => {
 
   describe('Item CRUD', () => {
     it('should create and retrieve an item', async () => {
-      const item: AgenFKItem = {
+      const item: AgEnFKItem = {
         id: 'i1',
         projectId: 'p1',
         type: ItemType.TASK,

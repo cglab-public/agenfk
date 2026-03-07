@@ -418,7 +418,7 @@ describe('ReleaseReminder', () => {
     });
     // After triggerUpdate, poll state changes to 'running'
     await waitFor(() => {
-      expect(screen.getByText(/Updating AgenFK/i)).toBeDefined();
+      expect(screen.getByText(/Updating AgEnFK/i)).toBeDefined();
     });
   });
 

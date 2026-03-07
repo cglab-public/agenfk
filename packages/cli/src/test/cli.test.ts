@@ -288,10 +288,16 @@ describe('CLI Commands', () => {
     it('should bootstrap services if missing', async () => {
       mockedFs.existsSync.mockReturnValue(false);
       mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
-      
+
       await program.parseAsync(['node', 'agenfk', 'up']);
-      
+
       expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+    });
+  });
+
+  describe('branding', () => {
+    it('should use AgEnFK capitalization in program description', () => {
+      expect(program.description()).toContain('AgEnFK');
     });
   });
 });

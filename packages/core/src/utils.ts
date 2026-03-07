@@ -1,4 +1,4 @@
-import { ItemType, AgenFKItem, Flow, FlowStep } from './types.js';
+import { ItemType, AgEnFKItem, Flow, FlowStep } from './types.js';
 
 /**
  * Convert a title string into a URL/branch-safe slug.
@@ -95,7 +95,7 @@ const PLATFORM_STATUSES = new Set([
  * If no match is found they fall back to the first non-special step.
  */
 export function migrateCardsToFlow(
-  items: AgenFKItem[],
+  items: AgEnFKItem[],
   oldFlow: Flow,
   newFlow: Flow,
 ): MigrationResult[] {

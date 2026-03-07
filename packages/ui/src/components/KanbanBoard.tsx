@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence, LayoutGroup, useAnimation } from 'framer-motion';
 import { api } from '../api';
-import { AgenFKItem, ItemType, Status, Project, Flow, FlowStep } from '../types';
+import { AgEnFKItem, ItemType, Status, Project, Flow, FlowStep } from '../types';
 import { clsx } from 'clsx';
 import {
   Plus, Loader2, AlertCircle,
@@ -72,8 +72,8 @@ const statusIcons: Record<Status, React.ReactNode> = {
 };
 
 interface KanbanCardProps {
-  item: AgenFKItem;
-  items?: AgenFKItem[];
+  item: AgEnFKItem;
+  items?: AgEnFKItem[];
   projects?: Project[];
   highlightedId: string | null;
   dragId: string | null;
@@ -87,7 +87,7 @@ interface KanbanCardProps {
   onCardDragOver: (e: React.DragEvent, targetId: string) => void;
   onCardDragLeave: (e: React.DragEvent) => void;
   onDoubleClick: () => void;
-  onDrillDown: (item: AgenFKItem) => void;
+  onDrillDown: (item: AgEnFKItem) => void;
   onArchive: (id: string) => void;
   onMoveToProject: (id: string, targetProjectId: string) => void;
   onCopyId: (id: string) => void;
@@ -230,9 +230,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
             {item.type}
           </span>
-          {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgenFKItem) => i.parentId === item.id) && (
+          {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
             <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors">
-              <Search size={9} /> {items?.filter((i: AgenFKItem) => i.parentId === item.id).length}
+              <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
           )}
         </div>
@@ -302,9 +302,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
         <div className="mb-2">
           {(() => {
-            const subitems = items?.filter((i: AgenFKItem) => i.parentId === item.id) || [];
+            const subitems = items?.filter((i: AgEnFKItem) => i.parentId === item.id) || [];
             if (subitems.length === 0) return null;
-            const progress = Math.round((subitems.filter((i: AgenFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
+            const progress = Math.round((subitems.filter((i: AgEnFKItem) => i.status === Status.DONE).length / subitems.length) * 100);
             return (
               <div className="space-y-1">
                 <div className="flex justify-between items-center text-[8px] font-bold text-slate-400 uppercase tracking-tighter">
@@ -482,7 +482,7 @@ export const KanbanBoard: React.FC = () => {
     staleTime: 1000 * 60 * 60 * 24
   });
 
-  const [selectedItem, setSelectedItem] = useState<AgenFKItem | null>(null);
+  const [selectedItem, setSelectedItem] = useState<AgEnFKItem | null>(null);
 
   // Fire card_opened when an existing item's modal is opened (id present = existing, not new)
   useEffect(() => {
@@ -495,7 +495,7 @@ export const KanbanBoard: React.FC = () => {
 
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
-  const [searchMatches, setSearchMatches] = useState<AgenFKItem[]>([]);
+  const [searchMatches, setSearchMatches] = useState<AgEnFKItem[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
@@ -534,7 +534,7 @@ export const KanbanBoard: React.FC = () => {
   // Keep selected item in sync with fresh data
   useEffect(() => {
     if (selectedItem && items) {
-      const updated = items.find((i: AgenFKItem) => i.id === selectedItem.id);
+      const updated = items.find((i: AgEnFKItem) => i.id === selectedItem.id);
       if (updated && JSON.stringify(updated) !== JSON.stringify(selectedItem)) {
         // Need to update asynchronously to avoid set-state-in-effect warning during render phase
         queueMicrotask(() => setSelectedItem(updated));
@@ -552,7 +552,7 @@ export const KanbanBoard: React.FC = () => {
     const socket = io('http://localhost:3000');
 
     socket.on('connect', () => {
-      console.log('%c[WS_CONNECT] %cConnected to AgenFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
+      console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
     });
 
     socket.on('items_updated', () => {
@@ -593,7 +593,7 @@ export const KanbanBoard: React.FC = () => {
   /* v8 ignore stop */
 
   const bulkUpdateMutation = useMutation({
-    mutationFn: (variables: { items: { id: string, updates: Partial<AgenFKItem> }[] }) => 
+    mutationFn: (variables: { items: { id: string, updates: Partial<AgEnFKItem> }[] }) => 
       api.bulkUpdateItems(variables.items),
     onMutate: () => {
       triggerUserAction();
@@ -604,7 +604,7 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (variables: { id: string, updates: Partial<AgenFKItem> }) => 
+    mutationFn: (variables: { id: string, updates: Partial<AgEnFKItem> }) => 
       api.updateItem(variables.id, variables.updates),
     onMutate: () => {
       triggerUserAction();
@@ -615,7 +615,7 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const createMutation = useMutation({
-    mutationFn: (variables: Partial<AgenFKItem>) => 
+    mutationFn: (variables: Partial<AgEnFKItem>) => 
       api.createItem({ ...variables, projectId: selectedProjectId! } as any),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
@@ -676,18 +676,18 @@ export const KanbanBoard: React.FC = () => {
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];
 
-    let filtered = items.filter((i: AgenFKItem) => i.status === status);
+    let filtered = items.filter((i: AgEnFKItem) => i.status === status);
 
     // Navigation Filtering
     if (navPath.length === 0) {
-      filtered = filtered.filter((i: AgenFKItem) => !i.parentId);
+      filtered = filtered.filter((i: AgEnFKItem) => !i.parentId);
     } else {
       const currentParent = navPath[navPath.length - 1];
-      filtered = filtered.filter((i: AgenFKItem) => i.parentId === currentParent.id);
+      filtered = filtered.filter((i: AgEnFKItem) => i.parentId === currentParent.id);
     }
 
     // Sort by sortOrder, then by createdAt for stable ordering
-    filtered.sort((a: AgenFKItem, b: AgenFKItem) => {
+    filtered.sort((a: AgEnFKItem, b: AgEnFKItem) => {
       const aOrder = a.sortOrder;
       const bOrder = b.sortOrder;
       if (aOrder !== undefined && bOrder !== undefined) {
@@ -703,7 +703,7 @@ export const KanbanBoard: React.FC = () => {
     return filtered;
   };
 
-  const handleDrillDown = (item: AgenFKItem) => {
+  const handleDrillDown = (item: AgEnFKItem) => {
     setNavPath([...navPath, { id: item.id, title: item.title, type: item.type }]);
   };
 
@@ -761,7 +761,7 @@ export const KanbanBoard: React.FC = () => {
     
     if (!id || !items) return;
 
-    const draggedItem = items.find((i: AgenFKItem) => i.id === id);
+    const draggedItem = items.find((i: AgEnFKItem) => i.id === id);
     if (!draggedItem) return;
 
     // Flow transition validation: block invalid moves when a flow is loaded
@@ -781,17 +781,17 @@ export const KanbanBoard: React.FC = () => {
     // Reorder within same column or move to specific position in another column
     if (currentDropTargetId && currentDropTargetId !== id) {
       const columnItemsBefore = getItemsByStatus(status);
-      const columnItems = columnItemsBefore.filter((i: AgenFKItem) => i.id !== id);
-      const targetIndex = columnItems.findIndex((i: AgenFKItem) => i.id === currentDropTargetId);
+      const columnItems = columnItemsBefore.filter((i: AgEnFKItem) => i.id !== id);
+      const targetIndex = columnItems.findIndex((i: AgEnFKItem) => i.id === currentDropTargetId);
       
       if (targetIndex >= 0) {
         const insertIndex = currentDropPosition === 'above' ? targetIndex : targetIndex + 1;
         columnItems.splice(insertIndex, 0, draggedItem);
         
         // Update all items in the column to have correct sortOrder
-        const bulkUpdates: {id: string, updates: Partial<AgenFKItem>}[] = [];
-        columnItems.forEach((item: AgenFKItem, idx: number) => {
-          const updates: Partial<AgenFKItem> = { sortOrder: idx };
+        const bulkUpdates: {id: string, updates: Partial<AgEnFKItem>}[] = [];
+        columnItems.forEach((item: AgEnFKItem, idx: number) => {
+          const updates: Partial<AgEnFKItem> = { sortOrder: idx };
           if (item.id === id && item.status !== status) {
             updates.status = status;
           }
@@ -803,7 +803,7 @@ export const KanbanBoard: React.FC = () => {
 
         if (bulkUpdates.length > 0) {
           // Optimistic local UI update to prevent race conditions during sequential API calls
-          queryClient.setQueryData(['items', selectedProjectId], (old: AgenFKItem[] | undefined) => {
+          queryClient.setQueryData(['items', selectedProjectId], (old: AgEnFKItem[] | undefined) => {
             if (!old) return old;
             return old.map(item => {
               const update = bulkUpdates.find(u => u.id === item.id);
@@ -825,7 +825,7 @@ export const KanbanBoard: React.FC = () => {
       const newSortOrder = targetColumnItems.length;
 
       // Optimistic local UI update
-      queryClient.setQueryData(['items', selectedProjectId], (old: AgenFKItem[] | undefined) => {
+      queryClient.setQueryData(['items', selectedProjectId], (old: AgEnFKItem[] | undefined) => {
         if (!old) return old;
         return old.map(item => item.id === id ? { ...item, status, sortOrder: newSortOrder } : item);
       });
@@ -848,7 +848,7 @@ export const KanbanBoard: React.FC = () => {
 
   const handleArchiveColumn = (status: Status) => {
     const columnItems = getItemsByStatus(status);
-    columnItems.forEach((item: AgenFKItem) => {
+    columnItems.forEach((item: AgEnFKItem) => {
       updateMutation.mutate({ id: item.id, updates: { status: Status.ARCHIVED } });
     });
   };
@@ -866,7 +866,7 @@ export const KanbanBoard: React.FC = () => {
     [Status.ARCHIVED]: 8,
   };
 
-  const navigateToMatch = (item: AgenFKItem) => {
+  const navigateToMatch = (item: AgEnFKItem) => {
     if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
     if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
     if (item.status === Status.BLOCKED) setIsBlockedCollapsed(false);
@@ -875,7 +875,7 @@ export const KanbanBoard: React.FC = () => {
     const chain: NavItem[] = [];
     let currentParentId = item.parentId;
     while (currentParentId) {
-      const parent = items?.find((i: AgenFKItem) => i.id === currentParentId);
+      const parent = items?.find((i: AgEnFKItem) => i.id === currentParentId);
       if (parent) {
         chain.unshift({ id: parent.id, title: parent.title, type: parent.type });
         currentParentId = parent.parentId;
@@ -902,11 +902,11 @@ export const KanbanBoard: React.FC = () => {
 
     const term = searchQuery.toLowerCase();
     const matches = items
-      .filter((i: AgenFKItem) =>
+      .filter((i: AgEnFKItem) =>
         i.id.toLowerCase().includes(term) ||
         i.title.toLowerCase().includes(term)
       )
-      .sort((a: AgenFKItem, b: AgenFKItem) =>
+      .sort((a: AgEnFKItem, b: AgEnFKItem) =>
         (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
       );
 
@@ -942,7 +942,7 @@ export const KanbanBoard: React.FC = () => {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400">
         <Loader2 className="h-10 w-10 animate-spin text-blue-500 mb-4" />
-        <p className="font-medium">Connecting to AgenFK Brain...</p>
+        <p className="font-medium">Connecting to AgEnFK Brain...</p>
       </div>
     );
   }
@@ -953,7 +953,7 @@ export const KanbanBoard: React.FC = () => {
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
         <Logo size={64} className="mb-8" />
         <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Welcome to AgenFK</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Welcome to AgEnFK</h2>
           <p className="text-slate-500 dark:text-slate-400 mb-8 text-sm">Select an existing project or create a new one to get started.</p>
           
           <div className="space-y-4">
@@ -1058,7 +1058,7 @@ export const KanbanBoard: React.FC = () => {
   // By using getItemsByStatus, we ensure the cycle time metrics exactly match 
   // the cards currently visible in the DONE column (respecting the navPath and type filters)
   const doneItems = getItemsByStatus(Status.DONE);
-  const totalCycleMs = doneItems.reduce((acc: number, i: AgenFKItem) => acc + calculateCycleTimeMs(i), 0);
+  const totalCycleMs = doneItems.reduce((acc: number, i: AgEnFKItem) => acc + calculateCycleTimeMs(i), 0);
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
   return (
@@ -1069,7 +1069,7 @@ export const KanbanBoard: React.FC = () => {
             <Logo size={32} />
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgenFK Dashboard</h1>
+                <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgEnFK Dashboard</h1>
                 <button
                   onClick={() => setIsWhatsNewOpen(true)}
                   title="What's new"
@@ -1301,7 +1301,7 @@ export const KanbanBoard: React.FC = () => {
                 <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
                   <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
                   <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-indigo-400 shrink-0 mt-2">Ideas</span>
-                  <span className="bg-white dark:bg-slate-800 text-indigo-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                  <span className="bg-white dark:bg-slate-800 text-indigo-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
                 </button>
               ) : (
                 /* v8 ignore start */
@@ -1315,11 +1315,11 @@ export const KanbanBoard: React.FC = () => {
                       <Lightbulb size={14} className="text-indigo-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {getItemsByStatus(Status.IDEAS).map((item: AgenFKItem) => (
+                      {getItemsByStatus(Status.IDEAS).map((item: AgEnFKItem) => (
                           <KanbanCard
                             key={item.id}
                             item={item}
@@ -1391,7 +1391,7 @@ export const KanbanBoard: React.FC = () => {
 
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                   <AnimatePresence mode="popLayout" initial={false}>
-                    {getItemsByStatus(status as Status).map((item: AgenFKItem) => (
+                    {getItemsByStatus(status as Status).map((item: AgEnFKItem) => (
                       <CardAnimationWrapper key={`anim-${item.id}`} enabled={easterEggsEnabled} itemId={item.id} status={item.status}>
                       <KanbanCard
                         key={item.id}
@@ -1441,11 +1441,11 @@ export const KanbanBoard: React.FC = () => {
                       <Pause size={14} className="text-orange-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Paused</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {getItemsByStatus(Status.PAUSED).map((item: AgenFKItem) => (
+                      {getItemsByStatus(Status.PAUSED).map((item: AgEnFKItem) => (
                           <KanbanCard
                             key={item.id}
                             item={item}
@@ -1483,11 +1483,11 @@ export const KanbanBoard: React.FC = () => {
                       <AlertCircle size={14} className="text-red-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Blocked</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {getItemsByStatus(Status.BLOCKED).map((item: AgenFKItem) => (
+                      {getItemsByStatus(Status.BLOCKED).map((item: AgEnFKItem) => (
                           <KanbanCard
                             key={item.id}
                             item={item}
@@ -1527,7 +1527,7 @@ export const KanbanBoard: React.FC = () => {
                       <button onClick={() => setIsArchiveCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
                       <Archive size={14} className="text-slate-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Archived</h2>
-                      {items?.some((i: AgenFKItem) => i.status === Status.ARCHIVED) && (
+                      {items?.some((i: AgEnFKItem) => i.status === Status.ARCHIVED) && (
                         <button
                           onClick={() => {
                             if (window.confirm('Move all archived items to trash?')) {
@@ -1541,11 +1541,11 @@ export const KanbanBoard: React.FC = () => {
                         </button>
                       )}
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).map((item: AgenFKItem) => (
+                      {items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).map((item: AgEnFKItem) => (
                         <KanbanCard
                           key={item.id}
                           item={item}
@@ -1585,7 +1585,7 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-orange-400 shrink-0 mt-2">Paused</span>
-                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
                     </button>
                   )}
                   {isBlockedCollapsed && (
@@ -1595,14 +1595,14 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>
-                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
                     </button>
                   )}
                   {isArchiveCollapsed && (
                     <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
                       <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
-                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgenFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                     </button>
                   )}
                 </div>

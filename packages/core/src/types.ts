@@ -126,7 +126,7 @@ export interface Bug extends BaseItem {
   severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 }
 
-export type AgenFKItem = Epic | Story | Task | Bug;
+export type AgEnFKItem = Epic | Story | Task | Bug;
 
 // ── GitHub Integration ──────────────────────────────────────────────
 
