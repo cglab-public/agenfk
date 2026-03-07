@@ -64,6 +64,7 @@ export interface CommentRecord {
   content: string;
   author: string;
   timestamp: Date;
+  step?: string;
 }
 
 export interface Project {

@@ -289,6 +289,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: "object", properties: {} },
       },
       {
+        name: "get_flow",
+        description: "Get the full active flow for a project — all steps in order with their exit criteria. Call this at session start to understand the complete workflow contract before starting work.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: { type: "string", description: "The project ID to fetch the active flow for." },
+          },
+          required: ["projectId"],
+        },
+      },
+      {
         name: "workflow_gatekeeper",
         description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch). role= is accepted for backward compatibility but is no longer enforced.",
         inputSchema: {
@@ -312,14 +323,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Validates exit criteria for the current flow step and advances the item to the next step. If command is provided, runs it as a build/test gate. If omitted, uses the project's verifyCommand. On success, advances to the next flow step (or DONE if last) and returns MANDATORY EXIT CRITERIA for the new current step — you MUST complete those instructions before calling validate_progress again. On failure, moves back to the coding step.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a build/test command. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. On failure, moves back to the coding step.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
-            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used." },
+            evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
+            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used on the final step." },
           },
-          required: ["itemId"],
+          required: ["itemId", "evidence"],
         },
       },
       {
@@ -442,8 +454,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         }
       }
       case "validate_progress": {
-        const { itemId, command } = z.object({ itemId: z.string(), command: z.string().optional() }).parse(request.params.arguments);
+        const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
         try {
+          // Fetch current item to tag comment with the step being completed
+          const { data: item } = await api.get(`/items/${itemId}`);
+          const currentStep = item.status;
+          // Log evidence as a tagged comment before advancing
+          const comments = item.comments || [];
+          comments.push({
+            id: uuidv4(),
+            content: `**Evidence [${currentStep}]:** ${evidence}`,
+            author: "agent",
+            timestamp: new Date(),
+            step: currentStep,
+          });
+          await api.put(`/items/${itemId}`, { comments });
+          // Advance the step
           const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
           return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
@@ -574,6 +600,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
             text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: Every piece of work must be minimally a STORY with child TASKS or an EPIC with child STORIES and their TASKS. Direct coding on a STORY or EPIC without child TASKS is prohibited.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. Create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
           }] 
         };
+      }
+      case "get_flow": {
+        const { projectId } = z.object({ projectId: z.string() }).parse(request.params.arguments);
+        try {
+          const { data: flow } = await api.get(`/projects/${projectId}/flow`);
+          const stepsSummary = flow.steps
+            .sort((a: any, b: any) => a.order - b.order)
+            .map((s: any) => {
+              const criteria = s.exitCriteria ? `\n    Exit criteria: "${s.exitCriteria}"` : '';
+              const anchor = s.isAnchor ? ' (anchor)' : '';
+              return `  ${s.order}. ${s.name}${anchor}${criteria}`;
+            })
+            .join('\n');
+          return { content: [{ type: "text", text: `Flow: "${flow.name}"\n\n${stepsSummary}\n\nThis is your workflow contract for this session. Each step's exit criteria is your mandatory work definition before calling validate_progress.` }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: msg }] };
+        }
       }
       case "get_server_info": {
         const { data } = await api.get(`/`);

@@ -55,9 +55,10 @@ Before creating any item, evaluate the request against these signals:
    - Run `git branch --show-current` to check the current branch.
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`) followed by `git pull` first.
    - This prevents new feature branches from being based on stale/unrelated feature branches and ensures you have the latest upstream changes.
-1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0), then call `validate_progress(id)` to advance from TODO to the coding step (enforces TODO exit criteria).
-2. Call `workflow_gatekeeper(intent, itemId)` before making any file changes.
-3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
+1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0), then call `validate_progress(id, evidence="Starting task, advancing from TODO")` to advance from TODO to the coding step.
+2. Call `get_flow(projectId)` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before calling `validate_progress` again.
+3. Call `workflow_gatekeeper(intent, itemId)` before making any file changes.
+4. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
 
 ---
 
@@ -76,7 +77,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
 1. Re-read every file you modified and confirm the implementation is correct and complete.
 2. Call `workflow_gatekeeper(itemId)` — the response includes the current step's **exit criteria** if defined.
 3. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
-4. Once satisfied, call `validate_progress(itemId, command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`).
+4. Once satisfied, call `validate_progress(itemId, evidence="<how you satisfied this step's exit criteria>", command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`). The evidence is mandatory — describe concretely what you did.
    - Success: advances to the next flow step. Repeat Phase 2 for each remaining intermediate step.
    - Failure: moves back to the coding step automatically. Fix and repeat from Phase 1.
 
@@ -84,7 +85,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
 
 ## Phase 3 — Final Validation (→ DONE)
 
-1. When the item is in the last intermediate step before DONE, call `validate_progress(itemId)` — omit `command` to use the project's `verifyCommand` automatically.
+1. When the item is in the last intermediate step before DONE, call `validate_progress(itemId, evidence="<how you satisfied this step's exit criteria>")` — omit `command` to use the project's `verifyCommand` automatically.
 2. If no `verifyCommand` is configured, the tool returns `NO_VERIFY_COMMAND`. **Auto-detect** the project's stack instead of asking the developer:
    1. Read the project root for config files: `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`, `Makefile`, `*.csproj`/`*.sln`.
    2. Detect the stack and compose the idiomatic build+test command:
@@ -97,7 +98,7 @@ Since there is no separate review agent in Standard Mode, perform the review you
       - **.NET** (`*.csproj` or `*.sln`): `dotnet build && dotnet test`
       - **Make** (`Makefile`): `make test`
    3. Call `update_project({ id, verifyCommand: "<detected>" })` to persist the command.
-   4. Retry `validate_progress(itemId)`.
+   4. Retry `validate_progress(itemId, evidence="<evidence>")`.
    5. If no config files are found and the stack cannot be detected, **then** ask the developer as a last resort.
 3. On success, the item moves to DONE automatically. On failure, it moves back to the coding step.
 4. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.

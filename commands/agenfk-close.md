@@ -24,15 +24,15 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 4 — Close Children First (Bottom-Up)**
 - If the item has children (EPIC with STORYs, STORY with TASKs), use `list_items(parentId=id)` to check their status.
-- Any child still in an intermediate flow step must be progressed to DONE first: use `validate_progress(childId)` — if no command is provided, the project's verifyCommand runs automatically. The server blocks direct DONE transitions via `update_item`.
-- **Sibling propagation**: If one child's `validate_progress` already reached DONE, remaining siblings will pass immediately (same verified code). Call `validate_progress` on each — the server skips execution via sibling propagation.
+- Any child still in an intermediate flow step must be progressed to DONE first: use `validate_progress(childId, evidence="<how this step's criteria were met>")` — if no command is provided, the project's verifyCommand runs automatically. The server blocks direct DONE transitions via `update_item`.
+- **Sibling propagation**: If one child's `validate_progress` already reached DONE, remaining siblings will pass immediately (same verified code). Call `validate_progress(id, evidence="<evidence>")` on each — the server skips execution via sibling propagation.
 - Any child still in the coding step (IN_PROGRESS or equivalent) should be flagged to the user before proceeding.
 - Only proceed to Step 5 once ALL children are DONE.
 
 **Step 5 — Move to DONE**
 - Call `add_comment(id, "Phase Close complete: Final summary prepared.")` to log the phase completion.
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
-- For leaf items (TASK/BUG) in an intermediate step: call `validate_progress(id)` to advance to DONE.
+- For leaf items (TASK/BUG) in an intermediate step: call `validate_progress(id, evidence="<how exit criteria were met>")` to advance to DONE.
 
 **Step 6 — Next Steps**
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:

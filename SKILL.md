@@ -125,19 +125,19 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Workflow** (use the active flow's step names — check `activeFlow` from `workflow_gatekeeper` response):
         *   `update_item(itemId, { status: "<review-step>" })` moves items from the active coding step to the review step when coding is complete (default: `REVIEW`).
         *   Call `workflow_gatekeeper(itemId)` before calling `validate_progress` — the response includes the current step's exit criteria.
-        *   `validate_progress(itemId, command?)` runs a command (or `project.verifyCommand` if omitted) and advances to the next flow step on success (back to the coding step on failure).
+        *   `validate_progress(itemId, evidence, command?)` — `evidence` is **required**: describe concretely how you satisfied the current step's exit criteria. It is logged as a tagged comment (audit trail) and serves as your mandatory confirmation before the step advances. Runs `command` (or `project.verifyCommand` if omitted) and advances to the next flow step on success.
         *   The Agent verifies coverage and regressions in each intermediate step.
-        *   Call `validate_progress(itemId)` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
+        *   Call `validate_progress(itemId, evidence="<how you satisfied this step>")` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
         *   Failure: Agent moves item back to the active coding step.
     *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `validate_progress` call validates the code for all siblings. After one passes, move remaining siblings to the same step via `update_item`, then call `validate_progress` on each to reach DONE.
 
 6.  **Final Verification (Validate Tool)**
-    *   **Action**: After self-review, the Agent calls `workflow_gatekeeper(itemId)` to get the current step's exit criteria, then calls `validate_progress(itemId, command?)` to gate the transition to the next step.
+    *   **Action**: After self-review, the Agent calls `workflow_gatekeeper(itemId)` to get the current step's exit criteria, then calls `validate_progress(itemId, evidence, command?)` to gate the transition to the next step.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `update_project`) is used automatically when no `command` is provided. Agents cannot override or bypass it.
     *   **Transition Logic (Automated by Tool)**:
         1. The agent advances the item past the coding step via `update_item`.
         2. The agent performs self-review (re-reads files, checks correctness).
-        3. The agent calls `validate_progress(itemId, command?)` — runs the command and advances to the next flow step.
+        3. The agent calls `validate_progress(itemId, evidence="<concrete description of how exit criteria were met>", command?)` — logs evidence as a tagged comment, runs the command, and advances to the next flow step.
         4. Success: Advances to the next step. Failure: Moves back to the coding step. Repeat for each intermediate step until DONE.
 
 7.  **Measurement & Tracking**
@@ -145,12 +145,12 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Progress Comments**: The Agent **MUST** call `add_comment(itemId, content)` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
     *   **Estimation**: If exact token counts are not available in the environment, the Agent **MUST** provide a reasonable estimate. **Do not skip this step.**
     *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up. Use the active flow's step names (check `activeFlow` in `workflow_gatekeeper` response):
-        1. Close all child TASKs first: advance past the coding step via `update_item`, self-review, then call `validate_progress` for each intermediate step until DONE.
-           - **Sibling shortcut**: If one child's `validate_progress` already advanced past a step, move remaining siblings to that step via `update_item`. Then call `validate_progress` on each — subsequent calls pass immediately via sibling propagation.
+        1. Close all child TASKs first: advance past the coding step via `update_item`, self-review, then call `validate_progress(id, evidence="<evidence>")` for each intermediate step until DONE.
+           - **Sibling shortcut**: If one child's `validate_progress` already advanced past a step, move remaining siblings to that step via `update_item`. Then call `validate_progress(id, evidence="<evidence>")` on each — subsequent calls pass immediately via sibling propagation.
         2. Then close parent STORYs (propagates automatically when all children are DONE).
         3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in intermediate steps. You are responsible for progressing each item all the way to DONE.
-        NEVER use `update_item({status: "DONE"})` — the server rejects direct DONE transitions. Always use `validate_progress` to close an item.
+        NEVER use `update_item({status: "DONE"})` — the server rejects direct DONE transitions. Always use `validate_progress(id, evidence="<evidence>")` to close an item.
     *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
         1. **Release**: Run `/agenfk-release` to create a new release.
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
@@ -172,7 +172,8 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `add_context`: Attach relevant file paths.
 *   `analyze_request`: Categorization strategy.
 *   `workflow_gatekeeper`: Pre-flight authorization and role verification.
-*   `validate_progress`: Validates exit criteria for the current flow step and advances to the next (command optional — uses verifyCommand if omitted).
+*   `get_flow`: Loads the full active flow with all steps and exit criteria — call at session start to understand your complete workflow contract.
+*   `validate_progress`: Step-completion gate — requires `evidence` (how you satisfied the exit criteria, logged as a tagged comment) and optional `command`. Advances to next step on success.
 *   `get_server_info`: Framework health check.
 *   `pause_work`: Save context snapshot and pause item.
 *   `resume_work`: Restore context and resume paused item.
