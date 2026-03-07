@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -34,10 +34,6 @@ beforeAll(async () => {
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
   await initStorage();
 
-  const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
-  if (fs.existsSync(tokenPath)) {
-    verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
-  }
 });
 
 afterAll(() => {
@@ -51,8 +47,6 @@ afterAll(() => {
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 });
 
-// Shared token extracted from the running server's ephemeral VERIFY_TOKEN.
-let verifyToken: string = '';
 
 afterEach(() => {
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
@@ -123,11 +117,11 @@ describe('POST /backup', () => {
   });
 
   it('performs backup when token is provided', async () => {
-    if (!verifyToken) return; // skip if no token available
+    if (!VERIFY_TOKEN) return; // skip if no token available
     await initStorage();
     const res = await request(app)
       .post('/backup')
-      .set('x-agenfk-internal', verifyToken);
+      .set('x-agenfk-internal', VERIFY_TOKEN);
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('backupPath');
   });
@@ -288,22 +282,22 @@ describe('POST /items/:id/review', () => {
   });
 
   it('returns 400 when command missing (with token)', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app)
       .post(`/items/${item.id}/review`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});
     expect(res.status).toBe(400);
   });
 
   it('returns 404 for unknown item (with token)', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     await initStorage();
     const res = await request(app)
       .post('/items/nonexistent/review')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ command: 'echo hi' });
     expect(res.status).toBe(404);
   });
@@ -320,11 +314,11 @@ describe('POST /items/:id/test', () => {
   });
 
   it('returns 404 for unknown item (with token)', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     await initStorage();
     const res = await request(app)
       .post('/items/nonexistent/test')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});
     expect(res.status).toBe(404);
   });
@@ -489,7 +483,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   beforeEach(async () => { await initStorage(); });
 
   it('advances intermediate step (REVIEW→TEST) with no command, without running anything', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV1' })).body;
     // No verifyCommand set on project
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV1', projectId: p.id })).body;
@@ -498,7 +492,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});  // no command
 
     expect(res.status).toBe(200);
@@ -506,14 +500,14 @@ describe('POST /items/:id/validate — command required only on final step', () 
   });
 
   it('advances intermediate step (IN_PROGRESS→REVIEW) with no command', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV2' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV2', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});  // no command
 
     expect(res.status).toBe(200);
@@ -521,12 +515,12 @@ describe('POST /items/:id/validate — command required only on final step', () 
   });
 
   it('still returns NO_VERIFY_COMMAND when on final step (TEST→DONE) with no command and no verifyCommand', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV3' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV3', projectId: p.id })).body;
     await request(app)
       .post('/items/bulk')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
@@ -534,7 +528,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});  // no command, no verifyCommand
 
     expect(res.status).toBe(400);
@@ -542,13 +536,13 @@ describe('POST /items/:id/validate — command required only on final step', () 
   });
 
   it('runs verifyCommand on final step (TEST→DONE) when no explicit command given', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV4' })).body;
     await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo verify-ok' });
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV4', projectId: p.id })).body;
     await request(app)
       .post('/items/bulk')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
@@ -556,7 +550,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});  // no command — should use verifyCommand
 
     expect([200, 422]).toContain(res.status);
@@ -570,7 +564,7 @@ describe('POST /items/:id/review success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('moves REVIEW item to TEST on passing command', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
@@ -578,7 +572,7 @@ describe('POST /items/:id/review success paths', () => {
 
     const res = await request(app)
       .post(`/items/${item.id}/review`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ command: 'echo review-ok' });
 
     expect([200, 422]).toContain(res.status);
@@ -588,7 +582,7 @@ describe('POST /items/:id/review success paths', () => {
   });
 
   it('returns 422 on failing command and moves back to IN_PROGRESS', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
@@ -596,7 +590,7 @@ describe('POST /items/:id/review success paths', () => {
 
     const res = await request(app)
       .post(`/items/${item.id}/review`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ command: 'exit 1' });
 
     expect(res.status).toBe(422);
@@ -610,7 +604,7 @@ describe('POST /items/:id/test success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('moves TEST item to DONE when verifyCommand passes', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P2' })).body;
     // Set verifyCommand on the project
     await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo done-ok' });
@@ -620,7 +614,7 @@ describe('POST /items/:id/test success paths', () => {
     // Force status to TEST using the bulk endpoint with internal token
     await request(app)
       .post('/items/bulk')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
@@ -628,7 +622,7 @@ describe('POST /items/:id/test success paths', () => {
 
     const res = await request(app)
       .post(`/items/${item.id}/test`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});
 
     expect([200, 422]).toContain(res.status);
@@ -638,13 +632,13 @@ describe('POST /items/:id/test success paths', () => {
   });
 
   it('returns 400 when no verifyCommand configured', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P-novc' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T-novc', projectId: p.id })).body;
 
     await request(app)
       .post('/items/bulk')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
@@ -652,7 +646,7 @@ describe('POST /items/:id/test success paths', () => {
 
     const res = await request(app)
       .post(`/items/${item.id}/test`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});
 
     expect(res.status).toBe(400);
@@ -840,12 +834,12 @@ describe('PUT /items/:id with internal token', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('allows DONE with internal verify token', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app)
       .put(`/items/${item.id}`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ status: 'DONE' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('DONE');
@@ -1030,12 +1024,12 @@ describe('POST /items/bulk with internal token', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('allows DONE status with internal token', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app)
       .post('/items/bulk')
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'DONE' } }] });
     expect(res.status).toBe(200);
     const updated = (await request(app).get(`/items/${item.id}`)).body;
@@ -1103,7 +1097,7 @@ describe('syncParentStatus advanced scenarios', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('syncs parent to IN_PROGRESS when one child is in_progress', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
@@ -1113,33 +1107,33 @@ describe('syncParentStatus advanced scenarios', () => {
   });
 
   it('syncs parent to DONE when all children are done', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Set child to DONE via internal token
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'DONE' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('DONE');
   });
 
   it('handles nested parent sync (grandparent)', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const grandparent = (await request(app).post('/items').send({ type: 'EPIC', title: 'GP', projectId: p.id })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id, parentId: grandparent.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'DONE' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
     const updatedParent = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updatedParent.status).toBe('DONE');
   });
 
   it('syncs parent to TEST when all children are in TEST or DONE', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'TEST' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('TEST');
   });
@@ -1279,50 +1273,50 @@ describe('syncParentStatus - remaining branches', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('does not re-update parent when it is already DONE', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to DONE first
-    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'DONE' });
+    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
     // Now set child to DONE — sync triggers but parent is already DONE, no-op
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'DONE' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('DONE');
   });
 
   it('does not re-update parent when it is already TEST', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to TEST first
-    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'TEST' });
+    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
     // Now set child to TEST — sync triggers but parent already TEST, no-op
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'TEST' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('TEST');
   });
 
   it('syncs parent to REVIEW when all children are REVIEW or above', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'REVIEW' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('REVIEW');
   });
 
   it('does not update parent already at REVIEW when child moves to REVIEW', async () => {
-    if (!verifyToken) return;
+    if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to REVIEW first
-    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'REVIEW' });
+    await request(app).put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
     // Now set child to REVIEW — sync: parent already REVIEW, no-op
-    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', verifyToken).send({ status: 'REVIEW' });
+    await request(app).put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
     const updated = (await request(app).get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('REVIEW');
   });
@@ -1669,7 +1663,7 @@ describe('Flow-aware status transition validation', () => {
     // Internal token bypasses both DONE guard and flow validation
     const res = await request(app)
       .put(`/items/${item.id}`)
-      .set('x-agenfk-internal', verifyToken)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ status: 'DONE' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('DONE');

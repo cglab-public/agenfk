@@ -14,7 +14,7 @@ import axios from "axios";
 
 // Load the install-time secret token used to authenticate verify_changes transitions.
 // Generated at install time and stored in ~/.agenfk/verify-token — not in the codebase.
-const VERIFY_TOKEN = (() => {
+export const VERIFY_TOKEN = (() => {
   const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
   try {
     return fs.readFileSync(tokenPath, 'utf8').trim();

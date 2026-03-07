@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, pkceStore, mapJiraTypeToAgEnFK, clearJiraValidationCache } from '../server';
+import { app, initStorage, storage, pkceStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
 import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -126,10 +126,6 @@ describe('Server API', () => {
     });
 
     it('should allow transition to DONE with internal token', async () => {
-      // Find the token
-      const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
-      const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf8').trim() : 'dummy';
-      
       const createRes = await request(app)
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Verify Me', description: 'D' });
@@ -137,7 +133,7 @@ describe('Server API', () => {
 
       const res = await request(app)
         .put(`/items/${id}`)
-        .set('x-agenfk-internal', token)
+        .set('x-agenfk-internal', VERIFY_TOKEN)
         .send({ status: Status.DONE });
       
       expect(res.status).toBe(200);
