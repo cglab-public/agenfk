@@ -472,6 +472,64 @@ describe('CardDetailModal', () => {
     });
   });
 
+  it('should display step badge beside author when comment has a step field', () => {
+    const itemWithComments = {
+      ...mockItem,
+      comments: [
+        {
+          id: 'c1',
+          author: 'agent',
+          content: 'evidence text',
+          timestamp: new Date().toISOString(),
+          step: 'create_unit_tests',
+        },
+      ],
+    };
+    render(
+      <CardDetailModal
+        item={itemWithComments as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    // Author is shown
+    expect(screen.getByText('@agent')).toBeDefined();
+    // Step badge is shown beside the author
+    expect(screen.getByText('create_unit_tests')).toBeDefined();
+  });
+
+  it('should not display any step badge when comment has no step field', () => {
+    const itemWithComments = {
+      ...mockItem,
+      comments: [
+        {
+          id: 'c2',
+          author: 'user',
+          content: 'plain comment',
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+    render(
+      <CardDetailModal
+        item={itemWithComments as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    expect(screen.getByText('@user')).toBeDefined();
+    // No step badge rendered
+    expect(screen.queryByTestId('comment-step-badge')).toBeNull();
+  });
+
   it('should copy ID to clipboard when clicked', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {
