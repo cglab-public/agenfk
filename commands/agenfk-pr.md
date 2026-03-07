@@ -7,7 +7,7 @@ You are executing the `/agenfk-pr <itemId>` command. Follow these steps precisel
 **Step 1 — Verify branch and item state**
 - Call `get_item(itemId)` to read the current item.
 - Check `item.branchName`:
-  - If no branch is linked, inform the user: "No branch is linked to this item. Please create a branch manually (`git checkout -b <branch-name>`) and link it to the item via `update_item({ id, branchName: '<branch-name>' })`."
+  - If no branch is linked, inform the user: "No branch is linked to this item. Ask the user to link a branch via `update_item({ id, branchName: '<branch-name>' })`."
   - If a branch exists, confirm you are on it (`git branch --show-current`). If not, run `git checkout <branchName>`.
 
 **Step 1.5 — Commit local changes**
