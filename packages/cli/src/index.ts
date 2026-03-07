@@ -1883,13 +1883,21 @@ program
   });
 
 program
-  .command('review <id> <command>')
-  .description('Run agent-chosen command and transition item IN_PROGRESS → REVIEW. MCP fallback: review_changes')
-  .action(async (id, command) => {
+  .command('verify <id> [command]')
+  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress)')
+  .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
+  .action(async (id, command, options) => {
+    if (!options.evidence) {
+      console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
+      process.exit(1);
+      return;
+    }
+
     const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
     if (!fs.existsSync(tokenPath)) {
       console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
       process.exit(1);
+      return;
     }
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
 
@@ -1898,70 +1906,26 @@ program
       try {
         const { data: allItems } = await axios.get(`${API_URL}/items`);
         const found = allItems.filter((i: any) => i.id.startsWith(id));
-        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); }
-        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}`)); process.exit(1); }
+        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); return; }
+        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}`)); process.exit(1); return; }
         targetId = found[0].id;
       } catch (e: any) {
         console.error(chalk.red('Error resolving item:'), e.response?.data?.error || e.message);
         process.exit(1);
+        return;
       }
     }
 
-    console.log(chalk.blue(`Running review: ${command}`));
     try {
-      const { data } = await axios.post(
-        `${API_URL}/items/${targetId}/review`,
-        { command },
-        { headers: { 'x-agenfk-internal': verifyToken } }
-      );
+      const body: any = { evidence: options.evidence };
+      if (command) body.command = command;
+      const { data } = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken } });
       if (data.output) console.log(data.output);
-      console.log(chalk.green(`\n✅ Review passed. Item moved to ${data.status}.`));
+      console.log(chalk.green(data.message || `\n✅ Validation passed.`));
     } catch (error: any) {
       const errData = error.response?.data;
       if (errData?.output) console.error(errData.output);
-      console.error(chalk.red(`\n❌ ${errData?.message || error.message}`));
-      process.exit(1);
-    }
-  });
-
-program
-  .command('test <id>')
-  .description('Run project verifyCommand and transition item TEST → DONE. MCP fallback: test_changes')
-  .action(async (id) => {
-    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
-    if (!fs.existsSync(tokenPath)) {
-      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
-      process.exit(1);
-    }
-    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
-
-    let targetId = id;
-    if (id.length < 36) {
-      try {
-        const { data: allItems } = await axios.get(`${API_URL}/items`);
-        const found = allItems.filter((i: any) => i.id.startsWith(id));
-        if (found.length === 0) { console.error(chalk.red(`No item found starting with ${id}`)); process.exit(1); }
-        if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}`)); process.exit(1); }
-        targetId = found[0].id;
-      } catch (e: any) {
-        console.error(chalk.red('Error resolving item:'), e.response?.data?.error || e.message);
-        process.exit(1);
-      }
-    }
-
-    console.log(chalk.blue(`Running project test suite...`));
-    try {
-      const { data } = await axios.post(
-        `${API_URL}/items/${targetId}/test`,
-        {},
-        { headers: { 'x-agenfk-internal': verifyToken } }
-      );
-      if (data.output) console.log(data.output);
-      console.log(chalk.green(`\n✅ Tests passed. Item moved to ${data.status}.`));
-    } catch (error: any) {
-      const errData = error.response?.data;
-      if (errData?.output) console.error(errData.output);
-      console.error(chalk.red(`\n❌ ${errData?.message || error.message}`));
+      console.error(chalk.red(`\n❌ ${errData?.message || errData?.error || error.message}`));
       process.exit(1);
     }
   });

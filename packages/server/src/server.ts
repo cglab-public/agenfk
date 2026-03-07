@@ -1215,9 +1215,17 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
 // Advances item to the next flow step. On failure, moves back to the coding step.
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
+
+  if (evidence) {
+    const evidenceComment = { id: uuidv4(), author: 'agent', content: `**Evidence [${item.status}]:** ${evidence}`, timestamp: new Date(), step: item.status };
+    await storage.updateItem(itemId, { comments: [...(item.comments || []), evidenceComment] });
+    // Reload item so subsequent comment appends don't lose the evidence comment
+    const refreshed = await storage.getItem(itemId);
+    if (refreshed) Object.assign(item, refreshed);
+  }
 
   const project = await storage.getProject(item.projectId);
   const projectFlows = await storage.listFlows();
@@ -1360,7 +1368,7 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res);
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined);
 }));
 
 // ── review_changes: DEPRECATED — delegates to validate_progress ──────────────
