@@ -718,11 +718,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         const { itemId, content, author } = args;
         const { data: item } = await api.get(`/items/${itemId}`);
         const comments = item.comments || [];
-        comments.push({ 
-          id: uuidv4(), 
-          content, 
-          author: author || "agent", 
-          timestamp: new Date() 
+        comments.push({
+          id: uuidv4(),
+          content,
+          author: author || "agent",
+          timestamp: new Date(),
+          step: item.status,
         });
         await api.put(`/items/${itemId}`, { comments });
         return { content: [{ type: "text", text: "Comment added." }] };

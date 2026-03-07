@@ -487,6 +487,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-indigo-500"></div>
                             @{comment.author}
+                            {comment.step && (
+                              <span data-testid="comment-step-badge" className="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                                {comment.step}
+                              </span>
+                            )}
                           </span>
                           <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
                             {new Date(comment.timestamp).toLocaleString()}

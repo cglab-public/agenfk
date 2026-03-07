@@ -69,6 +69,7 @@ export interface CommentRecord {
   content: string;
   author: string;
   timestamp: string;
+  step?: string;
 }
 
 export interface FlowStep {
