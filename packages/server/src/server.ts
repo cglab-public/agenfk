@@ -683,8 +683,10 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
-  const { flowId, token } = req.body;
-  if (!flowId || !token) return res.status(400).json({ error: 'flowId and token are required' });
+  const { flowId } = req.body;
+  if (!flowId) return res.status(400).json({ error: 'flowId is required' });
+  const token = process.env.REGISTRY_TOKEN ?? process.env.GITHUB_TOKEN;
+  if (!token) return res.status(503).json({ error: 'Registry publishing is not configured. Set REGISTRY_TOKEN or GITHUB_TOKEN on the server.' });
 
   const flow = await storage.getFlow(flowId);
   if (!flow) return res.status(404).json({ error: 'Flow not found' });

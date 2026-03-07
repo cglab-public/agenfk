@@ -228,20 +228,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to Community ─────────────────────────────────────────────────
-  const [showPublish, setShowPublish] = useState(false);
-  const [publishToken, setPublishToken] = useState('');
   const [publishUrl, setPublishUrl] = useState<string | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   const publishMutation = useMutation({
     mutationFn: async () => {
       if (!flow?.id) throw new Error('Flow must be saved before publishing.');
-      return api.publishToRegistry(flow.id, publishToken);
+      return api.publishToRegistry(flow.id);
     },
     onSuccess: ({ url }) => {
       setPublishUrl(url);
       setPublishError(null);
-      setPublishToken('');
     },
     onError: (e: Error) => {
       setPublishError(e.message || 'Failed to publish.');
@@ -558,11 +555,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 <button
                   data-testid="publish-flow-btn"
                   type="button"
-                  onClick={() => { setShowPublish(v => !v); setPublishUrl(null); setPublishError(null); }}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+                  disabled={publishMutation.isPending}
+                  onClick={() => { setPublishUrl(null); setPublishError(null); publishMutation.mutate(); }}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  <Upload size={15} />
-                  Publish
+                  {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                  {publishMutation.isPending ? 'Publishing…' : 'Publish'}
                 </button>
               )}
               <button
@@ -578,54 +576,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </div>
           </div>
 
-          {showPublish && (
-            <div data-testid="publish-panel" className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/10 p-3 flex flex-col gap-2">
-              <p className="text-xs font-semibold text-violet-700 dark:text-violet-300 flex items-center gap-1.5">
-                <Globe size={12} />
-                Publish to Community Registry
-              </p>
-              {publishUrl ? (
-                <a
-                  data-testid="publish-success-link"
-                  href={publishUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
-                >
-                  <ExternalLink size={12} />
-                  Published! View on registry
-                </a>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2">
-                    <input
-                      data-testid="publish-token-input"
-                      type="password"
-                      value={publishToken}
-                      onChange={e => setPublishToken(e.target.value)}
-                      placeholder="GitHub personal access token"
-                      className="flex-1 px-2 py-1.5 rounded-lg border border-violet-200 dark:border-violet-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-violet-500"
-                    />
-                    <button
-                      data-testid="publish-submit-btn"
-                      type="button"
-                      disabled={!publishToken.trim() || publishMutation.isPending}
-                      onClick={() => publishMutation.mutate()}
-                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {publishMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-                      {publishMutation.isPending ? 'Publishing…' : 'Submit'}
-                    </button>
-                  </div>
-                  {publishError && (
-                    <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
-                      <AlertCircle size={11} />
-                      {publishError}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
+          {publishUrl && (
+            <a
+              data-testid="publish-success-link"
+              href={publishUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+            >
+              <ExternalLink size={12} />
+              Published! View on registry
+            </a>
+          )}
+          {publishError && (
+            <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+              <AlertCircle size={11} />
+              {publishError}
+            </p>
           )}
         </div>
       )}
