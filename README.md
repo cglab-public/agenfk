@@ -172,7 +172,7 @@ AgEnFK utilizes a **Single Owner Architecture** to ensure data consistency and r
 
 AgEnFK v0.2 ships with **Custom Workflow Flows** — one of the most requested features since launch.
 
-You are no longer locked into the built-in TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline. Flows let you define exactly how work moves through your team: name the steps, write exit criteria for each one, and AgEnFK enforces them end-to-end — for both humans and AI agents.
+You are no longer locked into the built-in TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline. Flows let you define exactly how you want to organise your personal Agentic Engineering flow: name the steps, write exit criteria for each one, and AgEnFK enforces them end-to-end.
 
 ### How Flows Work
 
@@ -180,7 +180,7 @@ A **Flow** is an ordered list of steps with a name and exit criteria per step. T
 - **TODO** — the entry point for all new work.
 - **DONE** — the terminal state. The project's `verifyCommand` is enforced here by `validate_progress`.
 
-Everything in between is yours to define. A QA-heavy team might use `TODO → DEV → QA → SIGN_OFF → DONE`. A solo developer might keep it minimal: `TODO → CODING → DONE`.
+Everything in between is yours to define. A TDD-focused developer might use `TODO → WRITE_TESTS → IMPLEMENT → REVIEW → DONE`. Someone who prefers to keep it lean might go with just `TODO → CODING → DONE`.
 
 ### Flow Editor
 
