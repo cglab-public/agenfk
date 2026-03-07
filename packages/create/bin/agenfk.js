@@ -26,7 +26,7 @@ console.log(`${CYAN}
              |___/
 ${RESET}`);
 
-console.log(`${BLUE}=== AgenFK Installer ===${RESET}\n`);
+console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
 
 // Check git is available
 const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8' });
@@ -64,7 +64,7 @@ function downloadAsset(repo, tag, pattern, outputPath) {
 }
 
 if (fs.existsSync(INSTALL_DIR)) {
-  console.log(`${GREEN}AgenFK already installed at ${INSTALL_DIR}${RESET}`);
+  console.log(`${GREEN}AgEnFK already installed at ${INSTALL_DIR}${RESET}`);
   const isGitRepo = fs.existsSync(path.join(INSTALL_DIR, '.git'));
 
   if (isGitRepo) {
@@ -83,7 +83,7 @@ if (fs.existsSync(INSTALL_DIR)) {
   }
 } else {
   if (!shouldRebuild) {
-    console.log(`Installing pre-built AgenFK to ${INSTALL_DIR} ...`);
+    console.log(`Installing pre-built AgEnFK to ${INSTALL_DIR} ...`);
     fs.mkdirSync(INSTALL_DIR, { recursive: true });
     try {
       const latestTag = fetchLatestTag(REPO_NAME);
@@ -96,7 +96,7 @@ if (fs.existsSync(INSTALL_DIR)) {
       execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
     }
   } else {
-    console.log(`Cloning AgenFK to ${INSTALL_DIR} ...`);
+    console.log(`Cloning AgEnFK to ${INSTALL_DIR} ...`);
     execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
   }
 }
