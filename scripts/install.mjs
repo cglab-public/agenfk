@@ -559,6 +559,39 @@ process.exit(0);
             }
         }
         console.log(`  Installed: ${cliDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+        // Ensure ~/.local/bin is on PATH in shell rc files (Linux/macOS only)
+        if (os.platform() !== 'win32') {
+            const pathDirs = (process.env.PATH || '').split(':');
+            const alreadyOnPath = pathDirs.some(d => d === localBinDir || d === `${os.homedir()}/.local/bin`);
+            if (!alreadyOnPath) {
+                const exportLine = `\nexport PATH="$HOME/.local/bin:$PATH"`;
+                const rcFiles = [
+                    path.join(os.homedir(), '.zshrc'),
+                    path.join(os.homedir(), '.bashrc'),
+                    path.join(os.homedir(), '.profile'),
+                ];
+                let added = false;
+                for (const rc of rcFiles) {
+                    try {
+                        const existing = existsSync(rc) ? readFileSync(rc, 'utf8') : '';
+                        if (!existing.includes('.local/bin')) {
+                            await fs.appendFile(rc, exportLine, 'utf8');
+                            console.log(`  Added ~/.local/bin to PATH in ${path.basename(rc)}`);
+                            added = true;
+                        }
+                    } catch { /* skip unwritable files */ }
+                }
+                if (added) {
+                    const shell = path.basename(process.env.SHELL || '');
+                    const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
+                        : shell === 'bash' ? 'source ~/.bashrc'
+                        : shell === 'fish' ? 'source ~/.config/fish/config.fish'
+                        : 'source your shell rc file';
+                    console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
+                }
+            }
+        }
     }
 
     // 10 & 11. Global Slash Commands
