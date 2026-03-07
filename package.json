@@ -18,9 +18,24 @@
     "uninstall:framework": "node scripts/uninstall.mjs",
     "start:services": "node scripts/start-services.mjs"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "agenfk",
+    "agentic",
+    "engineering",
+    "framework",
+    "ai",
+    "mcp",
+    "claude",
+    "workflow",
+    "kanban",
+    "agile"
+  ],
+  "author": "CG/lab",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cglab-public/agenfk.git"
+  },
   "type": "module",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
