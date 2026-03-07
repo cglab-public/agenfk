@@ -108,20 +108,119 @@ describe('CLI Commands', () => {
   });
 
   describe('upgrade command', () => {
-    it('should check for updates and run installer', async () => {
-      mockedAxios.get.mockRejectedValue(new Error('Down')); // services not running
+    it('should use GitHub REST API for version check (no gh auth required)', async () => {
+      // First get: services check (reject = not running)
+      // Second get: GitHub API returns same version → no upgrade needed
+      mockedAxios.get
+        .mockRejectedValueOnce(new Error('Down'))
+        .mockResolvedValueOnce({ data: { tag_name: 'v0.0.0' } });
+
+      mockedFs.existsSync.mockImplementation(() => true);
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.0"}');
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        expect.stringContaining('api.github.com'),
+        expect.any(Object)
+      );
+      expect(mockedChildProcess.execSync).not.toHaveBeenCalledWith(
+        expect.stringContaining('gh release view'),
+        expect.any(Object)
+      );
+    });
+
+    it('should fall back to gh CLI when GitHub API is unavailable', async () => {
+      // First get: services check (reject)
+      // Second get: GitHub API fails
+      mockedAxios.get
+        .mockRejectedValueOnce(new Error('Down'))
+        .mockRejectedValueOnce(new Error('Network error'));
+
       mockedChildProcess.execSync.mockImplementation((cmd: any) => {
-        if (typeof cmd === 'string' && cmd.includes('gh release')) return 'v1.0.0';
+        if (typeof cmd === 'string' && cmd.includes('gh release view')) return 'v0.0.0';
         return Buffer.from('ok');
       });
-      
-      mockedFs.existsSync.mockImplementation(() => true);
-      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.1"}');
 
-      await program.parseAsync(['node', 'agenfk', 'upgrade', '--force']);
-      
-      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('gh release view'), expect.any(Object));
-      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(expect.stringContaining('install.mjs'), expect.any(Object));
+      mockedFs.existsSync.mockImplementation(() => true);
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.0"}');
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(
+        expect.stringContaining('gh release view'),
+        expect.any(Object)
+      );
+    });
+
+    it('should download release asset via curl without gh auth', async () => {
+      // First get: services check (reject = not running)
+      // Second get: GitHub API returns newer version
+      mockedAxios.get
+        .mockRejectedValueOnce(new Error('Down'))
+        .mockResolvedValueOnce({ data: { tag_name: 'v99.0.0' } });
+
+      mockedFs.existsSync.mockImplementation((p: any) => {
+        // Not a git repo, so it will try to download
+        if (typeof p === 'string' && p.endsWith('.git')) return false;
+        return true;
+      });
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.0"}');
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(
+        expect.stringContaining('curl'),
+        expect.any(Object)
+      );
+      expect(mockedChildProcess.execSync).not.toHaveBeenCalledWith(
+        expect.stringContaining('gh release download'),
+        expect.any(Object)
+      );
+    });
+
+    it('should fall back to gh release download when curl fails', async () => {
+      mockedAxios.get
+        .mockRejectedValueOnce(new Error('Down'))
+        .mockResolvedValueOnce({ data: { tag_name: 'v99.0.0' } });
+
+      mockedFs.existsSync.mockImplementation((p: any) => {
+        if (typeof p === 'string' && p.endsWith('.git')) return false;
+        return true;
+      });
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.0"}');
+      mockedChildProcess.execSync.mockImplementation((cmd: any) => {
+        if (typeof cmd === 'string' && cmd.includes('curl')) throw new Error('curl not found');
+        return Buffer.from('ok');
+      });
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(
+        expect.stringContaining('gh release download'),
+        expect.any(Object)
+      );
+    });
+
+    it('should run installer after successful download', async () => {
+      mockedAxios.get
+        .mockRejectedValueOnce(new Error('Down'))
+        .mockResolvedValueOnce({ data: { tag_name: 'v99.0.0' } });
+
+      mockedFs.existsSync.mockImplementation((p: any) => {
+        if (typeof p === 'string' && p.endsWith('.git')) return false;
+        return true;
+      });
+      mockedFs.readFileSync.mockReturnValue('{"version":"0.0.0"}');
+      mockedChildProcess.execSync.mockReturnValue(Buffer.from('ok'));
+
+      await program.parseAsync(['node', 'agenfk', 'upgrade']);
+
+      expect(mockedChildProcess.execSync).toHaveBeenCalledWith(
+        expect.stringContaining('install.mjs'),
+        expect.any(Object)
+      );
     });
   });
 
