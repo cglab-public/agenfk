@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/cli",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "CLI for AgenFK Engineering Framework",
   "main": "dist/index.js",
   "bin": {
