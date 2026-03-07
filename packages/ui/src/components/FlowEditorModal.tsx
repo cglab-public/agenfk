@@ -339,6 +339,19 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           />
         </div>
 
+        {/* Version — read-only, auto-managed */}
+        {flow?.version && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Version</span>
+            <span
+              data-testid="flow-version-badge"
+              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+            >
+              v{flow.version}
+            </span>
+          </div>
+        )}
+
         {/* Steps */}
         <div>
           <div className="flex items-center justify-between mb-2">
