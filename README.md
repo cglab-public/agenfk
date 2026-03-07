@@ -1,12 +1,12 @@
 ```text
-                          __ _    
-                         / _| |   
-   __ _  __ _  ___ _ __ | |_| | __
-  / _` |/ _` |/ _ \ '_ \|  _| |/ /
- | (_| | (_| |  __/ | | | | |   < 
-  \__,_|\__, |\___|_| |_|_| |_|\_\
-         __/ |                    
-        |___/                     
+                ______       ______ _  __
+     /\        |  ____|     |  ____| |/ /
+    /  \   __ _| |__   _ __ | |__  | ' /
+   / /\ \ / _` |  __| | '_ \|  __| |  <
+  / ____ \ (_| | |____| | | | |    | . \
+ /_/    \_\__, |______|_| |_|_|    |_|\_\
+           __/ |
+          |___/
 ```
 
 # AgEnFK: Agentic Engineering Framework
@@ -207,6 +207,65 @@ graph TD
 7.  **Review**: The Review Agent checks compilation, security vulnerabilities, and requirements traceability. If issues are found, the item returns to `IN_PROGRESS`.
 8.  **Test**: The Testing Agent writes any missing tests, runs the full suite with coverage, and records results with `log_test_result` — populating the **Test Results** tab on the card. Coverage must meet the 80% threshold.
 9.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
+
+## Custom Workflow Flows
+
+AgEnFK v0.2 ships with **Custom Workflow Flows** — one of the most requested features since launch.
+
+You are no longer locked into the built-in TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline. Flows let you define exactly how work moves through your team: name the steps, write exit criteria for each one, and AgEnFK enforces them end-to-end — for both humans and AI agents.
+
+### How Flows Work
+
+A **Flow** is an ordered list of steps with a name and exit criteria per step. Two anchors are always present and cannot be removed:
+- **TODO** — the entry point for all new work.
+- **DONE** — the terminal state. The project's `verifyCommand` is enforced here by `validate_progress`.
+
+Everything in between is yours to define. A QA-heavy team might use `TODO → DEV → QA → SIGN_OFF → DONE`. A solo developer might keep it minimal: `TODO → CODING → DONE`.
+
+### Flow Editor
+
+Open the **Flow Editor** from the Kanban toolbar to manage your flows visually:
+
+- **Create** a new flow from scratch or **clone** an existing one as a starting point.
+- **Drag to reorder** steps and edit the name and exit criteria inline.
+- **Set as active** to switch your project to that flow — cards are automatically migrated to the nearest equivalent step.
+- **Use Default Flow** to revert to the built-in AgEnFK workflow at any time.
+
+The Kanban board columns update instantly to reflect the active flow.
+
+### Agent Integration
+
+Agents load the full flow at session start using the `get_flow` MCP tool:
+
+```
+get_flow(projectId) → { steps: [{ name, exitCriteria }] }
+```
+
+Every call to `validate_progress` is flow-aware. The agent must provide `evidence` describing how it satisfied the **current step's exit criteria**. On success, the response includes the **next step's exit criteria** as mandatory work instructions for the agent.
+
+```
+validate_progress(itemId, evidence, command?) → { nextStep, exitCriteria }
+```
+
+### Community Registry
+
+Flows can be shared, discovered, and installed from the **AgEnFK Community Registry** ([cglab-public/agenfk-flows](https://github.com/cglab-public/agenfk-flows)).
+
+**Browse & Install** — from the Flow Editor, open the Community tab to search flows by name or author and install with one click.
+
+**Publish** — share your flow with the community directly from the editor:
+- If you are the registry owner, your flow is pushed straight to `main`.
+- Otherwise, AgEnFK forks the registry via `gh`, pushes your flow to a branch, and opens a PR — no token configuration needed.
+
+**CLI commands:**
+
+```bash
+agenfk flow browse               # Search the community registry
+agenfk flow install <name>       # Install a flow by name
+agenfk flow publish              # Publish the active flow to the registry
+```
+
+---
 
 ## Quick Start
 
