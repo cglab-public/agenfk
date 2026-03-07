@@ -152,10 +152,10 @@ async function run() {
         console.log(`${GREEN}[3/14] Choosing database engine...${NC}`);
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-        let dbType = 'json';
+        let dbType = 'sqlite';
         try {
-            const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: json): `);
-            if (answer.trim().toLowerCase() === 'sqlite') dbType = 'sqlite';
+            const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: sqlite): `);
+            if (answer.trim().toLowerCase() === 'json') dbType = 'json';
         } finally {
             rl.close();
         }
@@ -169,7 +169,7 @@ async function run() {
         console.log(`  Config written: ${agenfkConfigPath}`);
     } else if (!dbPath && onlyPlatform) {
         // Fallback for onlyPlatform if no config exists
-        dbPath = path.join(rootDir, '.agenfk', 'db.json');
+        dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
     }
 
     // 3b. Restore from backup (new install only)
