@@ -53,7 +53,7 @@ if (isNpxCache) {
 
   const distMissing = !fs.existsSync(path.join(INSTALL_DIR, 'packages/cli/dist')) || !fs.existsSync(path.join(INSTALL_DIR, 'packages/server/dist'));
   if (!shouldRebuild && distMissing) {
-    const REPO = 'cglab-PRIVATE/agenfk';
+    const REPO = 'cglab-public/agenfk';
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
@@ -74,7 +74,7 @@ if (isNpxCache) {
   
   const distMissing = !fs.existsSync(path.join(REPO_ROOT, 'packages/cli/dist')) || !fs.existsSync(path.join(REPO_ROOT, 'packages/server/dist'));
   if (!shouldRebuild && distMissing) {
-    const REPO = 'cglab-PRIVATE/agenfk';
+    const REPO = 'cglab-public/agenfk';
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();

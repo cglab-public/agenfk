@@ -176,8 +176,8 @@ program
     
     // Check for updates silently
     try {
-      const REPO = 'cglab-PRIVATE/agenfk';
-      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, { 
+      const REPO = 'cglab-public/agenfk';
+      const latestTag = execSync(`gh release view --repo ${REPO} --json tagName --template '{{.tagName}}'`, {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'] 
       }).trim();
@@ -230,7 +230,7 @@ program
   .option('-b, --beta', 'Include beta/pre-release versions')
   .option('--rebuild', 'Force a full build from source after upgrading')
   .action(async (options) => {
-    const REPO = 'cglab-PRIVATE/agenfk';
+    const REPO = 'cglab-public/agenfk';
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}...`));
     console.log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
 

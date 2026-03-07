@@ -20,7 +20,7 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cglab-PRIVATE/agenfk.git"
+    "url": "https://github.com/cglab-public/agenfk.git"
   },
   "engines": {
     "node": ">=18"

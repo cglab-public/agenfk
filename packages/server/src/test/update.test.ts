@@ -27,7 +27,7 @@ describe('Server Release Update API', () => {
     expect(res.body).toHaveProperty('jobId');
 
     expect(child_process.exec).toHaveBeenCalledWith(
-      expect.stringContaining('npx -y github:cglab-PRIVATE/agenfk'),
+      expect.stringContaining('npx -y github:cglab-public/agenfk'),
       expect.any(Object)
     );
   });

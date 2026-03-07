@@ -41,7 +41,7 @@ AgEnFK is built on six core mandates to ensure your AI-assisted development is c
 AgEnFK installs with a single command — no cloning required:
 
 ```bash
-npx github:cglab-PRIVATE/agenfk
+npx github:cglab-public/agenfk
 ```
 
 This will:

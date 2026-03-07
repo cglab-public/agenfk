@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const REPO_URL = 'https://github.com/cglab-PRIVATE/agenfk.git';
+const REPO_URL = 'https://github.com/cglab-public/agenfk.git';
 const INSTALL_DIR = path.join(os.homedir(), '.agenfk-system');
 
 const GREEN = '\x1b[32m';
@@ -36,7 +36,7 @@ if (gitCheck.status !== 0) {
 }
 
 const shouldRebuild = process.argv.includes('--rebuild');
-const REPO_NAME = 'cglab-PRIVATE/agenfk';
+const REPO_NAME = 'cglab-public/agenfk';
 
 if (fs.existsSync(INSTALL_DIR)) {
   console.log(`${GREEN}AgenFK already installed at ${INSTALL_DIR}${RESET}`);

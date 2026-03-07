@@ -36,7 +36,7 @@ function mount_sandbox() {
 
     if [ ! -f "$SANDBOX_HOME/.local/bin/agenfk" ]; then
         echo -e "${YELLOW}No installation found in sandbox. Running npx install...${NC}"
-        npx github:cglab-PRIVATE/agenfk
+        npx github:cglab-public/agenfk
     fi
 
     echo -e "${BLUE}Starting services...${NC}"
