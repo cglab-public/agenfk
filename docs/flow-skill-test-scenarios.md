@@ -514,7 +514,7 @@ After activating a custom flow, verify all platforms read the correct steps:
 On any platform:
 
 ```
-Agent: [Calls workflow_gatekeeper(intent, role="coding", itemId=<id>)]
+Agent: [Calls workflow_gatekeeper(intent, itemId=<id>)]
 Response includes:
 {
   "authorized": true,

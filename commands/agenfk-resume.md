@@ -25,7 +25,7 @@ You are executing the `/agenfk-resume [id]` command. Follow these steps precisel
 - Read the resume instructions carefully — they contain the next agent's action plan.
 
 **Step 4 — Continue the workflow**
-- Call `workflow_gatekeeper(intent="Resuming paused work", role="coding", itemId=<id>)` to authorize code changes.
+- Call `workflow_gatekeeper(intent="Resuming paused work", itemId=<id>)` to authorize code changes.
 - Follow the resume instructions to pick up where the previous agent left off.
 - Continue through the standard AgenFK workflow phases (Code → Review → Test → Done).
 

@@ -16,7 +16,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { execSync, spawnSync, spawn } from "child_process";
-import { getCodingStepName, getCodingStepItems } from "./gatekeeper-utils";
+import { getActiveStepItems } from "./gatekeeper-utils";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -290,15 +290,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "workflow_gatekeeper",
-        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists and the agent role matches the phase.",
+        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch). role= is accepted for backward compatibility but is no longer enforced.",
         inputSchema: {
           type: "object",
-          properties: { 
+          properties: {
             intent: { type: "string" },
-            role: { type: "string", enum: ["planning", "coding", "validating", "closing"], description: "The specialized role of the current agent. Use 'validating' before calling validate_progress." },
-            itemId: { type: "string", description: "Optional: The specific item ID to authorize against. Required if multiple items are IN_PROGRESS." }
+            role: { type: "string", enum: ["planning", "coding", "validating", "review", "testing", "closing"], description: "Optional: accepted for backward compatibility but no longer enforced." },
+            itemId: { type: "string", description: "Optional: The specific item ID to authorize against. Required if multiple tasks are active simultaneously." }
           },
-          required: ["intent", "role"],
+          required: ["intent"],
         },
       },
       {
@@ -474,28 +474,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "workflow_gatekeeper": {
         const { intent, role, itemId } = z.object({
           intent: z.string(),
-          role: z.enum(["planning", "coding", "validating", "review", "testing", "closing"]),
+          role: z.enum(["planning", "coding", "validating", "review", "testing", "closing"]).optional(),
           itemId: z.string().optional()
         }).parse(request.params.arguments);
 
         // Resolve the effective Project ID
         let effectiveProjectId: string | undefined | null;
-        let providedItem: any;
 
         if (itemId) {
           try {
             const { data: item } = await api.get(`/items/${itemId}`);
-            providedItem = item;
             effectiveProjectId = item.projectId;
           } catch (error: any) {
-             return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Item [${itemId}] not found in database.` }] };
+            return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Item [${itemId}] not found in database.` }] };
           }
         } else {
           effectiveProjectId = findProjectId(process.cwd());
         }
 
         if (!effectiveProjectId) {
-           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
+          return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
         // Validate that the project exists in the database
@@ -511,103 +509,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
           api.get(`/projects/${effectiveProjectId}/flow`).catch(() => ({ data: null })),
         ]);
 
-        // Find items that are not in terminal states
-        const activeItems = allItems.filter((i: any) =>
-          i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED' && (i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY' || i.type === 'EPIC')
-        );
-
-        // Compute flow step metadata first so codingStepName is available for all checks.
+        // Build flow steps summary
         const sortedFlowSteps: any[] = activeFlow
           ? [...activeFlow.steps].sort((a: any, b: any) => a.order - b.order)
           : [];
-        const intermediateFlowStatuses: Set<string> = activeFlow
-          ? new Set(sortedFlowSteps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()))
-          : new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
-        // Coding step = first non-anchor step (where coding happens).
-        // Uses the active flow's step name, not the hardcoded literal 'IN_PROGRESS'.
-        const codingStepName: string = getCodingStepName(activeFlow);
-
-        // Items currently in the coding step (flow-aware, not hardcoded to 'IN_PROGRESS').
-        const codingStepItems = getCodingStepItems(activeItems, codingStepName);
-
-        // Items in any intermediate step beyond the coding step (candidates for review_changes / test_changes)
-        const intermediateItems = activeItems.filter((i: any) =>
-          intermediateFlowStatuses.has(i.status.toUpperCase()) && i.status.toUpperCase() !== codingStepName.toUpperCase()
-        );
-
-        // Build a human-readable flow steps summary for inclusion in responses
         const flowStepsSummary = activeFlow
           ? `\nActive Flow: "${activeFlow.name}" — Steps: ${sortedFlowSteps.map((s: any) => s.name).join(' → ')}`
           : '';
 
-        // Enforcement Logic
-        if (role === 'planning') {
-          if (!itemId) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: itemId is required for the planning role.` }] };
-          const item = providedItem; // Already fetched
-          if (item.type !== 'EPIC' && item.type !== 'STORY') {
-            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Planning role is only valid for EPIC or STORY items.` }] };
-          }
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (PLANNING).\n\nItem: [${item.id.substring(0,8)}] ${item.title}\nIntent: "${intent}"${flowStepsSummary}` }] };
+        // Find all items in any active working step (any non-anchor, non-BLOCKED/PAUSED step)
+        const workingItems = getActiveStepItems(allItems, activeFlow);
+        const actionableItems = workingItems.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
+
+        if (actionableItems.length === 0) {
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently active in project [${effectiveProjectId}]. Advance a task from TODO first.${flowStepsSummary}` }] };
         }
 
-        if (role === 'coding') {
-          if (codingStepItems.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role requires a task in the coding step ('${codingStepName}') in project [${effectiveProjectId}].` }] };
-
-          let task;
-          if (itemId) {
-            task = codingStepItems.find((i: any) => i.id === itemId);
-            if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in the coding step ('${codingStepName}') or does not belong to project [${effectiveProjectId}].` }] };
-          } else {
-            if (codingStepItems.length > 1) return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are in the coding step ('${codingStepName}') in project [${effectiveProjectId}]. Please provide 'itemId' to disambiguate.` }] };
-            task = codingStepItems[0];
-          }
-
+        // Resolve which task to authorize
+        let task: any;
+        if (itemId) {
+          task = workingItems.find((i: any) => i.id === itemId);
+          if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in an active working step or does not belong to project [${effectiveProjectId}].` }] };
           if (task.type === 'EPIC' || task.type === 'STORY') {
-             return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Coding role is not allowed on ${task.type} items. Please decompose into TASKS and work on those instead.` }] };
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type}. Please decompose into TASKS and work on those instead.` }] };
           }
+        } else {
+          if (actionableItems.length > 1) {
+            const list = actionableItems.map((i: any) => `  • [${i.id.substring(0,8)}] ${i.title} (${i.status})`).join('\n');
+            return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are active in project [${effectiveProjectId}]. Provide 'itemId' to disambiguate:\n${list}` }] };
+          }
+          task = actionableItems[0];
+        }
 
-          // Auto-checkout git branch if branchName is set and branch exists locally
-          let branchHint = '';
-          if (task.branchName) {
-            try {
-              execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
-              const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
-              if (currentBranch !== task.branchName) {
-                execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
-                branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-              } else {
-                branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-              }
-            } catch {
-              branchHint = `\n⚠️ Branch '${task.branchName}' is linked to this item but does not exist locally. Please create and check out this branch manually before writing code.`;
+        // Surface exit criteria for the current step
+        const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
+        const exitCriteriaHint = currentStep?.exitCriteria
+          ? `\nExit criteria: "${currentStep.exitCriteria}"\n→ Satisfy the above before calling validate_progress.`
+          : '\n→ Call validate_progress(itemId, command?) to advance to the next step.';
+
+        // Branch hint
+        let branchHint = '';
+        if (task.branchName) {
+          try {
+            execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
+            const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+            if (currentBranch !== task.branchName) {
+              execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+              branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
+            } else {
+              branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
             }
+          } catch {
+            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Create and check out this branch before writing code.`;
           }
-
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (CODING).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"${branchHint}${flowStepsSummary}` }] };
         }
 
-        if (role === 'validating' || role === 'review' || role === 'testing') {
-          const candidates = itemId ? intermediateItems.filter((i: any) => i.id === itemId) : intermediateItems;
-          if (candidates.length === 0) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Validating role requires a task in an intermediate flow step (past coding) in project [${effectiveProjectId}]. Valid steps: ${[...intermediateFlowStatuses].filter(s => s !== codingStepName.toUpperCase()).join(', ')}.` }] };
-          const task = candidates[0];
-          // Surface the current step's exit criteria so the agent knows what to satisfy
-          const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
-          const exitCriteriaHint = currentStep?.exitCriteria
-            ? `\nExit criteria: "${currentStep.exitCriteria}"\n→ Satisfy the above before calling validate_progress.`
-            : '\n→ Call validate_progress(itemId, command?) to advance to the next step.';
-          const roleLabel = role === 'validating' ? 'VALIDATING' : role.toUpperCase();
-          return { content: [{ type: "text", text: `✅ AUTHORIZED (${roleLabel}).\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}${exitCriteriaHint}${flowStepsSummary}` }] };
-        }
-
-        // Default to checking for the coding step if role is generic or unrecognized
-        if (codingStepItems.length === 0) {
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently in the coding step ('${codingStepName}') in project [${effectiveProjectId}].` }] };
-        }
-
-        const defaultTask = itemId ? codingStepItems.find((i: any) => i.id === itemId) : codingStepItems[0];
-        if (!defaultTask) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Specified item is not in the coding step ('${codingStepName}') or does not belong to project [${effectiveProjectId}].` }] };
-
-        return { content: [{ type: "text", text: `✅ WORKFLOW VALIDATED.\n\nActive Item: [${defaultTask.id.substring(0,8)}] ${defaultTask.title}\nProject: [${effectiveProjectId}]\nIntent: "${intent}"${flowStepsSummary}` }] };
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${flowStepsSummary}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
