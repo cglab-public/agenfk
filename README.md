@@ -168,46 +168,6 @@ AgEnFK utilizes a **Single Owner Architecture** to ensure data consistency and r
 *   **Web Dashboard (The UI)**: A modern React/Vite application utilizing TanStack Query for state management. It provides a hierarchical Kanban board, token metrics, real-time progress logs (comments), detailed test results, and seamless context switching.
 *   **Storage (The Memory)**: Uses an atomic, file-based JSON storage plugin by default for maximum portability. The plugin uses temporary file swapping (`fs.renameSync`) to ensure atomic writes and prevent database corruption during concurrent operations.
 
-## Core Workflow
-
-The framework enforces a strict sequence of operations for every task. This process is fully automated and verified by the MCP tools and global skills:
-
-```mermaid
-graph TD
-    A[User Request] --> B{Analyze Request}
-    B -->|Epic| C[Generate Implementation Plan]
-    B -->|Story/Task/Bug| D[Create Item]
-    C --> D
-    D --> E["workflow_gatekeeper · /agenfk<br/>Authorize Code Change"]
-    E -->|No Active Task| F[Pause: Select/Create Task]
-    F --> E
-    E -->|Authorized| G["Execute Code Changes<br/>/agenfk-code · Coding Agent"]
-    G --> H["validate_progress · /agenfk-code<br/>Build/Compile only"]
-    H -->|Build Failure| I[Auto-move to IN_PROGRESS<br/>Report Errors]
-    I --> G
-    H -->|Build OK| J["/agenfk-review · REVIEW Agent<br/>Compile check · Security · Requirements"]
-    J -->|Issues Found| I
-    J -->|Approved| K["/agenfk-test · TEST Agent<br/>Write missing tests · Run with coverage<br/>log_test_result populates Test Results tab"]
-    K -->|Tests Fail| I
-    K -->|Tests Pass| L["/agenfk-close · Closing Agent<br/>Log tokens · Sync parent status"]
-
-    style A fill:#f8fafc,stroke:#94a3b8,color:#334155
-    style E fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#3730a3
-    style J fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e
-    style K fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#9a3412
-    style L fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#065f46
-```
-
-1.  **Initialize**: Generate a `.agenfk/project.json` to link the local repository to an AgEnFK project. *In Opencode, Claude Code or Gemini, you can simply type `/agenfk` to have the agent set this up for you.*
-2.  **Analyze**: Every request is analyzed to determine if it's an Epic, Story, Task, or Bug within the current project's scope.
-3.  **Plan**: Epics require a Markdown **Implementation Plan** before work begins. This ensures the AI reasons about the architecture before writing code.
-4.  **Authorize**: The `workflow_gatekeeper` ensures an agent only touches code when a specific task is `IN_PROGRESS`. In Deep Mode, the gatekeeper supports multiple active tasks by verifying changes against a specific `itemId`. This prevents rogue edits.
-5.  **Implementation Logging**: Agents log every significant step as a **Comment** on the card, providing a real-time audit trail in the UI.
-6.  **Build Verify**: `validate_progress` runs a **build/compile command** to gate each intermediate step transition. The agent picks the command. On the final step, the project's `verifyCommand` is enforced (agent cannot override).
-7.  **Review**: The Review Agent checks compilation, security vulnerabilities, and requirements traceability. If issues are found, the item returns to `IN_PROGRESS`.
-8.  **Test**: The Testing Agent writes any missing tests, runs the full suite with coverage, and records results with `log_test_result` — populating the **Test Results** tab on the card. Coverage must meet the 80% threshold.
-9.  **Measure**: Token consumption is logged per task and aggregated at the Story and Epic levels, providing a clear cost/velocity metric.
-
 ## Custom Workflow Flows
 
 AgEnFK v0.2 ships with **Custom Workflow Flows** — one of the most requested features since launch.
