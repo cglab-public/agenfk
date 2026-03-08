@@ -307,73 +307,69 @@ program
         }
         
         console.log(chalk.blue('Upgrading...'));
-        
+
         const rootDir = path.resolve(__dirname, '../../..');
-        const isGitRepo = fs.existsSync(path.join(rootDir, '.git'));
-        
-        if (!isGitRepo) {
-          console.log(chalk.gray(`Downloading pre-built binary for ${latestTag}...`));
+
+        // Stop server before upgrading so the new binary can start cleanly
+        if (servicesRunning) {
+          console.log(chalk.blue('Stopping services before upgrade...'));
           try {
-            const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
-            fs.mkdirSync(tempDir, { recursive: true });
-            
-            // Download the tarball (curl first, gh fallback)
-            downloadReleaseAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
-            
-            // Extract the tarball
-            console.log(chalk.gray('Extracting update...'));
-            // Use --strip-components=0 or just extract normally since package-dist.mjs doesn't seem to add a root folder
-            execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: 'inherit' });
-            
-            // Clean up temp dir
-            fs.rmSync(tempDir, { recursive: true, force: true });
-
-            // Clean stale dist/ to prevent type mismatches with new source
-            console.log(chalk.gray('Cleaning stale build artifacts...'));
-            const distDirs = ['packages/core/dist', 'packages/storage-json/dist', 'packages/storage-sqlite/dist', 'packages/telemetry/dist', 'packages/cli/dist', 'packages/server/dist'];
-            for (const d of distDirs) {
-              const p = path.join(rootDir, d);
-              if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
-            }
-
-            console.log(chalk.gray(`Running install script${options.rebuild ? ' (rebuild mode)' : ' (pre-built mode)'}...`));
-            execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
-            console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
-
-            if (servicesRunning) {
-              console.log(chalk.blue('Restarting services...'));
-              try {
-                execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
-              } catch (e) {
-                console.error(chalk.red('Auto-restart failed. Please run "agenfk up" manually.'));
-              }
-            }
-          } catch (e: any) {
-            console.error(chalk.red(`Upgrade failed: ${e.message}`));
-            return;
+            execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+          } catch (e) {
+            // ignore — server may have already stopped
           }
-        } else {
-          const installScript = path.join(rootDir, 'scripts', 'install.mjs');
-          
-          if (fs.existsSync(installScript)) {
-            console.log(chalk.gray(`Running install script${options.rebuild ? ' --rebuild' : ''}...`));
-            try {
-              execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
-              console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
+        }
 
-              if (servicesRunning) {
-                console.log(chalk.blue('Restarting services...'));
-                try {
-                  execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
-                } catch (e) {
-                  console.error(chalk.red('Auto-restart failed. Please run "agenfk up" manually.'));
-                }
-              }
-            } catch (e) {
-              console.error(chalk.red('Upgrade failed during installation.'));
-            }
-          } else {
-            console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
+        // Always try pre-built binaries from the release first (regardless of git repo)
+        const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
+        fs.mkdirSync(tempDir, { recursive: true });
+        let downloadedFromRelease = false;
+        try {
+          console.log(chalk.gray(`Downloading pre-built binary for ${latestTag}...`));
+          downloadReleaseAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
+
+          console.log(chalk.gray('Extracting update...'));
+          execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: 'inherit' });
+          downloadedFromRelease = true;
+        } catch (e: any) {
+          console.log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+
+        const installScript = path.join(rootDir, 'scripts', 'install.mjs');
+        if (!fs.existsSync(installScript)) {
+          console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
+          return;
+        }
+
+        // With pre-built dist already extracted, install.mjs skips the build step.
+        // Only force rebuild when download failed or --rebuild flag is set.
+        const rebuildFlag = (!downloadedFromRelease || options.rebuild) ? ' --rebuild' : '';
+        console.log(chalk.gray(`Running install script${rebuildFlag ? ' (rebuild mode)' : ' (pre-built mode)'}...`));
+        try {
+          execSync(`node scripts/install.mjs${rebuildFlag}`, { cwd: rootDir, stdio: 'inherit' });
+        } catch (e) {
+          console.error(chalk.red('Upgrade failed during installation.'));
+          return;
+        }
+
+        console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
+
+        // Start server with new version if it was running before the upgrade
+        if (servicesRunning) {
+          console.log(chalk.blue('Starting services with new version...'));
+          try {
+            const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
+              cwd: rootDir,
+              detached: true,
+              stdio: 'inherit',
+            });
+            start.unref();
+            console.log(chalk.green('Services started in background.'));
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } catch (e) {
+            console.error(chalk.red('Auto-start failed. Please run "agenfk up" manually.'));
           }
         }
       } else {
