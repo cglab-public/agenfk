@@ -99,3 +99,39 @@ describe('agenfk upgrade CLI command', () => {
     }
   });
 });
+
+const INSTALL_SCRIPT_PATH = path.resolve(__dirname, '../../../../scripts/install.mjs');
+
+function readInstall(): string {
+  if (!fs.existsSync(INSTALL_SCRIPT_PATH)) return '';
+  return fs.readFileSync(INSTALL_SCRIPT_PATH, 'utf8');
+}
+
+describe('install.mjs pre-built mode', () => {
+  it('should remove stale src/ directories when using pre-built dist (not rebuilding)', () => {
+    const install = readInstall();
+    // Must contain logic that removes src/ directories
+    expect(install).toMatch(/src.*rmSync|rmSync.*src|cleanStaleSrc|stale.*src|src.*stale/i);
+  });
+
+  it('should cover server package src/ in the stale-src cleanup list', () => {
+    const install = readInstall();
+    // The cleanup must reference packages/server/src
+    expect(install).toMatch(/packages\/server\/src|packages.server.src/);
+  });
+
+  it('should only remove stale src/ when in pre-built mode (build artifacts found)', () => {
+    const install = readInstall();
+    // The stale-src cleanup must appear in or near the "build artifacts found" branch,
+    // not inside the rebuild branch (where src/ would be needed for compilation)
+    const rebuildBranchMatch = install.match(/if\s*\(shouldRebuild[\s\S]{0,500}runBuild\(\)/);
+    const staleSrcMatch = install.match(/cleanStaleSrc|stale.*src.*rmSync|packages\/server\/src/);
+    expect(staleSrcMatch).not.toBeNull();
+
+    // Verify stale-src cleanup does NOT appear inside the shouldRebuild-triggered build block
+    if (rebuildBranchMatch && staleSrcMatch) {
+      const rebuildBlock = rebuildBranchMatch[0];
+      expect(rebuildBlock).not.toMatch(/cleanStaleSrc/);
+    }
+  });
+});

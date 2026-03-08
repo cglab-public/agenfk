@@ -94,6 +94,32 @@ async function run() {
         console.log(`  Cleaned stale build artifacts.`);
     }
 
+    // Remove stale TypeScript source directories from installed packages.
+    // The distributable tarball only ships pre-built dist/ — any src/ present is from
+    // a previous source-based install and must be removed to prevent a future upgrade
+    // from accidentally rebuilding from old source instead of using the pre-built dist.
+    const staleSrcDirs = [
+        'packages/core/src',
+        'packages/storage-json/src',
+        'packages/storage-sqlite/src',
+        'packages/telemetry/src',
+        'packages/cli/src',
+        'packages/server/src',
+        'packages/ui/src',
+        'packages/create/src',
+    ];
+    function cleanStaleSrc() {
+        let cleaned = 0;
+        for (const d of staleSrcDirs) {
+            const fullPath = path.join(rootDir, d);
+            if (existsSync(fullPath)) {
+                rmSync(fullPath, { recursive: true, force: true });
+                cleaned++;
+            }
+        }
+        if (cleaned > 0) console.log(`  Removed ${cleaned} stale source director${cleaned === 1 ? 'y' : 'ies'} (pre-built mode).`);
+    }
+
     function runBuild() {
         const result = spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
         if (result.status !== 0) {
@@ -111,6 +137,7 @@ async function run() {
             runBuild();
         } else {
             console.log(`${GREEN}[1/14] Build artifacts found, skipping rebuild.${NC}`);
+            cleanStaleSrc();
         }
     } else {
         const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
