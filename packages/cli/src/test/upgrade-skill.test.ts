@@ -10,11 +10,13 @@ import * as path from 'path';
 import * as os from 'os';
 
 const SKILL_PATH = path.join(os.homedir(), '.claude', 'commands', 'agenfk-upgrade.md');
+const SKILL_REPO_PATH = path.resolve(__dirname, '../../../../commands/agenfk-upgrade.md');
 const CLI_PATH = path.resolve(__dirname, '../../src/index.ts');
 
 function readSkill(): string {
-  if (!fs.existsSync(SKILL_PATH)) return '';
-  return fs.readFileSync(SKILL_PATH, 'utf8');
+  if (fs.existsSync(SKILL_PATH)) return fs.readFileSync(SKILL_PATH, 'utf8');
+  if (fs.existsSync(SKILL_REPO_PATH)) return fs.readFileSync(SKILL_REPO_PATH, 'utf8');
+  return '';
 }
 
 function readCli(): string {
