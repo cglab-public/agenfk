@@ -125,12 +125,8 @@ if (process.platform !== 'win32') {
     : shell === 'bash' ? 'source ~/.bashrc'
     : shell === 'fish' ? 'source ~/.config/fish/config.fish'
     : 'source your shell rc file';
-  console.log(`\n${BLUE}╔══════════════════════════════════════════════════════╗`);
-  console.log(`║  ✅ AgEnFK installation complete!                    ║`);
-  console.log(`║                                                      ║`);
-  console.log(`║  To use the 'agenfk' command in this terminal, run: ║`);
-  console.log(`║    ${sourceHint.padEnd(49)}║`);
-  console.log(`║                                                      ║`);
-  console.log(`║  Then start services with: agenfk up                ║`);
-  console.log(`╚══════════════════════════════════════════════════════╝${RESET}\n`);
+  console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
+  console.log(`\n${CYAN}  To use the 'agenfk' command in this terminal, run:${RESET}`);
+  console.log(`${CYAN}    ${sourceHint}${RESET}`);
+  console.log(`\n${CYAN}  Then start services with: agenfk up${RESET}\n`);
 }
