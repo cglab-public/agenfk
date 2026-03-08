@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync, rmSync } from 'fs';
+import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync, renameSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync, execSync } from 'child_process';
@@ -128,8 +128,53 @@ async function run() {
         }
     }
 
+    // Auto-heal: when called without --rebuild but dist/ dirs are missing, it means the broken
+    // 0.2.8 upgrade code deleted them after extracting the tarball. Re-download the correct
+    // tarball for this version rather than rebuilding from potentially stale source.
+    async function autoHealRedownload() {
+        let pkgVersion = '0.0.0';
+        try {
+            const pkg = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+            pkgVersion = pkg.version || pkgVersion;
+        } catch { /* ignore */ }
+
+        const REPO = 'cglab-public/agenfk';
+        const tag = `v${pkgVersion}`;
+        const url = `https://github.com/${REPO}/releases/download/${tag}/agenfk-dist.tar.gz`;
+        const tmpFile = path.join(os.tmpdir(), `agenfk-heal-${Date.now()}.tar.gz`);
+
+        console.log(`${YELLOW}[1/14] Pre-built artifacts missing — auto-heal re-download for ${tag}...${NC}`);
+        try {
+            // Try curl first
+            const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe' });
+            if (curlResult.status !== 0) {
+                // gh CLI fallback
+                const tmpDir = path.dirname(tmpFile);
+                const ghResult = spawnSync('gh', ['release', 'download', tag, '--repo', REPO,
+                    '--pattern', 'agenfk-dist.tar.gz', '-D', tmpDir, '--clobber'], { stdio: 'pipe' });
+                if (ghResult.status !== 0) return false;
+                const ghFile = path.join(tmpDir, 'agenfk-dist.tar.gz');
+                if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
+                else return false;
+            }
+            spawnSync('tar', ['-xzf', tmpFile, '-C', rootDir], { stdio: 'inherit' });
+            console.log(`${GREEN}  Re-download complete.${NC}`);
+            return true;
+        } catch { return false; } finally {
+            if (existsSync(tmpFile)) rmSync(tmpFile, { force: true });
+        }
+    }
+
     if (!onlyPlatform) {
-        const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+        let missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+
+        // Auto-heal: pre-built mode but dists are missing (broken 0.2.8 upgrade loop symptom).
+        // Re-download the tarball instead of rebuilding from potentially stale source.
+        if (!shouldRebuild && missingDists.length > 0) {
+            const healed = await autoHealRedownload();
+            if (healed) missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+        }
+
         if (shouldRebuild || missingDists.length > 0) {
             console.log(`${GREEN}[1/14] Building project...${NC}`);
             spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
