@@ -128,40 +128,172 @@ describe('install.mjs auto-heal (broken upgrade loop recovery)', () => {
     expect(install).toMatch(/gh.*release.*download|release.*download.*gh/);
   });
 
-  it('should only trigger re-download in non-rebuild mode with missing dists', () => {
+  it('should always attempt re-download when dists are missing (no fallback to source build)', () => {
     const install = readInstall();
-    // The re-download logic must be guarded by !shouldRebuild
-    // Find the auto-heal block and verify it's not inside a shouldRebuild branch
     const healMatch = install.match(/auto.?heal|re.?download.*tar|tar.*re.?download/i);
     expect(healMatch).not.toBeNull();
   });
 });
 
 describe('install.mjs pre-built mode', () => {
-  it('should remove stale src/ directories when using pre-built dist (not rebuilding)', () => {
+  it('should remove stale src/ directories after dist-bundle extraction', () => {
     const install = readInstall();
-    // Must contain logic that removes src/ directories
     expect(install).toMatch(/src.*rmSync|rmSync.*src|cleanStaleSrc|stale.*src|src.*stale/i);
   });
 
   it('should cover server package src/ in the stale-src cleanup list', () => {
     const install = readInstall();
-    // The cleanup must reference packages/server/src
     expect(install).toMatch(/packages\/server\/src|packages.server.src/);
   });
+});
 
-  it('should only remove stale src/ when in pre-built mode (build artifacts found)', () => {
+describe('install.mjs dist-bundle-only (no source build)', () => {
+  it('should NOT contain runBuild or npm run build', () => {
     const install = readInstall();
-    // The stale-src cleanup must appear in or near the "build artifacts found" branch,
-    // not inside the rebuild branch (where src/ would be needed for compilation)
-    const rebuildBranchMatch = install.match(/if\s*\(shouldRebuild[\s\S]{0,500}runBuild\(\)/);
-    const staleSrcMatch = install.match(/cleanStaleSrc|stale.*src.*rmSync|packages\/server\/src/);
-    expect(staleSrcMatch).not.toBeNull();
+    expect(install).not.toMatch(/function runBuild|runBuild\(\)/);
+    expect(install).not.toMatch(/npm.*run.*build|'run',\s*'build'/);
+  });
 
-    // Verify stale-src cleanup does NOT appear inside the shouldRebuild-triggered build block
-    if (rebuildBranchMatch && staleSrcMatch) {
-      const rebuildBlock = rebuildBranchMatch[0];
-      expect(rebuildBlock).not.toMatch(/cleanStaleSrc/);
-    }
+  it('should NOT contain cleanDists function', () => {
+    const install = readInstall();
+    expect(install).not.toMatch(/function cleanDists|cleanDists\(\)/);
+  });
+
+  it('should NOT contain shouldRebuild flag', () => {
+    const install = readInstall();
+    expect(install).not.toMatch(/shouldRebuild/);
+  });
+
+  it('should NOT run npm install as part of a source build', () => {
+    const install = readInstall();
+    // npm install is only acceptable in a comment or string, not as a spawnSync call for building
+    expect(install).not.toMatch(/spawnSync\s*\([^)]*'install'[^)]*\)/);
+  });
+
+  it('should exit with an error when dists are still missing after re-download', () => {
+    const install = readInstall();
+    // Must call process.exit(1) in the failure path (after re-download fails)
+    expect(install).toMatch(/process\.exit\(1\)/);
+    // The exit must follow a re-download failure check
+    const redownloadIdx = install.search(/autoHeal|re.?download/i);
+    const exitIdx = install.indexOf('process.exit(1)');
+    expect(redownloadIdx).toBeGreaterThan(-1);
+    expect(exitIdx).toBeGreaterThan(redownloadIdx);
+  });
+
+  it('should NOT accept --rebuild flag', () => {
+    const install = readInstall();
+    expect(install).not.toMatch(/--rebuild/);
+  });
+});
+
+describe('install.mjs --debuglog flag', () => {
+  it('should parse --debuglog from process.argv', () => {
+    const install = readInstall();
+    expect(install).toMatch(/process\.argv.*debuglog|debuglog.*process\.argv|includes\(['"]--debuglog['"]\)/);
+  });
+
+  it('should define a debug logging helper that is gated on the debuglog flag', () => {
+    const install = readInstall();
+    // A debugLog / debug function that only emits when the flag is active
+    expect(install).toMatch(/debugLog|debuglog|function debug/i);
+    // The function must reference the debuglog flag
+    expect(install).toMatch(/debugLog\s*=.*debuglog|debuglog.*&&.*console|if.*debuglog.*console/i);
+  });
+
+  it('should log environment variables relevant to db resolution under --debuglog', () => {
+    const install = readInstall();
+    // Must log AGENFK_DB_PATH env var
+    expect(install).toMatch(/debugLog.*AGENFK_DB_PATH|AGENFK_DB_PATH.*debugLog/);
+  });
+
+  it('should log the resolved config.json path and its contents under --debuglog', () => {
+    const install = readInstall();
+    expect(install).toMatch(/debugLog.*config\.json|config\.json.*debugLog|debugLog.*agenfkConfigPath|agenfkConfigPath.*debugLog/);
+  });
+
+  it('should log rootDir and cwd under --debuglog', () => {
+    const install = readInstall();
+    expect(install).toMatch(/debugLog.*rootDir|rootDir.*debugLog|debugLog.*cwd|cwd.*debugLog/);
+  });
+
+  it('should log which dist directories are present or missing under --debuglog', () => {
+    const install = readInstall();
+    expect(install).toMatch(/debugLog.*missingDists|missingDists.*debugLog|debugLog.*dist.*missing|missing.*dist.*debugLog/i);
+  });
+
+  it('should log presence of src/ directories under --debuglog', () => {
+    const install = readInstall();
+    // Helps diagnose spurious source builds
+    expect(install).toMatch(/debugLog.*staleSrc|staleSrc.*debugLog|debugLog.*src.*exist|exist.*src.*debugLog/i);
+  });
+
+  it('should log platform and WSL detection info under --debuglog', () => {
+    const install = readInstall();
+    expect(install).toMatch(/debugLog.*platform|platform.*debugLog|debugLog.*WSL|WSL.*debugLog/i);
+  });
+
+  it('should log whether a running agenfk server was detected under --debuglog', () => {
+    const install = readInstall();
+    // Helps diagnose the "connected to another distro's server" scenario
+    expect(install).toMatch(/debugLog.*server|server.*debugLog|debugLog.*port|port.*debugLog/i);
+  });
+
+  it('should log the resolved dbPath after all resolution steps under --debuglog', () => {
+    const install = readInstall();
+    expect(install).toMatch(/debugLog.*dbPath|dbPath.*debugLog/);
+  });
+});
+
+describe('CLI upgrade/up -- no --rebuild', () => {
+  it('upgrade command should not have a --rebuild option', () => {
+    const cli = readCli();
+    const upgradeStart = cli.indexOf(".command('upgrade')");
+    const upgradeEnd = cli.indexOf(".command('up')", upgradeStart);
+    const upgradeSection = cli.slice(upgradeStart, upgradeEnd);
+    expect(upgradeSection).not.toMatch(/option.*--rebuild|--rebuild.*rebuild/);
+  });
+
+  it('upgrade command should not pass --rebuild to install.mjs', () => {
+    const cli = readCli();
+    const upgradeStart = cli.indexOf(".command('upgrade')");
+    const upgradeEnd = cli.indexOf(".command('up')", upgradeStart);
+    const upgradeSection = cli.slice(upgradeStart, upgradeEnd);
+    expect(upgradeSection).not.toMatch(/rebuildFlag|--rebuild/);
+  });
+
+  it('up command should not have a --rebuild option', () => {
+    const cli = readCli();
+    const upStart = cli.indexOf(".command('up')");
+    const upEnd = cli.indexOf(".command('down')", upStart);
+    const upSection = cli.slice(upStart, upEnd);
+    expect(upSection).not.toMatch(/option.*--rebuild|options\.rebuild/);
+  });
+
+  it('up command should not pass --rebuild to install.mjs', () => {
+    const cli = readCli();
+    const upStart = cli.indexOf(".command('up')");
+    const upEnd = cli.indexOf(".command('down')", upStart);
+    const upSection = cli.slice(upStart, upEnd);
+    expect(upSection).not.toMatch(/--rebuild/);
+  });
+});
+
+describe('CLI upgrade --debuglog flag', () => {
+  it('should accept --debuglog as a CLI option on the upgrade command', () => {
+    const cli = readCli();
+    const upgradeStart = cli.indexOf(".command('upgrade')");
+    const upgradeEnd = cli.indexOf(".command('up')", upgradeStart);
+    const upgradeSection = cli.slice(upgradeStart, upgradeEnd);
+    expect(upgradeSection).toMatch(/--debuglog/);
+  });
+
+  it('should forward --debuglog to install.mjs when set', () => {
+    const cli = readCli();
+    const upgradeStart = cli.indexOf(".command('upgrade')");
+    const upgradeEnd = cli.indexOf(".command('up')", upgradeStart);
+    const upgradeSection = cli.slice(upgradeStart, upgradeEnd);
+    // The install.mjs invocation must include --debuglog when the option is active
+    expect(upgradeSection).toMatch(/debuglog.*install\.mjs|install\.mjs.*debuglog/i);
   });
 });

@@ -62,9 +62,40 @@ function ask(rl, question) {
 async function run() {
     console.log(`${BLUE}=== AgenFK Framework Installation ===${NC}`);
 
-    const shouldRebuild = process.argv.includes('--rebuild');
+    const debuglog = process.argv.includes('--debuglog');
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
+
+    const debugLog = debuglog ? (...args) => console.log(`${YELLOW}[DEBUG]${NC}`, ...args) : () => {};
+
+    if (debuglog) {
+        debugLog('=== AgenFK Install Debug Log ===');
+        debugLog('argv:', process.argv.join(' '));
+        debugLog('cwd:', process.cwd());
+        debugLog('rootDir:', rootDir);
+        debugLog('platform:', os.platform(), '| arch:', os.arch(), '| node:', process.version);
+        debugLog('WSL_DISTRO_NAME:', process.env.WSL_DISTRO_NAME || '(not set)');
+        debugLog('WSL_INTEROP:', process.env.WSL_INTEROP || '(not set)');
+        debugLog('AGENFK_DB_PATH env:', process.env.AGENFK_DB_PATH || '(not set)');
+        debugLog('onlyPlatform:', onlyPlatform || '(none)');
+        const agenfkConfigPath_ = path.join(agenfkHome, 'config.json');
+        debugLog('~/.agenfk/config.json path:', agenfkConfigPath_);
+        if (existsSync(agenfkConfigPath_)) {
+            try {
+                const cfg = readFileSync(agenfkConfigPath_, 'utf8');
+                debugLog('~/.agenfk/config.json contents:', cfg.trim());
+            } catch (e) {
+                debugLog('~/.agenfk/config.json read error:', e.message);
+            }
+        } else {
+            debugLog('~/.agenfk/config.json: NOT FOUND');
+        }
+        // Check if an agenfk server is already reachable on the default port
+        const serverPort = process.env.AGENFK_PORT || '3000';
+        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8' });
+        const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
+        debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
+    }
 
     function shouldRun(platform) {
         if (onlyPlatform) return onlyPlatform.toLowerCase() === platform.toLowerCase();
@@ -72,8 +103,7 @@ async function run() {
         return true;
     }
 
-    // 1. Build the project
-    const npmCmd = getCliCommand('npm');
+    // 1. Verify pre-built dist bundles
     const requiredDists = [
         'packages/core/dist',
         'packages/storage-json/dist',
@@ -82,17 +112,6 @@ async function run() {
         'packages/cli/dist',
         'packages/server/dist',
     ];
-
-    // Clean stale dist/ directories to prevent type mismatches after upgrades
-    function cleanDists() {
-        for (const d of requiredDists) {
-            const fullPath = path.join(rootDir, d);
-            if (existsSync(fullPath)) {
-                rmSync(fullPath, { recursive: true, force: true });
-            }
-        }
-        console.log(`  Cleaned stale build artifacts.`);
-    }
 
     // Remove stale TypeScript source directories from installed packages.
     // The distributable tarball only ships pre-built dist/ — any src/ present is from
@@ -120,17 +139,7 @@ async function run() {
         if (cleaned > 0) console.log(`  Removed ${cleaned} stale source director${cleaned === 1 ? 'y' : 'ies'} (pre-built mode).`);
     }
 
-    function runBuild() {
-        const result = spawnSync(npmCmd, ['run', 'build'], { stdio: 'inherit', cwd: rootDir });
-        if (result.status !== 0) {
-            console.error(`${YELLOW}Build failed with exit code ${result.status}. Installation cannot continue.${NC}`);
-            process.exit(1);
-        }
-    }
-
-    // Auto-heal: when called without --rebuild but dist/ dirs are missing, it means the broken
-    // 0.2.8 upgrade code deleted them after extracting the tarball. Re-download the correct
-    // tarball for this version rather than rebuilding from potentially stale source.
+    // If dists are missing, attempt to re-download the release tarball for this version.
     async function autoHealRedownload() {
         let pkgVersion = '0.0.0';
         try {
@@ -168,29 +177,46 @@ async function run() {
     if (!onlyPlatform) {
         let missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
 
-        // Auto-heal: pre-built mode but dists are missing (broken 0.2.8 upgrade loop symptom).
-        // Re-download the tarball instead of rebuilding from potentially stale source.
-        if (!shouldRebuild && missingDists.length > 0) {
-            const healed = await autoHealRedownload();
-            if (healed) missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+        if (debuglog) {
+            debugLog('--- Dist check ---');
+            for (const d of requiredDists) {
+                const full = path.join(rootDir, d);
+                debugLog(`  dist ${d}: ${existsSync(full) ? 'PRESENT' : 'MISSING'}`);
+            }
+            debugLog('missingDists count:', missingDists.length);
+            if (missingDists.length > 0) debugLog('missing:', missingDists.join(', '));
+            const presentStaleSrc = staleSrcDirs.filter(d => existsSync(path.join(rootDir, d)));
+            debugLog('staleSrcDirs present:', presentStaleSrc.length > 0 ? presentStaleSrc.join(', ') : '(none)');
         }
 
-        if (shouldRebuild || missingDists.length > 0) {
-            console.log(`${GREEN}[1/14] Building project...${NC}`);
-            spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-            if (shouldRebuild) cleanDists();
-            runBuild();
-        } else {
-            console.log(`${GREEN}[1/14] Build artifacts found, skipping rebuild.${NC}`);
-            cleanStaleSrc();
+        if (missingDists.length > 0) {
+            debugLog('trigger: missing dists → attempting auto-heal re-download');
+            const healed = await autoHealRedownload();
+            debugLog('auto-heal result:', healed ? 'SUCCESS' : 'FAILED');
+            if (healed) missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
+            debugLog('missingDists after heal:', missingDists.length);
         }
+
+        if (missingDists.length > 0) {
+            console.error(`${YELLOW}Installation failed: pre-built dist bundles are missing and could not be downloaded.`);
+            console.error(`  Missing: ${missingDists.join(', ')}`);
+            console.error(`  Download the latest release manually from https://github.com/cglab-public/agenfk/releases${NC}`);
+            process.exit(1);
+        }
+
+        debugLog('decision: all pre-built dists present');
+        console.log(`${GREEN}[1/14] Pre-built dist bundles verified.${NC}`);
+        cleanStaleSrc();
     } else {
         const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
         if (missingDists.length > 0) {
-            console.log(`${GREEN}[1/14] Missing build artifacts for integration install. Rebuilding...${NC}`);
-            spawnSync(npmCmd, ['install'], { stdio: 'inherit', cwd: rootDir });
-            cleanDists();
-            runBuild();
+            debugLog('trigger (onlyPlatform mode): missing dists → attempting re-download');
+            const healed = await autoHealRedownload();
+            if (!healed || requiredDists.some(d => !existsSync(path.join(rootDir, d)))) {
+                console.error(`${YELLOW}Integration install failed: pre-built dist bundles are missing.`);
+                console.error(`  Download the latest release from https://github.com/cglab-public/agenfk/releases${NC}`);
+                process.exit(1);
+            }
         }
     }
 
@@ -248,6 +274,9 @@ async function run() {
         // Fallback for onlyPlatform if no config exists
         dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
     }
+
+    debugLog('dbPath resolved:', dbPath || '(empty — not yet set)');
+    debugLog('dbPath file exists:', dbPath ? existsSync(dbPath) : false);
 
     // 3b. Restore from backup (new install only)
     if (!onlyPlatform) {
