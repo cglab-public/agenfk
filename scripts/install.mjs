@@ -368,7 +368,7 @@ const uiLogPath = path.join(agenfkDir, 'ui.log');
 const uiLog = fs.openSync(uiLogPath, 'w');
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
 const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
-const uiProcess = spawn(npmCmd, ['run', 'dev'], {
+const uiProcess = spawn(npmCmd, ['run', 'preview'], {
     cwd: path.join(rootDir, 'packages/ui'),
     env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: \`http://localhost:\${API_PORT}\` },
     detached: true,
