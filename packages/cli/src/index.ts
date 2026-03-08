@@ -272,7 +272,7 @@ program
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')
   .option('-b, --beta', 'Include beta/pre-release versions')
-  .option('--rebuild', 'Force a full build from source after upgrading')
+  .option('--debuglog', 'Enable verbose diagnostic logging in the install script')
   .action(async (options) => {
     const REPO = 'cglab-public/agenfk';
     console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}...`));
@@ -343,12 +343,10 @@ program
           return;
         }
 
-        // With pre-built dist already extracted, install.mjs skips the build step.
-        // Only force rebuild when download failed or --rebuild flag is set.
-        const rebuildFlag = (!downloadedFromRelease || options.rebuild) ? ' --rebuild' : '';
-        console.log(chalk.gray(`Running install script${rebuildFlag ? ' (rebuild mode)' : ' (pre-built mode)'}...`));
+        const debuglogFlag = options.debuglog ? ' --debuglog' : '';
+        console.log(chalk.gray('Running install script (pre-built mode)...'));
         try {
-          execSync(`node scripts/install.mjs${rebuildFlag}`, { cwd: rootDir, stdio: 'inherit' });
+          execSync(`node scripts/install.mjs${debuglogFlag}`, { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
           console.error(chalk.red('Upgrade failed during installation.'));
           return;
@@ -384,7 +382,7 @@ program
 program
   .command('up')
   .description('Bootstrap and start AgEnFK Engineering Framework')
-  .option('--rebuild', 'Force a full build from source during bootstrap')
+  .option('--debuglog', 'Enable verbose diagnostic logging in the install script')
   .option('--easter-eggs', 'Enable easter egg animations')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
@@ -407,10 +405,11 @@ program
     ];
     const missingDist = requiredDists.some(d => !fs.existsSync(d));
 
-    if (!fs.existsSync(startScript) || missingDist || options.rebuild) {
-        console.log(chalk.yellow(options.rebuild ? '📦 Rebuild requested...' : '📦 Initial bootstrap required...'));
+    if (!fs.existsSync(startScript) || missingDist) {
+        console.log(chalk.yellow('📦 Initial bootstrap required...'));
         try {
-            execSync(`node scripts/install.mjs${options.rebuild ? ' --rebuild' : ''}`, { cwd: rootDir, stdio: 'inherit' });
+            const installFlags = options.debuglog ? ' --debuglog' : '';
+            execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
             return;
@@ -862,14 +861,9 @@ integrationCommand
 integrationCommand
   .command('install <platform>')
   .description('Install or refresh a single integration without running the full framework installer')
-  .option('--rebuild', 'Force a rebuild before installing the integration')
-  .action((platform, options) => {
+  .action((platform) => {
     const resolvedPlatform = resolveIntegrationPlatform(platform);
     const args = [`--only=${resolvedPlatform}`];
-
-    if (options.rebuild) {
-      args.push('--rebuild');
-    }
 
     console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
     runIntegrationScript('install.mjs', args);
