@@ -38,6 +38,10 @@ async function run() {
         'packages/server/dist/',
         'packages/storage-json/package.json',
         'packages/storage-json/dist/',
+        'packages/storage-sqlite/package.json',
+        'packages/storage-sqlite/dist/',
+        'packages/telemetry/package.json',
+        'packages/telemetry/dist/',
         'packages/ui/package.json',
         'packages/ui/dist/'
     ];
