@@ -297,3 +297,49 @@ describe('CLI upgrade --debuglog flag', () => {
     expect(upgradeSection).toMatch(/debuglog.*install\.mjs|install\.mjs.*debuglog/i);
   });
 });
+
+const START_SERVICES_PATH = path.resolve(__dirname, '../../../../scripts/start-services.mjs');
+const UI_PKG_PATH = path.resolve(__dirname, '../../../ui/package.json');
+const VITE_CONFIG_PATH = path.resolve(__dirname, '../../../ui/vite.config.ts');
+
+function readStartServices(): string {
+  if (!fs.existsSync(START_SERVICES_PATH)) return '';
+  return fs.readFileSync(START_SERVICES_PATH, 'utf8');
+}
+function readUiPkg(): Record<string, unknown> {
+  if (!fs.existsSync(UI_PKG_PATH)) return {};
+  return JSON.parse(fs.readFileSync(UI_PKG_PATH, 'utf8'));
+}
+function readViteConfig(): string {
+  if (!fs.existsSync(VITE_CONFIG_PATH)) return '';
+  return fs.readFileSync(VITE_CONFIG_PATH, 'utf8');
+}
+
+describe('UI vite preview fix', () => {
+  it('start-services.mjs should use npm run preview, not npm run dev', () => {
+    const content = readStartServices();
+    expect(content).not.toMatch(/'run',\s*'dev'|"run",\s*"dev"/);
+    expect(content).toMatch(/'run',\s*'preview'|"run",\s*"preview"/);
+  });
+
+  it('install.mjs start-services template should use npm run preview, not npm run dev', () => {
+    const install = readInstall();
+    const templateStart = install.indexOf('startScriptContent');
+    const templateEnd = install.indexOf('startScriptPath', templateStart + 1);
+    const template = install.slice(templateStart, templateEnd);
+    expect(template).not.toMatch(/['"]run['"]\s*,\s*['"]dev['"]/);
+    expect(template).toMatch(/['"]run['"]\s*,\s*['"]preview['"]/);
+  });
+
+  it('packages/ui/package.json should have a preview script', () => {
+    const pkg = readUiPkg() as { scripts?: Record<string, string> };
+    expect(pkg.scripts?.preview).toBeDefined();
+    expect(pkg.scripts?.preview).toMatch(/vite preview/);
+  });
+
+  it('vite.config.ts should configure preview.port from VITE_PORT', () => {
+    const config = readViteConfig();
+    expect(config).toMatch(/preview\s*:\s*\{[^}]*port/);
+    expect(config).toMatch(/VITE_PORT/);
+  });
+});
