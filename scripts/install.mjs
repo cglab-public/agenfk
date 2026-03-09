@@ -218,6 +218,24 @@ async function run() {
         }
     }
 
+    // 1b. Install production dependencies (node_modules not shipped in tarball)
+    if (!onlyPlatform) {
+        const nodeModulesPath = path.join(rootDir, 'node_modules');
+        const npmCiCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
+        if (!existsSync(nodeModulesPath)) {
+            console.log(`${GREEN}[1b/14] Installing production dependencies (npm ci --omit=dev)...${NC}`);
+        } else {
+            console.log(`${GREEN}[1b/14] Production dependencies already present, skipping npm ci.${NC}`);
+        }
+        const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
+            cwd: rootDir,
+            stdio: 'inherit',
+        });
+        if (npmCiResult.status !== 0) {
+            console.log(`${YELLOW}  Warning: npm ci failed (exit ${npmCiResult.status}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.${NC}`);
+        }
+    }
+
     // 2. Generate install-time secret verify token
     if (!onlyPlatform) {
         console.log(`${GREEN}[2/14] Generating secret verify token...${NC}`);
