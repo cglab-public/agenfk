@@ -140,7 +140,8 @@ const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
 
-  const children = await storage.listItems({ parentId });
+  const allChildren = await storage.listItems({ parentId });
+  const children = allChildren.filter(c => c.status !== Status.TRASHED && c.status !== Status.ARCHIVED);
   if (children.length === 0) return;
 
   const allDone = children.every(c => c.status === Status.DONE);
@@ -988,6 +989,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
+      if (currentItem.parentId) parentIdsToSync.add(currentItem.parentId);
       continue;
     }
 
@@ -1014,7 +1016,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       results.push(updated);
       projectIds.add(updated.projectId);
 
-      if (updated.parentId && updated.status !== Status.ARCHIVED) {
+      if (updated.parentId) {
         parentIdsToSync.add(updated.parentId);
       }
 
@@ -1077,6 +1079,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
     await archiveRecursively(req.params.id);
     io.emit('items_updated');
+    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
     return res.json(await storage.getItem(req.params.id));
   }
 
@@ -1125,7 +1128,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     io.emit('items_updated');
     io.emit('project_switched', { projectId: updated.projectId });
 
-    if (updated.parentId && updated.status !== Status.ARCHIVED) {
+    if (updated.parentId) {
       await syncParentStatus(updated.parentId);
     }
 
