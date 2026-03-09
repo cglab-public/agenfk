@@ -1,6 +1,13 @@
 <!-- agenfk:start -->
 ## AgEnFK Workflow — MANDATORY
 
+### Clean Start — MANDATORY at task start
+
+Before creating or starting a new task:
+1. Run `git status` — if the working tree has uncommitted or modified files, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
+2. Run `git branch --show-current` — if NOT on `main`/`master` and the current branch doesn't belong to an item you're resuming, run `git checkout main` (or `master`).
+3. Run `git pull` to ensure you have the latest upstream changes.
+
 Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
 1. Have an AgEnFK task in any active working step for the active project.
 2. Call `workflow_gatekeeper(intent, itemId?)` via MCP to confirm authorization.

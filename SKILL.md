@@ -68,6 +68,10 @@ If MCP tools are not available in your context, surface the connectivity problem
 ## What I do
 
 1.  **Initialization**
+    *   **Clean Start from Main (MANDATORY)**:
+        1. Run `git status` — if the working tree has uncommitted or modified files, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
+        2. Run `git branch --show-current` — if NOT on `main` (or `master`) and the current branch does not belong to an item you're about to resume, run `git checkout main` (or `master`).
+        3. Run `git pull` to ensure you have the latest upstream changes.
     *   **Action**:
         1. Check for `.agenfk/project.json` in the project root.
         2. If missing, DO NOT assume an existing project should be reused based on name alone.

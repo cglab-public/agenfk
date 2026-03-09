@@ -51,10 +51,12 @@ Before creating any item, evaluate the request against these signals:
 
 ## Initialization
 
-0. **Main branch checkout** — Before creating or resuming work, ensure you're starting from the correct base:
+0. **Clean start from main** — Before creating or resuming work, ensure you're starting from a clean, up-to-date base:
+   - Run `git status` to check for uncommitted or modified files. If the working tree is dirty, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
    - Run `git branch --show-current` to check the current branch.
-   - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`) followed by `git pull` first.
-   - This prevents new feature branches from being based on stale/unrelated feature branches and ensures you have the latest upstream changes.
+   - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`).
+   - Run `git pull` to ensure you have the latest upstream changes.
+   - This prevents new feature branches from being based on stale/unrelated branches and avoids carrying uncommitted changes into new work.
 1. Call `list_items(projectId)` to check for any `IN_PROGRESS` task. If one exists, resume it. Otherwise create a new item with `create_item` (using the type determined in Step 0), then call `validate_progress(id, evidence="Starting task, advancing from TODO")` to advance from TODO to the coding step.
 2. Call `get_flow(projectId)` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before calling `validate_progress` again.
 3. Call `workflow_gatekeeper(intent, itemId)` before making any file changes.
