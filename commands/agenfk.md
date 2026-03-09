@@ -102,6 +102,11 @@ Since there is no separate review agent in Standard Mode, perform the review you
    5. If no config files are found and the stack cannot be detected, **then** ask the developer as a last resort.
 3. On success, the item moves to DONE automatically. On failure, it moves back to the coding step.
 4. Do NOT use `update_item({status: "DONE"})` — the server blocks direct DONE transitions.
+5. **Push your branch**: After DONE, push the branch to remote so your changes are available for PR/review:
+   ```
+   git push -u origin <branchName>
+   ```
+   Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
 
 ---
 

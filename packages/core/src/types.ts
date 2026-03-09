@@ -73,6 +73,7 @@ export interface Project {
   description?: string;
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
   flowId?: string;        // ID of the active Flow for this project (falls back to DEFAULT_FLOW)
+  projectRoot?: string;   // Absolute path to the project's root directory (set automatically by MCP on validate)
   createdAt: Date;
   updatedAt: Date;
 }
