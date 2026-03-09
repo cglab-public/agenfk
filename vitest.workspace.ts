@@ -6,7 +6,6 @@ export default defineWorkspace([
     resolve: {
       alias: {
         '@agenfk/core': path.resolve(__dirname, './packages/core/src/index.ts'),
-        '@agenfk/storage-json': path.resolve(__dirname, './packages/storage-json/src/index.ts'),
       },
     },
     test: {

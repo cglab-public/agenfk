@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import { JSONStorageProvider } from "@agenfk/storage-json";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
@@ -67,7 +66,7 @@ const performBackup = async (): Promise<string> => {
   ]);
 
   const timestamp = new Date().toISOString().replace(/:/g, '-');
-  const dbType = dbPath.endsWith('.sqlite') ? 'sqlite' : 'json';
+  const dbType = 'sqlite';
   const backupFile = path.join(BACKUP_DIR, `agenfk-backup-${timestamp}.json`);
 
   fs.writeFileSync(backupFile, JSON.stringify({ version: '1', backupDate: new Date().toISOString(), dbType, projects, items }, null, 2));
@@ -217,15 +216,19 @@ const initStorage = async () => {
     }
   }
 
-  // Select provider by file extension
-  storage = dbPath.endsWith('.sqlite')
-    ? new SQLiteStorageProvider()
-    : new JSONStorageProvider();
+  // Always use SQLite. If a legacy .json path was configured, remap to .sqlite.
+  if (dbPath.endsWith('.json')) {
+    const remapped = dbPath.replace(/\.json$/, '.sqlite');
+    console.warn(`[SERVER_START] Legacy JSON path detected (${dbPath}) — remapping to SQLite: ${remapped}`);
+    dbPath = remapped;
+  }
 
-  console.log(`[SERVER_START] Using Database: ${dbPath} (${dbPath.endsWith('.sqlite') ? 'SQLite' : 'JSON'})`);
+  storage = new SQLiteStorageProvider();
+
+  console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   await storage.init({ path: dbPath });
 
-  // Apply pending migration (written by `agenfk db switch` or install restore)
+  // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
   if (fs.existsSync(migrationPath)) {
     try {
@@ -243,20 +246,6 @@ const initStorage = async () => {
     } catch (e: any) {
       console.error(`[MIGRATION] Failed to import migration.json: ${e.message}`);
     }
-  }
-
-  // For JSON: watch for external direct edits and broadcast to UI.
-  // For SQLite: all writes go through the REST API which already emits
-  // 'items_updated' after every mutation. WAL mode makes fs.watch() on the
-  // main .sqlite file unreliable, so we skip it.
-  if (!dbPath.endsWith('.sqlite')) {
-    fs.watch(dbPath, (event) => {
-      if (event === 'change') {
-        const timestamp = new Date().toISOString();
-        console.log(`[${timestamp}] [DISK_CHANGE] Database file ${dbPath} modified. Broadcasting refresh to UI...`);
-        io.emit('items_updated');
-      }
-    });
   }
 };
 
@@ -393,7 +382,7 @@ app.get("/api/telemetry/config", (_req: any, res: any) => {
 // DB status & backup endpoints
 
 app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
-  const dbType = dbPath.endsWith('.sqlite') ? 'sqlite' : 'json';
+  const dbType = 'sqlite';
   let backupCount = 0;
   let latestBackup: string | null = null;
   if (fs.existsSync(BACKUP_DIR)) {
@@ -438,7 +427,7 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   const created = await storage.createProject(project);
   io.emit('items_updated');
   if (!existing) {
-    telemetry.capture('project_created', { storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json' });
+    telemetry.capture('project_created', { storageBackend: 'sqlite' });
   }
   res.status(201).json(created);
 }));
@@ -2405,7 +2394,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
       console.log(`AgEnFK API Server running on port ${PORT} (with WebSockets)`);
       telemetry.capture('server_started', {
         version: getCurrentVersion(),
-        storageBackend: dbPath.endsWith('.sqlite') ? 'sqlite' : 'json',
+        storageBackend: 'sqlite',
         nodeVersion: process.version,
       });
     });
