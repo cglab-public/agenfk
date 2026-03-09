@@ -159,6 +159,91 @@ describe('Server API', () => {
       expect(parentRes.body.status).toBe(Status.IN_PROGRESS);
     });
 
+    it('should treat parent as DONE when all active children are DONE and one is TRASHED', async () => {
+      const storyRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.STORY, title: 'Parent with Trashed Child' });
+      const storyId = storyRes.body.id;
+
+      const task1Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Active Done Task', parentId: storyId });
+      const task1Id = task1Res.body.id;
+
+      const task2Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Trashed Task', parentId: storyId });
+      const task2Id = task2Res.body.id;
+
+      // Move active task to DONE (via internal token)
+      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+
+      // Trash the second task
+      await request(app).delete(`/items/${task2Id}`);
+
+      // Parent should be DONE — trashed child should be ignored
+      const parentRes = await request(app).get(`/items/${storyId}`);
+      expect(parentRes.body.status).toBe(Status.DONE);
+    });
+
+    it('should treat parent as DONE when all active children are DONE and one is ARCHIVED', async () => {
+      const storyRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.STORY, title: 'Parent with Archived Child' });
+      const storyId = storyRes.body.id;
+
+      const task1Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Active Done Task 2', parentId: storyId });
+      const task1Id = task1Res.body.id;
+
+      const task2Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Archived Task', parentId: storyId });
+      const task2Id = task2Res.body.id;
+
+      // Move active task to DONE (via internal token)
+      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+
+      // Archive the second task
+      await request(app).put(`/items/${task2Id}`).send({ status: Status.ARCHIVED });
+
+      // Parent should be DONE — archived child should be ignored
+      const parentRes = await request(app).get(`/items/${storyId}`);
+      expect(parentRes.body.status).toBe(Status.DONE);
+    });
+
+    it('should not advance parent to DONE if active (non-trashed/archived) children remain incomplete', async () => {
+      const storyRes = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.STORY, title: 'Parent with Mixed Children' });
+      const storyId = storyRes.body.id;
+
+      const task1Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Done Task', parentId: storyId });
+      const task1Id = task1Res.body.id;
+
+      const task2Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Still TODO Task', parentId: storyId });
+
+      const task3Res = await request(app)
+        .post('/items')
+        .send({ projectId, type: ItemType.TASK, title: 'Trashed Task 2', parentId: storyId });
+      const task3Id = task3Res.body.id;
+
+      // Move task1 to DONE
+      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+
+      // Trash task3
+      await request(app).delete(`/items/${task3Id}`);
+
+      // task2 is still TODO — parent should NOT be DONE
+      const parentRes = await request(app).get(`/items/${storyId}`);
+      expect(parentRes.body.status).not.toBe(Status.DONE);
+    });
+
     it('should archive and unarchive an item', async () => {
       const createRes = await request(app)
         .post('/items')
