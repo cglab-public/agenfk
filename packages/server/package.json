@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@agenfk/core": "*",
-    "@agenfk/storage-json": "*",
     "@agenfk/storage-sqlite": "*",
     "@agenfk/telemetry": "*",
     "@modelcontextprotocol/sdk": "0.6.0",
