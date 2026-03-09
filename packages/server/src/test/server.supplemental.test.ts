@@ -1804,6 +1804,165 @@ describe('GET /projects/:id/flow', () => {
   });
 });
 
+// ── validate_progress: cwd persisted as project.projectRoot ──────────────────
+
+describe('POST /items/:id/validate — cwd persisted as project.projectRoot', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('persists cwd on the project when validate is called with cwd in body', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'CWD1' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD1', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ cwd: '/home/user/my-project' });
+
+    const updatedProject = (await request(app).get(`/projects/${p.id}`)).body;
+    expect(updatedProject.projectRoot).toBe('/home/user/my-project');
+  });
+
+  it('does not overwrite an existing projectRoot when cwd is absent', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'CWD2' })).body;
+    await request(app).put(`/projects/${p.id}`).send({ projectRoot: '/stored/root' });
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD2', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});  // no cwd
+
+    const updatedProject = (await request(app).get(`/projects/${p.id}`)).body;
+    expect(updatedProject.projectRoot).toBe('/stored/root');
+  });
+
+  it('updates projectRoot when a new cwd is provided', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'CWD3' })).body;
+    await request(app).put(`/projects/${p.id}`).send({ projectRoot: '/old/root' });
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD3', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ cwd: '/new/root' });
+
+    const updatedProject = (await request(app).get(`/projects/${p.id}`)).body;
+    expect(updatedProject.projectRoot).toBe('/new/root');
+  });
+});
+
+// ── validate_progress: push instructions on DONE ─────────────────────────────
+
+describe('POST /items/:id/validate — push instructions included in DONE message', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('includes git push instruction when item moves to DONE via command', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'PI1', verifyCommand: 'echo ok' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'PI1', projectId: p.id })).body;
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+
+    if (res.status !== 200) return;
+    expect(res.body.status).toBe('DONE');
+    expect(res.body.message).toContain('git push');
+  });
+
+  it('includes git push instruction when item moves to DONE via sibling propagation', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'PI2', verifyCommand: 'echo ok' })).body;
+    const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'PI2-parent', projectId: p.id })).body;
+    const child1 = (await request(app).post('/items').send({ type: 'TASK', title: 'PI2-child1', projectId: p.id, parentId: parent.id })).body;
+    const child2 = (await request(app).post('/items').send({ type: 'TASK', title: 'PI2-child2', projectId: p.id, parentId: parent.id })).body;
+
+    // Move child1 to DONE
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ items: [{ id: child1.id, updates: { status: 'TEST' } }] });
+    const c1Current = (await request(app).get(`/items/${child1.id}`)).body;
+    if (c1Current.status !== 'TEST') return;
+    const res1 = await request(app)
+      .post(`/items/${child1.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+    if (res1.status !== 200 || res1.body.status !== 'DONE') return;
+
+    // Move child2 to TEST so sibling propagation kicks in
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ items: [{ id: child2.id, updates: { status: 'TEST' } }] });
+    const c2Current = (await request(app).get(`/items/${child2.id}`)).body;
+    if (c2Current.status !== 'TEST') return;
+
+    const res2 = await request(app)
+      .post(`/items/${child2.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+
+    if (res2.status !== 200) return;
+    expect(res2.body.status).toBe('DONE');
+    expect(res2.body.message).toContain('git push');
+  });
+
+  it('includes branchName in push instruction when item has branchName set', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'PI3', verifyCommand: 'echo ok' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'PI3', projectId: p.id })).body;
+    // Set a branchName on the item
+    await request(app).put(`/items/${item.id}`).send({ branchName: 'task/abc-my-feature' });
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+
+    if (res.status !== 200) return;
+    expect(res.body.status).toBe('DONE');
+    expect(res.body.message).toContain('task/abc-my-feature');
+  });
+
+  it('does NOT include push instruction when item moves to an intermediate step', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'PI4' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'PI4', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('REVIEW');
+    expect(res.body.message).not.toContain('git push');
+  });
+});
+
 // ── comments with step field ──────────────────────────────────────────────────
 
 describe('PUT /items/:id — comment with step field', () => {
