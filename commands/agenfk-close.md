@@ -33,6 +33,11 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - Call `add_comment(id, "Phase Close complete: Final summary prepared.")` to log the phase completion.
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
 - For leaf items (TASK/BUG) in an intermediate step: call `validate_progress(id, evidence="<how exit criteria were met>")` to advance to DONE.
+- **Push your branch**: After the item reaches DONE, push the branch to remote:
+  ```
+  git push -u origin <branchName>
+  ```
+  Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
 
 **Step 6 — Next Steps**
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:

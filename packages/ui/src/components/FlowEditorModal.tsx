@@ -148,7 +148,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     } else {
       setName('');
       setDescription('');
-      setSteps([makeBlankStep(0)]);
+      const [todo, done] = makeFreshAnchors();
+      const blank = makeBlankStep(1);
+      done.order = 2;
+      setSteps([todo, blank, done]);
     }
     setSaved(false);
   }, [flow]);

@@ -193,6 +193,49 @@ describe('FlowEditorModal', () => {
     });
   });
 
+  it('new flow editor shows TODO anchor step at index 0', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('new-flow-btn'));
+    fireEvent.click(screen.getByTestId('new-flow-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('step-anchor-lock-0')).toBeDefined();
+    });
+  });
+
+  it('new flow editor shows DONE anchor step at the last index', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('new-flow-btn'));
+    fireEvent.click(screen.getByTestId('new-flow-btn'));
+    await waitFor(() => {
+      // With a blank middle step, DONE is at index 2
+      expect(screen.getByTestId('step-anchor-lock-2')).toBeDefined();
+    });
+  });
+
+  it('new flow has TODO and DONE anchors surrounding a blank middle step (3 step rows total)', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('new-flow-btn'));
+    fireEvent.click(screen.getByTestId('new-flow-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('step-row-0')).toBeDefined(); // TODO anchor
+      expect(screen.getByTestId('step-row-1')).toBeDefined(); // blank middle step
+      expect(screen.getByTestId('step-row-2')).toBeDefined(); // DONE anchor
+    });
+    // Middle step should not be an anchor (no lock icon at index 1)
+    expect(screen.queryByTestId('step-anchor-lock-1')).toBeNull();
+    // No 4th row
+    expect(screen.queryByTestId('step-row-3')).toBeNull();
+  });
+
   // ── Sidebar: delete with confirm ───────────────────────────────────────────
 
   it('delete shows inline confirm, calls deleteFlow on Yes', async () => {
@@ -305,11 +348,13 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('new-flow-btn'));
     fireEvent.click(screen.getByTestId('new-flow-btn'));
     await waitFor(() => screen.getByTestId('add-step-btn'));
-    // Starts with 1 blank step
+    // Starts with 3 steps: TODO anchor (0), blank middle (1), DONE anchor (2)
     expect(screen.getByTestId('step-row-0')).toBeDefined();
-    expect(screen.queryByTestId('step-row-1')).toBeNull();
-    fireEvent.click(screen.getByTestId('add-step-btn'));
     expect(screen.getByTestId('step-row-1')).toBeDefined();
+    expect(screen.getByTestId('step-row-2')).toBeDefined();
+    expect(screen.queryByTestId('step-row-3')).toBeNull();
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    expect(screen.getByTestId('step-row-3')).toBeDefined();
   });
 
   it('removes a middle (non-anchor) step when Delete is clicked', async () => {
@@ -370,8 +415,9 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('flow-name-input'));
 
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Sprint Flow' } });
-    fireEvent.change(screen.getByTestId('step-name-0'), { target: { value: 'in_progress' } });
-    fireEvent.change(screen.getByTestId('step-label-0'), { target: { value: 'In Progress' } });
+    // Index 0 is the TODO anchor (no editable name); the middle step is at index 1
+    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
 
@@ -613,9 +659,10 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('flow-name-input'));
 
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Colored Flow' } });
-    fireEvent.change(screen.getByTestId('step-name-0'), { target: { value: 'in_progress' } });
-    fireEvent.change(screen.getByTestId('step-label-0'), { target: { value: 'In Progress' } });
-    fireEvent.change(screen.getByTestId('step-color-0'), { target: { value: '#ff0000' } });
+    // Index 0 is the TODO anchor (no editable name/color); the middle step is at index 1
+    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
+    fireEvent.change(screen.getByTestId('step-color-1'), { target: { value: '#ff0000' } });
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
 
