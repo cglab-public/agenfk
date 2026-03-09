@@ -336,3 +336,4 @@ No. Your source code and project data never leave your machine. The only outboun
 
 ---
 *Built with ❤️ by the CG/lab AgEnFK Platform Team.*
+*CG/lab - a CAR Group comoany*
