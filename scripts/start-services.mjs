@@ -18,7 +18,7 @@ function resolveDbPath() {
             if (cfg.dbPath) return cfg.dbPath;
         } catch (e) {}
     }
-    return path.join(agenfkDir, 'db.sqlite');
+    return path.join(agenfkDir, 'db.json');
 }
 const dbPath = resolveDbPath();
 

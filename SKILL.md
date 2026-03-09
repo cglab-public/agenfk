@@ -156,6 +156,18 @@ If MCP tools are not available in your context, surface the connectivity problem
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
         3. **Continue Current**: Keep working on the current item (the Agent MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
 
+## Quality Guards — MANDATORY
+
+### Feature Implementation
+- **End-to-end verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark a feature as complete until you've confirmed the UI actually triggers the expected behavior.
+- **Evidence-based claims**: Before claiming a feature already exists or is implemented, search the actual codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
+
+### Bug & Error Fixing
+- **Root cause first**: When debugging errors, investigate the root cause fully before applying fixes. Avoid adding workarounds (like force-relogin) that can create new problems (infinite loops). Trace errors from the symptom back to the actual source.
+- **One fix at a time**: Apply a single targeted fix, verify it resolves the issue, then move on. Do not stack multiple speculative fixes.
+
+---
+
 ## When to use me
 
 Use this skill whenever you are performing software engineering tasks to ensure compliance with the AgenFK Engineering Framework.

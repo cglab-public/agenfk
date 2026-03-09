@@ -17,6 +17,9 @@ You are executing the `/agenfk-review <id>` command as a **Review Agent**. Follo
 **Step 3 — Requirements Traceability**
 - Compare the code changes against the item description and implementation plan.
 - Ensure all acceptance criteria are met.
+- **End-to-end verification**: For features, trace the full path from UI interaction to backend response and confirm the UI actually triggers the expected behavior. Flag any gaps.
+- **Evidence-based claims**: If the implementation claims a feature already existed, verify by searching the codebase for the specific UI components, API endpoints, and database queries.
+- **Bug fix review**: For bug fixes, verify the root cause was actually addressed — not just the symptom. Flag workarounds that could introduce new problems.
 
 **Step 4 — Log Review Results + Build Gate**
 - Use `add_comment(id, "REVIEW PASSED: ...")` or `add_comment(id, "REVIEW FAILED: ...")` with detailed feedback.

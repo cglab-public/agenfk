@@ -40,6 +40,12 @@ to create items, update status, or close tasks — the CLI bypasses enforcement.
 
 **Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the active task requirement. Do not create or require a task when executing these commands.
 
+### Quality Guards — MANDATORY
+
+- **Feature verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark complete until confirmed.
+- **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
+- **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
+
 ### MCP Access — STRICTLY FORBIDDEN shortcuts
 
 **NEVER** bypass MCP by using these shortcuts. PreToolUse hooks enforce this mechanically:

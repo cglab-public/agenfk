@@ -19,6 +19,8 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 - Capture the full command output.
 - Read the coverage report and identify any files modified in this task that fall below the **80% threshold**.
 - If coverage is too low, add more tests until the threshold is met.
+- **End-to-end verification**: For features, confirm the tests cover the full path from UI interaction to backend response — not just isolated units. Flag any untested integration gaps.
+- **Bug fix verification**: For bug fixes, ensure tests reproduce the original symptom and verify the root cause fix — not just the workaround.
 
 **Step 4 — Log Results & Yield**
 - If tests pass and coverage is met:
