@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 0.2.4)'
-        required: true
+        description: 'Version to release (e.g. 0.2.5) — leave blank to auto-bump patch'
+        required: false
 
 jobs:
   release:
@@ -18,7 +18,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-tags: true
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          INPUT="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT" ]; then
+            echo "version=$INPUT" >> "$GITHUB_OUTPUT"
+          else
+            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST=${LATEST#v}
+            MAJOR=$(echo "$LATEST" | cut -d. -f1)
+            MINOR=$(echo "$LATEST" | cut -d. -f2)
+            PATCH=$(echo "$LATEST" | cut -d. -f3)
+            NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
+            echo "Auto-bumping patch: $LATEST → $NEXT"
+            echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -28,7 +46,6 @@ jobs:
 
       - name: Bump version in all package.json files
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           node -e "
             const fs = require('fs');
             const { execSync } = require('child_process');
@@ -43,14 +60,14 @@ jobs:
             });
           "
         env:
-          VERSION: ${{ github.event.inputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
 
       - name: Commit and push version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json packages/*/package.json
-          git commit -m "chore: bump version to ${{ github.event.inputs.version }}"
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push
 
       - name: Install dependencies
@@ -64,7 +81,7 @@ jobs:
 
       - name: Create tag and GitHub release
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ steps.version.outputs.version }}"
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
           gh release create "v${VERSION}" agenfk-dist.tar.gz \
