@@ -1022,7 +1022,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-          const projectRoot = findProjectRoot(process.cwd());
+          const proj = await storage.getProject(updated.projectId);
+          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
           autoGitCommit(updated, projectRoot);
         }
       }
@@ -1142,7 +1143,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
       if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-        const projectRoot = findProjectRoot(process.cwd());
+        const proj = await storage.getProject(updated.projectId);
+        const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
         autoGitCommit(updated, projectRoot);
       } else {
         console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
@@ -1271,6 +1273,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
+  const branchRef = (item as any).branchName || 'HEAD';
+  const pushInstruction = nextStatus === Status.DONE
+    ? `\n\n🚀 **Push your branch**: The server has auto-committed the changes. Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
+    : '';
 
   // A command is only required for the final step (→ DONE). For intermediate
   // steps the command is optional — omitting it advances without running anything.
@@ -1300,8 +1306,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, findProjectRoot(process.cwd()));
-        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.`, output: 'Sibling propagation' });
+        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()));
+        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${pushInstruction}`, output: 'Sibling propagation' });
       }
     } else {
       const passedSibling = siblings.find(s => {
@@ -1330,7 +1336,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
   }
 
-  const projectRoot = findProjectRoot(process.cwd());
+  const projectRoot = (project as any)?.projectRoot || findProjectRoot(process.cwd());
   const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
@@ -1360,7 +1366,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: truncated });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: truncated });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
@@ -1375,6 +1381,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
+  }
+  const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
+  if (cwd) {
+    const item = await storage.getItem(req.params.id);
+    if (item) await storage.updateProject(item.projectId, { projectRoot: cwd });
   }
   return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined);
 }));
