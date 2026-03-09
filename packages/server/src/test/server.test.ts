@@ -13,7 +13,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./server-test-db.json');
+const TEST_DB = path.resolve('./server-test-db.sqlite');
 
 describe('Server API', () => {
   beforeAll(async () => {

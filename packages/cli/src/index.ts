@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { stageJsonMigration } from './db-migration.js';
 
 const program = new Command();
 const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
@@ -343,6 +344,12 @@ program
           return;
         }
 
+        // Stage any existing db.json for migration to SQLite before running install
+        const localAgenfkDir = path.join(rootDir, '.agenfk');
+        if (stageJsonMigration(localAgenfkDir)) {
+          console.log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
+        }
+
         const debuglogFlag = options.debuglog ? ' --debuglog' : '';
         console.log(chalk.gray('Running install script (pre-built mode)...'));
         try {
@@ -400,7 +407,6 @@ program
     const requiredDists = [
         path.join(rootDir, 'packages/server/dist/server.js'),
         path.join(rootDir, 'packages/storage-sqlite/dist/index.js'),
-        path.join(rootDir, 'packages/storage-json/dist/index.js'),
         path.join(rootDir, 'packages/core/dist/index.js'),
     ];
     const missingDist = requiredDists.some(d => !fs.existsSync(d));
@@ -1183,108 +1189,7 @@ dbCommand
     }
   });
 
-dbCommand
-  .command('switch <type>')
-  .description('Switch database type (json or sqlite) — migrates all data automatically')
-  .action(async (type: string) => {
-    const targetType = type.toLowerCase();
-    if (targetType !== 'json' && targetType !== 'sqlite') {
-      console.error(chalk.red('Error: type must be "json" or "sqlite"'));
-      process.exit(1);
-    }
-
-    // 1. Verify server is running and check current type
-    let currentStatus: any;
-    try {
-      const { data } = await axios.get(`${API_URL}/db/status`);
-      currentStatus = data;
-    } catch (error: any) {
-      console.error(chalk.red('Cannot connect to API server. Is it running? Try: agenfk up'));
-      process.exit(1);
-    }
-
-    const currentType = currentStatus.dbType;
-    if (currentType === targetType) {
-      console.log(chalk.yellow(`Already using ${targetType.toUpperCase()} storage. No change needed.`));
-      return;
-    }
-
-    telemetry.capture('cli_db_switch', { to: targetType });
-    console.log(chalk.blue(`Switching from ${currentType.toUpperCase()} → ${targetType.toUpperCase()}...`));
-
-    // 2. Export all data
-    console.log(chalk.gray('  Exporting data...'));
-    const [{ data: projects }, { data: items }] = await Promise.all([
-      axios.get(`${API_URL}/projects`),
-      axios.get(`${API_URL}/items`, { params: { includeArchived: 'true' } }),
-    ]);
-
-    const exportData = {
-      version: '1',
-      backupDate: new Date().toISOString(),
-      dbType: currentType,
-      projects,
-      items,
-    };
-
-    // 3. Write local backup to ~/.agenfk/backup/
-    const backupDir = path.join(os.homedir(), '.agenfk', 'backup');
-    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-    const backupFile = path.join(backupDir, `agenfk-backup-${new Date().toISOString().replace(/:/g, '-')}.json`);
-    fs.writeFileSync(backupFile, JSON.stringify(exportData, null, 2));
-    console.log(chalk.gray(`  Backup saved: ${backupFile}`));
-
-    // 4. Write migration.json — picked up by server on next start
-    const agenfkHome = path.join(os.homedir(), '.agenfk');
-    fs.writeFileSync(path.join(agenfkHome, 'migration.json'), JSON.stringify(exportData, null, 2));
-    console.log(chalk.gray('  Migration file written.'));
-
-    // 5. Compute new dbPath (same directory, new extension)
-    const currentDbPath: string = currentStatus.dbPath;
-    const newDbPath = currentDbPath.replace(/\.(json|sqlite)$/, `.${targetType === 'sqlite' ? 'sqlite' : 'json'}`);
-
-    // 6. Update ~/.agenfk/config.json
-    const configPath = path.join(agenfkHome, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ dbPath: newDbPath }, null, 2));
-    console.log(chalk.gray(`  Config updated: ${configPath}`));
-
-    // 7. Update AGENFK_DB_PATH in ~/.claude/settings.json
-    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-    if (fs.existsSync(claudeSettingsPath)) {
-      try {
-        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8'));
-        if (settings.mcpServers?.agenfk?.env) {
-          settings.mcpServers.agenfk.env.AGENFK_DB_PATH = newDbPath;
-          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2));
-          console.log(chalk.gray(`  Updated Claude settings: ${claudeSettingsPath}`));
-        }
-      } catch { /* ignore */ }
-    }
-
-    // 8. Update AGENFK_DB_PATH in ~/.config/opencode/opencode.json
-    const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (fs.existsSync(opencodeConfigPath)) {
-      try {
-        const config = JSON.parse(fs.readFileSync(opencodeConfigPath, 'utf8'));
-        if (config.mcp?.agenfk?.environment) {
-          config.mcp.agenfk.environment.AGENFK_DB_PATH = newDbPath;
-          fs.writeFileSync(opencodeConfigPath, JSON.stringify(config, null, 2));
-          console.log(chalk.gray(`  Updated Opencode config: ${opencodeConfigPath}`));
-        }
-      } catch { /* ignore */ }
-    }
-
-    // 9. Restart services so server picks up new provider + imports migration.json
-    console.log(chalk.blue('\nRestarting services...'));
-    const rootDir = path.resolve(__dirname, '../../..');
-    try {
-      const { execSync } = await import('child_process');
-      execSync('node packages/cli/bin/agenfk.js restart', { cwd: rootDir, stdio: 'inherit' });
-    } catch { /* restart is best-effort */ }
-
-    console.log(chalk.green(`\nDone. Now using ${targetType.toUpperCase()} storage at: ${newDbPath}`));
-    console.log(chalk.gray('Restart your AI editor to reload the MCP server with the new DB path.'));
-  });
+// db switch removed — SQLite is the only supported storage backend.
 
 // ── agenfk jira ──────────────────────────────────────────────────────────────
 

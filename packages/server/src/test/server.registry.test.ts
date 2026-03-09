@@ -24,7 +24,7 @@ vi.mock('axios', () => {
 
 import { app, initStorage } from '../server';
 
-const TEST_DB = path.resolve('./server-registry-test-db.json');
+const TEST_DB = path.resolve('./server-registry-test-db.sqlite');
 
 function makeExecMock(ghUser: string) {
   return (cmd: string) => {
@@ -128,7 +128,7 @@ describe('POST /registry/flows/publish', () => {
 
 import axios from 'axios';
 
-const INSTALL_DB = path.resolve('./server-registry-install-test-db.json');
+const INSTALL_DB = path.resolve('./server-registry-install-test-db.sqlite');
 
 function makeRegistryFlowContent(steps: object[]) {
   return Buffer.from(JSON.stringify({

@@ -18,7 +18,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./server-supplemental-test-db.json');
+const TEST_DB = path.resolve('./server-supplemental-test-db.sqlite');
 
 // ── Global jira token guard ───────────────────────────────────────────────────
 // Save the real jira token before any test runs; restore after all tests so
