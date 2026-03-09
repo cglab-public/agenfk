@@ -106,7 +106,6 @@ async function run() {
     // 1. Verify pre-built dist bundles
     const requiredDists = [
         'packages/core/dist',
-        'packages/storage-json/dist',
         'packages/storage-sqlite/dist',
         'packages/telemetry/dist',
         'packages/cli/dist',
@@ -119,7 +118,6 @@ async function run() {
     // from accidentally rebuilding from old source instead of using the pre-built dist.
     const staleSrcDirs = [
         'packages/core/src',
-        'packages/storage-json/src',
         'packages/storage-sqlite/src',
         'packages/telemetry/src',
         'packages/cli/src',
@@ -251,34 +249,48 @@ async function run() {
         } catch (e) {}
     }
 
-    if (!dbPath && !onlyPlatform) {
-        console.log(`${GREEN}[3/14] Choosing database engine...${NC}`);
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-        let dbType = 'sqlite';
-        try {
-            const answer = await ask(rl, `  Choose storage engine [json/sqlite] (default: sqlite): `);
-            if (answer.trim().toLowerCase() === 'json') dbType = 'json';
-        } finally {
-            rl.close();
+    if (!dbPath || dbPath.endsWith('.json')) {
+        // Always use SQLite. If a legacy .json path was configured, remap it.
+        if (dbPath && dbPath.endsWith('.json')) {
+            console.log(`  Remapping legacy JSON database path to SQLite...`);
+        } else if (!onlyPlatform) {
+            console.log(`${GREEN}[3/14] Configuring database engine (SQLite)...${NC}`);
         }
-
-        const dbExtension = dbType === 'sqlite' ? 'db.sqlite' : 'db.json';
-        dbPath = path.join(rootDir, '.agenfk', dbExtension);
-        console.log(`  Using: ${dbType.toUpperCase()} (${dbPath})`);
+        dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
+        console.log(`  Using: SQLITE (${dbPath})`);
 
         // 3a. Write ~/.agenfk/config.json
         await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath, telemetry: true }, null, 2), 'utf8');
         console.log(`  Config written: ${agenfkConfigPath}`);
-    } else if (!dbPath && onlyPlatform) {
-        // Fallback for onlyPlatform if no config exists
-        dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
     }
 
     debugLog('dbPath resolved:', dbPath || '(empty — not yet set)');
     debugLog('dbPath file exists:', dbPath ? existsSync(dbPath) : false);
 
-    // 3b. Restore from backup (new install only)
+    // 3b. Auto-migrate legacy db.json → SQLite migration.json
+    if (!onlyPlatform) {
+        const localAgenfkDir = path.join(rootDir, '.agenfk');
+        const dbJsonPath = path.join(localAgenfkDir, 'db.json');
+        const migrationPath = path.join(agenfkHome, 'migration.json');
+        if (existsSync(dbJsonPath) && !existsSync(migrationPath)) {
+            try {
+                const raw = readFileSync(dbJsonPath, 'utf8');
+                const data = JSON.parse(raw);
+                writeFileSync(migrationPath, JSON.stringify({
+                    version: data.version || '1',
+                    backupDate: new Date().toISOString(),
+                    dbType: 'json',
+                    projects: data.projects || [],
+                    items: data.items || [],
+                }, null, 2));
+                console.log(`  ${GREEN}Legacy db.json detected — data staged for migration to SQLite on first server start.${NC}`);
+            } catch (e) {
+                console.log(`  ${YELLOW}Warning: Could not read db.json for migration: ${e.message}${NC}`);
+            }
+        }
+    }
+
+    // 3c. Restore from backup (new install only)
     if (!onlyPlatform) {
         const backupDir = path.join(agenfkHome, 'backup');
         const isNewInstall = !existsSync(dbPath);

@@ -8,7 +8,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@agenfk/core': path.resolve(__dirname, './packages/core/src/index.ts'),
-      '@agenfk/storage-json': path.resolve(__dirname, './packages/storage-json/src/index.ts'),
       '@agenfk/telemetry': path.resolve(__dirname, './packages/telemetry/src/index.ts'),
     },
   },
@@ -26,7 +25,7 @@ export default defineConfig({
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {
-      include: ['packages/core/src/**', 'packages/storage-json/src/**', 'packages/server/src/**'],
+      include: ['packages/core/src/**', 'packages/storage-sqlite/src/**', 'packages/server/src/**'],
       exclude: [
         '**/dist/**',
         '**/node_modules/**',

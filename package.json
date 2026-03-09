@@ -4,13 +4,19 @@
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/core",
+    "packages/storage-sqlite",
+    "packages/telemetry",
+    "packages/cli",
+    "packages/server",
+    "packages/ui",
+    "packages/create"
   ],
   "bin": {
     "agenfk": "bin/agenfk.js"
   },
   "scripts": {
-    "build": "npm run build -w packages/core -w packages/storage-json -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui",
+    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
