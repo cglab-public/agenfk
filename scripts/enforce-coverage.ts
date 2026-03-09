@@ -14,8 +14,7 @@ function run() {
     const rootDir = process.cwd();
     const dists = [
       path.join(rootDir, 'packages', 'core', 'dist'),
-      path.join(rootDir, 'packages', 'storage-json', 'dist'),
-      path.join(rootDir, 'packages', 'cli', 'dist'),
+path.join(rootDir, 'packages', 'cli', 'dist'),
       path.join(rootDir, 'packages', 'server', 'dist'),
       path.join(rootDir, 'packages', 'ui', 'dist'),
     ];
