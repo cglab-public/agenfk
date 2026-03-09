@@ -36,8 +36,6 @@ async function run() {
         'packages/cli/bin/',
         'packages/server/package.json',
         'packages/server/dist/',
-        'packages/storage-json/package.json',
-        'packages/storage-json/dist/',
         'packages/storage-sqlite/package.json',
         'packages/storage-sqlite/dist/',
         'packages/telemetry/package.json',
