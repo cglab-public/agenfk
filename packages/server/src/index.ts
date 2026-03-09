@@ -456,7 +456,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/validate`, { evidence, command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/validate`, { evidence, command, cwd: process.cwd() }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
           return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
