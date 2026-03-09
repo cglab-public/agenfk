@@ -11,3 +11,6 @@ coverage/
 .claude/
 tmp.*.json
 *-test-db.json
+*-test-db.sqlite
+*-test-db.sqlite-shm
+*-test-db.sqlite-wal
