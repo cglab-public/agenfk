@@ -3,6 +3,11 @@ description: Run a task using full Multi-Agent Orchestration (Deep Mode)
 ---
 
 Load the `agenfk` skill. Run its Initialization protocol if needed.
+
+**Clean start from main** — Before starting work:
+- Run `git status` — if the working tree has uncommitted or modified files, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
+- If NOT on `main` (or `master`) and the current branch doesn't belong to an item you're resuming, run `git checkout main` (or `master`) followed by `git pull`.
+
 Identify the user's request and follow the **Deep Mode** protocol in the skill:
 1. Decompose the request into sub-items.
    - **MANDATORY**: For **EPICs** and **STORIES**, you **MUST** decompose the request into all constituent child items (using `create_item` with `parentId`) **BEFORE** starting work on the first task.
