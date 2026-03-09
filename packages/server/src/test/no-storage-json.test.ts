@@ -47,4 +47,10 @@ describe('storage-json removal', () => {
     expect(content).not.toContain("'packages/storage-json/src'");
     expect(content).not.toContain('"packages/storage-json/src"');
   });
+
+  it('package-dist.mjs should not include storage-json', () => {
+    const script = path.join(ROOT, 'scripts/package-dist.mjs');
+    const content = fs.readFileSync(script, 'utf8');
+    expect(content).not.toContain('storage-json');
+  });
 });
