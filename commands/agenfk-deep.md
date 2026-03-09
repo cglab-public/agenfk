@@ -14,6 +14,18 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 ---
 
+## Quality Guards — MANDATORY
+
+### Feature Implementation
+- **End-to-end verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark a feature as complete until you've confirmed the UI actually triggers the expected behavior.
+- **Evidence-based claims**: Before claiming a feature already exists or is implemented, search the actual codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
+
+### Bug & Error Fixing
+- **Root cause first**: When debugging errors, investigate the root cause fully before applying fixes. Avoid adding workarounds that can create new problems (e.g. infinite loops). Trace errors from the symptom back to the actual source.
+- **One fix at a time**: Apply a single targeted fix, verify it resolves the issue, then move on. Do not stack multiple speculative fixes.
+
+---
+
 ## Parent-Child Status Propagation Rule
 
 **MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward in the workflow (e.g., TODO → IN_PROGRESS, IN_PROGRESS → REVIEW, TEST → DONE) once **ALL** of its child items have also moved to that same state or further.

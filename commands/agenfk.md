@@ -64,9 +64,11 @@ Before creating any item, evaluate the request against these signals:
 
 ## Phase 1 — Code
 
+- **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
 - Explore the codebase, understand the context, then implement the changes.
 - **MANDATORY**: Call `add_comment(itemId, content)` for every significant step (e.g. "Analyzed file X", "Implemented function Y").
 - Keep changes minimal and focused on the request.
+- **Bug/Error fixing**: Investigate root causes fully before applying fixes. Avoid workarounds that can create new problems (e.g. infinite loops). Trace errors from symptom to source. Apply one fix at a time and verify.
 
 ---
 
@@ -74,7 +76,7 @@ Before creating any item, evaluate the request against these signals:
 
 Since there is no separate review agent in Standard Mode, perform the review yourself:
 
-1. Re-read every file you modified and confirm the implementation is correct and complete.
+1. **End-to-end verification**: Re-read every file you modified. For features, trace the full path from UI interaction to backend response and confirm the UI actually triggers the expected behavior. Do not mark complete until verified.
 2. Call `workflow_gatekeeper(itemId)` — the response includes the current step's **exit criteria** if defined.
 3. Call `add_comment(itemId, "Self-review complete: <brief findings or 'No issues found'>")`.
 4. Once satisfied, call `validate_progress(itemId, evidence="<how you satisfied this step's exit criteria>", command)` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`). The evidence is mandatory — describe concretely what you did.

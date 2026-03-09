@@ -13,12 +13,15 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Scan the codebase to locate all files mentioned in the plan.
 
 **Step 2 — Implement**
+- **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
 - Execute the plan step-by-step.
 - After each significant code change (file creation or modification):
     - Call `add_comment(id, "I have implemented: <description>")` to log your progress.
 - Ensure all code adheres to project conventions and architectural mandates.
+- **Bug/Error fixing**: Investigate root causes fully before applying fixes. Avoid workarounds that can create new problems. Trace errors from symptom to source. Apply one fix at a time and verify.
 
 **Step 3 — Self-Verify**
+- **End-to-end verification**: For features, trace the full path from UI interaction to backend response and confirm the UI actually triggers the expected behavior before handing over.
 - Run a **build/compile command only** (e.g., `npm run build`, `tsc`, `cargo build`).
 - **NEVER run the test suite here** — tests are exclusively the Testing Agent's responsibility.
 - Fix any compilation or lint errors before proceeding.
