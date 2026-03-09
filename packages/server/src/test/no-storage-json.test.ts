@@ -53,4 +53,16 @@ describe('storage-json removal', () => {
     const content = fs.readFileSync(script, 'utf8');
     expect(content).not.toContain('storage-json');
   });
+
+  it('cli package.json should not depend on @agenfk/storage-json', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages/cli/package.json'), 'utf8'));
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    expect(deps['@agenfk/storage-json']).toBeUndefined();
+  });
+
+  it('enforce-coverage.ts should not reference storage-json dist', () => {
+    const script = path.join(ROOT, 'scripts/enforce-coverage.ts');
+    const content = fs.readFileSync(script, 'utf8');
+    expect(content).not.toContain('storage-json');
+  });
 });
