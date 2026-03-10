@@ -874,9 +874,23 @@ integrationCommand
 integrationCommand
   .command('install <platform>')
   .description('Install or refresh a single integration without running the full framework installer')
-  .action((platform) => {
+  .option('--scope <scope>', 'Override rules scope (global or project)')
+  .action((platform, options) => {
     const resolvedPlatform = resolveIntegrationPlatform(platform);
     const args = [`--only=${resolvedPlatform}`];
+
+    // Pass rulesScope: explicit --scope flag, or read from config
+    if (options.scope) {
+      args.push(`--rules-scope=${options.scope}`);
+    } else {
+      const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+      if (fs.existsSync(configPath)) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (cfg.rulesScope) args.push(`--rules-scope=${cfg.rulesScope}`);
+        } catch {}
+      }
+    }
 
     console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
     runIntegrationScript('install.mjs', args);

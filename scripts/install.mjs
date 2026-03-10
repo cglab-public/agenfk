@@ -65,6 +65,7 @@ async function run() {
     const debuglog = process.argv.includes('--debuglog');
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
+    const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
 
     const debugLog = debuglog ? (...args) => console.log(`${YELLOW}[DEBUG]${NC}`, ...args) : () => {};
 
@@ -253,19 +254,33 @@ async function run() {
         }
     }
 
-    // 3. Database configuration
+    // 3. Database and rules scope configuration
     const agenfkConfigPath = path.join(agenfkHome, 'config.json');
     let dbPath = '';
+    let existingConfig = {};
 
     if (existsSync(agenfkConfigPath)) {
         try {
-            const cfg = JSON.parse(readFileSync(agenfkConfigPath, 'utf8'));
-            if (cfg.dbPath) {
-                dbPath = cfg.dbPath;
+            existingConfig = JSON.parse(readFileSync(agenfkConfigPath, 'utf8'));
+            if (existingConfig.dbPath) {
+                dbPath = existingConfig.dbPath;
                 if (!onlyPlatform) console.log(`  Using existing database configuration: ${dbPath}`);
             }
         } catch (e) {}
     }
+
+    // Resolve rulesScope: CLI flag → config → prompt
+    let rulesScope = rulesScopeArg || existingConfig.rulesScope || '';
+    if (!rulesScope && !onlyPlatform) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await ask(rl, `\n${BLUE}Where should AgEnFK workflow rules be installed?${NC}\n  1) global  — ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, etc.\n  2) project — .claude/CLAUDE.md, AGENTS.md in project root, etc.\n\nChoose [global/project] (default: global): `);
+        rl.close();
+        rulesScope = answer.trim().toLowerCase() === 'project' ? 'project' : 'global';
+    }
+    if (!rulesScope) rulesScope = existingConfig.rulesScope || 'global';
+    if (!onlyPlatform) console.log(`  Rules scope: ${rulesScope}`);
+
+    let configDirty = false;
 
     if (!dbPath || dbPath.endsWith('.json')) {
         // Always use SQLite. If a legacy .json path was configured, remap it.
@@ -276,9 +291,17 @@ async function run() {
         }
         dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
         console.log(`  Using: SQLITE (${dbPath})`);
+        configDirty = true;
+    }
 
+    if (existingConfig.rulesScope !== rulesScope) {
+        configDirty = true;
+    }
+
+    if (configDirty) {
         // 3a. Write ~/.agenfk/config.json
-        await fs.writeFile(agenfkConfigPath, JSON.stringify({ dbPath, telemetry: true }, null, 2), 'utf8');
+        const configData = { ...existingConfig, dbPath, rulesScope, telemetry: existingConfig.telemetry ?? true };
+        await fs.writeFile(agenfkConfigPath, JSON.stringify(configData, null, 2), 'utf8');
         console.log(`  Config written: ${agenfkConfigPath}`);
     }
 
@@ -886,32 +909,72 @@ process.exit(0);
         }
     }
 
-    // 13. Write AgenFK workflow rules to ~/.claude/CLAUDE.md
-    if (shouldRun('claude')) {
-        console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ~/.claude/CLAUDE.md...${NC}`);
-        const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-        await fs.mkdir(path.dirname(claudeMdPath), { recursive: true });
-        const claudeRulesSource = path.join(rootDir, 'clauderules', 'CLAUDE.md');
+    // Helper: write rules to the active scope and clean up the opposite scope
+    async function writeRulesWithScope(globalPath, projectPath, sourceFile, label) {
+        const activePath = rulesScope === 'project' ? projectPath : globalPath;
+        const oppositePath = rulesScope === 'project' ? globalPath : projectPath;
 
-        if (existsSync(claudeRulesSource)) {
-            const rulesContent = await fs.readFile(claudeRulesSource, 'utf8');
-
-            let existingContent = '';
-            if (existsSync(claudeMdPath)) {
-                existingContent = await fs.readFile(claudeMdPath, 'utf8');
-                // Remove any existing AgenFK block
-                existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-            }
-
-            await fs.writeFile(
-                claudeMdPath,
-                (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
-                'utf8'
-            );
-            console.log(`  Written: ${claudeMdPath}`);
-        } else if (!onlyPlatform) {
-            console.log(`  ${YELLOW}Warning: clauderules/CLAUDE.md not found in framework root. Skipping.${NC}`);
+        if (!existsSync(sourceFile)) {
+            if (!onlyPlatform) console.log(`  ${YELLOW}Warning: ${label} source not found. Skipping.${NC}`);
+            return;
         }
+
+        const rulesContent = await fs.readFile(sourceFile, 'utf8');
+
+        // Write to active scope
+        await fs.mkdir(path.dirname(activePath), { recursive: true });
+        let existingContent = '';
+        if (existsSync(activePath)) {
+            existingContent = await fs.readFile(activePath, 'utf8');
+            existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+        }
+        await fs.writeFile(
+            activePath,
+            (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
+            'utf8'
+        );
+        console.log(`  Written: ${activePath}`);
+
+        // Clean up opposite scope — remove agenfk blocks
+        if (existsSync(oppositePath)) {
+            let oppositeContent = await fs.readFile(oppositePath, 'utf8');
+            const cleaned = oppositeContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+            if (cleaned !== oppositeContent) {
+                await fs.writeFile(oppositePath, cleaned.trim() ? cleaned.trim() + '\n' : '', 'utf8');
+                console.log(`  Cleaned up opposite scope: ${oppositePath}`);
+            }
+        }
+    }
+
+    // Helper: copy rules file to the active scope and clean up the opposite scope
+    async function copyRulesWithScope(globalPath, projectPath, sourceFile, label) {
+        const activePath = rulesScope === 'project' ? projectPath : globalPath;
+        const oppositePath = rulesScope === 'project' ? globalPath : projectPath;
+
+        if (!existsSync(sourceFile)) {
+            if (!onlyPlatform) console.log(`  ${YELLOW}Warning: ${label} source not found. Skipping.${NC}`);
+            return;
+        }
+
+        await fs.mkdir(path.dirname(activePath), { recursive: true });
+        await fs.copyFile(sourceFile, activePath);
+        console.log(`  Written: ${activePath}`);
+
+        // Clean up opposite scope
+        if (existsSync(oppositePath)) {
+            await fs.unlink(oppositePath);
+            console.log(`  Cleaned up opposite scope: ${oppositePath}`);
+        }
+    }
+
+    // 13. Write AgenFK workflow rules — CLAUDE.md
+    if (shouldRun('claude')) {
+        const scopeLabel = rulesScope === 'project' ? '.claude/CLAUDE.md (project)' : '~/.claude/CLAUDE.md (global)';
+        console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ${scopeLabel}...${NC}`);
+        const globalClaudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+        const projectClaudeMd = path.join(rootDir, '.claude', 'CLAUDE.md');
+        const claudeRulesSource = path.join(rootDir, 'clauderules', 'CLAUDE.md');
+        await writeRulesWithScope(globalClaudeMd, projectClaudeMd, claudeRulesSource, 'clauderules/CLAUDE.md');
     }
 
     // 13b. Install Cursor workflow rules (.mdc)
@@ -924,15 +987,10 @@ process.exit(0);
             spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (cursorInstalled) {
             try {
-                const cursorRulesDir = getCursorRulesDir();
-                await fs.mkdir(cursorRulesDir, { recursive: true });
+                const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
+                const projectCursorMdc = path.join(rootDir, '.cursor', 'rules', 'agenfk.mdc');
                 const mdcSource = path.join(rootDir, 'cursorrules', 'agenfk.mdc');
-                if (existsSync(mdcSource)) {
-                    await fs.copyFile(mdcSource, path.join(cursorRulesDir, 'agenfk.mdc'));
-                    console.log(`  Written: ${path.join(cursorRulesDir, 'agenfk.mdc')}`);
-                } else if (!onlyPlatform) {
-                    console.log(`  ${YELLOW}Warning: cursorrules/agenfk.mdc not found in framework root. Skipping.${NC}`);
-                }
+                await copyRulesWithScope(globalCursorMdc, projectCursorMdc, mdcSource, 'cursorrules/agenfk.mdc');
             } catch (e) {
                 console.error('  Error installing Cursor rules:', e.message);
             }
@@ -948,30 +1006,10 @@ process.exit(0);
         const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
             try {
-                const codexDir = path.join(os.homedir(), '.codex');
-                await fs.mkdir(codexDir, { recursive: true });
-                const codexAgentsMdPath = path.join(codexDir, 'AGENTS.md');
+                const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
+                const projectAgentsMd = path.join(rootDir, 'AGENTS.md');
                 const codexRulesSource = path.join(rootDir, 'codexrules', 'AGENTS.md');
-
-                if (existsSync(codexRulesSource)) {
-                    const rulesContent = await fs.readFile(codexRulesSource, 'utf8');
-
-                    let existingContent = '';
-                    if (existsSync(codexAgentsMdPath)) {
-                        existingContent = await fs.readFile(codexAgentsMdPath, 'utf8');
-                        // Remove any existing AgenFK block
-                        existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-                    }
-
-                    await fs.writeFile(
-                        codexAgentsMdPath,
-                        (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
-                        'utf8'
-                    );
-                    console.log(`  Written: ${codexAgentsMdPath}`);
-                } else if (!onlyPlatform) {
-                    console.log(`  ${YELLOW}Warning: codexrules/AGENTS.md not found in framework root. Skipping.${NC}`);
-                }
+                await writeRulesWithScope(globalAgentsMd, projectAgentsMd, codexRulesSource, 'codexrules/AGENTS.md');
             } catch (e) {
                 console.error('  Error installing Codex rules:', e.message);
             }
@@ -987,30 +1025,10 @@ process.exit(0);
         const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
             try {
-                const geminiDir = path.join(os.homedir(), '.gemini');
-                await fs.mkdir(geminiDir, { recursive: true });
-                const geminiMdPath = path.join(geminiDir, 'GEMINI.md');
+                const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
+                const projectGeminiMd = path.join(rootDir, 'GEMINI.md');
                 const geminiRulesSource = path.join(rootDir, 'geminirules', 'GEMINI.md');
-
-                if (existsSync(geminiRulesSource)) {
-                    const rulesContent = await fs.readFile(geminiRulesSource, 'utf8');
-
-                    let existingContent = '';
-                    if (existsSync(geminiMdPath)) {
-                        existingContent = await fs.readFile(geminiMdPath, 'utf8');
-                        // Remove any existing AgenFK block
-                        existingContent = existingContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-                    }
-
-                    await fs.writeFile(
-                        geminiMdPath,
-                        (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
-                        'utf8'
-                    );
-                    console.log(`  Written: ${geminiMdPath}`);
-                } else if (!onlyPlatform) {
-                    console.log(`  ${YELLOW}Warning: geminirules/GEMINI.md not found in framework root. Skipping.${NC}`);
-                }
+                await writeRulesWithScope(globalGeminiMd, projectGeminiMd, geminiRulesSource, 'geminirules/GEMINI.md');
             } catch (e) {
                 console.error('  Error installing Gemini CLI rules:', e.message);
             }
