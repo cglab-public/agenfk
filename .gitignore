@@ -8,9 +8,9 @@ build/
 coverage/
 .opencode/
 *.tar.gz
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 .claude/
 tmp.*.json
 *-test-db.json
-*-test-db.sqlite
-*-test-db.sqlite-shm
-*-test-db.sqlite-wal

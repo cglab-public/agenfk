@@ -402,16 +402,7 @@ program
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
-    // 1. Always ensure production dependencies are installed
-    console.log(chalk.gray('📦 Ensuring dependencies are up to date...'));
-    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    try {
-        execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: rootDir, stdio: 'inherit' });
-    } catch (e) {
-        console.warn(chalk.yellow('Warning: npm ci failed. Continuing anyway...'));
-    }
-
-    // 2. Full bootstrap only if dist files are missing
+    // 1. Full bootstrap only if dist files are missing
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
     const requiredDists = [
         path.join(rootDir, 'packages/server/dist/server.js'),
