@@ -309,6 +309,13 @@ async function run() {
     debugLog('dbPath resolved:', dbPath || '(empty — not yet set)');
     debugLog('dbPath file exists:', dbPath ? existsSync(dbPath) : false);
 
+    // Hoist path constants needed both inside and outside the rulesOnly block
+    const localBinDir = path.join(os.homedir(), '.local', 'bin');
+    const gatekeeperDestBase = path.join(localBinDir, 'agenfk-gatekeeper');
+    const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
+    const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
+    const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
+
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
         console.log(`${BLUE}  --rules-only: skipping non-rules steps, jumping to rules installation...${NC}`);
@@ -697,7 +704,6 @@ process.exit(0);
     }
 
     // 9. Symlink CLI to ~/.local/bin
-    const localBinDir = path.join(os.homedir(), '.local', 'bin');
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');
     const cliDestBase = path.join(localBinDir, 'agenfk');
     const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
@@ -824,8 +830,6 @@ process.exit(0);
 
     // 12. Install gatekeeper hook script
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
-    const gatekeeperDestBase = path.join(localBinDir, 'agenfk-gatekeeper');
-    const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
 
     if (!onlyPlatform) {
         console.log(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
@@ -847,7 +851,6 @@ process.exit(0);
 
         // 12b. Install MCP enforcer hook script (blocks direct db/REST/CLI bypass routes)
         const enforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer.mjs');
-        const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${enforcerDestBase}.cmd`, `@echo off\nnode "${enforcerSource}" %*`, 'utf8');
@@ -879,9 +882,6 @@ process.exit(0);
             console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
         }
     }
-
-    const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
-    const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
 
     // 7 (deferred). Configure Claude Code MCP via official CLI
     if (shouldRun('claude')) {
