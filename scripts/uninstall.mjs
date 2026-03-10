@@ -47,6 +47,7 @@ async function run() {
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
     const rulesOnly = process.argv.includes('--rules-only');
+    const projectDir = rulesOnly ? process.cwd() : rootDir;
 
     // Read rulesScope from config to know where rules were installed
     let rulesScope = rulesScopeArg || '';
@@ -259,7 +260,7 @@ async function run() {
     if (shouldRun('codex')) {
         console.log(`${GREEN}[6e/10] Removing Codex workflow rules (${rulesScope} scope)...${NC}`);
         const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
-        const projectAgentsMd = path.join(rootDir, 'AGENTS.md');
+        const projectAgentsMd = path.join(projectDir, 'AGENTS.md');
         for (const agentsMdPath of [globalAgentsMd, projectAgentsMd]) {
             if (existsSync(agentsMdPath)) {
                 let content = await fs.readFile(agentsMdPath, 'utf8');
@@ -281,7 +282,7 @@ async function run() {
     if (shouldRun('cursor')) {
         console.log(`${GREEN}[6f/10] Removing Cursor workflow rules (${rulesScope} scope)...${NC}`);
         const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
-        const projectCursorMdc = path.join(rootDir, '.cursor', 'rules', 'agenfk.mdc');
+        const projectCursorMdc = path.join(projectDir, '.cursor', 'rules', 'agenfk.mdc');
         for (const mdcPath of [globalCursorMdc, projectCursorMdc]) {
             if (existsSync(mdcPath)) {
                 await fs.unlink(mdcPath);
@@ -294,7 +295,7 @@ async function run() {
     if (shouldRun('gemini')) {
         console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules (${rulesScope} scope)...${NC}`);
         const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
-        const projectGeminiMd = path.join(rootDir, 'GEMINI.md');
+        const projectGeminiMd = path.join(projectDir, 'GEMINI.md');
         for (const geminiMdPath of [globalGeminiMd, projectGeminiMd]) {
             if (existsSync(geminiMdPath)) {
                 let content = await fs.readFile(geminiMdPath, 'utf8');
@@ -326,7 +327,7 @@ async function run() {
     if (shouldRun('claude')) {
         console.log(`${GREEN}[8/10] Removing AgenFK rules from CLAUDE.md (${rulesScope} scope)...${NC}`);
         const globalClaudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-        const projectClaudeMd = path.join(rootDir, '.claude', 'CLAUDE.md');
+        const projectClaudeMd = path.join(projectDir, '.claude', 'CLAUDE.md');
         for (const mdPath of [globalClaudeMd, projectClaudeMd]) {
             if (existsSync(mdPath)) {
                 let content = await fs.readFile(mdPath, 'utf8');

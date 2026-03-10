@@ -67,6 +67,9 @@ async function run() {
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
     const rulesOnly = process.argv.includes('--rules-only');
+    // When installing project-scoped rules via `agenfk rules install`, the target
+    // project is the user's current working directory, not the framework install dir.
+    const projectDir = rulesOnly ? process.cwd() : rootDir;
 
     const debugLog = debuglog ? (...args) => console.log(`${YELLOW}[DEBUG]${NC}`, ...args) : () => {};
 
@@ -981,7 +984,7 @@ process.exit(0);
         const scopeLabel = rulesScope === 'project' ? '.claude/CLAUDE.md (project)' : '~/.claude/CLAUDE.md (global)';
         console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ${scopeLabel}...${NC}`);
         const globalClaudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-        const projectClaudeMd = path.join(rootDir, '.claude', 'CLAUDE.md');
+        const projectClaudeMd = path.join(projectDir, '.claude', 'CLAUDE.md');
         const claudeRulesSource = path.join(rootDir, 'clauderules', 'CLAUDE.md');
         await writeRulesWithScope(globalClaudeMd, projectClaudeMd, claudeRulesSource, 'clauderules/CLAUDE.md');
     }
@@ -997,7 +1000,7 @@ process.exit(0);
         if (cursorInstalled) {
             try {
                 const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
-                const projectCursorMdc = path.join(rootDir, '.cursor', 'rules', 'agenfk.mdc');
+                const projectCursorMdc = path.join(projectDir, '.cursor', 'rules', 'agenfk.mdc');
                 const mdcSource = path.join(rootDir, 'cursorrules', 'agenfk.mdc');
                 await copyRulesWithScope(globalCursorMdc, projectCursorMdc, mdcSource, 'cursorrules/agenfk.mdc');
             } catch (e) {
@@ -1016,7 +1019,7 @@ process.exit(0);
         if (codexInstalled) {
             try {
                 const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
-                const projectAgentsMd = path.join(rootDir, 'AGENTS.md');
+                const projectAgentsMd = path.join(projectDir, 'AGENTS.md');
                 const codexRulesSource = path.join(rootDir, 'codexrules', 'AGENTS.md');
                 await writeRulesWithScope(globalAgentsMd, projectAgentsMd, codexRulesSource, 'codexrules/AGENTS.md');
             } catch (e) {
@@ -1035,7 +1038,7 @@ process.exit(0);
         if (geminiInstalled) {
             try {
                 const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
-                const projectGeminiMd = path.join(rootDir, 'GEMINI.md');
+                const projectGeminiMd = path.join(projectDir, 'GEMINI.md');
                 const geminiRulesSource = path.join(rootDir, 'geminirules', 'GEMINI.md');
                 await writeRulesWithScope(globalGeminiMd, projectGeminiMd, geminiRulesSource, 'geminirules/GEMINI.md');
             } catch (e) {
