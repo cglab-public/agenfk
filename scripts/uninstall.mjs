@@ -45,16 +45,19 @@ async function run() {
     console.log("");
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
+    const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
+    const rulesOnly = process.argv.includes('--rules-only');
 
     // Read rulesScope from config to know where rules were installed
-    let rulesScope = 'global';
+    let rulesScope = rulesScopeArg || '';
     const agenfkConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
-    if (existsSync(agenfkConfigPath)) {
+    if (!rulesScope && existsSync(agenfkConfigPath)) {
         try {
             const cfg = JSON.parse(await fs.readFile(agenfkConfigPath, 'utf8'));
             if (cfg.rulesScope) rulesScope = cfg.rulesScope;
         } catch {}
     }
+    if (!rulesScope) rulesScope = 'global';
 
     function shouldRun(platform) {
         if (onlyPlatform) return onlyPlatform.toLowerCase() === platform.toLowerCase();
@@ -84,6 +87,12 @@ async function run() {
         console.log(`${YELLOW}Proceeding with uninstallation...${NC}`);
     }
 
+    // --rules-only: skip steps 1–6d, jump straight to rules removal
+    if (rulesOnly) {
+        console.log(`${BLUE}  --rules-only: removing workflow rules (${rulesScope} scope)...${NC}`);
+    }
+
+    if (!rulesOnly) {
     // 1. Slash commands — Claude Code
     if (shouldRun('claude')) {
         console.log(`${GREEN}[1/10] Removing Claude Code slash commands...${NC}`);
@@ -244,6 +253,8 @@ async function run() {
         }
     }
 
+    } // end if (!rulesOnly)
+
     // 6e. Codex workflow rules (AGENTS.md) — clean up from both scopes
     if (shouldRun('codex')) {
         console.log(`${GREEN}[6e/10] Removing Codex workflow rules (${rulesScope} scope)...${NC}`);
@@ -326,6 +337,11 @@ async function run() {
                 }
             }
         }
+    }
+
+    if (rulesOnly) {
+        console.log(`${GREEN}Done. Workflow rules removed (${rulesScope}).${NC}`);
+        return;
     }
 
     // 9. Verify token

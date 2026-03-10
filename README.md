@@ -131,6 +131,25 @@ agenfk integration uninstall cursor
 
 Supported platform IDs are `claude`, `opencode`, `cursor`, `codex`, and `gemini`.
 
+### Rules Scope — Global vs Project
+
+During first install, AgEnFK asks where workflow rules (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `agenfk.mdc`) should be installed:
+
+*   **Global** (default) — rules go to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, etc. They are picked up automatically by every AI coding tool, across all repositories — no per-repo setup needed.
+*   **Project** — rules go to `.claude/CLAUDE.md`, `AGENTS.md` in the project root, etc. Scoped to the current repository only. You must install rules in each repo you want AgEnFK to manage.
+
+Your choice is saved in `~/.agenfk/config.json` and respected on every upgrade. To manage rules after installation:
+
+```bash
+agenfk rules install           # install rules into current repo (project scope)
+agenfk rules install --global  # install rules globally
+agenfk rules uninstall         # remove project-scoped rules
+agenfk rules uninstall --global
+agenfk rules status            # show current scope (global, project, or none)
+```
+
+Switching automatically removes rules from the old location and installs them in the new one.
+
 ## Multi-Project Support
 
 AgEnFK supports managing multiple distinct projects from a single unified backend. 

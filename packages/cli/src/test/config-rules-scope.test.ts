@@ -52,83 +52,93 @@ import * as os from 'os';
 
 const CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
 
-describe('agenfk config set rulesScope', () => {
+describe('agenfk rules install', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('accepts "global" and writes rulesScope to config', async () => {
+  it('installs project-scoped rules by default and saves rulesScope to config', async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ dbPath: '/some/path' }));
 
-    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'global']);
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+
+    const written = JSON.parse(
+      (mockWriteFileSync.mock.calls[0] as any[])[1] as string
+    );
+    expect(written.rulesScope).toBe('project');
+    expect(written.dbPath).toBe('/some/path');
+  });
+
+  it('installs global-scoped rules with --global flag', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{}');
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
 
     const written = JSON.parse(
       (mockWriteFileSync.mock.calls[0] as any[])[1] as string
     );
     expect(written.rulesScope).toBe('global');
-    // Preserves existing keys
-    expect(written.dbPath).toBe('/some/path');
   });
 
-  it('accepts "project" and writes rulesScope to config', async () => {
+  it('runs install.mjs with --rules-scope and --rules-only', async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('{}');
 
-    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'project']);
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
 
-    const written = JSON.parse(
-      (mockWriteFileSync.mock.calls[0] as any[])[1] as string
-    );
-    expect(written.rulesScope).toBe('project');
-  });
-
-  it('rejects invalid values (not "global" or "project")', async () => {
-    const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
-
-    await expect(
-      program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'banana'])
-    ).rejects.toThrow('exit');
-
-    // Should NOT have written anything
-    expect(mockWriteFileSync).not.toHaveBeenCalled();
-    mockExit.mockRestore();
-  });
-
-  it('creates config when file does not exist', async () => {
-    mockExistsSync.mockReturnValue(false);
-
-    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'project']);
-
-    expect(mockReadFileSync).not.toHaveBeenCalled();
-    const written = JSON.parse(
-      (mockWriteFileSync.mock.calls[0] as any[])[1] as string
-    );
-    expect(written.rulesScope).toBe('project');
-  });
-
-  it('re-runs install.mjs with --rules-scope to migrate rules', async () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('{}');
-
-    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'project']);
-
-    // Should have called spawnSync with install.mjs and --rules-scope=project
     expect(mockSpawnSync).toHaveBeenCalledWith(
       'node',
       expect.arrayContaining([
         expect.stringContaining('install.mjs'),
-        '--rules-scope=project',
+        '--rules-scope=global',
+        '--rules-only',
       ]),
       expect.objectContaining({ stdio: 'inherit' })
     );
   });
 
-  it('passes --rules-only flag so install.mjs only updates rules (no full reinstall)', async () => {
+  it('creates config when file does not exist', async () => {
+    mockExistsSync.mockReturnValue(false);
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockReadFileSync).not.toHaveBeenCalled();
+    const written = JSON.parse(
+      (mockWriteFileSync.mock.calls[0] as any[])[1] as string
+    );
+    expect(written.rulesScope).toBe('global');
+  });
+});
+
+describe('agenfk rules uninstall', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('runs uninstall.mjs with --rules-scope=project and --rules-only by default', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'project' }));
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall']);
+
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      'node',
+      expect.arrayContaining([
+        expect.stringContaining('uninstall.mjs'),
+        '--rules-scope=project',
+        '--rules-only',
+      ]),
+      expect.objectContaining({ stdio: 'inherit' })
+    );
+  });
+
+  it('runs uninstall.mjs with --rules-scope=global when --global flag is used', async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('{}');
 
-    await program.parseAsync(['node', 'agenfk', 'config', 'set', 'rulesScope', 'global']);
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
 
     expect(mockSpawnSync).toHaveBeenCalledWith(
       'node',
@@ -138,5 +148,59 @@ describe('agenfk config set rulesScope', () => {
       ]),
       expect.anything()
     );
+  });
+
+  it('clears rulesScope from config after uninstalling the active scope', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global', dbPath: '/p' }));
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+
+    // writeFileSync should be called to update config (removing rulesScope)
+    expect(mockWriteFileSync).toHaveBeenCalled();
+    const written = JSON.parse(
+      (mockWriteFileSync.mock.calls[0] as any[])[1] as string
+    );
+    expect(written.rulesScope).toBeUndefined();
+    expect(written.dbPath).toBe('/p');
+  });
+});
+
+describe('agenfk rules status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports "global" when config has rulesScope=global', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global' }));
+
+    const spy = vi.spyOn(console, 'log');
+    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('global'));
+    spy.mockRestore();
+  });
+
+  it('reports "project" when config has rulesScope=project', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'project' }));
+
+    const spy = vi.spyOn(console, 'log');
+    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('project'));
+    spy.mockRestore();
+  });
+
+  it('reports "not configured" when no rulesScope is set', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{}');
+
+    const spy = vi.spyOn(console, 'log');
+    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('not configured'));
+    spy.mockRestore();
   });
 });

@@ -208,7 +208,8 @@ try {
 
 program
   .version(CURRENT_VERSION)
-  .description('AgEnFK Engineering CLI');
+  .description('AgEnFK Engineering CLI')
+;
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -1617,29 +1618,81 @@ configSetCommand
     }
   });
 
-configSetCommand
-  .command('rulesScope <value>')
-  .description('Set where workflow rules are installed: "global" (e.g. ~/.claude/) or "project" (e.g. .claude/)')
-  .action((value: string) => {
-    const normalised = value.trim().toLowerCase();
-    if (normalised !== 'global' && normalised !== 'project') {
-      console.error(chalk.red('Error: value must be "global" or "project"'));
-      process.exit(1);
-    }
+// ── agenfk rules ──────────────────────────────────────────────────────────────
+
+const rulesCommand = program
+  .command('rules')
+  .description('Manage workflow rules (CLAUDE.md, AGENTS.md, GEMINI.md, agenfk.mdc)');
+
+rulesCommand
+  .command('install')
+  .description('Install workflow rules into the current repo (project scope) or globally')
+  .option('-g, --global', 'Install rules globally (~/.claude/, ~/.codex/, etc.) instead of per-project')
+  .action((options: { global?: boolean }) => {
+    const scope = options.global ? 'global' : 'project';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
-      config.rulesScope = normalised;
+      config.rulesScope = scope;
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
-      console.log(chalk.green(`Rules scope set to: ${normalised}`));
-      console.log(chalk.blue('Re-installing rules to the new location...'));
-      runIntegrationScript('install.mjs', [`--rules-scope=${normalised}`, '--rules-only']);
-      console.log(chalk.green('Done. Rules have been moved to the ' + normalised + ' location.'));
+      console.log(chalk.blue(`Installing workflow rules (${scope})...`));
+      runIntegrationScript('install.mjs', [`--rules-scope=${scope}`, '--rules-only']);
+      console.log(chalk.green(`Done. Workflow rules installed (${scope}).`));
     } catch (err: any) {
-      console.error(chalk.red('Error updating config:'), err.message);
+      console.error(chalk.red('Error installing rules:'), err.message);
+      process.exit(1);
+    }
+  });
+
+rulesCommand
+  .command('uninstall')
+  .description('Remove workflow rules from the current repo or globally')
+  .option('-g, --global', 'Remove global rules instead of project rules')
+  .action((options: { global?: boolean }) => {
+    const scope = options.global ? 'global' : 'project';
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      console.log(chalk.blue(`Removing workflow rules (${scope})...`));
+      runIntegrationScript('uninstall.mjs', [`--rules-scope=${scope}`, '--rules-only']);
+      // Update config to reflect the removal
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      if (config.rulesScope === scope) {
+        delete config.rulesScope;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      }
+      console.log(chalk.green(`Done. Workflow rules removed (${scope}).`));
+    } catch (err: any) {
+      console.error(chalk.red('Error removing rules:'), err.message);
+      process.exit(1);
+    }
+  });
+
+rulesCommand
+  .command('status')
+  .description('Show where workflow rules are currently installed')
+  .action(() => {
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      let scope = 'none';
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        scope = config.rulesScope || 'none';
+      }
+      if (scope === 'global') {
+        console.log(chalk.green('Rules scope: global') + chalk.gray(' (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, etc.)'));
+      } else if (scope === 'project') {
+        console.log(chalk.green('Rules scope: project') + chalk.gray(` (${process.cwd()})`));
+      } else {
+        console.log(chalk.yellow('Rules scope: not configured') + chalk.gray(' (run "agenfk rules install" or "agenfk rules install --global")'));
+      }
+    } catch (err: any) {
+      console.error(chalk.red('Error reading config:'), err.message);
       process.exit(1);
     }
   });
@@ -2510,6 +2563,50 @@ flowCommand
       console.error(chalk.red('Error installing flow:'), error.response?.data?.error || error.message);
     }
   });
+
+// ── Grouped Help Output ──────────────────────────────────────────────────────
+// Override the default help to group commands by section
+
+const _originalHelpInfo = program.helpInformation.bind(program);
+program.helpInformation = function () {
+  const allCommands = program.commands;
+  const groups: [string, string[]][] = [
+    ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
+    ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
+    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-tokens', 'log-test']],
+    ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
+    ['Git & Release',         ['branch', 'pr']],
+    ['Flows',                 ['flow']],
+    ['External Sync',         ['github', 'jira']],
+    ['Configuration',         ['config', 'backup', 'db']],
+  ];
+
+  const grouped = new Set<string>();
+  let output = `Usage: agenfk [options] [command]\n\nAgEnFK Engineering CLI\n`;
+  output += `\nOptions:\n  -V, --version  output the version number\n  -h, --help     display help for command\n`;
+
+  for (const [section, names] of groups) {
+    const cmds = names
+      .map(n => allCommands.find(c => c.name() === n))
+      .filter(Boolean);
+    if (cmds.length === 0) continue;
+    cmds.forEach(c => grouped.add(c!.name()));
+    output += `\n${section}:\n`;
+    for (const c of cmds) {
+      output += `  ${c!.name().padEnd(20)} ${c!.description()}\n`;
+    }
+  }
+
+  // MCP (always show separately)
+  const mcp = allCommands.find(c => c.name() === 'mcp');
+  if (mcp) {
+    grouped.add('mcp');
+    output += `\nInternal:\n  mcp${' '.repeat(16)} ${mcp.description()}\n`;
+  }
+
+  output += `\nRun "agenfk <command> --help" for details on a specific command.\n`;
+  return output;
+};
 
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
