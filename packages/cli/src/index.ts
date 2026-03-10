@@ -402,7 +402,7 @@ program
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
-    // 1. Only bootstrap if start-services.mjs or any required dist is missing
+    // 1. Full bootstrap only if dist files are missing
     const startScript = path.join(rootDir, 'scripts', 'start-services.mjs');
     const requiredDists = [
         path.join(rootDir, 'packages/server/dist/server.js'),
@@ -420,8 +420,6 @@ program
             console.error(chalk.red('Bootstrap failed.'));
             return;
         }
-    } else {
-        console.log(chalk.green('Build artifacts found, skipping rebuild.'));
     }
     
     console.log(chalk.blue('⚡ Starting agenfk services...'));
