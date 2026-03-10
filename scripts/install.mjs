@@ -66,6 +66,7 @@ async function run() {
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
+    const rulesOnly = process.argv.includes('--rules-only');
 
     const debugLog = debuglog ? (...args) => console.log(`${YELLOW}[DEBUG]${NC}`, ...args) : () => {};
 
@@ -308,6 +309,12 @@ async function run() {
     debugLog('dbPath resolved:', dbPath || '(empty — not yet set)');
     debugLog('dbPath file exists:', dbPath ? existsSync(dbPath) : false);
 
+    // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
+    if (rulesOnly) {
+        console.log(`${BLUE}  --rules-only: skipping non-rules steps, jumping to rules installation...${NC}`);
+    }
+
+    if (!rulesOnly) {
     // 3b. Auto-migrate legacy db.json → SQLite migration.json
     if (!onlyPlatform) {
         const localAgenfkDir = path.join(rootDir, '.agenfk');
@@ -908,6 +915,8 @@ process.exit(0);
             console.log("  Error checking Claude Code CLI. Skipping.");
         }
     }
+
+    } // end if (!rulesOnly)
 
     // Helper: write rules to the active scope and clean up the opposite scope
     async function writeRulesWithScope(globalPath, projectPath, sourceFile, label) {

@@ -1617,6 +1617,33 @@ configSetCommand
     }
   });
 
+configSetCommand
+  .command('rulesScope <value>')
+  .description('Set where workflow rules are installed: "global" (e.g. ~/.claude/) or "project" (e.g. .claude/)')
+  .action((value: string) => {
+    const normalised = value.trim().toLowerCase();
+    if (normalised !== 'global' && normalised !== 'project') {
+      console.error(chalk.red('Error: value must be "global" or "project"'));
+      process.exit(1);
+    }
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      config.rulesScope = normalised;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      console.log(chalk.green(`Rules scope set to: ${normalised}`));
+      console.log(chalk.blue('Re-installing rules to the new location...'));
+      runIntegrationScript('install.mjs', [`--rules-scope=${normalised}`, '--rules-only']);
+      console.log(chalk.green('Done. Rules have been moved to the ' + normalised + ' location.'));
+    } catch (err: any) {
+      console.error(chalk.red('Error updating config:'), err.message);
+      process.exit(1);
+    }
+  });
+
 // ── MCP FALLBACK COMMANDS ─────────────────────────────────────────────────────
 // These commands provide CLI parity with MCP tools for use when MCP is unavailable.
 
