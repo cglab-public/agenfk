@@ -24,6 +24,44 @@ AgEnFK is built on six core mandates to ensure your AI-assisted development is c
 *   **Reliable**: Enforces mandatory verification (build/lint/test) before any work is declared "Done".
 *   **Flexible**: Plugin-based architecture with support for MCP (Model Context Protocol), usable across multiple AI coding agents.
 
+## How do I use AgEnFK?
+
+The core experience is simple: you describe what you want in plain language, and AgEnFK turns it into a structured, verified workflow. Here is what happens end-to-end using the default flow (TODO → IN_PROGRESS → REVIEW → TEST → DONE).
+
+### 1. You make a request
+
+Open your AI coding agent (Claude Code, Opencode, Gemini CLI, etc.) and type `/agenfk` followed by what you need:
+
+```
+/agenfk Add a retry mechanism to the API client with exponential backoff
+```
+
+The agent reads your request, classifies it (Task, Story, or Epic depending on complexity), and creates a card on the Kanban board in the **TODO** column.
+
+### 2. The agent plans and codes
+
+The agent advances the card to **IN_PROGRESS** and begins implementation. It explores your codebase, understands the context, writes the code, and logs progress comments on the card as it goes — giving you full visibility on the Kanban dashboard.
+
+### 3. Build verification
+
+Once the implementation is complete, the agent moves the card to **REVIEW** and performs a self-review of every file it modified. It then runs your project's build command (e.g. `npm run build`, `cargo build`) to verify the code compiles cleanly.
+
+### 4. Test verification
+
+The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
+
+### 5. Done
+
+When all verification passes, the card moves to **DONE**, the agent commits the changes, and pushes the branch. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
+
+---
+
+This default flow is the main workflow, but AgEnFK is designed to adapt to how **you** work — not the other way around.
+
+**Define your own flows.** The default pipeline is just a starting point. You can create custom flows with any steps and exit criteria you need — for example, a BDD flow (TODO → WRITE_TESTS → IMPLEMENT → REVIEW → DONE) or a minimal flow (TODO → CODING → DONE). Share your flows with the community via the [AgEnFK Community Registry](https://github.com/cglab-public/agenfk-flows), and download flows published by other engineers — all from the Flow Editor in the Kanban UI. See [Custom Workflow Flows](#custom-workflow-flows) for details.
+
+**Bring your own cards.** You don't have to start every task from a chat prompt. Import cards from **JIRA** or **GitHub Issues** to pull work items directly into your AgEnFK board (see [GitHub Issues Sync](#github-issues-sync)), or create and organise cards manually on the **Kanban dashboard** using drag-and-drop — then let the agent pick them up when you're ready.
+
 ## Supported Platforms
 
 | Platform | Support Level | Enforcement | Notes |
@@ -241,44 +279,6 @@ After installation, slash commands are available in your AI editor (Claude Code,
 | `/agenfk-release-beta` | Push to remote and cut a pre-release (beta). |
 
 Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight. On experimental platforms (Cursor), the MCP tools are available directly — refer to the platform-specific workflow rules installed during setup.
-
-## How do I use AgEnFK?
-
-The core experience is simple: you describe what you want in plain language, and AgEnFK turns it into a structured, verified workflow. Here is what happens end-to-end using the default flow (TODO → IN_PROGRESS → REVIEW → TEST → DONE).
-
-### 1. You make a request
-
-Open your AI coding agent (Claude Code, Opencode, Gemini CLI, etc.) and type `/agenfk` followed by what you need:
-
-```
-/agenfk Add a retry mechanism to the API client with exponential backoff
-```
-
-The agent reads your request, classifies it (Task, Story, or Epic depending on complexity), and creates a card on the Kanban board in the **TODO** column.
-
-### 2. The agent plans and codes
-
-The agent advances the card to **IN_PROGRESS** and begins implementation. It explores your codebase, understands the context, writes the code, and logs progress comments on the card as it goes — giving you full visibility on the Kanban dashboard.
-
-### 3. Build verification
-
-Once the implementation is complete, the agent moves the card to **REVIEW** and performs a self-review of every file it modified. It then runs your project's build command (e.g. `npm run build`, `cargo build`) to verify the code compiles cleanly.
-
-### 4. Test verification
-
-The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
-
-### 5. Done
-
-When all verification passes, the card moves to **DONE**, the agent commits the changes, and pushes the branch. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
-
----
-
-This default flow is the main workflow, but AgEnFK is designed to adapt to how **you** work — not the other way around.
-
-**Define your own flows.** The default pipeline is just a starting point. You can create custom flows with any steps and exit criteria you need — for example, a BDD flow (TODO → WRITE_TESTS → IMPLEMENT → REVIEW → DONE) or a minimal flow (TODO → CODING → DONE). Share your flows with the community via the [AgEnFK Community Registry](https://github.com/cglab-public/agenfk-flows), and download flows published by other engineers — all from the Flow Editor in the Kanban UI. See [Custom Workflow Flows](#custom-workflow-flows) for details.
-
-**Bring your own cards.** You don't have to start every task from a chat prompt. Import cards from **JIRA** or **GitHub Issues** to pull work items directly into your AgEnFK board (see [GitHub Issues Sync](#github-issues-sync)), or create and organise cards manually on the **Kanban dashboard** using drag-and-drop — then let the agent pick them up when you're ready.
 
 ## Operation Modes
 
