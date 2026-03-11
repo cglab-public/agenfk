@@ -409,6 +409,91 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["itemId"],
         },
       },
+      {
+        name: "list_flows",
+        description: "List all custom workflow flows defined in this AgEnFK instance.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "create_flow",
+        description: "Create a new custom workflow flow with named steps. Optionally activate it for a project immediately.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Unique flow name (e.g. 'security-review')." },
+            description: { type: "string", description: "Optional description." },
+            steps: {
+              type: "array",
+              description: "Ordered list of steps. Each step: { name, label?, exitCriteria?, order, isSpecial?, isAnchor? }.",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  label: { type: "string" },
+                  exitCriteria: { type: "string" },
+                  order: { type: "number" },
+                  isSpecial: { type: "boolean" },
+                  isAnchor: { type: "boolean" },
+                },
+                required: ["name", "order"],
+              },
+            },
+            projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
+          },
+          required: ["name", "steps"],
+        },
+      },
+      {
+        name: "update_flow",
+        description: "Update an existing workflow flow (name, description, or steps).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The flow ID to update." },
+            name: { type: "string" },
+            description: { type: "string" },
+            steps: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  label: { type: "string" },
+                  exitCriteria: { type: "string" },
+                  order: { type: "number" },
+                  isSpecial: { type: "boolean" },
+                  isAnchor: { type: "boolean" },
+                },
+                required: ["name", "order"],
+              },
+            },
+          },
+          required: ["id"],
+        },
+      },
+      {
+        name: "delete_flow",
+        description: "Delete a custom workflow flow by ID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "The flow ID to delete." },
+          },
+          required: ["id"],
+        },
+      },
+      {
+        name: "use_flow",
+        description: "Activate a workflow flow for a project. All items in that project will follow the new flow's step order.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectId: { type: "string", description: "The project to update." },
+            flowId: { type: "string", description: "The flow to activate. Pass empty string to reset to the default flow." },
+          },
+          required: ["projectId", "flowId"],
+        },
+      },
     ],
   };
 });
@@ -769,6 +854,78 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
         } catch (error: any) {
           const msg = error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: `❌ Failed to resume: ${msg}` }] };
+        }
+      }
+      case "list_flows": {
+        const { data } = await api.get(`/flows`);
+        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+      case "create_flow": {
+        const args = z.object({
+          name: z.string(),
+          description: z.string().optional(),
+          steps: z.array(z.object({
+            name: z.string(),
+            label: z.string().optional(),
+            exitCriteria: z.string().optional(),
+            order: z.number(),
+            isSpecial: z.boolean().optional(),
+            isAnchor: z.boolean().optional(),
+          })),
+          projectId: z.string().optional(),
+        }).parse(request.params.arguments);
+        const { projectId, ...flowBody } = args;
+        const { data: created } = await api.post(`/flows`, flowBody);
+        if (projectId) {
+          await api.post(`/projects/${projectId}/flow`, { flowId: created.id });
+          return { content: [{ type: "text", text: `✅ Flow "${created.name}" created (${created.id}) and activated for project ${projectId}.` }] };
+        }
+        return { content: [{ type: "text", text: `✅ Flow "${created.name}" created with ID: ${created.id}\n\nUse use_flow(projectId, "${created.id}") to activate it for a project.` }] };
+      }
+      case "update_flow": {
+        const args = z.object({
+          id: z.string(),
+          name: z.string().optional(),
+          description: z.string().optional(),
+          steps: z.array(z.object({
+            name: z.string(),
+            label: z.string().optional(),
+            exitCriteria: z.string().optional(),
+            order: z.number(),
+            isSpecial: z.boolean().optional(),
+            isAnchor: z.boolean().optional(),
+          })).optional(),
+        }).parse(request.params.arguments);
+        const { id, ...updates } = args;
+        try {
+          const { data } = await api.put(`/flows/${id}`, updates);
+          return { content: [{ type: "text", text: `✅ Flow "${data.name}" updated.\n\n${JSON.stringify(data, null, 2)}` }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ ${msg}` }] };
+        }
+      }
+      case "delete_flow": {
+        const { id } = z.object({ id: z.string() }).parse(request.params.arguments);
+        try {
+          await api.delete(`/flows/${id}`);
+          return { content: [{ type: "text", text: `✅ Flow ${id} deleted.` }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ ${msg}` }] };
+        }
+      }
+      case "use_flow": {
+        const { projectId, flowId } = z.object({
+          projectId: z.string(),
+          flowId: z.string(),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/projects/${projectId}/flow`, { flowId: flowId || null });
+          return { content: [{ type: "text", text: `✅ Flow activated for project ${projectId}.\n\n${JSON.stringify(data, null, 2)}` }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ ${msg}` }] };
         }
       }
       default:
