@@ -45,6 +45,20 @@ async function run() {
     console.log("");
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
+    const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
+    const rulesOnly = process.argv.includes('--rules-only');
+    const projectDir = rulesOnly ? process.cwd() : rootDir;
+
+    // Read rulesScope from config to know where rules were installed
+    let rulesScope = rulesScopeArg || '';
+    const agenfkConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    if (!rulesScope && existsSync(agenfkConfigPath)) {
+        try {
+            const cfg = JSON.parse(await fs.readFile(agenfkConfigPath, 'utf8'));
+            if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+        } catch {}
+    }
+    if (!rulesScope) rulesScope = 'global';
 
     function shouldRun(platform) {
         if (onlyPlatform) return onlyPlatform.toLowerCase() === platform.toLowerCase();
@@ -74,6 +88,12 @@ async function run() {
         console.log(`${YELLOW}Proceeding with uninstallation...${NC}`);
     }
 
+    // --rules-only: skip steps 1–6d, jump straight to rules removal
+    if (rulesOnly) {
+        console.log(`${BLUE}  --rules-only: removing workflow rules (${rulesScope} scope)...${NC}`);
+    }
+
+    if (!rulesOnly) {
     // 1. Slash commands — Claude Code
     if (shouldRun('claude')) {
         console.log(`${GREEN}[1/10] Removing Claude Code slash commands...${NC}`);
@@ -122,13 +142,37 @@ async function run() {
         }
     }
 
-    // 3. Opencode skill
+    // 3. Opencode skill (legacy single-dir format)
     if (shouldRun('opencode')) {
         console.log(`${GREEN}[3/10] Removing Opencode skill...${NC}`);
         const skillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
         if (existsSync(skillDir)) {
             await fs.rm(skillDir, { recursive: true, force: true });
             console.log(`  Removed: ${skillDir}`);
+        }
+    }
+
+    // 3b. Skills (new skills/<name>/SKILL.md format) — all platforms
+    {
+        console.log(`${GREEN}[3b/10] Removing agenfk skills (all platforms)...${NC}`);
+        const skillsDirs = [
+            path.join(os.homedir(), '.claude', 'skills'),
+            path.join(os.homedir(), '.config', 'opencode', 'skills'),
+            path.join(os.homedir(), '.cursor', 'skills'),
+            path.join(os.homedir(), '.codex', 'skills'),
+            path.join(os.homedir(), '.gemini', 'skills'),
+            path.join(os.homedir(), '.agents', 'skills'),
+        ];
+        for (const dir of skillsDirs) {
+            if (!existsSync(dir)) continue;
+            const entries = await fs.readdir(dir);
+            for (const entry of entries) {
+                if (entry.startsWith('agenfk')) {
+                    const fullPath = path.join(dir, entry);
+                    await fs.rm(fullPath, { recursive: true, force: true });
+                    console.log(`  Removed: ${fullPath}`);
+                }
+            }
         }
     }
 
@@ -234,53 +278,62 @@ async function run() {
         }
     }
 
-    // 6e. Codex workflow rules (AGENTS.md)
+    } // end if (!rulesOnly)
+
+    // 6e. Codex workflow rules (AGENTS.md) — clean up from both scopes
     if (shouldRun('codex')) {
-        console.log(`${GREEN}[6e/10] Removing Codex workflow rules...${NC}`);
-        const codexAgentsMdPath = path.join(os.homedir(), '.codex', 'AGENTS.md');
-        if (existsSync(codexAgentsMdPath)) {
-            let codexContent = await fs.readFile(codexAgentsMdPath, 'utf8');
-            codexContent = codexContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-            if (codexContent.trim()) {
-                await fs.writeFile(codexAgentsMdPath, codexContent, 'utf8');
-                console.log(`  Removed AgenFK block from ${codexAgentsMdPath}`);
-            } else {
-                await fs.unlink(codexAgentsMdPath);
-                console.log(`  Removed: ${codexAgentsMdPath} (was AgenFK-only)`);
+        console.log(`${GREEN}[6e/10] Removing Codex workflow rules (${rulesScope} scope)...${NC}`);
+        const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
+        const projectAgentsMd = path.join(projectDir, 'AGENTS.md');
+        for (const agentsMdPath of [globalAgentsMd, projectAgentsMd]) {
+            if (existsSync(agentsMdPath)) {
+                let content = await fs.readFile(agentsMdPath, 'utf8');
+                const cleaned = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                if (cleaned !== content) {
+                    if (cleaned.trim()) {
+                        await fs.writeFile(agentsMdPath, cleaned, 'utf8');
+                        console.log(`  Removed AgenFK block from ${agentsMdPath}`);
+                    } else {
+                        await fs.unlink(agentsMdPath);
+                        console.log(`  Removed: ${agentsMdPath} (was AgenFK-only)`);
+                    }
+                }
             }
-        } else {
-            console.log(`  ${codexAgentsMdPath} not found (skipping)`);
         }
     }
 
-    // 6f. Cursor workflow rules (.mdc)
+    // 6f. Cursor workflow rules (.mdc) — clean up from both scopes
     if (shouldRun('cursor')) {
-        console.log(`${GREEN}[6f/10] Removing Cursor workflow rules...${NC}`);
-        const cursorMdcPath = path.join(getCursorRulesDir(), 'agenfk.mdc');
-        if (existsSync(cursorMdcPath)) {
-            await fs.unlink(cursorMdcPath);
-            console.log(`  Removed: ${cursorMdcPath}`);
-        } else {
-            console.log(`  ${cursorMdcPath} not found (skipping)`);
+        console.log(`${GREEN}[6f/10] Removing Cursor workflow rules (${rulesScope} scope)...${NC}`);
+        const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
+        const projectCursorMdc = path.join(projectDir, '.cursor', 'rules', 'agenfk.mdc');
+        for (const mdcPath of [globalCursorMdc, projectCursorMdc]) {
+            if (existsSync(mdcPath)) {
+                await fs.unlink(mdcPath);
+                console.log(`  Removed: ${mdcPath}`);
+            }
         }
     }
 
-    // 6g. Gemini CLI workflow rules (GEMINI.md)
+    // 6g. Gemini CLI workflow rules (GEMINI.md) — clean up from both scopes
     if (shouldRun('gemini')) {
-        console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules...${NC}`);
-        const geminiMdPath = path.join(os.homedir(), '.gemini', 'GEMINI.md');
-        if (existsSync(geminiMdPath)) {
-            let geminiContent = await fs.readFile(geminiMdPath, 'utf8');
-            geminiContent = geminiContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-            if (geminiContent.trim()) {
-                await fs.writeFile(geminiMdPath, geminiContent, 'utf8');
-                console.log(`  Removed AgenFK block from ${geminiMdPath}`);
-            } else {
-                await fs.unlink(geminiMdPath);
-                console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+        console.log(`${GREEN}[6g/10] Removing Gemini CLI workflow rules (${rulesScope} scope)...${NC}`);
+        const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
+        const projectGeminiMd = path.join(projectDir, 'GEMINI.md');
+        for (const geminiMdPath of [globalGeminiMd, projectGeminiMd]) {
+            if (existsSync(geminiMdPath)) {
+                let content = await fs.readFile(geminiMdPath, 'utf8');
+                const cleaned = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                if (cleaned !== content) {
+                    if (cleaned.trim()) {
+                        await fs.writeFile(geminiMdPath, cleaned, 'utf8');
+                        console.log(`  Removed AgenFK block from ${geminiMdPath}`);
+                    } else {
+                        await fs.unlink(geminiMdPath);
+                        console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+                    }
+                }
             }
-        } else {
-            console.log(`  ${geminiMdPath} not found (skipping)`);
         }
     }
 
@@ -294,16 +347,26 @@ async function run() {
         }
     }
 
-    // 8. CLAUDE.md workflow rules
+    // 8. CLAUDE.md workflow rules (clean up from active scope + opposite)
     if (shouldRun('claude')) {
-        console.log(`${GREEN}[8/10] Removing AgenFK rules from ~/.claude/CLAUDE.md...${NC}`);
-        const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
-        if (existsSync(claudeMdPath)) {
-            let content = await fs.readFile(claudeMdPath, 'utf8');
-            content = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
-            await fs.writeFile(claudeMdPath, content, 'utf8');
-            console.log(`  Removed AgenFK block from ${claudeMdPath}`);
+        console.log(`${GREEN}[8/10] Removing AgenFK rules from CLAUDE.md (${rulesScope} scope)...${NC}`);
+        const globalClaudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+        const projectClaudeMd = path.join(projectDir, '.claude', 'CLAUDE.md');
+        for (const mdPath of [globalClaudeMd, projectClaudeMd]) {
+            if (existsSync(mdPath)) {
+                let content = await fs.readFile(mdPath, 'utf8');
+                const cleaned = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                if (cleaned !== content) {
+                    await fs.writeFile(mdPath, cleaned, 'utf8');
+                    console.log(`  Removed AgenFK block from ${mdPath}`);
+                }
+            }
         }
+    }
+
+    if (rulesOnly) {
+        console.log(`${GREEN}Done. Workflow rules removed (${rulesScope}).${NC}`);
+        return;
     }
 
     // 9. Verify token
