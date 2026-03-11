@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/server",
-  "version": "0.2.21-beta.11",
+  "version": "0.2.21-beta.12",
   "description": "MCP Server for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
