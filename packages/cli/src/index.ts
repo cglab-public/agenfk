@@ -1657,12 +1657,16 @@ function writeRuleBlock(targetPath: string, sourceContent: string): void {
   fs.writeFileSync(targetPath, combined, 'utf8');
 }
 
-/** Remove agenfk block from a markdown file */
+/** Remove agenfk block from a markdown file; delete file if it becomes empty */
 function removeRuleBlock(targetPath: string): void {
   if (!fs.existsSync(targetPath)) return;
   const content = fs.readFileSync(targetPath, 'utf8');
   const cleaned = content.replace(AGENFK_BLOCK_RE, '').trim();
-  fs.writeFileSync(targetPath, cleaned ? cleaned + '\n' : '', 'utf8');
+  if (cleaned) {
+    fs.writeFileSync(targetPath, cleaned + '\n', 'utf8');
+  } else {
+    fs.unlinkSync(targetPath);
+  }
 }
 
 const RULES_CONFIG: Array<{
@@ -1807,6 +1811,35 @@ function removeCommandsFromDir(
   }
 }
 
+/** Remove all agenfk skill dirs/files from a platform's skills dir (uninstall without needing srcDir) */
+function removeAgenfkSkillsFromDir(destDir: string): void {
+  if (!fs.existsSync(destDir)) return;
+  for (const entry of fs.readdirSync(destDir) as string[]) {
+    if (!entry.startsWith('agenfk')) continue;
+    const full = path.join(destDir, entry);
+    // Remove SKILL.md inside the skill dir, then the dir itself
+    const skillFile = path.join(full, 'SKILL.md');
+    if (fs.existsSync(skillFile)) {
+      fs.unlinkSync(skillFile);
+    } else if (fs.existsSync(full)) {
+      // Plain file (old flat format)
+      try { fs.unlinkSync(full); } catch { /* ignore */ }
+    }
+    try { fs.rmdirSync(full); } catch { /* ignore — not empty or doesn't exist */ }
+  }
+  // Remove destDir itself if now empty, then try the parent too
+  try {
+    if ((fs.readdirSync(destDir) as string[]).length === 0) {
+      fs.rmdirSync(destDir);
+      // Try to clean up the platform root dir (e.g. .claude/) if now empty
+      const parentDir = path.dirname(destDir);
+      try {
+        if ((fs.readdirSync(parentDir) as string[]).length === 0) fs.rmdirSync(parentDir);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
 const rulesCommand = program
   .command('skills')
   .description('Manage workflow skills & rules (CLAUDE.md, AGENTS.md, GEMINI.md, slash commands)');
@@ -1917,7 +1950,9 @@ rulesCommand
       // ── Commands → skills (all platforms) ───────────────────────────────
       for (const platform of COMMAND_SKILL_PLATFORMS) {
         const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        // Try source-based removal first (when srcDir exists), then sweep destDir directly
         removeCommandsFromDir(cmdSrcDir, targetDir, SKILL_TRANSFORM);
+        removeAgenfkSkillsFromDir(targetDir);
       }
 
       // ── Legacy flat commands dirs (old format) ───────────────────────────
