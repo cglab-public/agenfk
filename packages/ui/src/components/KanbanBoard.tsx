@@ -1312,11 +1312,11 @@ export const KanbanBoard: React.FC = () => {
 
       <main className="flex-1 overflow-x-auto overflow-y-hidden p-4 bg-slate-50/50 dark:bg-slate-950/20 isolate relative z-0">
         <LayoutGroup id="board">
-          <div className="flex flex-col md:flex-row gap-2 h-full w-full relative z-0">
+          <div data-testid="board-columns-container" className="flex flex-col md:flex-row gap-2 h-full min-w-full relative z-0">
             {/* Ideas Section — hidden in drill-down view */}
-            {navPath.length === 0 && <div className={clsx("flex flex-col transition-all duration-300 h-full", !isIdeasCollapsed ? "w-64 shrink min-w-0" : "w-12 shrink-0")}>
+            {navPath.length === 0 && <div data-testid="ideas-column-wrapper" className={clsx("flex flex-col transition-all duration-300 h-full shrink-0", !isIdeasCollapsed ? "w-64" : "w-12")}>
               {isIdeasCollapsed ? (
-                <button onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
+                <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
                   <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
                   <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-indigo-400 shrink-0 mt-2">Ideas</span>
                   <span className="bg-white dark:bg-slate-800 text-indigo-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
