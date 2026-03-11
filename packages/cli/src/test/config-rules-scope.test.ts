@@ -239,42 +239,32 @@ describe('agenfk rules install — commands', () => {
     });
   });
 
-  it('installs skills to Claude Code and Universal (.agents) in project (--project)', async () => {
+  it('installs skills to Universal (.agents) only in project (--project)', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
-    // Claude Code and Universal (.agents) are the only COMMAND_SKILL_PLATFORMS
-    for (const skillsDir of [
-      path.join(FAKE_GIT_ROOT, '.claude', 'skills'),
-      path.join(FAKE_GIT_ROOT, '.agents', 'skills'),
-    ]) {
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-flow', 'SKILL.md'),
-        expect.any(String)
-      );
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-close', 'SKILL.md'),
-        expect.any(String)
-      );
-    }
+    // Universal (.agents) is the single install target — all platforms read from there
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join(FAKE_GIT_ROOT, '.agents', 'skills', 'agenfk-flow', 'SKILL.md'),
+      expect.any(String)
+    );
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join(FAKE_GIT_ROOT, '.agents', 'skills', 'agenfk-close', 'SKILL.md'),
+      expect.any(String)
+    );
   });
 
-  it('installs skills to Claude Code and Universal (.agents) globally (default)', async () => {
+  it('installs skills to Universal (.agents) only globally (default)', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
-    // Claude Code and Universal (.agents) are the only COMMAND_SKILL_PLATFORMS
-    for (const skillsDir of [
-      path.join(os.homedir(), '.claude', 'skills'),
-      path.join(os.homedir(), '.agents', 'skills'),
-    ]) {
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-flow', 'SKILL.md'),
-        expect.any(String)
-      );
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-close', 'SKILL.md'),
-        expect.any(String)
-      );
-    }
+    // Universal (.agents) is the single install target — all platforms read from there
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-flow', 'SKILL.md'),
+      expect.any(String)
+    );
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-close', 'SKILL.md'),
+      expect.any(String)
+    );
   });
 });
 
@@ -296,11 +286,11 @@ describe('agenfk rules uninstall — skills', () => {
     });
   });
 
-  it('removes global Claude Code skill on uninstall --global', async () => {
+  it('removes Universal (.agents) skill on uninstall --global', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-flow', 'SKILL.md')
     );
   });
 
@@ -313,20 +303,16 @@ describe('agenfk rules uninstall — skills', () => {
     );
   });
 
-  it('removes command skills from Claude Code and Universal on uninstall --global', async () => {
+  it('removes Universal (.agents) skills on uninstall --global', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
-    for (const skillsDir of [
-      path.join(os.homedir(), '.claude', 'skills'),
-      path.join(os.homedir(), '.agents', 'skills'),
-    ]) {
-      expect(mockUnlinkSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
-      );
-      expect(mockUnlinkSync).toHaveBeenCalledWith(
-        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
-      );
-    }
+    // Only Universal (.agents) is in COMMAND_SKILL_PLATFORMS
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-close', 'SKILL.md')
+    );
   });
 });
 

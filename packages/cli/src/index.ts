@@ -1715,8 +1715,9 @@ const LEGACY_COMMANDS_DIRS: Array<() => string> = [
 ];
 
 /** Platform-specific skills dirs that are superseded by ~/.agents/skills/.
- *  These are cleaned up on install/uninstall to avoid skill conflict warnings. */
+ *  These are cleaned up on install/uninstall to avoid duplicate skill warnings. */
 const SUPERSEDED_SKILL_DIRS: Array<() => string> = [
+  () => path.join(os.homedir(), '.claude', 'skills'),
   () => path.join(os.homedir(), '.config', 'opencode', 'skills'),
   () => path.join(os.homedir(), '.cursor', 'skills'),
   () => path.join(os.homedir(), '.codex', 'skills'),
@@ -1755,14 +1756,8 @@ const COMMAND_SKILL_PLATFORMS: Array<{
   projectDir: (root: string) => string;
 }> = [
   {
-    // Claude Code reads ONLY from ~/.claude/skills/ (does not read .agents/skills/)
-    name: 'Claude Code',
-    globalDir: () => path.join(os.homedir(), '.claude', 'skills'),
-    projectDir: (root) => path.join(root, '.claude', 'skills'),
-  },
-  {
-    // Universal path: read by Cursor, OpenCode, Gemini CLI, Codex, and agents-compatible tools.
-    // Installing here (and NOT to platform-specific dirs) avoids skill conflict warnings.
+    // Universal path: read by ALL platforms including Claude Code, Cursor, OpenCode, Gemini, Codex.
+    // Single install location avoids duplicate skill warnings across tools.
     name: 'Universal (.agents)',
     globalDir: () => path.join(os.homedir(), '.agents', 'skills'),
     projectDir: (root) => path.join(root, '.agents', 'skills'),
