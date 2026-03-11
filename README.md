@@ -70,9 +70,9 @@ This default flow is the main workflow, but AgEnFK is designed to adapt to how *
 | **Opencode** | Fully Supported | MCP + skill integration | Native slash commands and skill system |
 | **Google Gemini CLI** | Fully Supported | MCP + workflow rules | Native slash commands and skill system |
 | **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
-| **OpenAI Codex CLI** | Fully Supported | MCP + workflow rules | Native MCP integration with installed `AGENTS.md` workflow rules |
+| **OpenAI Codex CLI** | Fully Supported | MCP + skills | Skills invoked via `$agenfk` (type `$` in Codex to browse); `AGENTS.md` workflow rules |
 
-> Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI is fully supported via MCP integration and installed workflow rules.
+> Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI is fully supported via MCP integration; skills are accessed with `$skill-name` (not `/`).
 
 ## Installation & Setup
 
@@ -130,6 +130,25 @@ agenfk integration uninstall cursor
 ```
 
 Supported platform IDs are `claude`, `opencode`, `cursor`, `codex`, and `gemini`.
+
+### Rules Scope — Global vs Project
+
+During first install, AgEnFK asks where workflow rules (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `agenfk.mdc`) should be installed:
+
+*   **Global** (default) — rules go to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, etc. They are picked up automatically by every AI coding tool, across all repositories — no per-repo setup needed.
+*   **Project** — rules go to `.claude/CLAUDE.md`, `AGENTS.md` in the project root, etc. Scoped to the current repository only. You must install rules in each repo you want AgEnFK to manage.
+
+Your choice is saved in `~/.agenfk/config.json` and respected on every upgrade. To manage rules after installation:
+
+```bash
+agenfk skills install            # install rules & skills globally (default)
+agenfk skills install --project  # install into the current repo (uses git root)
+agenfk skills uninstall          # remove global rules & skills (default)
+agenfk skills uninstall --project  # remove project-scoped rules & skills
+agenfk skills status             # show current scope (global, project, or none)
+```
+
+Switching automatically removes rules from the old location and installs them in the new one.
 
 ## Multi-Project Support
 
@@ -269,16 +288,18 @@ agenfk flow publish              # Publish the active flow to the registry
 
 ## Quick Start
 
-After installation, slash commands are available in your AI editor (Claude Code, Opencode, Gemini and other supported platforms):
+After installation, skills and slash commands are available in your AI editor:
 
-| Command | Description |
-|---|---|
-| `/agenfk` | **Standard Mode**: Execute tasks proactively in a single session. |
-| `/agenfk-deep` | **Deep Mode**: Full multi-agent orchestration with planning and review gates. |
-| `/agenfk-release` | Push to remote and cut a stable GitHub release. |
-| `/agenfk-release-beta` | Push to remote and cut a pre-release (beta). |
+| Command | Claude Code / OpenCode / Gemini / Cursor | Codex |
+|---|---|---|
+| Start task | `/agenfk` | `$agenfk` |
+| Deep mode | `/agenfk-deep` | `$agenfk-deep` |
+| Release | `/agenfk-release` | `$agenfk-release` |
+| Beta release | `/agenfk-release-beta` | `$agenfk-release-beta` |
 
-Type `/agenfk` in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight. On experimental platforms (Cursor), the MCP tools are available directly — refer to the platform-specific workflow rules installed during setup.
+> **Codex note:** Codex uses `$skill-name` to invoke skills (type `$` to browse available skills). It does not support `/skill-name` slash commands. All other platforms use `/skill-name`.
+
+Type `/agenfk` (or `$agenfk` in Codex) in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
 
 ## Operation Modes
 

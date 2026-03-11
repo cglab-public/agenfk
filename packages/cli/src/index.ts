@@ -119,11 +119,15 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
-      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=1`, {
+      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
         headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
         timeout: 10000,
       });
-      const tag = resp.data?.[0]?.tag_name;
+      const releases: Array<{ tag_name: string; published_at: string }> = resp.data ?? [];
+      const latest = releases
+        .filter((r) => r.tag_name && r.published_at)
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
+      const tag = latest?.tag_name;
       if (tag) return tag;
     } else {
       const resp = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, {
@@ -208,7 +212,8 @@ try {
 
 program
   .version(CURRENT_VERSION)
-  .description('AgEnFK Engineering CLI');
+  .description('AgEnFK Engineering CLI')
+;
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
@@ -865,9 +870,23 @@ integrationCommand
 integrationCommand
   .command('install <platform>')
   .description('Install or refresh a single integration without running the full framework installer')
-  .action((platform) => {
+  .option('--scope <scope>', 'Override rules scope (global or project)')
+  .action((platform, options) => {
     const resolvedPlatform = resolveIntegrationPlatform(platform);
     const args = [`--only=${resolvedPlatform}`];
+
+    // Pass rulesScope: explicit --scope flag, or read from config
+    if (options.scope) {
+      args.push(`--rules-scope=${options.scope}`);
+    } else {
+      const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+      if (fs.existsSync(configPath)) {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (cfg.rulesScope) args.push(`--rules-scope=${cfg.rulesScope}`);
+        } catch {}
+      }
+    }
 
     console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
     runIntegrationScript('install.mjs', args);
@@ -1599,6 +1618,541 @@ configSetCommand
       console.log(chalk.green(`Flow registry set to: ${value}`));
     } catch (err: any) {
       console.error(chalk.red('Error updating config:'), err.message);
+      process.exit(1);
+    }
+  });
+
+// ── agenfk skills ─────────────────────────────────────────────────────────────
+
+// Framework install dir (~/.agenfk-system) — where rule source files live
+const AGENFK_SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
+const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g;
+
+/** Returns the git repo root, falling back to process.cwd() */
+function getProjectRoot(): string {
+  try {
+    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch {
+    return process.cwd();
+  }
+}
+
+function getCursorRulesDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(os.homedir(), '.cursor', 'rules');
+  } else if (process.platform === 'darwin') {
+    return path.join(os.homedir(), '.cursor', 'rules');
+  }
+  return path.join(os.homedir(), '.config', 'cursor', 'rules');
+}
+
+/** Insert rule block into a markdown file, replacing any existing agenfk block */
+function writeRuleBlock(targetPath: string, sourceContent: string): void {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  let existing = '';
+  if (fs.existsSync(targetPath)) {
+    existing = fs.readFileSync(targetPath, 'utf8').replace(AGENFK_BLOCK_RE, '');
+  }
+  const combined = (existing.trim() ? existing.trim() + '\n\n' : '') + sourceContent.trim() + '\n';
+  fs.writeFileSync(targetPath, combined, 'utf8');
+}
+
+/** Remove agenfk block from a markdown file; delete file if it becomes empty */
+function removeRuleBlock(targetPath: string): void {
+  if (!fs.existsSync(targetPath)) return;
+  const content = fs.readFileSync(targetPath, 'utf8');
+  const cleaned = content.replace(AGENFK_BLOCK_RE, '').trim();
+  if (cleaned) {
+    fs.writeFileSync(targetPath, cleaned + '\n', 'utf8');
+  } else {
+    fs.unlinkSync(targetPath);
+  }
+}
+
+const RULES_CONFIG: Array<{
+  label: string;
+  sourceFile: string;
+  globalPath: () => string;
+  projectPath: (root: string) => string;
+  copy?: boolean; // true = copy whole file (mdc), false = insert block
+}> = [
+  {
+    label: 'CLAUDE.md',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'clauderules', 'CLAUDE.md'),
+    globalPath: () => path.join(os.homedir(), '.claude', 'CLAUDE.md'),
+    projectPath: (root) => path.join(root, '.claude', 'CLAUDE.md'),
+  },
+  {
+    label: 'agenfk.mdc (Cursor)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'cursorrules', 'agenfk.mdc'),
+    globalPath: () => path.join(getCursorRulesDir(), 'agenfk.mdc'),
+    projectPath: (root) => path.join(root, '.cursor', 'rules', 'agenfk.mdc'),
+    copy: true,
+  },
+  {
+    label: 'AGENTS.md (Codex)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'codexrules', 'AGENTS.md'),
+    globalPath: () => path.join(os.homedir(), '.codex', 'AGENTS.md'),
+    projectPath: (root) => path.join(root, 'AGENTS.md'),
+  },
+  {
+    label: 'GEMINI.md',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'geminirules', 'GEMINI.md'),
+    globalPath: () => path.join(os.homedir(), '.gemini', 'GEMINI.md'),
+    projectPath: (root) => path.join(root, 'GEMINI.md'),
+  },
+];
+
+// All platforms install commands/*.md as skills/<name>/SKILL.md in their skills directory
+const SKILL_TRANSFORM = (f: string): string => path.join(f.replace(/\.md$/, ''), 'SKILL.md');
+
+/** Legacy flat commands dirs (old format, pre-skills migration).
+ *  Only includes dirs that are truly superseded; active slash-command dirs
+ *  for each platform are managed separately. */
+const LEGACY_COMMANDS_DIRS: Array<() => string> = [
+  () => path.join(os.homedir(), '.claude', 'commands'),
+  () => path.join(os.homedir(), '.codex', 'commands'),
+];
+
+/** Platform-specific skills dirs that are superseded by ~/.agents/skills/.
+ *  These are cleaned up on install/uninstall to avoid duplicate skill warnings. */
+const SUPERSEDED_SKILL_DIRS: Array<() => string> = [
+  () => path.join(os.homedir(), '.claude', 'skills'),
+  () => path.join(os.homedir(), '.config', 'opencode', 'skills'),
+  () => path.join(os.homedir(), '.cursor', 'skills'),
+  () => path.join(os.homedir(), '.codex', 'skills'),
+  () => path.join(os.homedir(), '.gemini', 'skills'),
+];
+
+function removeSupersededSkillDirs(): void {
+  for (const dirFn of SUPERSEDED_SKILL_DIRS) {
+    removeAgenfkSkillsFromDir(dirFn());
+  }
+}
+
+/** Remove agenfk*.md flat files and agenfk* subdirs from all legacy commands dirs */
+function removeLegacyCommands(): void {
+  for (const dirFn of LEGACY_COMMANDS_DIRS) {
+    const dir = dirFn();
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.startsWith('agenfk')) continue;
+      const full = path.join(dir, entry);
+      try {
+        const stat = fs.statSync(full);
+        if (stat.isDirectory()) {
+          fs.rmSync(full, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(full);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+}
+
+const COMMAND_SKILL_PLATFORMS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    // Universal path: read by ALL platforms including Claude Code, Cursor, OpenCode, Gemini, Codex.
+    // Single install location avoids duplicate skill warnings across tools.
+    name: 'Universal (.agents)',
+    globalDir: () => path.join(os.homedir(), '.agents', 'skills'),
+    projectDir: (root) => path.join(root, '.agents', 'skills'),
+  },
+];
+
+/** OpenCode flat-command platforms: files go as <name>.md directly (no subdir transform).
+ *  OpenCode slash commands live in ~/.config/opencode/commands/<name>.md */
+const OPENCODE_COMMAND_PLATFORMS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    name: 'OpenCode commands',
+    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
+    projectDir: (root) => path.join(root, '.opencode', 'commands'),
+  },
+];
+
+/** Gemini CLI TOML command platforms: each .md becomes a .toml slash command.
+ *  Gemini slash commands live in ~/.gemini/commands/<name>.toml */
+const GEMINI_TOML_PLATFORMS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    name: 'Gemini commands',
+    globalDir: () => path.join(os.homedir(), '.gemini', 'commands'),
+    projectDir: (root) => path.join(root, '.gemini', 'commands'),
+  },
+];
+
+/** Install commands as flat .md files (for OpenCode slash commands) */
+function syncCommandsFlat(srcDir: string, destDir: string): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of files) {
+    const dest = path.join(destDir, file);
+    fs.copyFileSync(path.join(srcDir, file), dest);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove agenfk*.md flat files from a commands dir (mirrors syncCommandsFlat) */
+function removeAgenfkFlatFromDir(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir) as string[]) {
+    if (entry.startsWith('agenfk') && entry.endsWith('.md')) {
+      try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Generate Gemini TOML slash commands from commands/*.md files */
+function syncCommandsToml(srcDir: string, destDir: string): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of files) {
+    const mdContent = fs.readFileSync(path.join(srcDir, file), 'utf8');
+    const skillName = file.replace(/\.md$/, '');
+    // Parse description from YAML frontmatter
+    let description = skillName;
+    const fmMatch = mdContent.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+      if (descMatch) description = descMatch[1].trim();
+    }
+    const tomlContent = `description = "${description}"\nprompt = """\n${mdContent}\n"""\n`;
+    const dest = path.join(destDir, `${skillName}.toml`);
+    fs.writeFileSync(dest, tomlContent);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove agenfk*.toml files from a Gemini commands dir */
+function removeAgenfkTomlFromDir(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir) as string[]) {
+    if (entry.startsWith('agenfk') && entry.endsWith('.toml')) {
+      try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Install commands from system commands dir to a platform's destination */
+function syncCommandsToDir(
+  srcDir: string,
+  destDir: string,
+  transform?: (filename: string) => string
+): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  for (const file of files) {
+    const src = path.join(srcDir, file);
+    const relDest = transform ? transform(file) : file;
+    const dest = path.join(destDir, relDest);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    // Read content and inject 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
+    let content = fs.readFileSync(src, 'utf8');
+    if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
+      const skillName = file.replace(/\.md$/, '');
+      content = content.replace('---\n', `---\nname: ${skillName}\n`);
+    }
+    fs.writeFileSync(dest, content);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove commands from a platform's destination dir (mirror of syncCommandsToDir) */
+function removeCommandsFromDir(
+  srcDir: string,
+  destDir: string,
+  transform?: (filename: string) => string
+): void {
+  if (!fs.existsSync(srcDir) || !fs.existsSync(destDir)) return;
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  for (const file of files) {
+    const relDest = transform ? transform(file) : file;
+    const dest = path.join(destDir, relDest);
+    if (fs.existsSync(dest)) {
+      fs.unlinkSync(dest);
+      // Remove empty parent dirs created for skills format (e.g. .claude/skills/agenfk-flow/)
+      const parentDir = path.dirname(dest);
+      if (parentDir !== destDir && fs.existsSync(parentDir)) {
+        const remaining = fs.readdirSync(parentDir) as string[];
+        if (remaining.length === 0) {
+          fs.rmdirSync(parentDir);
+        }
+      }
+    }
+  }
+}
+
+/** Remove all agenfk skill dirs/files from a platform's skills dir (uninstall without needing srcDir) */
+function removeAgenfkSkillsFromDir(destDir: string): void {
+  if (!fs.existsSync(destDir)) return;
+  for (const entry of fs.readdirSync(destDir) as string[]) {
+    if (!entry.startsWith('agenfk')) continue;
+    const full = path.join(destDir, entry);
+    // Remove SKILL.md inside the skill dir, then the dir itself
+    const skillFile = path.join(full, 'SKILL.md');
+    if (fs.existsSync(skillFile)) {
+      fs.unlinkSync(skillFile);
+    } else if (fs.existsSync(full)) {
+      // Plain file (old flat format)
+      try { fs.unlinkSync(full); } catch { /* ignore */ }
+    }
+    try { fs.rmdirSync(full); } catch { /* ignore — not empty or doesn't exist */ }
+  }
+  // Remove destDir itself if now empty, then try the parent too
+  try {
+    if ((fs.readdirSync(destDir) as string[]).length === 0) {
+      fs.rmdirSync(destDir);
+      // Try to clean up the platform root dir (e.g. .claude/) if now empty
+      const parentDir = path.dirname(destDir);
+      try {
+        if ((fs.readdirSync(parentDir) as string[]).length === 0) fs.rmdirSync(parentDir);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+const rulesCommand = program
+  .command('skills')
+  .description('Manage workflow skills & rules (CLAUDE.md, AGENTS.md, GEMINI.md, slash commands)');
+
+rulesCommand
+  .command('install')
+  .description('Install workflow rules & skills globally (default) or into the current repo')
+  .option('-g, --global', 'Install globally (default)')
+  .option('-p, --project', 'Install into the current repo (uses git root)')
+  .action((options: { global?: boolean; project?: boolean }) => {
+    const scope = options.project ? 'project' : 'global';
+    const projectRoot = scope === 'project' ? getProjectRoot() : '';
+    // Compute once (avoids repeated git calls and duplicate "fatal:" warnings)
+    const oppositeRoot = scope === 'global' ? getProjectRoot() : '';
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
+    try {
+      const installed: string[] = [];
+      const skipped: string[] = [];
+
+      // ── Rule files ──────────────────────────────────────────────────────────
+      for (const rule of RULES_CONFIG) {
+        if (!fs.existsSync(rule.sourceFile)) {
+          skipped.push(rule.label);
+          continue;
+        }
+        const activePath = scope === 'global' ? rule.globalPath() : rule.projectPath(projectRoot);
+        const oppositePath = scope === 'global' ? rule.projectPath(oppositeRoot) : rule.globalPath();
+
+        if (rule.copy) {
+          fs.mkdirSync(path.dirname(activePath), { recursive: true });
+          fs.copyFileSync(rule.sourceFile, activePath);
+        } else {
+          const src = fs.readFileSync(rule.sourceFile, 'utf8');
+          writeRuleBlock(activePath, src);
+        }
+        installed.push(`  ${chalk.green('✓')} ${rule.label} → ${activePath}`);
+
+        // Clean up opposite scope
+        if (fs.existsSync(oppositePath)) {
+          if (rule.copy) {
+            fs.unlinkSync(oppositePath);
+          } else {
+            removeRuleBlock(oppositePath);
+          }
+          // Remove empty parent dirs (e.g. .cursor/rules/ after removing agenfk.mdc)
+          const parentDir = path.dirname(oppositePath);
+          try {
+            if (fs.existsSync(parentDir) && (fs.readdirSync(parentDir) as string[]).length === 0) {
+              fs.rmdirSync(parentDir);
+              const grandParent = path.dirname(parentDir);
+              if (fs.existsSync(grandParent) && (fs.readdirSync(grandParent) as string[]).length === 0) {
+                fs.rmdirSync(grandParent);
+              }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // ── Skills (all platforms) ────────────────────────────────────────────
+      for (const platform of COMMAND_SKILL_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+
+        const paths = syncCommandsToDir(cmdSrcDir, activeDir, SKILL_TRANSFORM);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} skills (${paths.length}) → ${activeDir}`);
+        }
+
+        // Clean up opposite scope (use direct scan so it works even when srcDir is missing)
+        removeCommandsFromDir(cmdSrcDir, oppositeDir, SKILL_TRANSFORM);
+        removeAgenfkSkillsFromDir(oppositeDir);
+      }
+
+      // ── OpenCode flat slash commands ──────────────────────────────────────
+      for (const platform of OPENCODE_COMMAND_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+        const paths = syncCommandsFlat(cmdSrcDir, activeDir);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
+        }
+        removeAgenfkFlatFromDir(oppositeDir);
+      }
+
+      // ── Gemini TOML slash commands ────────────────────────────────────────
+      for (const platform of GEMINI_TOML_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+        const paths = syncCommandsToml(cmdSrcDir, activeDir);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
+        }
+        removeAgenfkTomlFromDir(oppositeDir);
+      }
+
+      // Clean up legacy flat commands dirs (old format, all scopes)
+      removeLegacyCommands();
+      // Clean up platform-specific skill dirs superseded by ~/.agents/skills/
+      removeSupersededSkillDirs();
+
+      // Persist scope to config
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      config.rulesScope = scope;
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+
+      console.log(chalk.green(`Workflow rules & skills installed (${scope}):`));
+      installed.forEach(l => console.log(l));
+      if (skipped.length) {
+        console.log(chalk.gray(`Skipped (source not found): ${skipped.join(', ')}`));
+      }
+    } catch (err: any) {
+      console.error(chalk.red('Error installing rules:'), err.message);
+      process.exit(1);
+    }
+  });
+
+rulesCommand
+  .command('uninstall')
+  .description('Remove workflow rules globally (default) or from the current repo')
+  .option('-g, --global', 'Remove global rules (default)')
+  .option('-p, --project', 'Remove from the current repo (uses git root)')
+  .action((options: { global?: boolean; project?: boolean }) => {
+    const scope = options.project ? 'project' : 'global';
+    const projectRoot = scope === 'project' ? getProjectRoot() : '';
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
+    try {
+      const removed: string[] = [];
+
+      // ── Rule files ──────────────────────────────────────────────────────────
+      for (const rule of RULES_CONFIG) {
+        const targetPath = scope === 'global' ? rule.globalPath() : rule.projectPath(projectRoot);
+        if (!fs.existsSync(targetPath)) continue;
+        if (rule.copy) {
+          fs.unlinkSync(targetPath);
+        } else {
+          removeRuleBlock(targetPath);
+        }
+        // Remove empty parent dirs (e.g. .cursor/rules/ after removing agenfk.mdc)
+        const parentDir = path.dirname(targetPath);
+        try {
+          if (fs.existsSync(parentDir) && (fs.readdirSync(parentDir) as string[]).length === 0) {
+            fs.rmdirSync(parentDir);
+            const grandParent = path.dirname(parentDir);
+            if (fs.existsSync(grandParent) && (fs.readdirSync(grandParent) as string[]).length === 0) {
+              fs.rmdirSync(grandParent);
+            }
+          }
+        } catch { /* ignore */ }
+        removed.push(`  ${chalk.green('✓')} ${rule.label} removed from ${targetPath}`);
+      }
+
+      // ── Commands → skills (all platforms) ───────────────────────────────
+      for (const platform of COMMAND_SKILL_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        // Try source-based removal first (when srcDir exists), then sweep destDir directly
+        removeCommandsFromDir(cmdSrcDir, targetDir, SKILL_TRANSFORM);
+        removeAgenfkSkillsFromDir(targetDir);
+      }
+
+      // ── OpenCode flat slash commands ──────────────────────────────────────
+      for (const platform of OPENCODE_COMMAND_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        removeAgenfkFlatFromDir(targetDir);
+      }
+
+      // ── Gemini TOML slash commands ────────────────────────────────────────
+      for (const platform of GEMINI_TOML_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        removeAgenfkTomlFromDir(targetDir);
+      }
+
+      // ── Legacy flat commands dirs (old format) ───────────────────────────
+      removeLegacyCommands();
+      // Clean up platform-specific skill dirs superseded by ~/.agents/skills/
+      removeSupersededSkillDirs();
+
+      // Update config
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      }
+      if (config.rulesScope === scope) {
+        delete config.rulesScope;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      }
+
+      if (removed.length) {
+        console.log(chalk.green(`Workflow rules & skills removed (${scope}):`));
+        removed.forEach(l => console.log(l));
+      } else {
+        console.log(chalk.yellow(`No workflow rules found for scope: ${scope}`));
+      }
+    } catch (err: any) {
+      console.error(chalk.red('Error removing rules:'), err.message);
+      process.exit(1);
+    }
+  });
+
+rulesCommand
+  .command('status')
+  .description('Show where workflow rules are currently installed')
+  .action(() => {
+    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    try {
+      let scope = 'none';
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        scope = config.rulesScope || 'none';
+      }
+      if (scope === 'global') {
+        console.log(chalk.green('Rules scope: global') + chalk.gray(' (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, etc.)'));
+      } else if (scope === 'project') {
+        console.log(chalk.green('Rules scope: project') + chalk.gray(` (${process.cwd()})`));
+      } else {
+        console.log(chalk.yellow('Rules scope: not configured') + chalk.gray(' (run "agenfk skills install" or "agenfk skills install --project")'));
+      }
+    } catch (err: any) {
+      console.error(chalk.red('Error reading config:'), err.message);
       process.exit(1);
     }
   });
@@ -2469,6 +3023,50 @@ flowCommand
       console.error(chalk.red('Error installing flow:'), error.response?.data?.error || error.message);
     }
   });
+
+// ── Grouped Help Output ──────────────────────────────────────────────────────
+// Override the default help to group commands by section
+
+const _originalHelpInfo = program.helpInformation.bind(program);
+program.helpInformation = function () {
+  const allCommands = program.commands;
+  const groups: [string, string[]][] = [
+    ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
+    ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
+    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-tokens', 'log-test']],
+    ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
+    ['Git & Release',         ['branch', 'pr']],
+    ['Flows',                 ['flow']],
+    ['External Sync',         ['github', 'jira']],
+    ['Configuration',         ['config', 'backup', 'db']],
+  ];
+
+  const grouped = new Set<string>();
+  let output = `Usage: agenfk [options] [command]\n\nAgEnFK Engineering CLI\n`;
+  output += `\nOptions:\n  -V, --version  output the version number\n  -h, --help     display help for command\n`;
+
+  for (const [section, names] of groups) {
+    const cmds = names
+      .map(n => allCommands.find(c => c.name() === n))
+      .filter(Boolean);
+    if (cmds.length === 0) continue;
+    cmds.forEach(c => grouped.add(c!.name()));
+    output += `\n${section}:\n`;
+    for (const c of cmds) {
+      output += `  ${c!.name().padEnd(20)} ${c!.description()}\n`;
+    }
+  }
+
+  // MCP (always show separately)
+  const mcp = allCommands.find(c => c.name() === 'mcp');
+  if (mcp) {
+    grouped.add('mcp');
+    output += `\nInternal:\n  mcp${' '.repeat(16)} ${mcp.description()}\n`;
+  }
+
+  output += `\nRun "agenfk <command> --help" for details on a specific command.\n`;
+  return output;
+};
 
 if (process.env.NODE_ENV !== 'test') {
   program.parse(process.argv);
