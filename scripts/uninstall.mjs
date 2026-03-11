@@ -142,13 +142,36 @@ async function run() {
         }
     }
 
-    // 3. Opencode skill
+    // 3. Opencode skill (legacy single-dir format)
     if (shouldRun('opencode')) {
         console.log(`${GREEN}[3/10] Removing Opencode skill...${NC}`);
         const skillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
         if (existsSync(skillDir)) {
             await fs.rm(skillDir, { recursive: true, force: true });
             console.log(`  Removed: ${skillDir}`);
+        }
+    }
+
+    // 3b. Skills (new skills/<name>/SKILL.md format) — all platforms
+    {
+        console.log(`${GREEN}[3b/10] Removing agenfk skills (all platforms)...${NC}`);
+        const skillsDirs = [
+            path.join(os.homedir(), '.claude', 'skills'),
+            path.join(os.homedir(), '.config', 'opencode', 'skills'),
+            path.join(os.homedir(), '.cursor', 'skills'),
+            path.join(os.homedir(), '.codex', 'skills'),
+            path.join(os.homedir(), '.gemini', 'skills'),
+        ];
+        for (const dir of skillsDirs) {
+            if (!existsSync(dir)) continue;
+            const entries = await fs.readdir(dir);
+            for (const entry of entries) {
+                if (entry.startsWith('agenfk')) {
+                    const fullPath = path.join(dir, entry);
+                    await fs.rm(fullPath, { recursive: true, force: true });
+                    console.log(`  Removed: ${fullPath}`);
+                }
+            }
         }
     }
 
