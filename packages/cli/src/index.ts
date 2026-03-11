@@ -1620,6 +1620,72 @@ configSetCommand
 
 // ── agenfk rules ──────────────────────────────────────────────────────────────
 
+// Framework install dir (~/.agenfk-system) — where rule source files live
+const AGENFK_SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
+const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g;
+
+function getCursorRulesDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(os.homedir(), '.cursor', 'rules');
+  } else if (process.platform === 'darwin') {
+    return path.join(os.homedir(), '.cursor', 'rules');
+  }
+  return path.join(os.homedir(), '.config', 'cursor', 'rules');
+}
+
+/** Insert rule block into a markdown file, replacing any existing agenfk block */
+function writeRuleBlock(targetPath: string, sourceContent: string): void {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  let existing = '';
+  if (fs.existsSync(targetPath)) {
+    existing = fs.readFileSync(targetPath, 'utf8').replace(AGENFK_BLOCK_RE, '');
+  }
+  const combined = (existing.trim() ? existing.trim() + '\n\n' : '') + sourceContent.trim() + '\n';
+  fs.writeFileSync(targetPath, combined, 'utf8');
+}
+
+/** Remove agenfk block from a markdown file */
+function removeRuleBlock(targetPath: string): void {
+  if (!fs.existsSync(targetPath)) return;
+  const content = fs.readFileSync(targetPath, 'utf8');
+  const cleaned = content.replace(AGENFK_BLOCK_RE, '').trim();
+  fs.writeFileSync(targetPath, cleaned ? cleaned + '\n' : '', 'utf8');
+}
+
+const RULES_CONFIG: Array<{
+  label: string;
+  sourceFile: string;
+  globalPath: () => string;
+  projectPath: () => string;
+  copy?: boolean; // true = copy whole file (mdc), false = insert block
+}> = [
+  {
+    label: 'CLAUDE.md',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'clauderules', 'CLAUDE.md'),
+    globalPath: () => path.join(os.homedir(), '.claude', 'CLAUDE.md'),
+    projectPath: () => path.join(process.cwd(), '.claude', 'CLAUDE.md'),
+  },
+  {
+    label: 'agenfk.mdc (Cursor)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'cursorrules', 'agenfk.mdc'),
+    globalPath: () => path.join(getCursorRulesDir(), 'agenfk.mdc'),
+    projectPath: () => path.join(process.cwd(), '.cursor', 'rules', 'agenfk.mdc'),
+    copy: true,
+  },
+  {
+    label: 'AGENTS.md (Codex)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'codexrules', 'AGENTS.md'),
+    globalPath: () => path.join(os.homedir(), '.codex', 'AGENTS.md'),
+    projectPath: () => path.join(process.cwd(), 'AGENTS.md'),
+  },
+  {
+    label: 'GEMINI.md',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'geminirules', 'GEMINI.md'),
+    globalPath: () => path.join(os.homedir(), '.gemini', 'GEMINI.md'),
+    projectPath: () => path.join(process.cwd(), 'GEMINI.md'),
+  },
+];
+
 const rulesCommand = program
   .command('rules')
   .description('Manage workflow rules (CLAUDE.md, AGENTS.md, GEMINI.md, agenfk.mdc)');
@@ -1632,15 +1698,49 @@ rulesCommand
     const scope = options.global ? 'global' : 'project';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
+      const installed: string[] = [];
+      const skipped: string[] = [];
+
+      for (const rule of RULES_CONFIG) {
+        if (!fs.existsSync(rule.sourceFile)) {
+          skipped.push(rule.label);
+          continue;
+        }
+        const activePath = scope === 'global' ? rule.globalPath() : rule.projectPath();
+        const oppositePath = scope === 'global' ? rule.projectPath() : rule.globalPath();
+
+        if (rule.copy) {
+          fs.mkdirSync(path.dirname(activePath), { recursive: true });
+          fs.copyFileSync(rule.sourceFile, activePath);
+        } else {
+          const src = fs.readFileSync(rule.sourceFile, 'utf8');
+          writeRuleBlock(activePath, src);
+        }
+        installed.push(`  ${chalk.green('✓')} ${rule.label} → ${activePath}`);
+
+        // Clean up opposite scope
+        if (fs.existsSync(oppositePath)) {
+          if (rule.copy) {
+            fs.unlinkSync(oppositePath);
+          } else {
+            removeRuleBlock(oppositePath);
+          }
+        }
+      }
+
+      // Persist scope to config
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
       config.rulesScope = scope;
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
-      console.log(chalk.blue(`Installing workflow rules (${scope})...`));
-      runIntegrationScript('install.mjs', [`--rules-scope=${scope}`, '--rules-only']);
-      console.log(chalk.green(`Done. Workflow rules installed (${scope}).`));
+
+      console.log(chalk.green(`Workflow rules installed (${scope}):`));
+      installed.forEach(l => console.log(l));
+      if (skipped.length) {
+        console.log(chalk.gray(`Skipped (source not found): ${skipped.join(', ')}`));
+      }
     } catch (err: any) {
       console.error(chalk.red('Error installing rules:'), err.message);
       process.exit(1);
@@ -1655,9 +1755,20 @@ rulesCommand
     const scope = options.global ? 'global' : 'project';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
-      console.log(chalk.blue(`Removing workflow rules (${scope})...`));
-      runIntegrationScript('uninstall.mjs', [`--rules-scope=${scope}`, '--rules-only']);
-      // Update config to reflect the removal
+      const removed: string[] = [];
+
+      for (const rule of RULES_CONFIG) {
+        const targetPath = scope === 'global' ? rule.globalPath() : rule.projectPath();
+        if (!fs.existsSync(targetPath)) continue;
+        if (rule.copy) {
+          fs.unlinkSync(targetPath);
+        } else {
+          removeRuleBlock(targetPath);
+        }
+        removed.push(`  ${chalk.green('✓')} ${rule.label} removed from ${targetPath}`);
+      }
+
+      // Update config
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -1666,7 +1777,13 @@ rulesCommand
         delete config.rulesScope;
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
       }
-      console.log(chalk.green(`Done. Workflow rules removed (${scope}).`));
+
+      if (removed.length) {
+        console.log(chalk.green(`Workflow rules removed (${scope}):`));
+        removed.forEach(l => console.log(l));
+      } else {
+        console.log(chalk.yellow(`No workflow rules found for scope: ${scope}`));
+      }
     } catch (err: any) {
       console.error(chalk.red('Error removing rules:'), err.message);
       process.exit(1);
