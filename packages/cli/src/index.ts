@@ -1725,30 +1725,38 @@ const SKILLS_CONFIG: Array<{
   },
 ];
 
-// Command directory destinations per platform
-// For Claude Code, commands/*.md → skills/<name>/SKILL.md (skills format, not commands folder)
-// For OpenCode and Gemini, commands/*.md → commands dir
-const COMMANDS_DESTINATIONS: Array<{
+// All platforms install commands/*.md as skills/<name>/SKILL.md in their skills directory
+const SKILL_TRANSFORM = (f: string): string => path.join(f.replace(/\.md$/, ''), 'SKILL.md');
+
+const COMMAND_SKILL_PLATFORMS: Array<{
   name: string;
   globalDir: () => string;
   projectDir: () => string;
-  transform?: (filename: string) => string; // path relative to destDir
 }> = [
   {
     name: 'Claude Code',
     globalDir: () => path.join(os.homedir(), '.claude', 'skills'),
     projectDir: () => path.join(process.cwd(), '.claude', 'skills'),
-    transform: (f: string) => path.join(f.replace(/\.md$/, ''), 'SKILL.md'),
   },
   {
     name: 'OpenCode',
-    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
-    projectDir: () => path.join(process.cwd(), '.opencode', 'commands'),
+    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'skills'),
+    projectDir: () => path.join(process.cwd(), '.opencode', 'skills'),
+  },
+  {
+    name: 'Cursor',
+    globalDir: () => path.join(os.homedir(), '.cursor', 'skills'),
+    projectDir: () => path.join(process.cwd(), '.cursor', 'skills'),
+  },
+  {
+    name: 'Codex',
+    globalDir: () => path.join(os.homedir(), '.codex', 'skills'),
+    projectDir: () => path.join(process.cwd(), '.codex', 'skills'),
   },
   {
     name: 'Gemini',
-    globalDir: () => path.join(os.homedir(), '.gemini', 'commands', 'agenfk'),
-    projectDir: () => path.join(process.cwd(), '.gemini', 'commands', 'agenfk'),
+    globalDir: () => path.join(os.homedir(), '.gemini', 'skills'),
+    projectDir: () => path.join(process.cwd(), '.gemini', 'skills'),
   },
 ];
 
@@ -1860,18 +1868,18 @@ rulesCommand
         }
       }
 
-      // ── Commands (directory) ─────────────────────────────────────────────
-      for (const dest of COMMANDS_DESTINATIONS) {
-        const activeDir = scope === 'global' ? dest.globalDir() : dest.projectDir();
-        const oppositeDir = scope === 'global' ? dest.projectDir() : dest.globalDir();
+      // ── Commands → skills (all platforms) ───────────────────────────────
+      for (const platform of COMMAND_SKILL_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir();
+        const oppositeDir = scope === 'global' ? platform.projectDir() : platform.globalDir();
 
-        const paths = syncCommandsToDir(cmdSrcDir, activeDir, dest.transform);
+        const paths = syncCommandsToDir(cmdSrcDir, activeDir, SKILL_TRANSFORM);
         if (paths.length > 0) {
-          installed.push(`  ${chalk.green('✓')} ${dest.name} commands (${paths.length}) → ${activeDir}`);
+          installed.push(`  ${chalk.green('✓')} ${platform.name} skills (${paths.length}) → ${activeDir}`);
         }
 
         // Clean up opposite scope
-        removeCommandsFromDir(cmdSrcDir, oppositeDir, dest.transform);
+        removeCommandsFromDir(cmdSrcDir, oppositeDir, SKILL_TRANSFORM);
       }
 
       // Persist scope to config
@@ -1924,10 +1932,10 @@ rulesCommand
         removed.push(`  ${chalk.green('✓')} ${skill.label} removed from ${targetPath}`);
       }
 
-      // ── Commands ─────────────────────────────────────────────────────────
-      for (const dest of COMMANDS_DESTINATIONS) {
-        const targetDir = scope === 'global' ? dest.globalDir() : dest.projectDir();
-        removeCommandsFromDir(cmdSrcDir, targetDir, dest.transform);
+      // ── Commands → skills (all platforms) ───────────────────────────────
+      for (const platform of COMMAND_SKILL_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir();
+        removeCommandsFromDir(cmdSrcDir, targetDir, SKILL_TRANSFORM);
       }
 
       // Update config

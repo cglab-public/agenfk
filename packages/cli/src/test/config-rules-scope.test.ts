@@ -265,62 +265,46 @@ describe('agenfk rules install — commands', () => {
   });
 
   // Project-scope tests run first to avoid Commander option bleed from --global tests
-  it('installs Claude Code commands as skills/name/SKILL.md in project', async () => {
+  it('installs all platform commands as skills/name/SKILL.md in project', async () => {
     await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
 
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      expect.stringContaining(path.join(process.cwd(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
-    );
+    for (const skillsDir of [
+      path.join(process.cwd(), '.claude', 'skills'),
+      path.join(process.cwd(), '.opencode', 'skills'),
+      path.join(process.cwd(), '.cursor', 'skills'),
+      path.join(process.cwd(), '.codex', 'skills'),
+      path.join(process.cwd(), '.gemini', 'skills'),
+    ]) {
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('agenfk-flow.md'),
+        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
+      );
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('agenfk-close.md'),
+        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
+      );
+    }
   });
 
-  it('installs OpenCode commands to project opencode commands dir', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      path.join(process.cwd(), '.opencode', 'commands', 'agenfk-flow.md')
-    );
-  });
-
-  it('installs Gemini commands to project gemini commands/agenfk dir', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      path.join(process.cwd(), '.gemini', 'commands', 'agenfk', 'agenfk-flow.md')
-    );
-  });
-
-  it('installs Claude Code commands as skills/name/SKILL.md globally', async () => {
+  it('installs all platform commands as skills/name/SKILL.md globally', async () => {
     await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
 
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
-    );
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-close.md'),
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-close', 'SKILL.md')
-    );
-  });
-
-  it('installs OpenCode commands to global opencode commands dir', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      path.join(os.homedir(), '.config', 'opencode', 'commands', 'agenfk-flow.md')
-    );
-  });
-
-  it('installs Gemini commands to global gemini commands/agenfk dir', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('agenfk-flow.md'),
-      path.join(os.homedir(), '.gemini', 'commands', 'agenfk', 'agenfk-flow.md')
-    );
+    for (const skillsDir of [
+      path.join(os.homedir(), '.claude', 'skills'),
+      path.join(os.homedir(), '.config', 'opencode', 'skills'),
+      path.join(os.homedir(), '.cursor', 'skills'),
+      path.join(os.homedir(), '.codex', 'skills'),
+      path.join(os.homedir(), '.gemini', 'skills'),
+    ]) {
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('agenfk-flow.md'),
+        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
+      );
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('agenfk-close.md'),
+        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
+      );
+    }
   });
 });
 
@@ -366,15 +350,23 @@ describe('agenfk rules uninstall — skills', () => {
     );
   });
 
-  it('removes Claude Code command skills on uninstall --global', async () => {
+  it('removes command skills from all platforms on uninstall --global', async () => {
     await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
 
-    expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
-    );
-    expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-close', 'SKILL.md')
-    );
+    for (const skillsDir of [
+      path.join(os.homedir(), '.claude', 'skills'),
+      path.join(os.homedir(), '.config', 'opencode', 'skills'),
+      path.join(os.homedir(), '.cursor', 'skills'),
+      path.join(os.homedir(), '.codex', 'skills'),
+      path.join(os.homedir(), '.gemini', 'skills'),
+    ]) {
+      expect(mockUnlinkSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
+      );
+      expect(mockUnlinkSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
+      );
+    }
   });
 });
 
