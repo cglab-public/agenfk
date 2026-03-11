@@ -9,7 +9,7 @@ metadata:
 
 # AgenFK Flow Manager
 
-This skill guides you through creating or editing a custom workflow **flow** for an AgenFK project.
+This skill guides you through creating or editing a custom workflow **flow** for an AgEnFK project.
 A flow defines the ordered steps (statuses) that items move through — replacing the default
 TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline with a tailored one for your team.
 
@@ -79,60 +79,43 @@ Ask: "Does this look right? Type **yes** to create, **edit** to change a step, o
 
 ### Step 5 — Create the flow
 
-Once confirmed, run via Bash:
+Once confirmed, call the `create_flow` MCP tool:
 
-```bash
-agenfk flow create "[name]" --project "[projectId]"
 ```
-
-The CLI will interactively prompt for description and steps. However, since you have already
-collected all the data, use the **server API directly** via MCP if available, or construct
-the CLI call non-interactively using the `agenfk flow create` command.
-
-**Option A — MCP server API (preferred when MCP is available):**
-
-Call `POST /flows` via the agenfk MCP server:
-```json
-{
-  "name": "<name>",
-  "description": "<description>",
-  "projectId": "<projectId>",
-  "steps": [
-    { "name": "TODO", "label": "Not started", "order": 1, "isSpecial": false },
-    { "name": "IN_PROGRESS", "label": "In progress", "order": 2, "isSpecial": false },
+create_flow(
+  name: "<name>",
+  description: "<description>",
+  steps: [
+    { name: "TODO",        label: "Not started",  order: 1, isAnchor: true },
+    { name: "IN_PROGRESS", label: "In progress",  order: 2, exitCriteria: "..." },
     ...
-  ]
-}
+    { name: "DONE",        label: "Done",         order: N, isAnchor: true },
+  ],
+  projectId: "<projectId>"   // optional — activates the flow immediately
+)
 ```
 
-Since there is no direct `create_flow` MCP tool, use Bash to call the server REST API:
-```bash
-curl -s -X POST http://localhost:3000/flows \
-  -H "Content-Type: application/json" \
-  -d '{"name":"<name>","description":"<desc>","projectId":"<id>","steps":[...]}'
-```
+If `projectId` is provided, the flow is created **and** activated for that project in one call.
 
-**Option B — CLI (fallback):**
+**Fallback — CLI (if MCP is unavailable):**
 ```bash
 agenfk flow create "<name>" --project "<projectId>"
 ```
-Then enter each step when prompted.
 
 ### Step 6 — Optionally activate the flow for the project
 
-After creation, ask:
+If you did not pass `projectId` in Step 5, ask:
 > "Would you like to activate this flow for project **[name]** now?"
 
-If yes, run:
-```bash
-agenfk flow use <flowId> --project <projectId>
+If yes, call the `use_flow` MCP tool:
+
+```
+use_flow(projectId: "<projectId>", flowId: "<flowId>")
 ```
 
-Or via REST:
+**Fallback — CLI:**
 ```bash
-curl -s -X POST http://localhost:3000/projects/<projectId>/flow \
-  -H "Content-Type: application/json" \
-  -d '{"flowId":"<flowId>"}'
+agenfk flow use <flowId> --project <projectId>
 ```
 
 ### Step 7 — Summary
@@ -149,16 +132,33 @@ Report back:
 
 If the user wants to edit a flow instead of creating one:
 
-1. List flows: `agenfk flow list` or `GET /flows`
-2. Show the target flow: `agenfk flow show <id>`
-3. Run: `agenfk flow edit <id>` — or use `PUT /flows/<id>` via REST with the full updated flow body.
-4. Confirm changes.
+1. **List flows** — call `list_flows()` via MCP (or `agenfk flow list`).
+2. **Show the target flow** — call `get_flow(projectId)` for the active flow, or inspect the full list.
+3. **Update** — call `update_flow(id, name?, description?, steps?)` via MCP:
+
+```
+update_flow(
+  id: "<flowId>",
+  name: "New name",            // optional
+  description: "New desc",     // optional
+  steps: [ ... ]               // optional — replaces all steps
+)
+```
+
+**Fallback — CLI:**
+```bash
+agenfk flow edit <id>
+```
+
+## Deleting a flow
+
+Call `delete_flow(id)` via MCP, or `agenfk flow delete <id>`.
 
 ---
 
 ## Notes
 
-- Flow names must be unique within a project.
-- The `workflow_gatekeeper` MCP tool returns the active flow's steps — all platforms benefit automatically once a flow is activated.
-- To reset a project back to the default flow: `agenfk flow reset --project <projectId>`
-- To share a flow with the community: `agenfk flow publish <flowId>`
+- Flow names must be unique.
+- `workflow_gatekeeper` returns the active flow's steps automatically — all platforms benefit once a flow is activated.
+- To reset a project back to the default flow: `use_flow(projectId, "")` (empty flowId) or `agenfk flow reset --project <projectId>`.
+- To share a flow with the community: `agenfk flow publish <flowId>`.
