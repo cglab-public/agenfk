@@ -62,7 +62,7 @@ const CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
 
 /** Reset Commander option state to prevent test pollution across suites */
 function resetCommanderGlobalOption(): void {
-  const rulesCmd = program.commands.find((c: any) => c.name() === 'rules');
+  const rulesCmd = program.commands.find((c: any) => c.name() === 'skills');
   const installCmd = (rulesCmd as any)?.commands?.find((c: any) => c.name() === 'install');
   const uninstallCmd = (rulesCmd as any)?.commands?.find((c: any) => c.name() === 'uninstall');
   if (installCmd) (installCmd as any)._optionValues = {};
@@ -86,7 +86,7 @@ describe('agenfk rules install', () => {
   });
 
   it('installs to global scope by default (no flag)', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       path.join(os.homedir(), '.claude', 'CLAUDE.md'),
@@ -96,7 +96,7 @@ describe('agenfk rules install', () => {
   });
 
   it('installs to global scope with --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--global']);
 
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       path.join(os.homedir(), '.claude', 'CLAUDE.md'),
@@ -106,7 +106,7 @@ describe('agenfk rules install', () => {
   });
 
   it('installs to project scope with --project', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       path.join(FAKE_GIT_ROOT, '.claude', 'CLAUDE.md'),
@@ -118,7 +118,7 @@ describe('agenfk rules install', () => {
   it('project scope uses git root, not process.cwd()', async () => {
     mockExecSync.mockReturnValue('/some/git/root');
 
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       path.join('/some/git/root', '.claude', 'CLAUDE.md'),
@@ -134,7 +134,7 @@ describe('agenfk rules install', () => {
   });
 
   it('persists rulesScope=global to config by default', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
     const configWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === CONFIG_PATH
@@ -145,7 +145,7 @@ describe('agenfk rules install', () => {
   });
 
   it('persists rulesScope=project to config with --project', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
     const configWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === CONFIG_PATH
@@ -159,7 +159,7 @@ describe('agenfk rules install', () => {
     mockExistsSync.mockReturnValue(false);
 
     const spy = vi.spyOn(console, 'log');
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
     expect(mockWriteFileSync).not.toHaveBeenCalledWith(
       expect.stringContaining('CLAUDE.md'),
@@ -185,7 +185,7 @@ describe('agenfk rules uninstall', () => {
       return '# My notes\n\n<!-- agenfk:start -->\nrules\n<!-- agenfk:end -->\n';
     });
 
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall']);
 
     const claudeWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === path.join(os.homedir(), '.claude', 'CLAUDE.md')
@@ -200,7 +200,7 @@ describe('agenfk rules uninstall', () => {
       return '# My notes\n\n<!-- agenfk:start -->\nrules\n<!-- agenfk:end -->\n';
     });
 
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     const claudeWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === path.join(os.homedir(), '.claude', 'CLAUDE.md')
@@ -211,7 +211,7 @@ describe('agenfk rules uninstall', () => {
   });
 
   it('clears rulesScope from config when scope matches', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     const configWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === CONFIG_PATH
@@ -240,7 +240,7 @@ describe('agenfk rules install — commands', () => {
   });
 
   it('installs all platform commands as skills/name/SKILL.md in project (--project)', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
     for (const skillsDir of [
       path.join(FAKE_GIT_ROOT, '.claude', 'skills'),
@@ -261,7 +261,7 @@ describe('agenfk rules install — commands', () => {
   });
 
   it('installs all platform commands as skills/name/SKILL.md globally (default)', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
     for (const skillsDir of [
       path.join(os.homedir(), '.claude', 'skills'),
@@ -301,7 +301,7 @@ describe('agenfk rules uninstall — skills', () => {
   });
 
   it('removes global Claude Code skill on uninstall --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     expect(mockUnlinkSync).toHaveBeenCalledWith(
       path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
@@ -309,7 +309,7 @@ describe('agenfk rules uninstall — skills', () => {
   });
 
   it('removes global OpenCode skill on uninstall --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     expect(mockUnlinkSync).toHaveBeenCalledWith(
       path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md')
@@ -317,7 +317,7 @@ describe('agenfk rules uninstall — skills', () => {
   });
 
   it('removes global Cursor skill on uninstall --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     expect(mockUnlinkSync).toHaveBeenCalledWith(
       path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow', 'SKILL.md')
@@ -325,7 +325,7 @@ describe('agenfk rules uninstall — skills', () => {
   });
 
   it('removes command skills from all platforms on uninstall --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     for (const skillsDir of [
       path.join(os.homedir(), '.claude', 'skills'),
@@ -354,7 +354,7 @@ describe('agenfk rules status', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global' }));
 
     const spy = vi.spyOn(console, 'log');
-    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'status']);
 
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('global'));
     spy.mockRestore();
@@ -365,7 +365,7 @@ describe('agenfk rules status', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'project' }));
 
     const spy = vi.spyOn(console, 'log');
-    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'status']);
 
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('project'));
     spy.mockRestore();
@@ -376,7 +376,7 @@ describe('agenfk rules status', () => {
     mockReadFileSync.mockReturnValue('{}');
 
     const spy = vi.spyOn(console, 'log');
-    await program.parseAsync(['node', 'agenfk', 'rules', 'status']);
+    await program.parseAsync(['node', 'agenfk', 'skills', 'status']);
 
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('not configured'));
     spy.mockRestore();

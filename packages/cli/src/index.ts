@@ -1618,7 +1618,7 @@ configSetCommand
     }
   });
 
-// ── agenfk rules ──────────────────────────────────────────────────────────────
+// ── agenfk skills ─────────────────────────────────────────────────────────────
 
 // Framework install dir (~/.agenfk-system) — where rule source files live
 const AGENFK_SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
@@ -1698,6 +1698,34 @@ const RULES_CONFIG: Array<{
 // All platforms install commands/*.md as skills/<name>/SKILL.md in their skills directory
 const SKILL_TRANSFORM = (f: string): string => path.join(f.replace(/\.md$/, ''), 'SKILL.md');
 
+/** Legacy flat commands dirs per platform (old format, pre-skills migration) */
+const LEGACY_COMMANDS_DIRS: Array<() => string> = [
+  () => path.join(os.homedir(), '.claude', 'commands'),
+  () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
+  () => path.join(os.homedir(), '.gemini', 'commands'),
+  () => path.join(os.homedir(), '.codex', 'commands'),
+];
+
+/** Remove agenfk*.md flat files and agenfk* subdirs from all legacy commands dirs */
+function removeLegacyCommands(): void {
+  for (const dirFn of LEGACY_COMMANDS_DIRS) {
+    const dir = dirFn();
+    if (!fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.startsWith('agenfk')) continue;
+      const full = path.join(dir, entry);
+      try {
+        const stat = fs.statSync(full);
+        if (stat.isDirectory()) {
+          fs.rmSync(full, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(full);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+}
+
 const COMMAND_SKILL_PLATFORMS: Array<{
   name: string;
   globalDir: () => string;
@@ -1776,8 +1804,8 @@ function removeCommandsFromDir(
 }
 
 const rulesCommand = program
-  .command('rules')
-  .description('Manage workflow rules (CLAUDE.md, AGENTS.md, GEMINI.md, agenfk.mdc)');
+  .command('skills')
+  .description('Manage workflow skills & rules (CLAUDE.md, AGENTS.md, GEMINI.md, slash commands)');
 
 rulesCommand
   .command('install')
@@ -1835,6 +1863,9 @@ rulesCommand
         removeCommandsFromDir(cmdSrcDir, oppositeDir, SKILL_TRANSFORM);
       }
 
+      // Clean up legacy flat commands dirs (old format, all scopes)
+      removeLegacyCommands();
+
       // Persist scope to config
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
@@ -1885,6 +1916,9 @@ rulesCommand
         removeCommandsFromDir(cmdSrcDir, targetDir, SKILL_TRANSFORM);
       }
 
+      // ── Legacy flat commands dirs (old format) ───────────────────────────
+      removeLegacyCommands();
+
       // Update config
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
@@ -1923,7 +1957,7 @@ rulesCommand
       } else if (scope === 'project') {
         console.log(chalk.green('Rules scope: project') + chalk.gray(` (${process.cwd()})`));
       } else {
-        console.log(chalk.yellow('Rules scope: not configured') + chalk.gray(' (run "agenfk rules install" or "agenfk rules install --global")'));
+        console.log(chalk.yellow('Rules scope: not configured') + chalk.gray(' (run "agenfk skills install" or "agenfk skills install --project")'));
       }
     } catch (err: any) {
       console.error(chalk.red('Error reading config:'), err.message);
