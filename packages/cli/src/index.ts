@@ -119,11 +119,15 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
-      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=1`, {
+      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
         headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
         timeout: 10000,
       });
-      const tag = resp.data?.[0]?.tag_name;
+      const releases: Array<{ tag_name: string; published_at: string }> = resp.data ?? [];
+      const latest = releases
+        .filter((r) => r.tag_name && r.published_at)
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
+      const tag = latest?.tag_name;
       if (tag) return tag;
     } else {
       const resp = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, {
