@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { Flow, RegistryFlow } from '../types';
+import { ThemeProvider } from '../ThemeContext';
 
 vi.mock('../api', () => ({
   api: {
@@ -28,7 +29,9 @@ const makeQueryClient = () =>
 const wrapper =
   (qc: QueryClient) =>
   ({ children }: { children: React.ReactNode }) => (
-    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    </ThemeProvider>
   );
 
 const PROJECT_ID = 'proj-abc';
@@ -870,6 +873,13 @@ const REGISTRY_FLOW_1: RegistryFlow = {
   version: '1.0.0',
   stepCount: 5,
   description: 'A standard engineering sprint flow',
+  steps: [
+    { name: 'TODO', label: 'To Do' },
+    { name: 'IN_PROGRESS', label: 'In Progress' },
+    { name: 'REVIEW', label: 'Review' },
+    { name: 'TEST', label: 'Test' },
+    { name: 'DONE', label: 'Done' },
+  ],
 };
 
 const REGISTRY_FLOW_2: RegistryFlow = {
@@ -879,6 +889,11 @@ const REGISTRY_FLOW_2: RegistryFlow = {
   version: '2.0.0',
   stepCount: 3,
   description: 'Design review process',
+  steps: [
+    { name: 'TODO', label: 'To Do' },
+    { name: 'DESIGN_REVIEW', label: 'Design Review' },
+    { name: 'DONE', label: 'Done' },
+  ],
 };
 
 const INSTALLED_FLOW: Flow = {
@@ -1027,6 +1042,48 @@ describe('FlowEditorModal — Community tab', () => {
     fireEvent.click(screen.getByTestId('tab-my-flows'));
     expect(screen.getByTestId('flow-list')).toBeDefined();
     expect(screen.getByTestId('new-flow-btn')).toBeDefined();
+  });
+
+  it('community preview panel shows a Mermaid diagram container when flow has steps', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    // The diagram container must be present when flow has steps
+    expect(screen.getByTestId('community-flow-diagram')).toBeDefined();
+  });
+
+  it('community preview panel does not show diagram placeholder text when flow has steps', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    // The old placeholder text must be gone when steps are available
+    expect(screen.queryByText(/Step details will be available after installation/i)).toBeNull();
+  });
+
+  it('community preview panel shows placeholder text when flow has no steps', async () => {
+    const flowWithNoSteps: RegistryFlow = { ...REGISTRY_FLOW_1, steps: undefined };
+    vi.mocked(api.browseRegistry).mockResolvedValue([flowWithNoSteps]);
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    // Without step data, the fallback placeholder must be shown
+    expect(screen.getByText(/Step details will be available after installation/i)).toBeDefined();
+    expect(screen.queryByTestId('community-flow-diagram')).toBeNull();
   });
 });
 
