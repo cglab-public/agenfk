@@ -3,13 +3,15 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Hoist mock vars
-const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync, mockCopyFileSync, mockUnlinkSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync, mockCopyFileSync, mockUnlinkSync, mockReaddirSync, mockRmdirSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
   mockMkdirSync: vi.fn(),
   mockCopyFileSync: vi.fn(),
   mockUnlinkSync: vi.fn(),
+  mockReaddirSync: vi.fn().mockReturnValue([]),
+  mockRmdirSync: vi.fn(),
 }));
 
 vi.mock('fs', () => ({
@@ -19,6 +21,8 @@ vi.mock('fs', () => ({
   mkdirSync: mockMkdirSync,
   copyFileSync: mockCopyFileSync,
   unlinkSync: mockUnlinkSync,
+  readdirSync: mockReaddirSync,
+  rmdirSync: mockRmdirSync,
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
@@ -26,6 +30,8 @@ vi.mock('fs', () => ({
     mkdirSync: mockMkdirSync,
     copyFileSync: mockCopyFileSync,
     unlinkSync: mockUnlinkSync,
+    readdirSync: mockReaddirSync,
+    rmdirSync: mockRmdirSync,
   },
 }));
 
@@ -52,16 +58,27 @@ vi.mock('@agenfk/telemetry', () => ({
 import { program } from '../index';
 
 const CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
+
+/** Reset Commander --global option state to prevent test pollution across suites */
+function resetCommanderGlobalOption(): void {
+  const rulesCmd = program.commands.find((c: any) => c.name() === 'rules');
+  const installCmd = (rulesCmd as any)?.commands?.find((c: any) => c.name() === 'install');
+  const uninstallCmd = (rulesCmd as any)?.commands?.find((c: any) => c.name() === 'uninstall');
+  if (installCmd) (installCmd as any)._optionValues = {};
+  if (uninstallCmd) (uninstallCmd as any)._optionValues = {};
+}
 const SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
 
 describe('agenfk rules install', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetCommanderGlobalOption();
     // Source rule files exist, config does not
     mockExistsSync.mockImplementation((p: string) =>
       p.includes('.agenfk-system') && !p.includes('config.json')
     );
     mockReadFileSync.mockReturnValue('<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->');
+    mockReaddirSync.mockReturnValue([]);
   });
 
   it('installs to project scope by default', async () => {
@@ -114,8 +131,10 @@ describe('agenfk rules install', () => {
 describe('agenfk rules uninstall', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetCommanderGlobalOption();
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global' }));
+    mockReaddirSync.mockReturnValue([]);
   });
 
   it('removes agenfk block from CLAUDE.md for global scope', async () => {
@@ -143,6 +162,219 @@ describe('agenfk rules uninstall', () => {
     expect(configWrite).toBeDefined();
     const written = JSON.parse(configWrite![1]);
     expect(written.rulesScope).toBeUndefined();
+  });
+});
+
+describe('agenfk rules install — skills', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCommanderGlobalOption();
+    mockExistsSync.mockImplementation((p: string) =>
+      p.includes('.agenfk-system') && !p.includes('config.json')
+    );
+    mockReadFileSync.mockReturnValue('<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->');
+    mockReaddirSync.mockReturnValue([]);
+  });
+
+  it('copies Claude Code agenfk-flow skill to global path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'claude-code', 'agenfk-flow', 'SKILL.md')),
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+  });
+
+  it('copies Claude Code agenfk-flow skill to project path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'claude-code', 'agenfk-flow', 'SKILL.md')),
+      expect.stringContaining(path.join('.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
+    );
+  });
+
+  it('copies OpenCode agenfk-flow skill to global path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'opencode', 'agenfk-flow', 'SKILL.md')),
+      path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+  });
+
+  it('copies Cursor agenfk-flow skill to global path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'cursor', 'agenfk-flow.mdc')),
+      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow.mdc')
+    );
+  });
+
+  it('copies Codex agenfk-flow skill to global path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'codex', 'agenfk-flow.md')),
+      path.join(os.homedir(), '.codex', 'skills', 'agenfk-flow.md')
+    );
+  });
+
+  it('copies Gemini agenfk-flow skill to global path', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join('skills', 'gemini', 'agenfk-flow.md')),
+      path.join(os.homedir(), '.gemini', 'skills', 'agenfk-flow.md')
+    );
+  });
+
+  it('removes project skill files when switching to global scope', async () => {
+    // Project skill files exist
+    mockExistsSync.mockImplementation((p: string) => true);
+    mockReadFileSync.mockImplementation((p: string) => {
+      if (p.endsWith('config.json')) return '{}';
+      return '<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->';
+    });
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    // Project Claude Code skill should be deleted
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(process.cwd(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
+    );
+  });
+});
+
+describe('agenfk rules install — commands', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCommanderGlobalOption();
+    mockExistsSync.mockImplementation((p: string) =>
+      p.includes('.agenfk-system') && !p.includes('config.json')
+    );
+    mockReadFileSync.mockReturnValue('<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->');
+    // Simulate two command files in system commands dir
+    mockReaddirSync.mockImplementation((p: string) => {
+      if (typeof p === 'string' && p.includes('commands')) {
+        return ['agenfk-flow.md', 'agenfk-close.md'];
+      }
+      return [];
+    });
+  });
+
+  // Project-scope tests run first to avoid Commander option bleed from --global tests
+  it('installs Claude Code commands as skills/name/SKILL.md in project', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      expect.stringContaining(path.join(process.cwd(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
+    );
+  });
+
+  it('installs OpenCode commands to project opencode commands dir', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      path.join(process.cwd(), '.opencode', 'commands', 'agenfk-flow.md')
+    );
+  });
+
+  it('installs Gemini commands to project gemini commands/agenfk dir', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      path.join(process.cwd(), '.gemini', 'commands', 'agenfk', 'agenfk-flow.md')
+    );
+  });
+
+  it('installs Claude Code commands as skills/name/SKILL.md globally', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-close.md'),
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-close', 'SKILL.md')
+    );
+  });
+
+  it('installs OpenCode commands to global opencode commands dir', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      path.join(os.homedir(), '.config', 'opencode', 'commands', 'agenfk-flow.md')
+    );
+  });
+
+  it('installs Gemini commands to global gemini commands/agenfk dir', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('agenfk-flow.md'),
+      path.join(os.homedir(), '.gemini', 'commands', 'agenfk', 'agenfk-flow.md')
+    );
+  });
+});
+
+describe('agenfk rules uninstall — skills', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCommanderGlobalOption();
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockImplementation((p: string) => {
+      if (p.endsWith('config.json')) return JSON.stringify({ rulesScope: 'global' });
+      return '# notes\n\n<!-- agenfk:start -->\nrules\n<!-- agenfk:end -->\n';
+    });
+    mockReaddirSync.mockImplementation((p: string) => {
+      if (typeof p === 'string' && p.includes('commands')) {
+        return ['agenfk-flow.md', 'agenfk-close.md'];
+      }
+      // For skill dirs (checking what to delete), return empty
+      return [];
+    });
+  });
+
+  it('removes global Claude Code skill on uninstall --global', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+  });
+
+  it('removes global OpenCode skill on uninstall --global', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+  });
+
+  it('removes global Cursor skill on uninstall --global', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow.mdc')
+    );
+  });
+
+  it('removes Claude Code command skills on uninstall --global', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
+
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
+    );
+    expect(mockUnlinkSync).toHaveBeenCalledWith(
+      path.join(os.homedir(), '.claude', 'skills', 'agenfk-close', 'SKILL.md')
+    );
   });
 });
 

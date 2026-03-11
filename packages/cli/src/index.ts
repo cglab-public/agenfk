@@ -1686,6 +1686,117 @@ const RULES_CONFIG: Array<{
   },
 ];
 
+// Single skill files per platform (copy = true)
+const SKILLS_CONFIG: Array<{
+  label: string;
+  sourceFile: string;
+  globalPath: () => string;
+  projectPath: () => string;
+}> = [
+  {
+    label: 'agenfk-flow skill (Claude Code)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md'),
+    globalPath: () => path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'),
+    projectPath: () => path.join(process.cwd(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'),
+  },
+  {
+    label: 'agenfk-flow skill (OpenCode)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'skills', 'opencode', 'agenfk-flow', 'SKILL.md'),
+    globalPath: () => path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md'),
+    projectPath: () => path.join(process.cwd(), '.opencode', 'skills', 'agenfk-flow', 'SKILL.md'),
+  },
+  {
+    label: 'agenfk-flow skill (Cursor)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'skills', 'cursor', 'agenfk-flow.mdc'),
+    globalPath: () => path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow.mdc'),
+    projectPath: () => path.join(process.cwd(), '.cursor', 'skills', 'agenfk-flow.mdc'),
+  },
+  {
+    label: 'agenfk-flow skill (Codex)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'skills', 'codex', 'agenfk-flow.md'),
+    globalPath: () => path.join(os.homedir(), '.codex', 'skills', 'agenfk-flow.md'),
+    projectPath: () => path.join(process.cwd(), '.codex', 'skills', 'agenfk-flow.md'),
+  },
+  {
+    label: 'agenfk-flow skill (Gemini)',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'skills', 'gemini', 'agenfk-flow.md'),
+    globalPath: () => path.join(os.homedir(), '.gemini', 'skills', 'agenfk-flow.md'),
+    projectPath: () => path.join(process.cwd(), '.gemini', 'skills', 'agenfk-flow.md'),
+  },
+];
+
+// Command directory destinations per platform
+// For Claude Code, commands/*.md → skills/<name>/SKILL.md (skills format, not commands folder)
+// For OpenCode and Gemini, commands/*.md → commands dir
+const COMMANDS_DESTINATIONS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: () => string;
+  transform?: (filename: string) => string; // path relative to destDir
+}> = [
+  {
+    name: 'Claude Code',
+    globalDir: () => path.join(os.homedir(), '.claude', 'skills'),
+    projectDir: () => path.join(process.cwd(), '.claude', 'skills'),
+    transform: (f: string) => path.join(f.replace(/\.md$/, ''), 'SKILL.md'),
+  },
+  {
+    name: 'OpenCode',
+    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
+    projectDir: () => path.join(process.cwd(), '.opencode', 'commands'),
+  },
+  {
+    name: 'Gemini',
+    globalDir: () => path.join(os.homedir(), '.gemini', 'commands', 'agenfk'),
+    projectDir: () => path.join(process.cwd(), '.gemini', 'commands', 'agenfk'),
+  },
+];
+
+/** Install commands from system commands dir to a platform's destination */
+function syncCommandsToDir(
+  srcDir: string,
+  destDir: string,
+  transform?: (filename: string) => string
+): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  for (const file of files) {
+    const src = path.join(srcDir, file);
+    const relDest = transform ? transform(file) : file;
+    const dest = path.join(destDir, relDest);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove commands from a platform's destination dir (mirror of syncCommandsToDir) */
+function removeCommandsFromDir(
+  srcDir: string,
+  destDir: string,
+  transform?: (filename: string) => string
+): void {
+  if (!fs.existsSync(srcDir) || !fs.existsSync(destDir)) return;
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  for (const file of files) {
+    const relDest = transform ? transform(file) : file;
+    const dest = path.join(destDir, relDest);
+    if (fs.existsSync(dest)) {
+      fs.unlinkSync(dest);
+      // Remove empty parent dirs created for skills format (e.g. .claude/skills/agenfk-flow/)
+      const parentDir = path.dirname(dest);
+      if (parentDir !== destDir && fs.existsSync(parentDir)) {
+        const remaining = fs.readdirSync(parentDir) as string[];
+        if (remaining.length === 0) {
+          fs.rmdirSync(parentDir);
+        }
+      }
+    }
+  }
+}
+
 const rulesCommand = program
   .command('rules')
   .description('Manage workflow rules (CLAUDE.md, AGENTS.md, GEMINI.md, agenfk.mdc)');
@@ -1697,10 +1808,12 @@ rulesCommand
   .action((options: { global?: boolean }) => {
     const scope = options.global ? 'global' : 'project';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
     try {
       const installed: string[] = [];
       const skipped: string[] = [];
 
+      // ── Rule files ──────────────────────────────────────────────────────────
       for (const rule of RULES_CONFIG) {
         if (!fs.existsSync(rule.sourceFile)) {
           skipped.push(rule.label);
@@ -1728,6 +1841,39 @@ rulesCommand
         }
       }
 
+      // ── Skills (single files per platform) ───────────────────────────────
+      for (const skill of SKILLS_CONFIG) {
+        if (!fs.existsSync(skill.sourceFile)) {
+          skipped.push(skill.label);
+          continue;
+        }
+        const activePath = scope === 'global' ? skill.globalPath() : skill.projectPath();
+        const oppositePath = scope === 'global' ? skill.projectPath() : skill.globalPath();
+
+        fs.mkdirSync(path.dirname(activePath), { recursive: true });
+        fs.copyFileSync(skill.sourceFile, activePath);
+        installed.push(`  ${chalk.green('✓')} ${skill.label} → ${activePath}`);
+
+        // Clean up opposite scope
+        if (fs.existsSync(oppositePath)) {
+          fs.unlinkSync(oppositePath);
+        }
+      }
+
+      // ── Commands (directory) ─────────────────────────────────────────────
+      for (const dest of COMMANDS_DESTINATIONS) {
+        const activeDir = scope === 'global' ? dest.globalDir() : dest.projectDir();
+        const oppositeDir = scope === 'global' ? dest.projectDir() : dest.globalDir();
+
+        const paths = syncCommandsToDir(cmdSrcDir, activeDir, dest.transform);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${dest.name} commands (${paths.length}) → ${activeDir}`);
+        }
+
+        // Clean up opposite scope
+        removeCommandsFromDir(cmdSrcDir, oppositeDir, dest.transform);
+      }
+
       // Persist scope to config
       let config: Record<string, unknown> = {};
       if (fs.existsSync(configPath)) {
@@ -1736,7 +1882,7 @@ rulesCommand
       config.rulesScope = scope;
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 
-      console.log(chalk.green(`Workflow rules installed (${scope}):`));
+      console.log(chalk.green(`Workflow rules & skills installed (${scope}):`));
       installed.forEach(l => console.log(l));
       if (skipped.length) {
         console.log(chalk.gray(`Skipped (source not found): ${skipped.join(', ')}`));
@@ -1754,9 +1900,11 @@ rulesCommand
   .action((options: { global?: boolean }) => {
     const scope = options.global ? 'global' : 'project';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
+    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
     try {
       const removed: string[] = [];
 
+      // ── Rule files ──────────────────────────────────────────────────────────
       for (const rule of RULES_CONFIG) {
         const targetPath = scope === 'global' ? rule.globalPath() : rule.projectPath();
         if (!fs.existsSync(targetPath)) continue;
@@ -1766,6 +1914,20 @@ rulesCommand
           removeRuleBlock(targetPath);
         }
         removed.push(`  ${chalk.green('✓')} ${rule.label} removed from ${targetPath}`);
+      }
+
+      // ── Skills ───────────────────────────────────────────────────────────
+      for (const skill of SKILLS_CONFIG) {
+        const targetPath = scope === 'global' ? skill.globalPath() : skill.projectPath();
+        if (!fs.existsSync(targetPath)) continue;
+        fs.unlinkSync(targetPath);
+        removed.push(`  ${chalk.green('✓')} ${skill.label} removed from ${targetPath}`);
+      }
+
+      // ── Commands ─────────────────────────────────────────────────────────
+      for (const dest of COMMANDS_DESTINATIONS) {
+        const targetDir = scope === 'global' ? dest.globalDir() : dest.projectDir();
+        removeCommandsFromDir(cmdSrcDir, targetDir, dest.transform);
       }
 
       // Update config
@@ -1779,7 +1941,7 @@ rulesCommand
       }
 
       if (removed.length) {
-        console.log(chalk.green(`Workflow rules removed (${scope}):`));
+        console.log(chalk.green(`Workflow rules & skills removed (${scope}):`));
         removed.forEach(l => console.log(l));
       } else {
         console.log(chalk.yellow(`No workflow rules found for scope: ${scope}`));
