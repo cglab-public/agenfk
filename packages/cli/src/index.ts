@@ -1706,13 +1706,28 @@ const RULES_CONFIG: Array<{
 // All platforms install commands/*.md as skills/<name>/SKILL.md in their skills directory
 const SKILL_TRANSFORM = (f: string): string => path.join(f.replace(/\.md$/, ''), 'SKILL.md');
 
-/** Legacy flat commands dirs per platform (old format, pre-skills migration) */
+/** Legacy flat commands dirs (old format, pre-skills migration).
+ *  Only includes dirs that are truly superseded; active slash-command dirs
+ *  for each platform are managed separately. */
 const LEGACY_COMMANDS_DIRS: Array<() => string> = [
   () => path.join(os.homedir(), '.claude', 'commands'),
-  () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
-  () => path.join(os.homedir(), '.gemini', 'commands'),
   () => path.join(os.homedir(), '.codex', 'commands'),
 ];
+
+/** Platform-specific skills dirs that are superseded by ~/.agents/skills/.
+ *  These are cleaned up on install/uninstall to avoid skill conflict warnings. */
+const SUPERSEDED_SKILL_DIRS: Array<() => string> = [
+  () => path.join(os.homedir(), '.config', 'opencode', 'skills'),
+  () => path.join(os.homedir(), '.cursor', 'skills'),
+  () => path.join(os.homedir(), '.codex', 'skills'),
+  () => path.join(os.homedir(), '.gemini', 'skills'),
+];
+
+function removeSupersededSkillDirs(): void {
+  for (const dirFn of SUPERSEDED_SKILL_DIRS) {
+    removeAgenfkSkillsFromDir(dirFn());
+  }
+}
 
 /** Remove agenfk*.md flat files and agenfk* subdirs from all legacy commands dirs */
 function removeLegacyCommands(): void {
@@ -1740,31 +1755,105 @@ const COMMAND_SKILL_PLATFORMS: Array<{
   projectDir: (root: string) => string;
 }> = [
   {
+    // Claude Code reads ONLY from ~/.claude/skills/ (does not read .agents/skills/)
     name: 'Claude Code',
     globalDir: () => path.join(os.homedir(), '.claude', 'skills'),
     projectDir: (root) => path.join(root, '.claude', 'skills'),
   },
   {
-    name: 'OpenCode',
-    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'skills'),
-    projectDir: (root) => path.join(root, '.opencode', 'skills'),
-  },
-  {
-    name: 'Cursor',
-    globalDir: () => path.join(os.homedir(), '.cursor', 'skills'),
-    projectDir: (root) => path.join(root, '.cursor', 'skills'),
-  },
-  {
-    name: 'Codex',
-    globalDir: () => path.join(os.homedir(), '.codex', 'skills'),
-    projectDir: (root) => path.join(root, '.codex', 'skills'),
-  },
-  {
-    name: 'Gemini',
-    globalDir: () => path.join(os.homedir(), '.gemini', 'skills'),
-    projectDir: (root) => path.join(root, '.gemini', 'skills'),
+    // Universal path: read by Cursor, OpenCode, Gemini CLI, Codex, and agents-compatible tools.
+    // Installing here (and NOT to platform-specific dirs) avoids skill conflict warnings.
+    name: 'Universal (.agents)',
+    globalDir: () => path.join(os.homedir(), '.agents', 'skills'),
+    projectDir: (root) => path.join(root, '.agents', 'skills'),
   },
 ];
+
+/** OpenCode flat-command platforms: files go as <name>.md directly (no subdir transform).
+ *  OpenCode slash commands live in ~/.config/opencode/commands/<name>.md */
+const OPENCODE_COMMAND_PLATFORMS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    name: 'OpenCode commands',
+    globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
+    projectDir: (root) => path.join(root, '.opencode', 'commands'),
+  },
+];
+
+/** Gemini CLI TOML command platforms: each .md becomes a .toml slash command.
+ *  Gemini slash commands live in ~/.gemini/commands/<name>.toml */
+const GEMINI_TOML_PLATFORMS: Array<{
+  name: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    name: 'Gemini commands',
+    globalDir: () => path.join(os.homedir(), '.gemini', 'commands'),
+    projectDir: (root) => path.join(root, '.gemini', 'commands'),
+  },
+];
+
+/** Install commands as flat .md files (for OpenCode slash commands) */
+function syncCommandsFlat(srcDir: string, destDir: string): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of files) {
+    const dest = path.join(destDir, file);
+    fs.copyFileSync(path.join(srcDir, file), dest);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove agenfk*.md flat files from a commands dir (mirrors syncCommandsFlat) */
+function removeAgenfkFlatFromDir(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir) as string[]) {
+    if (entry.startsWith('agenfk') && entry.endsWith('.md')) {
+      try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Generate Gemini TOML slash commands from commands/*.md files */
+function syncCommandsToml(srcDir: string, destDir: string): string[] {
+  if (!fs.existsSync(srcDir)) return [];
+  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const installed: string[] = [];
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of files) {
+    const mdContent = fs.readFileSync(path.join(srcDir, file), 'utf8');
+    const skillName = file.replace(/\.md$/, '');
+    // Parse description from YAML frontmatter
+    let description = skillName;
+    const fmMatch = mdContent.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+      if (descMatch) description = descMatch[1].trim();
+    }
+    const tomlContent = `description = "${description}"\nprompt = """\n${mdContent}\n"""\n`;
+    const dest = path.join(destDir, `${skillName}.toml`);
+    fs.writeFileSync(dest, tomlContent);
+    installed.push(dest);
+  }
+  return installed;
+}
+
+/** Remove agenfk*.toml files from a Gemini commands dir */
+function removeAgenfkTomlFromDir(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir) as string[]) {
+    if (entry.startsWith('agenfk') && entry.endsWith('.toml')) {
+      try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
+    }
+  }
+}
 
 /** Install commands from system commands dir to a platform's destination */
 function syncCommandsToDir(
@@ -1780,7 +1869,13 @@ function syncCommandsToDir(
     const relDest = transform ? transform(file) : file;
     const dest = path.join(destDir, relDest);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
+    // Read content and inject 'name' frontmatter field if missing (required by OpenCode, Codex, Cursor, Gemini)
+    let content = fs.readFileSync(src, 'utf8');
+    if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
+      const skillName = file.replace(/\.md$/, '');
+      content = content.replace('---\n', `---\nname: ${skillName}\n`);
+    }
+    fs.writeFileSync(dest, content);
     installed.push(dest);
   }
   return installed;
@@ -1914,8 +2009,32 @@ rulesCommand
         removeAgenfkSkillsFromDir(oppositeDir);
       }
 
+      // ── OpenCode flat slash commands ──────────────────────────────────────
+      for (const platform of OPENCODE_COMMAND_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+        const paths = syncCommandsFlat(cmdSrcDir, activeDir);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
+        }
+        removeAgenfkFlatFromDir(oppositeDir);
+      }
+
+      // ── Gemini TOML slash commands ────────────────────────────────────────
+      for (const platform of GEMINI_TOML_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+        const paths = syncCommandsToml(cmdSrcDir, activeDir);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
+        }
+        removeAgenfkTomlFromDir(oppositeDir);
+      }
+
       // Clean up legacy flat commands dirs (old format, all scopes)
       removeLegacyCommands();
+      // Clean up platform-specific skill dirs superseded by ~/.agents/skills/
+      removeSupersededSkillDirs();
 
       // Persist scope to config
       let config: Record<string, unknown> = {};
@@ -1980,8 +2099,22 @@ rulesCommand
         removeAgenfkSkillsFromDir(targetDir);
       }
 
+      // ── OpenCode flat slash commands ──────────────────────────────────────
+      for (const platform of OPENCODE_COMMAND_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        removeAgenfkFlatFromDir(targetDir);
+      }
+
+      // ── Gemini TOML slash commands ────────────────────────────────────────
+      for (const platform of GEMINI_TOML_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        removeAgenfkTomlFromDir(targetDir);
+      }
+
       // ── Legacy flat commands dirs (old format) ───────────────────────────
       removeLegacyCommands();
+      // Clean up platform-specific skill dirs superseded by ~/.agents/skills/
+      removeSupersededSkillDirs();
 
       // Update config
       let config: Record<string, unknown> = {};

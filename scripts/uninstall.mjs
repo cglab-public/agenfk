@@ -161,6 +161,7 @@ async function run() {
             path.join(os.homedir(), '.cursor', 'skills'),
             path.join(os.homedir(), '.codex', 'skills'),
             path.join(os.homedir(), '.gemini', 'skills'),
+            path.join(os.homedir(), '.agents', 'skills'),
         ];
         for (const dir of skillsDirs) {
             if (!existsSync(dir)) continue;

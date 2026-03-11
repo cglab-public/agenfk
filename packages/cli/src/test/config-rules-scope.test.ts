@@ -239,44 +239,40 @@ describe('agenfk rules install — commands', () => {
     });
   });
 
-  it('installs all platform commands as skills/name/SKILL.md in project (--project)', async () => {
+  it('installs skills to Claude Code and Universal (.agents) in project (--project)', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'install', '--project']);
 
+    // Claude Code and Universal (.agents) are the only COMMAND_SKILL_PLATFORMS
     for (const skillsDir of [
       path.join(FAKE_GIT_ROOT, '.claude', 'skills'),
-      path.join(FAKE_GIT_ROOT, '.opencode', 'skills'),
-      path.join(FAKE_GIT_ROOT, '.cursor', 'skills'),
-      path.join(FAKE_GIT_ROOT, '.codex', 'skills'),
-      path.join(FAKE_GIT_ROOT, '.gemini', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.agents', 'skills'),
     ]) {
-      expect(mockCopyFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('agenfk-flow.md'),
-        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-flow', 'SKILL.md'),
+        expect.any(String)
       );
-      expect(mockCopyFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('agenfk-close.md'),
-        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-close', 'SKILL.md'),
+        expect.any(String)
       );
     }
   });
 
-  it('installs all platform commands as skills/name/SKILL.md globally (default)', async () => {
+  it('installs skills to Claude Code and Universal (.agents) globally (default)', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'install']);
 
+    // Claude Code and Universal (.agents) are the only COMMAND_SKILL_PLATFORMS
     for (const skillsDir of [
       path.join(os.homedir(), '.claude', 'skills'),
-      path.join(os.homedir(), '.config', 'opencode', 'skills'),
-      path.join(os.homedir(), '.cursor', 'skills'),
-      path.join(os.homedir(), '.codex', 'skills'),
-      path.join(os.homedir(), '.gemini', 'skills'),
+      path.join(os.homedir(), '.agents', 'skills'),
     ]) {
-      expect(mockCopyFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('agenfk-flow.md'),
-        path.join(skillsDir, 'agenfk-flow', 'SKILL.md')
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-flow', 'SKILL.md'),
+        expect.any(String)
       );
-      expect(mockCopyFileSync).toHaveBeenCalledWith(
-        expect.stringContaining('agenfk-close.md'),
-        path.join(skillsDir, 'agenfk-close', 'SKILL.md')
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        path.join(skillsDir, 'agenfk-close', 'SKILL.md'),
+        expect.any(String)
       );
     }
   });
@@ -308,31 +304,21 @@ describe('agenfk rules uninstall — skills', () => {
     );
   });
 
-  it('removes global OpenCode skill on uninstall --global', async () => {
+  it('removes Universal (.agents) skill on uninstall --global', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
+    // .agents/skills is the universal path (used by OpenCode, Cursor, Gemini, Codex)
     expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md')
+      path.join(os.homedir(), '.agents', 'skills', 'agenfk-flow', 'SKILL.md')
     );
   });
 
-  it('removes global Cursor skill on uninstall --global', async () => {
-    await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
-
-    expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow', 'SKILL.md')
-    );
-  });
-
-  it('removes command skills from all platforms on uninstall --global', async () => {
+  it('removes command skills from Claude Code and Universal on uninstall --global', async () => {
     await program.parseAsync(['node', 'agenfk', 'skills', 'uninstall', '--global']);
 
     for (const skillsDir of [
       path.join(os.homedir(), '.claude', 'skills'),
-      path.join(os.homedir(), '.config', 'opencode', 'skills'),
-      path.join(os.homedir(), '.cursor', 'skills'),
-      path.join(os.homedir(), '.codex', 'skills'),
-      path.join(os.homedir(), '.gemini', 'skills'),
+      path.join(os.homedir(), '.agents', 'skills'),
     ]) {
       expect(mockUnlinkSync).toHaveBeenCalledWith(
         path.join(skillsDir, 'agenfk-flow', 'SKILL.md')

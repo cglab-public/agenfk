@@ -706,6 +706,32 @@ process.exit(0);
         }
     }
 
+    // 8e. Universal skills: install all commands/*.md to ~/.agents/skills/<name>/SKILL.md
+    // This path is the primary skill discovery location for Codex and is also supported
+    // by OpenCode, Gemini CLI, Cursor, and other agents-compatible tools.
+    console.log(`${GREEN}[8e/14] Installing universal skills (~/.agents/skills/)...${NC}`);
+    {
+        const agentsSkillsDir = path.join(os.homedir(), '.agents', 'skills');
+        const commandsDir = path.join(rootDir, 'commands');
+        if (existsSync(commandsDir)) {
+            const files = await fs.readdir(commandsDir);
+            for (const file of files) {
+                if (!file.endsWith('.md')) continue;
+                const skillName = file.replace(/\.md$/, '');
+                const skillDir = path.join(agentsSkillsDir, skillName);
+                await fs.mkdir(skillDir, { recursive: true });
+                let content = readFileSync(path.join(commandsDir, file), 'utf8');
+                // Inject 'name' field if missing (required by Codex, OpenCode, Cursor, Gemini)
+                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
+                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
+                }
+                const dest = path.join(skillDir, 'SKILL.md');
+                writeFileSync(dest, content, 'utf8');
+                console.log(`  Installed: ${dest}`);
+            }
+        }
+    }
+
     // 9. Symlink CLI to ~/.local/bin
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');
     const cliDestBase = path.join(localBinDir, 'agenfk');
