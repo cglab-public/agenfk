@@ -1631,7 +1631,7 @@ const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/
 /** Returns the git repo root, falling back to process.cwd() */
 function getProjectRoot(): string {
   try {
-    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
+    return execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
   } catch {
     return process.cwd();
   }
@@ -1852,6 +1852,8 @@ rulesCommand
   .action((options: { global?: boolean; project?: boolean }) => {
     const scope = options.project ? 'project' : 'global';
     const projectRoot = scope === 'project' ? getProjectRoot() : '';
+    // Compute once (avoids repeated git calls and duplicate "fatal:" warnings)
+    const oppositeRoot = scope === 'global' ? getProjectRoot() : '';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
     try {
@@ -1865,7 +1867,7 @@ rulesCommand
           continue;
         }
         const activePath = scope === 'global' ? rule.globalPath() : rule.projectPath(projectRoot);
-        const oppositePath = scope === 'global' ? rule.projectPath(getProjectRoot()) : rule.globalPath();
+        const oppositePath = scope === 'global' ? rule.projectPath(oppositeRoot) : rule.globalPath();
 
         if (rule.copy) {
           fs.mkdirSync(path.dirname(activePath), { recursive: true });
@@ -1883,21 +1885,33 @@ rulesCommand
           } else {
             removeRuleBlock(oppositePath);
           }
+          // Remove empty parent dirs (e.g. .cursor/rules/ after removing agenfk.mdc)
+          const parentDir = path.dirname(oppositePath);
+          try {
+            if (fs.existsSync(parentDir) && (fs.readdirSync(parentDir) as string[]).length === 0) {
+              fs.rmdirSync(parentDir);
+              const grandParent = path.dirname(parentDir);
+              if (fs.existsSync(grandParent) && (fs.readdirSync(grandParent) as string[]).length === 0) {
+                fs.rmdirSync(grandParent);
+              }
+            }
+          } catch { /* ignore */ }
         }
       }
 
       // ── Skills (all platforms) ────────────────────────────────────────────
       for (const platform of COMMAND_SKILL_PLATFORMS) {
         const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
-        const oppositeDir = scope === 'global' ? platform.projectDir(getProjectRoot()) : platform.globalDir();
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
 
         const paths = syncCommandsToDir(cmdSrcDir, activeDir, SKILL_TRANSFORM);
         if (paths.length > 0) {
           installed.push(`  ${chalk.green('✓')} ${platform.name} skills (${paths.length}) → ${activeDir}`);
         }
 
-        // Clean up opposite scope
+        // Clean up opposite scope (use direct scan so it works even when srcDir is missing)
         removeCommandsFromDir(cmdSrcDir, oppositeDir, SKILL_TRANSFORM);
+        removeAgenfkSkillsFromDir(oppositeDir);
       }
 
       // Clean up legacy flat commands dirs (old format, all scopes)
@@ -1944,6 +1958,17 @@ rulesCommand
         } else {
           removeRuleBlock(targetPath);
         }
+        // Remove empty parent dirs (e.g. .cursor/rules/ after removing agenfk.mdc)
+        const parentDir = path.dirname(targetPath);
+        try {
+          if (fs.existsSync(parentDir) && (fs.readdirSync(parentDir) as string[]).length === 0) {
+            fs.rmdirSync(parentDir);
+            const grandParent = path.dirname(parentDir);
+            if (fs.existsSync(grandParent) && (fs.readdirSync(grandParent) as string[]).length === 0) {
+              fs.rmdirSync(grandParent);
+            }
+          }
+        } catch { /* ignore */ }
         removed.push(`  ${chalk.green('✓')} ${rule.label} removed from ${targetPath}`);
       }
 
