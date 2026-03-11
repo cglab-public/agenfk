@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Hoist mock vars
-const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync, mockCopyFileSync, mockUnlinkSync, mockReaddirSync, mockRmdirSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync, mockCopyFileSync, mockUnlinkSync, mockReaddirSync, mockRmdirSync, mockExecSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
@@ -12,6 +12,7 @@ const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync, mock
   mockUnlinkSync: vi.fn(),
   mockReaddirSync: vi.fn().mockReturnValue([]),
   mockRmdirSync: vi.fn(),
+  mockExecSync: vi.fn().mockReturnValue('/fake/project/root'),
 }));
 
 vi.mock('fs', () => ({
@@ -36,10 +37,10 @@ vi.mock('fs', () => ({
 }));
 
 vi.mock('child_process', () => ({
-  execSync: vi.fn(),
+  execSync: mockExecSync,
   spawn: vi.fn(),
   spawnSync: vi.fn().mockReturnValue({ status: 0 }),
-  default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn().mockReturnValue({ status: 0 }) },
+  default: { execSync: mockExecSync, spawn: vi.fn(), spawnSync: vi.fn().mockReturnValue({ status: 0 }) },
 }));
 
 vi.mock('axios');
@@ -59,7 +60,7 @@ import { program } from '../index';
 
 const CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
 
-/** Reset Commander --global option state to prevent test pollution across suites */
+/** Reset Commander option state to prevent test pollution across suites */
 function resetCommanderGlobalOption(): void {
   const rulesCmd = program.commands.find((c: any) => c.name() === 'rules');
   const installCmd = (rulesCmd as any)?.commands?.find((c: any) => c.name() === 'install');
@@ -67,12 +68,15 @@ function resetCommanderGlobalOption(): void {
   if (installCmd) (installCmd as any)._optionValues = {};
   if (uninstallCmd) (uninstallCmd as any)._optionValues = {};
 }
+
+const FAKE_GIT_ROOT = '/fake/project/root';
 const SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
 
 describe('agenfk rules install', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetCommanderGlobalOption();
+    mockExecSync.mockReturnValue(FAKE_GIT_ROOT);
     // Source rule files exist, config does not
     mockExistsSync.mockImplementation((p: string) =>
       p.includes('.agenfk-system') && !p.includes('config.json')
@@ -81,12 +85,11 @@ describe('agenfk rules install', () => {
     mockReaddirSync.mockReturnValue([]);
   });
 
-  it('installs to project scope by default', async () => {
+  it('installs to global scope by default (no flag)', async () => {
     await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
 
-    // Should write CLAUDE.md to cwd/.claude/CLAUDE.md
     expect(mockWriteFileSync).toHaveBeenCalledWith(
-      expect.stringContaining('.claude/CLAUDE.md'),
+      path.join(os.homedir(), '.claude', 'CLAUDE.md'),
       expect.any(String),
       'utf8'
     );
@@ -102,8 +105,36 @@ describe('agenfk rules install', () => {
     );
   });
 
-  it('persists rulesScope to config', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+  it('installs to project scope with --project', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join(FAKE_GIT_ROOT, '.claude', 'CLAUDE.md'),
+      expect.any(String),
+      'utf8'
+    );
+  });
+
+  it('project scope uses git root, not process.cwd()', async () => {
+    mockExecSync.mockReturnValue('/some/git/root');
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      path.join('/some/git/root', '.claude', 'CLAUDE.md'),
+      expect.any(String),
+      'utf8'
+    );
+    // Must NOT install to process.cwd()
+    expect(mockWriteFileSync).not.toHaveBeenCalledWith(
+      path.join(process.cwd(), '.claude', 'CLAUDE.md'),
+      expect.any(String),
+      'utf8'
+    );
+  });
+
+  it('persists rulesScope=global to config by default', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
 
     const configWrite = mockWriteFileSync.mock.calls.find(
       (c: any[]) => c[0] === CONFIG_PATH
@@ -111,6 +142,17 @@ describe('agenfk rules install', () => {
     expect(configWrite).toBeDefined();
     const written = JSON.parse(configWrite![1]);
     expect(written.rulesScope).toBe('global');
+  });
+
+  it('persists rulesScope=project to config with --project', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
+
+    const configWrite = mockWriteFileSync.mock.calls.find(
+      (c: any[]) => c[0] === CONFIG_PATH
+    );
+    expect(configWrite).toBeDefined();
+    const written = JSON.parse(configWrite![1]);
+    expect(written.rulesScope).toBe('project');
   });
 
   it('skips source files that do not exist', async () => {
@@ -135,6 +177,21 @@ describe('agenfk rules uninstall', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global' }));
     mockReaddirSync.mockReturnValue([]);
+  });
+
+  it('uninstalls from global scope by default (no flag)', async () => {
+    mockReadFileSync.mockImplementation((p: string) => {
+      if (p.endsWith('config.json')) return JSON.stringify({ rulesScope: 'global' });
+      return '# My notes\n\n<!-- agenfk:start -->\nrules\n<!-- agenfk:end -->\n';
+    });
+
+    await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall']);
+
+    const claudeWrite = mockWriteFileSync.mock.calls.find(
+      (c: any[]) => c[0] === path.join(os.homedir(), '.claude', 'CLAUDE.md')
+    );
+    expect(claudeWrite).toBeDefined();
+    expect(claudeWrite![1]).not.toContain('agenfk:start');
   });
 
   it('removes agenfk block from CLAUDE.md for global scope', async () => {
@@ -165,97 +222,15 @@ describe('agenfk rules uninstall', () => {
   });
 });
 
-describe('agenfk rules install — skills', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetCommanderGlobalOption();
-    mockExistsSync.mockImplementation((p: string) =>
-      p.includes('.agenfk-system') && !p.includes('config.json')
-    );
-    mockReadFileSync.mockReturnValue('<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->');
-    mockReaddirSync.mockReturnValue([]);
-  });
-
-  it('copies Claude Code agenfk-flow skill to global path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'claude-code', 'agenfk-flow', 'SKILL.md')),
-      path.join(os.homedir(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md')
-    );
-  });
-
-  it('copies Claude Code agenfk-flow skill to project path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'claude-code', 'agenfk-flow', 'SKILL.md')),
-      expect.stringContaining(path.join('.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
-    );
-  });
-
-  it('copies OpenCode agenfk-flow skill to global path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'opencode', 'agenfk-flow', 'SKILL.md')),
-      path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow', 'SKILL.md')
-    );
-  });
-
-  it('copies Cursor agenfk-flow skill to global path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'cursor', 'agenfk-flow.mdc')),
-      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow.mdc')
-    );
-  });
-
-  it('copies Codex agenfk-flow skill to global path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'codex', 'agenfk-flow.md')),
-      path.join(os.homedir(), '.codex', 'skills', 'agenfk-flow.md')
-    );
-  });
-
-  it('copies Gemini agenfk-flow skill to global path', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    expect(mockCopyFileSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join('skills', 'gemini', 'agenfk-flow.md')),
-      path.join(os.homedir(), '.gemini', 'skills', 'agenfk-flow.md')
-    );
-  });
-
-  it('removes project skill files when switching to global scope', async () => {
-    // Project skill files exist
-    mockExistsSync.mockImplementation((p: string) => true);
-    mockReadFileSync.mockImplementation((p: string) => {
-      if (p.endsWith('config.json')) return '{}';
-      return '<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->';
-    });
-
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
-
-    // Project Claude Code skill should be deleted
-    expect(mockUnlinkSync).toHaveBeenCalledWith(
-      expect.stringContaining(path.join(process.cwd(), '.claude', 'skills', 'agenfk-flow', 'SKILL.md'))
-    );
-  });
-});
-
 describe('agenfk rules install — commands', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetCommanderGlobalOption();
+    mockExecSync.mockReturnValue(FAKE_GIT_ROOT);
     mockExistsSync.mockImplementation((p: string) =>
       p.includes('.agenfk-system') && !p.includes('config.json')
     );
     mockReadFileSync.mockReturnValue('<!-- agenfk:start -->\ncontent\n<!-- agenfk:end -->');
-    // Simulate two command files in system commands dir
     mockReaddirSync.mockImplementation((p: string) => {
       if (typeof p === 'string' && p.includes('commands')) {
         return ['agenfk-flow.md', 'agenfk-close.md'];
@@ -264,16 +239,15 @@ describe('agenfk rules install — commands', () => {
     });
   });
 
-  // Project-scope tests run first to avoid Commander option bleed from --global tests
-  it('installs all platform commands as skills/name/SKILL.md in project', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
+  it('installs all platform commands as skills/name/SKILL.md in project (--project)', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--project']);
 
     for (const skillsDir of [
-      path.join(process.cwd(), '.claude', 'skills'),
-      path.join(process.cwd(), '.opencode', 'skills'),
-      path.join(process.cwd(), '.cursor', 'skills'),
-      path.join(process.cwd(), '.codex', 'skills'),
-      path.join(process.cwd(), '.gemini', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.claude', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.opencode', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.cursor', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.codex', 'skills'),
+      path.join(FAKE_GIT_ROOT, '.gemini', 'skills'),
     ]) {
       expect(mockCopyFileSync).toHaveBeenCalledWith(
         expect.stringContaining('agenfk-flow.md'),
@@ -286,8 +260,8 @@ describe('agenfk rules install — commands', () => {
     }
   });
 
-  it('installs all platform commands as skills/name/SKILL.md globally', async () => {
-    await program.parseAsync(['node', 'agenfk', 'rules', 'install', '--global']);
+  it('installs all platform commands as skills/name/SKILL.md globally (default)', async () => {
+    await program.parseAsync(['node', 'agenfk', 'rules', 'install']);
 
     for (const skillsDir of [
       path.join(os.homedir(), '.claude', 'skills'),
@@ -312,6 +286,7 @@ describe('agenfk rules uninstall — skills', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetCommanderGlobalOption();
+    mockExecSync.mockReturnValue(FAKE_GIT_ROOT);
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockImplementation((p: string) => {
       if (p.endsWith('config.json')) return JSON.stringify({ rulesScope: 'global' });
@@ -321,7 +296,6 @@ describe('agenfk rules uninstall — skills', () => {
       if (typeof p === 'string' && p.includes('commands')) {
         return ['agenfk-flow.md', 'agenfk-close.md'];
       }
-      // For skill dirs (checking what to delete), return empty
       return [];
     });
   });
@@ -346,7 +320,7 @@ describe('agenfk rules uninstall — skills', () => {
     await program.parseAsync(['node', 'agenfk', 'rules', 'uninstall', '--global']);
 
     expect(mockUnlinkSync).toHaveBeenCalledWith(
-      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow.mdc')
+      path.join(os.homedir(), '.cursor', 'skills', 'agenfk-flow', 'SKILL.md')
     );
   });
 

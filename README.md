@@ -141,11 +141,11 @@ During first install, AgEnFK asks where workflow rules (`CLAUDE.md`, `AGENTS.md`
 Your choice is saved in `~/.agenfk/config.json` and respected on every upgrade. To manage rules after installation:
 
 ```bash
-agenfk rules install           # install rules into current repo (project scope)
-agenfk rules install --global  # install rules globally
-agenfk rules uninstall         # remove project-scoped rules
-agenfk rules uninstall --global
-agenfk rules status            # show current scope (global, project, or none)
+agenfk rules install            # install rules globally (default)
+agenfk rules install --project  # install rules into the current repo (uses git root)
+agenfk rules uninstall          # remove global rules (default)
+agenfk rules uninstall --project  # remove project-scoped rules from the current repo
+agenfk rules status             # show current scope (global, project, or none)
 ```
 
 Switching automatically removes rules from the old location and installs them in the new one.
