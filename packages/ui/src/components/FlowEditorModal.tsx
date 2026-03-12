@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import mermaid from 'mermaid';
 import { api } from '../api';
 import { Flow, FlowStep, RegistryFlow } from '../types';
+import { useTheme } from '../ThemeContext';
 import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
 
 // Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
@@ -725,6 +727,29 @@ const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) =>
   </span>
 );
 
+// ── Mermaid diagram for flow steps ───────────────────────────────────────────
+
+/* v8 ignore start */
+const FlowMermaid: React.FC<{ steps: { name: string; label: string }[] }> = ({ steps }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
+
+  useEffect(() => {
+    if (!ref.current || steps.length === 0) return;
+    const id = `mermaid-flow-${Math.random().toString(36).substring(2, 9)}`;
+    const nodes = steps.map((s, i) => `  ${i}["${s.label || s.name}"]`).join('\n');
+    const edges = steps.slice(1).map((_, i) => `  ${i} --> ${i + 1}`).join('\n');
+    const chart = `flowchart LR\n${nodes}\n${edges}`;
+    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    mermaid.render(id, chart).then(({ svg }) => {
+      if (ref.current) ref.current.innerHTML = svg;
+    }).catch(() => {});
+  }, [steps, theme]);
+
+  return <div ref={ref} data-testid="community-flow-diagram" className="overflow-x-auto py-2" />;
+};
+/* v8 ignore stop */
+
 // ── Community preview panel (right panel for community flows) ─────────────────
 
 interface CommunityPreviewPanelProps {
@@ -789,11 +814,18 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           </div>
         )}
 
-        <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-          <p className="text-xs text-slate-500 italic">
-            Step details will be available after installation.
-          </p>
-        </div>
+        {flow.steps && flow.steps.length > 0 ? (
+          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Flow</p>
+            <FlowMermaid steps={flow.steps} />
+          </div>
+        ) : (
+          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
+            <p className="text-xs text-slate-500 italic">
+              Step details will be available after installation.
+            </p>
+          </div>
+        )}
 
         {installMutation.isError && (
           <p data-testid="community-install-error" className="text-sm text-red-600 dark:text-red-400">

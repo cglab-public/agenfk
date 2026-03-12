@@ -583,6 +583,7 @@ interface RegistryFlowEntry {
   version?: string;
   stepCount: number;
   description?: string;
+  steps?: { name: string; label: string }[];
 }
 
 app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
@@ -614,6 +615,9 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
             version: content.version,
             stepCount: Array.isArray(content.steps) ? content.steps.length : 0,
             description: content.description,
+            steps: Array.isArray(content.steps)
+              ? content.steps.map((s: any) => ({ name: s.name ?? '', label: s.label ?? s.name ?? '' }))
+              : undefined,
           };
         } catch {
           return {

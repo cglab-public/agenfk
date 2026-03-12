@@ -102,6 +102,7 @@ export interface RegistryFlow {
   version?: string;
   stepCount: number;
   description?: string;
+  steps?: { name: string; label: string }[];
 }
 
 export interface AgEnFKItem {

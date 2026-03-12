@@ -847,4 +847,54 @@ describe('KanbanBoard', () => {
       expect(todoHeader.style.borderTopColor).toBeTruthy();
     });
   });
+
+  describe('Ideas column expansion layout', () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+
+    function setup() {
+      vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+      vi.mocked(api.listItems).mockResolvedValue([]);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<KanbanBoard />, { wrapper });
+    }
+
+    it('should apply min-w-full to the board flex container so it can grow beyond viewport width', async () => {
+      setup();
+      await waitFor(() => screen.getByTestId('column-header-TODO'));
+
+      // The flex container wrapping all columns must use min-w-full (not w-full alone)
+      // so that expanding Ideas does not squeeze the other columns.
+      const boardContainer = document.querySelector('[data-testid="board-columns-container"]');
+      expect(boardContainer).not.toBeNull();
+      expect(boardContainer!.classList.contains('min-w-full')).toBe(true);
+      expect(boardContainer!.classList.contains('w-full')).toBe(false);
+    });
+
+    it('should apply shrink-0 to the Ideas column wrapper when expanded', async () => {
+      setup();
+      await waitFor(() => screen.getByTestId('column-header-TODO'));
+
+      // Expand the Ideas column
+      const ideasBtn = screen.getByTestId('ideas-collapsed-button');
+      fireEvent.click(ideasBtn);
+
+      await waitFor(() => {
+        const ideasWrapper = document.querySelector('[data-testid="ideas-column-wrapper"]');
+        expect(ideasWrapper).not.toBeNull();
+        expect(ideasWrapper!.classList.contains('shrink-0')).toBe(true);
+        expect(ideasWrapper!.classList.contains('shrink')).toBe(false);
+      });
+    });
+
+    it('should NOT apply shrink-0 to Ideas column wrapper when collapsed (stays narrow)', async () => {
+      setup();
+      await waitFor(() => screen.getByTestId('column-header-TODO'));
+
+      // When collapsed, the wrapper uses shrink-0 (fixed narrow width)
+      const ideasWrapper = document.querySelector('[data-testid="ideas-column-wrapper"]');
+      expect(ideasWrapper).not.toBeNull();
+      // Collapsed: uses w-12 shrink-0 — stays fixed at 48px
+      expect(ideasWrapper!.classList.contains('shrink-0')).toBe(true);
+    });
+  });
 });
