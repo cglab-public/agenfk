@@ -210,6 +210,86 @@ try {
   // In some environments this might fail
 }
 
+// ── Upgrade tier startup check ────────────────────────────────────────────────
+
+const UPGRADE_TIER_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function checkUpgradeTier(): Promise<void> {
+  const cacheFile = path.join(os.homedir(), '.agenfk', 'upgrade-tier-cache.json');
+
+  // Try the local cache first
+  try {
+    if (fs.existsSync(cacheFile)) {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (cached.fetchedAt && (Date.now() - cached.fetchedAt) < UPGRADE_TIER_CACHE_TTL) {
+        applyUpgradeTierAction(cached.tier ?? 'optional', cached.version ?? '');
+        return;
+      }
+    }
+  } catch {
+    // Cache read failed — proceed to live fetch
+  }
+
+  let tier: 'mandatory' | 'recommended' | 'optional' = 'optional';
+  let latestVersion = '';
+
+  try {
+    // Try the local server first (it already caches the result)
+    const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 3000 });
+    tier = resp.data?.upgradeTier ?? 'optional';
+    latestVersion = resp.data?.version ?? '';
+  } catch {
+    // Server unavailable — fall back to GitHub API directly
+    try {
+      const repo = 'cglab-public/agenfk';
+      const releaseResp = await axios.get(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' }, timeout: 5000 },
+      );
+      const tagName: string = releaseResp.data?.tag_name ?? '';
+      latestVersion = tagName.replace(/^v/, '');
+      if (tagName) {
+        const rawResp = await axios.get(
+          `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`,
+          { timeout: 5000 },
+        );
+        if (rawResp.data?.agenfkUpgradeTier === 'mandatory' || rawResp.data?.agenfkUpgradeTier === 'recommended') {
+          tier = rawResp.data.agenfkUpgradeTier;
+        }
+      }
+    } catch {
+      // Failed to reach GitHub — proceed silently, no tier enforcement
+      return;
+    }
+  }
+
+  // Persist to local upgradeCache
+  try {
+    const cacheDir = path.join(os.homedir(), '.agenfk');
+    if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({ tier, version: latestVersion, fetchedAt: Date.now() }));
+  } catch {
+    // Cache write failed — non-fatal
+  }
+
+  applyUpgradeTierAction(tier, latestVersion);
+}
+
+function applyUpgradeTierAction(tier: string, latestVersion: string): void {
+  if (tier === 'mandatory') {
+    console.error(chalk.red.bold('\n⛔ MANDATORY UPGRADE REQUIRED'));
+    console.error(chalk.red(`AgEnFK v${latestVersion || 'latest'} is a mandatory upgrade and must be applied before continuing.`));
+    console.error(chalk.red('Run: ') + chalk.yellow.bold('agenfk upgrade'));
+    console.error('');
+    process.exit(1);
+  } else if (tier === 'recommended') {
+    console.log(chalk.yellow.bold('\n⚠️  Recommended upgrade available'));
+    console.log(chalk.yellow(`AgEnFK v${latestVersion || 'latest'} is available with recommended improvements.`));
+    console.log(chalk.yellow('Run ') + chalk.bold('agenfk upgrade') + chalk.yellow(' when convenient.\n'));
+  }
+  // optional: silent — no output
+}
+
 program
   .version(CURRENT_VERSION)
   .description('AgEnFK Engineering CLI')
@@ -3069,5 +3149,8 @@ program.helpInformation = function () {
 };
 
 if (process.env.NODE_ENV !== 'test') {
-  program.parse(process.argv);
+  (async () => {
+    await checkUpgradeTier();
+    program.parse(process.argv);
+  })();
 }

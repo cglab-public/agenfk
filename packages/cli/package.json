@@ -32,5 +32,6 @@
     "cli"
   ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "agenfkUpgradeTier": "recommended"
 }

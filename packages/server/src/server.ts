@@ -2087,6 +2087,7 @@ app.post("/github/import", async (req: any, res: any) => {
 
 let releaseCache: { data: any; fetchedAt: number } | null = null;
 const RELEASE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+export const clearReleaseCache = (): void => { releaseCache = null; };
 
 const getCurrentVersion = (): string => {
   try {
@@ -2194,13 +2195,28 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
 
   try {
     const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
+    const tagName: string = data.tag_name;
+
+    // Fetch upgradeTier from the raw CLI package.json for this tag
+    let upgradeTier: 'mandatory' | 'recommended' | 'optional' = 'optional';
+    try {
+      const rawUrl = `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`;
+      const { data: cliPkg } = await axios.get(rawUrl, { timeout: 5000 });
+      if (cliPkg?.agenfkUpgradeTier === 'mandatory' || cliPkg?.agenfkUpgradeTier === 'recommended') {
+        upgradeTier = cliPkg.agenfkUpgradeTier;
+      }
+    } catch {
+      // If fetch fails, default to optional — non-fatal
+    }
+
     const releaseData = {
-      version: data.tag_name.replace(/^v/, ''),
-      tagName: data.tag_name,
+      version: tagName.replace(/^v/, ''),
+      tagName,
       name: data.name,
       body: data.body || '',
       publishedAt: data.published_at,
       url: data.html_url,
+      upgradeTier,
     };
     releaseCache = { data: releaseData, fetchedAt: Date.now() };
     res.json({ ...releaseData, currentVersion });
