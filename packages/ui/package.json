@@ -1,7 +1,7 @@
 {
   "name": "ui",
   "private": true,
-  "version": "0.2.23-beta.1",
+  "version": "0.2.23",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,9 +14,8 @@
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.0",
     "@tailwindcss/typography": "^0.5.19",
-    "@vitejs/plugin-react": "^5.1.1",
-    "vite": "^7.3.1",
     "@tanstack/react-query": "^5.90.21",
+    "@vitejs/plugin-react": "^5.1.1",
     "axios": "^1.13.5",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
@@ -28,7 +27,8 @@
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "socket.io-client": "^4.8.3",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "vite": "^7.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
