@@ -64,18 +64,10 @@ if (isNpxCache) {
   if (isUpdate) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
     // Overlay new files from the npx cache onto the existing install
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
-    }
+    fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
   } else {
     console.log(`${GREEN}Installing AgEnFK to ${INSTALL_DIR}...${RESET}`);
-    if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
-    } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
-    }
+    fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
   }
 
   const distMissing = !fs.existsSync(path.join(INSTALL_DIR, 'packages/cli/dist')) || !fs.existsSync(path.join(INSTALL_DIR, 'packages/server/dist'));
@@ -119,13 +111,15 @@ if (isNpxCache) {
 }
 
 // Final reminder — always shown so it's visible at the end of install output
-if (process.platform !== 'win32') {
+console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
+if (process.platform === 'win32') {
+  console.log(`\n${CYAN}  Open a new terminal, then start services with: agenfk up${RESET}\n`);
+} else {
   const shell = process.env.SHELL ? path.basename(process.env.SHELL) : '';
   const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
     : shell === 'bash' ? 'source ~/.bashrc'
     : shell === 'fish' ? 'source ~/.config/fish/config.fish'
     : 'source your shell rc file';
-  console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
   console.log(`\n${CYAN}  To use the 'agenfk' command in this terminal, run:${RESET}`);
   console.log(`${CYAN}    ${sourceHint}${RESET}`);
   console.log(`\n${CYAN}  Then start services with: agenfk up${RESET}\n`);

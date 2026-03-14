@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
 
+const bootstrapScript = readFileSync(
+    path.resolve(__dirname, '../../../../bin/agenfk.js'),
+    'utf8'
+);
+
 // Tests for the install.mjs script's production dependency installation.
 // Root cause: tsc compiles CLI to dist/ without bundling — dist/index.js
 // still requires 'commander' at runtime, but node_modules is NOT included
@@ -96,5 +101,77 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
         // (either !onlyPlatform or a ternary where .agents is in the falsy branch)
         const beforeAgents = block3b.slice(0, agentsIdx);
         expect(beforeAgents).toMatch(/onlyPlatform/i);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// install.mjs — Windows native PATH setup (task ca1dd7d8)
+// ---------------------------------------------------------------------------
+describe('install.mjs — Windows native PATH setup', () => {
+    it('uses LOCALAPPDATA-based bin dir on Windows', () => {
+        // On native Windows, ~/.local/bin is not a standard location.
+        // The installer must use %LOCALAPPDATA%\agenfk\bin instead.
+        expect(installScript).toMatch(/LOCALAPPDATA/);
+    });
+
+    it('LOCALAPPDATA bin dir path includes agenfk subdirectory', () => {
+        // Must be scoped under an agenfk sub-folder, not placed directly in AppData root.
+        expect(installScript).toMatch(/LOCALAPPDATA[^'"]*agenfk/i);
+    });
+
+    it('updates Windows User PATH after installing CLI', () => {
+        // On Windows, the installer must persist the bin dir to the User PATH so
+        // 'agenfk' is discoverable in new terminal sessions without manual steps.
+        // PowerShell [Environment]::SetEnvironmentVariable is the correct API —
+        // setx is limited to 1024 chars and silently truncates long PATHs.
+        expect(installScript).toMatch(/SetEnvironmentVariable/);
+    });
+
+    it('Windows PATH update targets User scope, not Machine scope', () => {
+        // Machine scope requires admin elevation; User scope does not.
+        expect(installScript).toMatch(/SetEnvironmentVariable[^)]*User/);
+    });
+
+    it('Windows PATH update is guarded so it only runs on win32', () => {
+        // The SetEnvironmentVariable call must be inside a win32 platform check.
+        const winIdx = installScript.indexOf('SetEnvironmentVariable');
+        expect(winIdx).toBeGreaterThan(-1);
+        // Search backwards for the nearest platform guard
+        const before = installScript.slice(0, winIdx);
+        expect(before).toMatch(/win32/);
+    });
+
+    it('shows a completion message on Windows', () => {
+        // bin/agenfk.js currently only prints the "installation complete" message
+        // on non-win32. It must also print something useful on Windows.
+        // Simplest fix: remove the platform guard so the message is always shown.
+        const winCompletionIdx = bootstrapScript.search(/agenfk up|installation complete/i);
+        expect(winCompletionIdx).toBeGreaterThan(-1);
+        // The message must NOT be inside an `if (process.platform !== 'win32')` block
+        // i.e. the entire message block should not be gated to non-windows only.
+        // We verify this by checking there's no win32 exclusion wrapping the message.
+        const msgMatch = bootstrapScript.match(/if\s*\(\s*process\.platform\s*!==\s*['"]win32['"]\s*\)/g);
+        // If there IS a non-win32 guard, the agenfk-up message must also appear outside it
+        if (msgMatch) {
+            // Find where the guard ends and check the message appears after (outside) the block too
+            const guardIdx = bootstrapScript.indexOf("process.platform !== 'win32'");
+            const afterGuard = bootstrapScript.slice(guardIdx + 200); // skip past the block body
+            // Either: message appears after the guard block, OR the guard was removed
+            const messageOutsideGuard = /agenfk up|installation complete/i.test(afterGuard);
+            const guardRemoved = guardIdx === -1;
+            expect(messageOutsideGuard || guardRemoved).toBe(true);
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// bin/agenfk.js — Windows compatibility (task 55f052b9)
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — no bash fallback on Windows', () => {
+    it('does not fall back to cp -r shell command', () => {
+        // cp -r is a bash command unavailable in native Windows PowerShell/cmd.
+        // fs.cpSync (Node 16.7+) handles the copy without a shell, so the bash
+        // fallback must be removed.
+        expect(bootstrapScript).not.toContain('cp -r');
     });
 });

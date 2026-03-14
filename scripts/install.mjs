@@ -313,7 +313,10 @@ async function run() {
     debugLog('dbPath file exists:', dbPath ? existsSync(dbPath) : false);
 
     // Hoist path constants needed both inside and outside the rulesOnly block
-    const localBinDir = path.join(os.homedir(), '.local', 'bin');
+    // On native Windows use %LOCALAPPDATA%\agenfk\bin; elsewhere use ~/.local/bin.
+    const localBinDir = os.platform() === 'win32'
+        ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'agenfk', 'bin')
+        : path.join(os.homedir(), '.local', 'bin');
     const gatekeeperDestBase = path.join(localBinDir, 'agenfk-gatekeeper');
     const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
     const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
@@ -738,7 +741,7 @@ process.exit(0);
     const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
 
     if (!onlyPlatform) {
-        console.log(`${GREEN}[9/14] Installing agenfk command to ~/.local/bin...${NC}`);
+        console.log(`${GREEN}[9/14] Installing agenfk command to ${localBinDir}...${NC}`);
         await fs.mkdir(localBinDir, { recursive: true });
         
         if (os.platform() === 'win32') {
@@ -761,8 +764,30 @@ process.exit(0);
         }
         console.log(`  Installed: ${cliDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
-        // Ensure ~/.local/bin is on PATH in shell rc files (Linux/macOS only)
-        if (os.platform() !== 'win32') {
+        // Ensure the bin dir is on PATH
+        if (os.platform() === 'win32') {
+            // Add to Windows User PATH via PowerShell [Environment]::SetEnvironmentVariable.
+            // This avoids the 1024-char truncation bug in setx and requires no admin elevation.
+            try {
+                const currentUserPath = spawnSync(
+                    'powershell',
+                    ['-NoProfile', '-Command', "[Environment]::GetEnvironmentVariable('PATH', 'User')"],
+                    { encoding: 'utf8' }
+                ).stdout.trim();
+                const pathEntries = currentUserPath.split(';').map(p => p.trim()).filter(Boolean);
+                if (!pathEntries.some(p => p.toLowerCase() === localBinDir.toLowerCase())) {
+                    const newPath = [...pathEntries, localBinDir].join(';');
+                    // Pass the new PATH value via env var to avoid any injection through interpolation
+                    spawnSync(
+                        'powershell',
+                        ['-NoProfile', '-Command', "[Environment]::SetEnvironmentVariable('PATH', $env:AGENFK_NEW_PATH, 'User')"],
+                        { env: { ...process.env, AGENFK_NEW_PATH: newPath } }
+                    );
+                    console.log(`  Added ${localBinDir} to User PATH`);
+                }
+            } catch { /* non-fatal: PATH update failure should not abort install */ }
+            console.log(`\n${YELLOW}  ⚠ Open a new terminal for 'agenfk' to be available in your PATH.${NC}`);
+        } else {
             const pathDirs = (process.env.PATH || '').split(':');
             const alreadyOnPath = pathDirs.some(d => d === localBinDir || d === `${os.homedir()}/.local/bin`);
             if (!alreadyOnPath) {
