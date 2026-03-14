@@ -377,3 +377,29 @@ describe('agenfk resume all', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// agenfk integration — install/uninstall removed in favour of pause/resume
+// ---------------------------------------------------------------------------
+describe('agenfk integration — install/uninstall removed', () => {
+  it('integration install subcommand no longer exists', () => {
+    const integrationCmd = program.commands.find(c => c.name() === 'integration');
+    expect(integrationCmd).toBeDefined();
+    const subNames = integrationCmd!.commands.map(c => c.name());
+    expect(subNames).not.toContain('install');
+  });
+
+  it('integration uninstall subcommand no longer exists', () => {
+    const integrationCmd = program.commands.find(c => c.name() === 'integration');
+    expect(integrationCmd).toBeDefined();
+    const subNames = integrationCmd!.commands.map(c => c.name());
+    expect(subNames).not.toContain('uninstall');
+  });
+
+  it('integration list subcommand still exists', () => {
+    const integrationCmd = program.commands.find(c => c.name() === 'integration');
+    expect(integrationCmd).toBeDefined();
+    const subNames = integrationCmd!.commands.map(c => c.name());
+    expect(subNames).toContain('list');
+  });
+});

@@ -968,46 +968,6 @@ integrationCommand
     );
   });
 
-integrationCommand
-  .command('install <platform>')
-  .description('Install or refresh a single integration without running the full framework installer')
-  .option('--scope <scope>', 'Override rules scope (global or project)')
-  .action((platform, options) => {
-    const resolvedPlatform = resolveIntegrationPlatform(platform);
-    const args = [`--only=${resolvedPlatform}`];
-
-    // Pass rulesScope: explicit --scope flag, or read from config
-    if (options.scope) {
-      args.push(`--rules-scope=${options.scope}`);
-    } else {
-      const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
-      if (fs.existsSync(configPath)) {
-        try {
-          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (cfg.rulesScope) args.push(`--rules-scope=${cfg.rulesScope}`);
-        } catch {}
-      }
-    }
-
-    console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
-    runIntegrationScript('install.mjs', args);
-  });
-
-integrationCommand
-  .command('uninstall <platform>')
-  .description('Remove a single integration without uninstalling the full framework')
-  .option('-y, --yes', 'Skip confirmation prompts')
-  .action((platform, options) => {
-    const resolvedPlatform = resolveIntegrationPlatform(platform);
-    const args = [`--only=${resolvedPlatform}`];
-
-    if (options.yes) {
-      args.push('--yes');
-    }
-
-    console.log(chalk.blue(`Removing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
-    runIntegrationScript('uninstall.mjs', args);
-  });
 
 // ---------------------------------------------------------------------------
 // agenfk pause <platform|all> — temporarily disable integration(s)
