@@ -189,6 +189,27 @@ function runIntegrationScript(scriptName: string, args: string[]) {
   }
 }
 
+const AGENFK_CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
+
+function getPausedIntegrations(): string[] {
+  if (!fs.existsSync(AGENFK_CONFIG_PATH)) return [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+    return Array.isArray(cfg.pausedIntegrations) ? cfg.pausedIntegrations : [];
+  } catch {
+    return [];
+  }
+}
+
+function setPausedIntegrations(list: string[]): void {
+  let cfg: Record<string, any> = {};
+  if (fs.existsSync(AGENFK_CONFIG_PATH)) {
+    try { cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8')); } catch {}
+  }
+  cfg.pausedIntegrations = list;
+  fs.writeFileSync(AGENFK_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+}
+
 if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
   console.log(
     chalk.cyan(
@@ -208,6 +229,86 @@ try {
   }
 } catch (e) {
   // In some environments this might fail
+}
+
+// ── Upgrade tier startup check ────────────────────────────────────────────────
+
+const UPGRADE_TIER_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function checkUpgradeTier(): Promise<void> {
+  const cacheFile = path.join(os.homedir(), '.agenfk', 'upgrade-tier-cache.json');
+
+  // Try the local cache first
+  try {
+    if (fs.existsSync(cacheFile)) {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (cached.fetchedAt && (Date.now() - cached.fetchedAt) < UPGRADE_TIER_CACHE_TTL) {
+        applyUpgradeTierAction(cached.tier ?? 'optional', cached.version ?? '');
+        return;
+      }
+    }
+  } catch {
+    // Cache read failed — proceed to live fetch
+  }
+
+  let tier: 'mandatory' | 'recommended' | 'optional' = 'optional';
+  let latestVersion = '';
+
+  try {
+    // Try the local server first (it already caches the result)
+    const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 3000 });
+    tier = resp.data?.upgradeTier ?? 'optional';
+    latestVersion = resp.data?.version ?? '';
+  } catch {
+    // Server unavailable — fall back to GitHub API directly
+    try {
+      const repo = 'cglab-public/agenfk';
+      const releaseResp = await axios.get(
+        `https://api.github.com/repos/${repo}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' }, timeout: 5000 },
+      );
+      const tagName: string = releaseResp.data?.tag_name ?? '';
+      latestVersion = tagName.replace(/^v/, '');
+      if (tagName) {
+        const rawResp = await axios.get(
+          `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`,
+          { timeout: 5000 },
+        );
+        if (rawResp.data?.agenfkUpgradeTier === 'mandatory' || rawResp.data?.agenfkUpgradeTier === 'recommended') {
+          tier = rawResp.data.agenfkUpgradeTier;
+        }
+      }
+    } catch {
+      // Failed to reach GitHub — proceed silently, no tier enforcement
+      return;
+    }
+  }
+
+  // Persist to local upgradeCache
+  try {
+    const cacheDir = path.join(os.homedir(), '.agenfk');
+    if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify({ tier, version: latestVersion, fetchedAt: Date.now() }));
+  } catch {
+    // Cache write failed — non-fatal
+  }
+
+  applyUpgradeTierAction(tier, latestVersion);
+}
+
+function applyUpgradeTierAction(tier: string, latestVersion: string): void {
+  if (tier === 'mandatory') {
+    console.error(chalk.red.bold('\n⛔ MANDATORY UPGRADE REQUIRED'));
+    console.error(chalk.red(`AgEnFK v${latestVersion || 'latest'} is a mandatory upgrade and must be applied before continuing.`));
+    console.error(chalk.red('Run: ') + chalk.yellow.bold('agenfk upgrade'));
+    console.error('');
+    process.exit(1);
+  } else if (tier === 'recommended') {
+    console.log(chalk.yellow.bold('\n⚠️  Recommended upgrade available'));
+    console.log(chalk.yellow(`AgEnFK v${latestVersion || 'latest'} is available with recommended improvements.`));
+    console.log(chalk.yellow('Run ') + chalk.bold('agenfk upgrade') + chalk.yellow(' when convenient.\n'));
+  }
+  // optional: silent — no output
 }
 
 program
@@ -867,45 +968,95 @@ integrationCommand
     );
   });
 
-integrationCommand
-  .command('install <platform>')
-  .description('Install or refresh a single integration without running the full framework installer')
-  .option('--scope <scope>', 'Override rules scope (global or project)')
-  .action((platform, options) => {
-    const resolvedPlatform = resolveIntegrationPlatform(platform);
-    const args = [`--only=${resolvedPlatform}`];
 
-    // Pass rulesScope: explicit --scope flag, or read from config
-    if (options.scope) {
-      args.push(`--rules-scope=${options.scope}`);
-    } else {
-      const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
-      if (fs.existsSync(configPath)) {
-        try {
-          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-          if (cfg.rulesScope) args.push(`--rules-scope=${cfg.rulesScope}`);
-        } catch {}
-      }
+// ---------------------------------------------------------------------------
+// agenfk pause <platform|all> — temporarily disable integration(s)
+// ---------------------------------------------------------------------------
+program
+  .command('pause <platform>')
+  .description('Pause one or all integrations (removes MCP config and skills). Use "all" to pause everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
+  .action((platform, options) => {
+    const allPlatforms = Object.keys(INTEGRATION_LABELS);
+    const pauseAll = platform.trim().toLowerCase() === 'all';
+
+    const targets: string[] = pauseAll
+      ? allPlatforms
+      : [resolveIntegrationPlatform(platform)];
+
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.yellow(`This will pause: ${labels}`));
+      console.log(chalk.gray('Use -y/--yes to skip this prompt in scripts.'));
     }
 
-    console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
-    runIntegrationScript('install.mjs', args);
+    for (const p of targets) {
+      console.log(chalk.blue(`Pausing ${INTEGRATION_LABELS[p]}...`));
+      runIntegrationScript('uninstall.mjs', [`--only=${p}`, '--yes']);
+    }
+
+    const existing = getPausedIntegrations();
+    const updated = Array.from(new Set([...existing, ...targets]));
+    setPausedIntegrations(updated);
+
+    console.log(chalk.green(`✔ Paused: ${labels}`));
+    console.log(chalk.gray('Run `agenfk resume` to restore.'));
   });
 
-integrationCommand
-  .command('uninstall <platform>')
-  .description('Remove a single integration without uninstalling the full framework')
-  .option('-y, --yes', 'Skip confirmation prompts')
+// ---------------------------------------------------------------------------
+// agenfk resume <platform|all> — restore paused integration(s)
+// ---------------------------------------------------------------------------
+program
+  .command('resume <platform>')
+  .description('Resume one or all paused integrations. Use "all" to resume everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
   .action((platform, options) => {
-    const resolvedPlatform = resolveIntegrationPlatform(platform);
-    const args = [`--only=${resolvedPlatform}`];
+    const resumeAll = platform.trim().toLowerCase() === 'all';
+    const paused = getPausedIntegrations();
 
-    if (options.yes) {
-      args.push('--yes');
+    const targets: string[] = resumeAll
+      ? paused
+      : (() => {
+          const p = resolveIntegrationPlatform(platform);
+          if (!paused.includes(p)) {
+            console.log(chalk.yellow(`${INTEGRATION_LABELS[p]} is not currently paused.`));
+            return [];
+          }
+          return [p];
+        })();
+
+    if (targets.length === 0) {
+      if (resumeAll) {
+        console.log(chalk.yellow('No integrations are currently paused.'));
+      }
+      return;
     }
 
-    console.log(chalk.blue(`Removing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
-    runIntegrationScript('uninstall.mjs', args);
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.cyan(`This will resume: ${labels}`));
+    }
+
+    // Read rulesScope from config for re-install
+    let rulesScope = '';
+    try {
+      if (fs.existsSync(AGENFK_CONFIG_PATH)) {
+        const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+        if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+      }
+    } catch {}
+
+    for (const p of targets) {
+      console.log(chalk.blue(`Resuming ${INTEGRATION_LABELS[p]}...`));
+      const args = [`--only=${p}`];
+      if (rulesScope) args.push(`--rules-scope=${rulesScope}`);
+      runIntegrationScript('install.mjs', args);
+    }
+
+    const remaining = paused.filter(p => !targets.includes(p));
+    setPausedIntegrations(remaining);
+
+    console.log(chalk.green(`✔ Resumed: ${labels}`));
   });
 
 /**
@@ -3069,5 +3220,8 @@ program.helpInformation = function () {
 };
 
 if (process.env.NODE_ENV !== 'test') {
-  program.parse(process.argv);
+  (async () => {
+    await checkUpgradeTier();
+    program.parse(process.argv);
+  })();
 }

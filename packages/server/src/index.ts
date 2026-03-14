@@ -498,7 +498,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+// ── MCP upgrade notice ────────────────────────────────────────────────────────
+
+let mcpUpgradeNoticeCache: { text: string; fetchedAt: number } | null = null;
+const MCP_UPGRADE_NOTICE_TTL = 15 * 60 * 1000;
+
+async function getUpgradeNotice(): Promise<string> {
+  if (mcpUpgradeNoticeCache && (Date.now() - mcpUpgradeNoticeCache.fetchedAt) < MCP_UPGRADE_NOTICE_TTL) {
+    return mcpUpgradeNoticeCache.text;
+  }
+  try {
+    const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 2000 });
+    const tier: string = resp.data?.upgradeTier ?? 'optional';
+    const version: string = resp.data?.version ?? '';
+    let text = '';
+    if (tier === 'mandatory') {
+      text = `\n\n⛔ **MANDATORY UPGRADE REQUIRED**: AgEnFK v${version} must be installed before continuing. Run \`agenfk upgrade\`.`;
+    } else if (tier === 'recommended') {
+      text = `\n\n⚠️ Recommended upgrade available: AgEnFK v${version}. Run \`agenfk upgrade\` when convenient.`;
+    }
+    mcpUpgradeNoticeCache = { text, fetchedAt: Date.now() };
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+async function callToolHandler(request: any): Promise<any> {
   try {
     switch (request.params.name) {
       case "list_projects": {
@@ -937,6 +963,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
     else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgEnFK API at ${API_URL}.`;
     return { content: [{ type: "text", text: `❌ Error: ${errorMessage}` }], isError: true };
   }
+}
+
+server.setRequestHandler(CallToolRequestSchema, async (request: any) => {
+  const [result, upgradeNotice] = await Promise.all([
+    callToolHandler(request),
+    getUpgradeNotice(),
+  ]);
+  // Append upgrade notice to successful (non-error) responses
+  if (upgradeNotice && result && !result.isError && Array.isArray(result.content)) {
+    const last = result.content[result.content.length - 1];
+    if (last?.type === 'text') {
+      return {
+        ...result,
+        content: [
+          ...result.content.slice(0, -1),
+          { type: 'text', text: last.text + upgradeNotice },
+        ],
+      };
+    }
+  }
+  return result;
 });
 
 async function run() {

@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/cli",
-  "version": "0.2.22",
+  "version": "0.2.23-beta.1",
   "description": "CLI for AgenFK Engineering Framework",
   "main": "dist/index.js",
   "bin": {
@@ -32,5 +32,6 @@
     "cli"
   ],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "agenfkUpgradeTier": "recommended"
 }

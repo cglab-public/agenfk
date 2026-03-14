@@ -152,17 +152,24 @@ async function run() {
         }
     }
 
-    // 3b. Skills (new skills/<name>/SKILL.md format) — all platforms
+    // 3b. Skills (new skills/<name>/SKILL.md format)
+    // When --only=<platform> is set, only remove that platform's skills dir.
+    // The universal shared skills dir is only wiped on full uninstall (no --only flag).
     {
-        console.log(`${GREEN}[3b/10] Removing agenfk skills (all platforms)...${NC}`);
-        const skillsDirs = [
-            path.join(os.homedir(), '.claude', 'skills'),
-            path.join(os.homedir(), '.config', 'opencode', 'skills'),
-            path.join(os.homedir(), '.cursor', 'skills'),
-            path.join(os.homedir(), '.codex', 'skills'),
-            path.join(os.homedir(), '.gemini', 'skills'),
-            path.join(os.homedir(), '.agents', 'skills'),
-        ];
+        console.log(`${GREEN}[3b/10] Removing agenfk skills...${NC}`);
+        const platformSkillsDirs = {
+            claude: path.join(os.homedir(), '.claude', 'skills'),
+            opencode: path.join(os.homedir(), '.config', 'opencode', 'skills'),
+            cursor: path.join(os.homedir(), '.cursor', 'skills'),
+            codex: path.join(os.homedir(), '.codex', 'skills'),
+            gemini: path.join(os.homedir(), '.gemini', 'skills'),
+        };
+        const skillsDirs = onlyPlatform
+            ? (platformSkillsDirs[onlyPlatform.toLowerCase()] ? [platformSkillsDirs[onlyPlatform.toLowerCase()]] : [])
+            : [
+                ...Object.values(platformSkillsDirs),
+                path.join(os.homedir(), '.agents', 'skills'),
+              ];
         for (const dir of skillsDirs) {
             if (!existsSync(dir)) continue;
             const entries = await fs.readdir(dir);

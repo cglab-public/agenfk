@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
-import { Rocket, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Rocket, AlertTriangle, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -16,6 +16,7 @@ interface ReleaseInfo {
   publishedAt: string;
   url: string;
   currentVersion: string;
+  upgradeTier?: 'mandatory' | 'recommended' | 'optional';
 }
 
 type UpdateState =
@@ -95,7 +96,11 @@ export const ReleaseReminder: React.FC = () => {
     return null;
   }
 
-  if (isDismissed === release.version) {
+  const tier = release.upgradeTier ?? 'optional';
+  const isMandatory = tier === 'mandatory';
+  const isRecommended = tier === 'recommended';
+
+  if (!isMandatory && isDismissed === release.version) {
     return null;
   }
 
@@ -179,13 +184,19 @@ export const ReleaseReminder: React.FC = () => {
     <>
       <button
         onClick={() => setIsModalOpen(true)}
-        className="relative p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 shadow-sm transition-all hover:bg-emerald-100 dark:hover:bg-emerald-900/40 hover:scale-105"
-        title={`New release available: v${release.version}`}
+        className={`relative p-2 rounded-lg border shadow-sm transition-all hover:scale-105 ${
+          isMandatory
+            ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40'
+            : isRecommended
+            ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600 dark:text-yellow-400 border-yellow-200 dark:border-yellow-800 hover:bg-yellow-100 dark:hover:bg-yellow-900/40'
+            : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
+        }`}
+        title={isMandatory ? `Mandatory upgrade required: v${release.version}` : `New release available: v${release.version}`}
       >
-        <Rocket size={18} />
+        {isMandatory ? <AlertTriangle size={18} /> : <Rocket size={18} />}
         <span className="absolute -top-1 -right-1 flex h-3 w-3">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isMandatory ? 'bg-red-400' : isRecommended ? 'bg-yellow-400' : 'bg-emerald-400'}`}></span>
+          <span className={`relative inline-flex rounded-full h-3 w-3 ${isMandatory ? 'bg-red-500' : isRecommended ? 'bg-yellow-500' : 'bg-emerald-500'}`}></span>
         </span>
       </button>
 
@@ -201,14 +212,19 @@ export const ReleaseReminder: React.FC = () => {
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg">
-                  <Rocket size={20} className="text-emerald-600 dark:text-emerald-400" />
+                <div className={`p-2 rounded-lg ${isMandatory ? 'bg-red-50 dark:bg-red-900/20' : isRecommended ? 'bg-yellow-50 dark:bg-yellow-900/20' : 'bg-emerald-50 dark:bg-emerald-900/20'}`}>
+                  {isMandatory
+                    ? <AlertTriangle size={20} className="text-red-600 dark:text-red-400" />
+                    : <Rocket size={20} className={isRecommended ? 'text-yellow-600 dark:text-yellow-400' : 'text-emerald-600 dark:text-emerald-400'} />
+                  }
                 </div>
                 <div>
                   <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">
                     {updateState.phase === 'success' ? 'Update Complete' :
                      updateState.phase === 'error' ? 'Update Failed' :
                      updateState.phase === 'running' ? 'Updating AgEnFK...' :
+                     isMandatory ? 'Mandatory Upgrade Required' :
+                     isRecommended ? 'Recommended Upgrade Available' :
                      'New Release Available'}
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -320,12 +336,15 @@ export const ReleaseReminder: React.FC = () => {
                 </>
               ) : (
                 <>
-                  <button
-                    onClick={handleDismiss}
-                    className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium transition-colors"
-                  >
-                    Dismiss
-                  </button>
+                  {!isMandatory && (
+                    <button
+                      onClick={handleDismiss}
+                      className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                  {isMandatory && <span />}
                   <div className="flex items-center gap-3">
                     <a
                       href={release.url}
@@ -338,10 +357,14 @@ export const ReleaseReminder: React.FC = () => {
                     </a>
                     <button
                       onClick={handleUpdateNow}
-                      className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95"
+                      className={`flex items-center gap-2 text-white px-4 py-2 rounded-lg font-semibold text-sm shadow-sm transition-all active:scale-95 ${
+                        isMandatory
+                          ? 'bg-red-600 hover:bg-red-700'
+                          : 'bg-emerald-600 hover:bg-emerald-700'
+                      }`}
                     >
                       <ArrowUpCircle size={16} />
-                      Update Now
+                      {isMandatory ? 'Upgrade Now (Required)' : 'Update Now'}
                     </button>
                   </div>
                 </>
