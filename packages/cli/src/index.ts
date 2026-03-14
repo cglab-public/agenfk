@@ -189,6 +189,27 @@ function runIntegrationScript(scriptName: string, args: string[]) {
   }
 }
 
+const AGENFK_CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
+
+function getPausedIntegrations(): string[] {
+  if (!fs.existsSync(AGENFK_CONFIG_PATH)) return [];
+  try {
+    const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+    return Array.isArray(cfg.pausedIntegrations) ? cfg.pausedIntegrations : [];
+  } catch {
+    return [];
+  }
+}
+
+function setPausedIntegrations(list: string[]): void {
+  let cfg: Record<string, any> = {};
+  if (fs.existsSync(AGENFK_CONFIG_PATH)) {
+    try { cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8')); } catch {}
+  }
+  cfg.pausedIntegrations = list;
+  fs.writeFileSync(AGENFK_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+}
+
 if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
   console.log(
     chalk.cyan(
@@ -986,6 +1007,96 @@ integrationCommand
 
     console.log(chalk.blue(`Removing ${INTEGRATION_LABELS[resolvedPlatform]} integration...`));
     runIntegrationScript('uninstall.mjs', args);
+  });
+
+// ---------------------------------------------------------------------------
+// agenfk pause <platform|all> — temporarily disable integration(s)
+// ---------------------------------------------------------------------------
+program
+  .command('pause <platform>')
+  .description('Pause one or all integrations (removes MCP config and skills). Use "all" to pause everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
+  .action((platform, options) => {
+    const allPlatforms = Object.keys(INTEGRATION_LABELS);
+    const pauseAll = platform.trim().toLowerCase() === 'all';
+
+    const targets: string[] = pauseAll
+      ? allPlatforms
+      : [resolveIntegrationPlatform(platform)];
+
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.yellow(`This will pause: ${labels}`));
+      console.log(chalk.gray('Use -y/--yes to skip this prompt in scripts.'));
+    }
+
+    for (const p of targets) {
+      console.log(chalk.blue(`Pausing ${INTEGRATION_LABELS[p]}...`));
+      runIntegrationScript('uninstall.mjs', [`--only=${p}`, '--yes']);
+    }
+
+    const existing = getPausedIntegrations();
+    const updated = Array.from(new Set([...existing, ...targets]));
+    setPausedIntegrations(updated);
+
+    console.log(chalk.green(`✔ Paused: ${labels}`));
+    console.log(chalk.gray('Run `agenfk resume` to restore.'));
+  });
+
+// ---------------------------------------------------------------------------
+// agenfk resume <platform|all> — restore paused integration(s)
+// ---------------------------------------------------------------------------
+program
+  .command('resume <platform>')
+  .description('Resume one or all paused integrations. Use "all" to resume everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
+  .action((platform, options) => {
+    const resumeAll = platform.trim().toLowerCase() === 'all';
+    const paused = getPausedIntegrations();
+
+    const targets: string[] = resumeAll
+      ? paused
+      : (() => {
+          const p = resolveIntegrationPlatform(platform);
+          if (!paused.includes(p)) {
+            console.log(chalk.yellow(`${INTEGRATION_LABELS[p]} is not currently paused.`));
+            return [];
+          }
+          return [p];
+        })();
+
+    if (targets.length === 0) {
+      if (resumeAll) {
+        console.log(chalk.yellow('No integrations are currently paused.'));
+      }
+      return;
+    }
+
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.cyan(`This will resume: ${labels}`));
+    }
+
+    // Read rulesScope from config for re-install
+    let rulesScope = '';
+    try {
+      if (fs.existsSync(AGENFK_CONFIG_PATH)) {
+        const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+        if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+      }
+    } catch {}
+
+    for (const p of targets) {
+      console.log(chalk.blue(`Resuming ${INTEGRATION_LABELS[p]}...`));
+      const args = [`--only=${p}`];
+      if (rulesScope) args.push(`--rules-scope=${rulesScope}`);
+      runIntegrationScript('install.mjs', args);
+    }
+
+    const remaining = paused.filter(p => !targets.includes(p));
+    setPausedIntegrations(remaining);
+
+    console.log(chalk.green(`✔ Resumed: ${labels}`));
   });
 
 /**
