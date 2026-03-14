@@ -13,6 +13,29 @@
 
 Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework designed to turn "Vibe Coding" into rigorous **Agentic Engineering**. AgEnFK enforces a structured workflow that bridges the gap between autonomous AI agents and professional software engineering practices.
 
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [How do I use AgEnFK?](#how-do-i-use-agenfk)
+- [Supported Platforms](#supported-platforms)
+- [Installation & Setup](#installation--setup)
+  - [Post-Install Steps](#post-install-steps)
+  - [Rules Scope — Global vs Project](#rules-scope--global-vs-project)
+  - [Pausing & Resuming Integrations](#pausing--resuming-integrations)
+  - [Uninstalling AgEnFK](#uninstalling-agenfk)
+- [Multi-Project Support](#multi-project-support)
+- [GitHub Issues Sync](#github-issues-sync)
+- [Architecture Deep Dive](#architecture-deep-dive)
+- [Custom Workflow Flows](#custom-workflow-flows)
+- [Quick Start](#quick-start)
+- [Operation Modes](#operation-modes)
+- [Telemetry](#telemetry)
+- [FAQ](#faq)
+
+---
+
 ## Overview
 
 AgEnFK is built on six core mandates to ensure your AI-assisted development is consistent and high-quality:
@@ -113,23 +136,9 @@ After installation, complete the setup:
     *   `agenfk down`: Stop all running AgEnFK processes.
     *   `agenfk health`: Verify configuration, database, and connectivity.
     *   `agenfk integration list`: Show the supported editor and agent integrations.
-    *   `agenfk integration install <platform>`: Reinstall one integration without rerunning the full framework installer.
-    *   `agenfk integration uninstall <platform>`: Remove one integration without uninstalling the full framework.
-    *   `npm run uninstall:framework`: Fully remove AgEnFK from your system.
+    *   `agenfk pause <platform>`: Temporarily disable a specific integration (removes MCP config and skills). Use `all` to pause every integration.
+    *   `agenfk resume <platform>`: Re-enable a previously paused integration. Use `all` to resume everything.
 4.  **Initialize a project** — go to any repository and type `/agenfk` in your AI editor to link it to the framework.
-
-### Managing Individual Integrations
-
-If you only need to repair or refresh one editor integration, use the `agenfk integration` command group instead of rerunning the full installer.
-
-```bash
-agenfk integration list
-agenfk integration install claude
-agenfk integration install codex --rebuild
-agenfk integration uninstall cursor
-```
-
-Supported platform IDs are `claude`, `opencode`, `cursor`, `codex`, and `gemini`.
 
 ### Rules Scope — Global vs Project
 
@@ -150,9 +159,81 @@ agenfk skills status             # show current scope (global, project, or none)
 
 Switching automatically removes rules from the old location and installs them in the new one.
 
+### Pausing & Resuming Integrations
+
+You can temporarily disable one or all editor integrations without fully uninstalling AgEnFK. This is useful when you want to stop AgEnFK from appearing in a specific AI editor without losing your configuration or workflow data.
+
+**Pause** removes the MCP server registration and all AgEnFK skills/slash commands from the target editor. The framework itself (server, database, CLI) continues running normally.
+
+```bash
+# Pause a single integration
+agenfk pause claude
+agenfk pause opencode
+agenfk pause cursor
+agenfk pause codex
+agenfk pause gemini
+
+# Pause all integrations at once
+agenfk pause all
+
+# Use --yes to skip the confirmation prompt
+agenfk pause claude --yes
+```
+
+**Resume** re-installs the MCP registration and skills for the target editor, restoring it to fully operational state.
+
+```bash
+# Resume a single integration
+agenfk resume claude
+agenfk resume opencode
+
+# Resume all previously paused integrations
+agenfk resume all
+
+# Use --yes to skip the confirmation prompt
+agenfk resume all --yes
+```
+
+Paused integrations are tracked in `~/.agenfk/config.json` under `pausedIntegrations`. Resume respects your configured `rulesScope` (global or project) so rules are reinstalled in the correct location.
+
+> **Supported platform IDs:** `claude`, `opencode`, `cursor`, `codex`, `gemini`. You can also use the alias `claude-code` for `claude`.
+
+### Uninstalling AgEnFK
+
+To fully remove AgEnFK from your system:
+
+```bash
+agenfk uninstall
+```
+
+This removes:
+- All slash commands and skills from Claude Code, Opencode, and Gemini CLI
+- MCP server configuration from all editors (Claude Code, Opencode, Cursor, Codex CLI, Gemini CLI)
+- Cursor workflow rules (`agenfk.mdc`)
+- Workflow rules from all scopes (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`)
+- The AgEnFK PreToolUse hook from `~/.claude/settings.json`
+- The `~/.agenfk-system` framework files
+- The `agenfk` CLI symlink from `~/.local/bin`
+
+Your project data (`~/.agenfk/db.sqlite`, `~/.agenfk/config.json`) is **not** deleted by default, so you can reinstall later without losing your boards and history.
+
+**To uninstall only a specific editor integration** (leaving all others intact):
+
+```bash
+agenfk pause claude    # removes Claude Code MCP + skills only
+agenfk pause cursor    # removes Cursor MCP + rules only
+```
+
+**To uninstall framework files only** (rules and skills, without removing the CLI or database):
+
+```bash
+agenfk skills uninstall          # remove global rules & skills
+agenfk skills uninstall --project  # remove project-scoped rules & skills
+```
+
 ## Multi-Project Support
 
-AgEnFK supports managing multiple distinct projects from a single unified backend. 
+AgEnFK supports managing multiple distinct projects from a single unified backend.
 
 *   **Local Linking**: Each local repository is linked to a database project via a `.agenfk/project.json` file.
 *   **Automatic Context Switching**: When an AI Agent (via MCP) or a developer (via CLI) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
@@ -388,6 +469,12 @@ Yes. Projects are independent records in the database. You can switch between th
 ### Is my code or project data sent anywhere?
 
 No. Your source code and project data never leave your machine. The only outbound data is anonymous usage telemetry (see [Telemetry](#telemetry)), which can be disabled with `agenfk config set telemetry false`.
+
+---
+
+### How do I pause AgEnFK in one editor without affecting others?
+
+Use `agenfk pause <platform>` to disable a specific integration. For example, `agenfk pause cursor` removes AgEnFK's MCP config and rules from Cursor while leaving Claude Code, Opencode, and others untouched. Run `agenfk resume cursor` to re-enable it. See [Pausing & Resuming Integrations](#pausing--resuming-integrations) for full details.
 
 ---
 
