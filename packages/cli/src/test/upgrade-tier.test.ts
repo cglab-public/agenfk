@@ -128,3 +128,47 @@ describe('CLI startup — optional tier is silent', () => {
     expect(tierSection).toMatch(/optional|else\s*\{|default:/i);
   });
 });
+
+// ── Version-match suppression ─────────────────────────────────────────────────
+// When the local version already equals the remote version, no warning should
+// be displayed — not even for recommended tier.  The root cause was that
+// applyUpgradeTierAction showed the banner regardless of whether an upgrade
+// was actually available.
+
+describe('CLI startup — suppress tier warning when already on latest version', () => {
+  // Helper: find the function *definition* (not call sites)
+  function getApplyFuncSection(cli: string): string {
+    // Match "function applyUpgradeTierAction(" to find the definition
+    const defIdx = cli.search(/function applyUpgradeTierAction/i);
+    if (defIdx === -1) return '';
+    return cli.slice(defIdx, defIdx + 1200);
+  }
+
+  it('applyUpgradeTierAction checks latestVersion against CURRENT_VERSION before showing warning', () => {
+    const cli = readCli();
+    const funcSection = getApplyFuncSection(cli);
+    expect(funcSection.length).toBeGreaterThan(0);
+    // Must guard on version equality — look for CURRENT_VERSION or a semver compare
+    expect(funcSection).toMatch(/CURRENT_VERSION|currentVersion/i);
+  });
+
+  it('applyUpgradeTierAction returns early when latestVersion === CURRENT_VERSION', () => {
+    const cli = readCli();
+    const funcSection = getApplyFuncSection(cli);
+    expect(funcSection.length).toBeGreaterThan(0);
+    // Must have an early-return guard: if versions match → return without printing
+    expect(funcSection).toMatch(/===.*CURRENT_VERSION|CURRENT_VERSION.*===|latestVersion.*===|===.*latestVersion/i);
+  });
+
+  it('recommended banner is NOT shown when latestVersion equals current version', () => {
+    const cli = readCli();
+    const funcSection = getApplyFuncSection(cli);
+    expect(funcSection.length).toBeGreaterThan(0);
+    // The version equality check must appear BEFORE the recommended block
+    const versionCheckIdx = funcSection.search(/===.*CURRENT_VERSION|CURRENT_VERSION.*===|latestVersion.*CURRENT_VERSION/i);
+    const recommendedIdx = funcSection.search(/recommended/i);
+    expect(versionCheckIdx).toBeGreaterThan(-1);
+    expect(recommendedIdx).toBeGreaterThan(-1);
+    expect(versionCheckIdx).toBeLessThan(recommendedIdx);
+  });
+});

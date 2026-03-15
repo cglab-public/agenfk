@@ -511,8 +511,12 @@ async function getUpgradeNotice(): Promise<string> {
     const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 2000 });
     const tier: string = resp.data?.upgradeTier ?? 'optional';
     const version: string = resp.data?.version ?? '';
+    const currentVersion: string = resp.data?.currentVersion ?? '';
     let text = '';
-    if (tier === 'mandatory') {
+    // Suppress notice when already on the latest version.
+    if (!version || (currentVersion && version === currentVersion)) {
+      // nothing to show
+    } else if (tier === 'mandatory') {
       text = `\n\n⛔ **MANDATORY UPGRADE REQUIRED**: AgEnFK v${version} must be installed before continuing. Run \`agenfk upgrade\`.`;
     } else if (tier === 'recommended') {
       text = `\n\n⚠️ Recommended upgrade available: AgEnFK v${version}. Run \`agenfk upgrade\` when convenient.`;
