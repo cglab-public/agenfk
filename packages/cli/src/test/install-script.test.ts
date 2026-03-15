@@ -18,6 +18,11 @@ const uninstallScript = readFileSync(
     'utf8'
 );
 
+const bootstrapScript = readFileSync(
+    path.resolve(__dirname, '../../../../bin/agenfk.js'),
+    'utf8'
+);
+
 describe('install.mjs — production dependency installation', () => {
     it('runs npm ci to install production dependencies', () => {
         expect(installScript).toContain('npm ci');
@@ -96,5 +101,59 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
         // (either !onlyPlatform or a ternary where .agents is in the falsy branch)
         const beforeAgents = block3b.slice(0, agentsIdx);
         expect(beforeAgents).toMatch(/onlyPlatform/i);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// bin/agenfk.js — --beta flag (task ece8514b)
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — --beta flag for npx beta installs', () => {
+    it('detects --beta flag from process.argv', () => {
+        // The bootstrap must check process.argv for --beta
+        expect(bootstrapScript).toMatch(/argv.*beta|beta.*argv/i);
+    });
+
+    it('uses /releases?per_page= endpoint when beta flag is set', () => {
+        // Beta installs fetch all releases and pick the latest by date,
+        // not /releases/latest which excludes pre-releases.
+        expect(bootstrapScript).toMatch(/releases\?per_page=/);
+    });
+
+    it('forwards --beta flag to scripts/install.mjs', () => {
+        // install.mjs is invoked via execSync — the --beta flag must be forwarded
+        // so downstream steps know this is a beta install.
+        expect(bootstrapScript).toMatch(/install\.mjs.*beta|beta.*install\.mjs/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// bin/agenfk.js + install.mjs — Windows tar --force-local (bug 7c938419)
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — Windows tar --force-local', () => {
+    it('uses --force-local when extracting tar on Windows', () => {
+        // BSD tar (Windows built-in) treats "C:" in paths as a remote hostname.
+        // --force-local disables that behaviour.
+        expect(bootstrapScript).toContain('--force-local');
+    });
+
+    it('--force-local is gated to win32 platform', () => {
+        // Should not add the flag on Linux/macOS where GNU tar handles it fine.
+        const forceLocalIdx = bootstrapScript.indexOf('--force-local');
+        expect(forceLocalIdx).toBeGreaterThan(-1);
+        const before = bootstrapScript.slice(0, forceLocalIdx);
+        expect(before).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs — Windows tar --force-local', () => {
+    it('uses --force-local when extracting tar on Windows', () => {
+        expect(installScript).toContain('--force-local');
+    });
+
+    it('--force-local is gated to win32 platform', () => {
+        const forceLocalIdx = installScript.indexOf('--force-local');
+        expect(forceLocalIdx).toBeGreaterThan(-1);
+        const before = installScript.slice(0, forceLocalIdx);
+        expect(before).toMatch(/win32/);
     });
 });

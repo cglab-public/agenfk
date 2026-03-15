@@ -169,7 +169,11 @@ async function run() {
                 if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
                 else return false;
             }
-            spawnSync('tar', ['-xzf', tmpFile, '-C', rootDir], { stdio: 'inherit' });
+            // On Windows, BSD tar treats "C:" as a remote hostname — --force-local disables that.
+            const tarArgs = os.platform() === 'win32'
+                ? ['--force-local', '-xzf', tmpFile, '-C', rootDir]
+                : ['-xzf', tmpFile, '-C', rootDir];
+            spawnSync('tar', tarArgs, { stdio: 'inherit' });
             console.log(`${GREEN}  Re-download complete.${NC}`);
             return true;
         } catch { return false; } finally {

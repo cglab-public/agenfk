@@ -32,18 +32,33 @@ console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
 // A real clone has a .git directory; the npx cache does not.
 const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
+const isBeta = process.argv.includes('--beta');
 
-// Fetch latest release tag — curl (no auth) first, gh CLI as fallback
-function fetchLatestTag(repo) {
+// On Windows, BSD tar treats "C:" as a remote hostname; the force-local flag disables that.
+const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
+
+// Fetch latest release tag — curl (no auth) first, gh CLI as fallback.
+// When beta=true, fetches all recent releases and picks the most recently published
+// (including pre-releases), mirroring the behaviour of `agenfk upgrade --beta`.
+function fetchLatestTag(repo, beta = false) {
   try {
+    const url = beta
+      ? `https://api.github.com/repos/${repo}/releases?per_page=20`
+      : `https://api.github.com/repos/${repo}/releases/latest`;
     const json = execSync(
-      `curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
+      `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
     );
-    const tag = JSON.parse(json).tag_name;
+    const data = JSON.parse(json);
+    const tag = beta
+      ? (Array.isArray(data) ? data.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))[0]?.tag_name : null)
+      : data.tag_name;
     if (tag) return tag;
   } catch {}
   // Fallback: gh CLI
+  if (beta) {
+    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8' }).trim();
+  }
   return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
 }
 
@@ -84,9 +99,9 @@ if (isNpxCache) {
     const REPO = 'cglab-public/agenfk';
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
-      const latestTag = fetchLatestTag(REPO);
+      const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
@@ -95,7 +110,7 @@ if (isNpxCache) {
   }
 
   console.log(`\n${GREEN}Running setup from ${INSTALL_DIR}...${RESET}\n`);
-  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, { cwd: INSTALL_DIR, stdio: 'inherit' });
+  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd: INSTALL_DIR, stdio: 'inherit' });
 } else {
   // Running from a real git clone — install in place
   console.log(`${GREEN}Running install from ${REPO_ROOT}...${RESET}\n`);
@@ -105,9 +120,9 @@ if (isNpxCache) {
     const REPO = 'cglab-public/agenfk';
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
-      const latestTag = fetchLatestTag(REPO);
+      const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar -xzf "${path.join(REPO_ROOT, 'agenfk-dist.tar.gz')}" -C "${REPO_ROOT}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${path.join(REPO_ROOT, 'agenfk-dist.tar.gz')}" -C "${REPO_ROOT}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
@@ -115,7 +130,7 @@ if (isNpxCache) {
     }
   }
 
-  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
 
 // Final reminder — always shown so it's visible at the end of install output
