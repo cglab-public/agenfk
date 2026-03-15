@@ -1,6 +1,6 @@
 {
   "name": "agenfk-framework",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
