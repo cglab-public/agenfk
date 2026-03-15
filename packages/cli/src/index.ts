@@ -297,6 +297,8 @@ async function checkUpgradeTier(): Promise<void> {
 }
 
 function applyUpgradeTierAction(tier: string, latestVersion: string): void {
+  // If we already have the latest version, suppress all warnings regardless of tier.
+  if (latestVersion && latestVersion === CURRENT_VERSION) return;
   if (tier === 'mandatory') {
     console.error(chalk.red.bold('\n⛔ MANDATORY UPGRADE REQUIRED'));
     console.error(chalk.red(`AgEnFK v${latestVersion || 'latest'} is a mandatory upgrade and must be applied before continuing.`));
