@@ -204,3 +204,29 @@ describe('CLI — agenfk verify uses 5-minute timeout', () => {
         expect(block).toMatch(/300000/);
     });
 });
+
+// ---------------------------------------------------------------------------
+// install.mjs — npm spawnSync must use shell:true on Windows (bug acb7232c)
+// On MinGW, spawnSync('npm') without shell:true fails to find npm.cmd,
+// silently skipping npm ci and leaving node_modules empty.
+// ---------------------------------------------------------------------------
+describe('install.mjs — npm spawnSync uses shell:true on Windows', () => {
+    it('passes shell option to the npm ci spawnSync call', () => {
+        // The spawnSync for npm ci must include a shell option so .cmd scripts
+        // are resolved on Windows (both MinGW and native cmd.exe).
+        // Match the assignment: const npmCiResult = spawnSync(...)
+        const assignIdx = installScript.indexOf('npmCiResult = spawnSync');
+        expect(assignIdx).toBeGreaterThan(-1);
+        // Grab from the assignment to closing brace of the options object
+        const spawnBlock = installScript.slice(assignIdx, assignIdx + 300);
+        expect(spawnBlock).toMatch(/shell/);
+    });
+
+    it('gates shell:true to win32 only — not forced on Linux/macOS', () => {
+        // shell:true on Linux spawns an extra process for no reason.
+        // Must be conditional on win32.
+        const assignIdx = installScript.indexOf('npmCiResult = spawnSync');
+        const spawnBlock = installScript.slice(assignIdx, assignIdx + 300);
+        expect(spawnBlock).toMatch(/win32/);
+    });
+});

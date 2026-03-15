@@ -251,6 +251,7 @@ async function run() {
         const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
             cwd: rootDir,
             stdio: 'inherit',
+            shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
         });
         if (npmCiResult.status !== 0) {
             console.log(`${YELLOW}  Warning: npm ci failed (exit ${npmCiResult.status}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.${NC}`);
