@@ -43,6 +43,15 @@ function toWindowsPath(p) {
     return p;
 }
 
+// Converts a Win32 drive path (C:\Users\...) to an MSYS2 POSIX path (/c/Users/...)
+// so that MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
+function toPosixPath(p) {
+    if (isMinGW && /^[a-zA-Z]:/.test(p)) {
+        return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
+    }
+    return p;
+}
+
 // Returns the platform-appropriate directory for Cursor's global rules (.mdc files).
 function getCursorRulesDir() {
     if (os.platform() === 'win32') {
@@ -170,10 +179,13 @@ async function run() {
                 else return false;
             }
             // On Windows, BSD tar treats "C:" as a remote hostname — --force-local disables that.
+            // On MinGW (Git for Windows) we also convert paths to POSIX form (/c/Users/...)
+            // so MSYS2 tar never sees a bare "C:" regardless of --force-local support.
             const tarArgs = os.platform() === 'win32'
-                ? ['--force-local', '-xzf', tmpFile, '-C', rootDir]
+                ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
                 : ['-xzf', tmpFile, '-C', rootDir];
-            spawnSync('tar', tarArgs, { stdio: 'inherit' });
+            const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit' });
+            if (tarResult.status !== 0) return false;
             console.log(`${GREEN}  Re-download complete.${NC}`);
             return true;
         } catch { return false; } finally {

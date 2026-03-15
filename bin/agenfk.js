@@ -34,7 +34,24 @@ const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
 
-// On Windows, BSD tar treats "C:" as a remote hostname; the force-local flag disables that.
+// On MSYS2 / Git-for-Windows (MinGW), Node.js reports process.platform === 'win32' but
+// the bundled tar is an MSYS2 binary that understands POSIX paths (/c/Users/...).
+// Converting Win32 paths to POSIX form avoids the "C: treated as remote hostname" error
+// even when --force-local is not supported or not respected by the installed tar version.
+const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX ||
+  (process.platform === 'win32' && process.env.SHELL?.includes('bash')));
+
+// Convert a Win32 drive path to an MSYS2 POSIX path (/c/Users/...) so that
+// MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
+function toPosixPath(p) {
+  if (isMinGW && /^[a-zA-Z]:/.test(p)) {
+    return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
+  }
+  return p;
+}
+
+// On Windows, BSD tar treats "C:" as a remote hostname; --force-local disables that.
+// On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
 const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
 
 // Fetch latest release tag — curl (no auth) first, gh CLI as fallback.
@@ -101,7 +118,7 @@ if (isNpxCache) {
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${toPosixPath(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
@@ -122,7 +139,7 @@ if (isNpxCache) {
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${path.join(REPO_ROOT, 'agenfk-dist.tar.gz')}" -C "${REPO_ROOT}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
