@@ -210,6 +210,47 @@ describe('CLI — agenfk verify uses 5-minute timeout', () => {
 // On MinGW, spawnSync('npm') without shell:true fails to find npm.cmd,
 // silently skipping npm ci and leaving node_modules empty.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// install.mjs template + start-services.mjs — npm spawn shell:true (bug 47c80eec)
+// spawn(npmCmd, ['run', 'preview']) without shell:true fails with ENOENT on MinGW
+// because npm is a .cmd script that requires cmd.exe to execute.
+// ---------------------------------------------------------------------------
+const startServicesScript = readFileSync(
+    path.resolve(__dirname, '../../../../scripts/start-services.mjs'),
+    'utf8'
+);
+
+describe('start-services.mjs — npm spawn uses shell:true on Windows', () => {
+    it('passes shell option to the npm run preview spawn call', () => {
+        const spawnIdx = startServicesScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        expect(spawnIdx).toBeGreaterThan(-1);
+        const spawnBlock = startServicesScript.slice(spawnIdx, spawnIdx + 400);
+        expect(spawnBlock).toMatch(/shell/);
+    });
+
+    it('gates shell:true to win32 only in start-services', () => {
+        const spawnIdx = startServicesScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        const spawnBlock = startServicesScript.slice(spawnIdx, spawnIdx + 400);
+        expect(spawnBlock).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs template — npm spawn uses shell:true on Windows', () => {
+    it('template passes shell option to the npm run preview spawn call', () => {
+        // The template written to start-services.mjs must include shell on the spawn
+        const templateStart = installScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        expect(templateStart).toBeGreaterThan(-1);
+        const templateBlock = installScript.slice(templateStart, templateStart + 400);
+        expect(templateBlock).toMatch(/shell/);
+    });
+
+    it('template gates shell:true to win32 only', () => {
+        const templateStart = installScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        const templateBlock = installScript.slice(templateStart, templateStart + 400);
+        expect(templateBlock).toMatch(/win32/);
+    });
+});
+
 describe('install.mjs — npm spawnSync uses shell:true on Windows', () => {
     it('passes shell option to the npm ci spawnSync call', () => {
         // The spawnSync for npm ci must include a shell option so .cmd scripts

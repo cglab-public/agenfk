@@ -48,7 +48,8 @@ const uiProcess = spawn(npmCmd, ['run', 'preview'], {
     cwd: path.join(rootDir, 'packages/ui'),
     env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
     detached: true,
-    stdio: ['ignore', uiLog, uiLog]
+    stdio: ['ignore', uiLog, uiLog],
+    shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
 });
 uiProcess.unref();
 
