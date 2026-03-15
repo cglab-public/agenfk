@@ -18,6 +18,11 @@ const uninstallScript = readFileSync(
     'utf8'
 );
 
+const bootstrapScript = readFileSync(
+    path.resolve(__dirname, '../../../../bin/agenfk.js'),
+    'utf8'
+);
+
 describe('install.mjs — production dependency installation', () => {
     it('runs npm ci to install production dependencies', () => {
         expect(installScript).toContain('npm ci');
@@ -96,5 +101,173 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
         // (either !onlyPlatform or a ternary where .agents is in the falsy branch)
         const beforeAgents = block3b.slice(0, agentsIdx);
         expect(beforeAgents).toMatch(/onlyPlatform/i);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// bin/agenfk.js — --beta flag (task ece8514b)
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — --beta flag for npx beta installs', () => {
+    it('detects --beta flag from process.argv', () => {
+        // The bootstrap must check process.argv for --beta
+        expect(bootstrapScript).toMatch(/argv.*beta|beta.*argv/i);
+    });
+
+    it('uses /releases?per_page= endpoint when beta flag is set', () => {
+        // Beta installs fetch all releases and pick the latest by date,
+        // not /releases/latest which excludes pre-releases.
+        expect(bootstrapScript).toMatch(/releases\?per_page=/);
+    });
+
+    it('forwards --beta flag to scripts/install.mjs', () => {
+        // install.mjs is invoked via execSync — the --beta flag must be forwarded
+        // so downstream steps know this is a beta install.
+        expect(bootstrapScript).toMatch(/install\.mjs.*beta|beta.*install\.mjs/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// bin/agenfk.js + install.mjs — Windows tar --force-local (bug 7c938419)
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — Windows tar --force-local', () => {
+    it('uses --force-local when extracting tar on Windows', () => {
+        // BSD tar (Windows built-in) treats "C:" in paths as a remote hostname.
+        // --force-local disables that behaviour.
+        expect(bootstrapScript).toContain('--force-local');
+    });
+
+    it('--force-local is gated to win32 platform', () => {
+        // Should not add the flag on Linux/macOS where GNU tar handles it fine.
+        const forceLocalIdx = bootstrapScript.indexOf('--force-local');
+        expect(forceLocalIdx).toBeGreaterThan(-1);
+        const before = bootstrapScript.slice(0, forceLocalIdx);
+        expect(before).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs — Windows tar --force-local', () => {
+    it('uses --force-local when extracting tar on Windows', () => {
+        expect(installScript).toContain('--force-local');
+    });
+
+    it('--force-local is gated to win32 platform', () => {
+        const forceLocalIdx = installScript.indexOf('--force-local');
+        expect(forceLocalIdx).toBeGreaterThan(-1);
+        const before = installScript.slice(0, forceLocalIdx);
+        expect(before).toMatch(/win32/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// MCP server + CLI — validate_progress 5-minute timeout (task 9c5d2fbe)
+// ---------------------------------------------------------------------------
+const mcpServerScript = readFileSync(
+    path.resolve(__dirname, '../../../server/src/index.ts'),
+    'utf8'
+);
+
+const cliScript = readFileSync(
+    path.resolve(__dirname, '../../src/index.ts'),
+    'utf8'
+);
+
+describe('MCP server — validate_progress uses 5-minute timeout', () => {
+    it('validate_progress post call has a 300000ms timeout', () => {
+        // 30s is too short for npm run build && npm test; must be 5 minutes.
+        const validateIdx = mcpServerScript.indexOf('case "validate_progress"');
+        expect(validateIdx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(validateIdx, validateIdx + 500);
+        expect(block).toMatch(/300000/);
+    });
+
+    it('review_changes post call has a 300000ms timeout', () => {
+        const idx = mcpServerScript.indexOf('case "review_changes"');
+        expect(idx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(idx, idx + 400);
+        expect(block).toMatch(/300000/);
+    });
+
+    it('test_changes post call has a 300000ms timeout', () => {
+        const idx = mcpServerScript.indexOf('case "test_changes"');
+        expect(idx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(idx, idx + 400);
+        expect(block).toMatch(/300000/);
+    });
+});
+
+describe('CLI — agenfk verify uses 5-minute timeout', () => {
+    it('verify command axios.post has a 300000ms timeout', () => {
+        // The verify command calls /items/:id/validate — must not time out on long builds.
+        const verifyIdx = cliScript.indexOf(".command('verify");
+        expect(verifyIdx).toBeGreaterThan(-1);
+        const block = cliScript.slice(verifyIdx, verifyIdx + 2000);
+        expect(block).toMatch(/300000/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// install.mjs — npm spawnSync must use shell:true on Windows (bug acb7232c)
+// On MinGW, spawnSync('npm') without shell:true fails to find npm.cmd,
+// silently skipping npm ci and leaving node_modules empty.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// install.mjs template + start-services.mjs — npm spawn shell:true (bug 47c80eec)
+// spawn(npmCmd, ['run', 'preview']) without shell:true fails with ENOENT on MinGW
+// because npm is a .cmd script that requires cmd.exe to execute.
+// ---------------------------------------------------------------------------
+const startServicesScript = readFileSync(
+    path.resolve(__dirname, '../../../../scripts/start-services.mjs'),
+    'utf8'
+);
+
+describe('start-services.mjs — npm spawn uses shell:true on Windows', () => {
+    it('passes shell option to the npm run preview spawn call', () => {
+        const spawnIdx = startServicesScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        expect(spawnIdx).toBeGreaterThan(-1);
+        const spawnBlock = startServicesScript.slice(spawnIdx, spawnIdx + 400);
+        expect(spawnBlock).toMatch(/shell/);
+    });
+
+    it('gates shell:true to win32 only in start-services', () => {
+        const spawnIdx = startServicesScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        const spawnBlock = startServicesScript.slice(spawnIdx, spawnIdx + 400);
+        expect(spawnBlock).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs template — npm spawn uses shell:true on Windows', () => {
+    it('template passes shell option to the npm run preview spawn call', () => {
+        // The template written to start-services.mjs must include shell on the spawn
+        const templateStart = installScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        expect(templateStart).toBeGreaterThan(-1);
+        const templateBlock = installScript.slice(templateStart, templateStart + 400);
+        expect(templateBlock).toMatch(/shell/);
+    });
+
+    it('template gates shell:true to win32 only', () => {
+        const templateStart = installScript.indexOf("spawn(npmCmd, ['run', 'preview']");
+        const templateBlock = installScript.slice(templateStart, templateStart + 400);
+        expect(templateBlock).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs — npm spawnSync uses shell:true on Windows', () => {
+    it('passes shell option to the npm ci spawnSync call', () => {
+        // The spawnSync for npm ci must include a shell option so .cmd scripts
+        // are resolved on Windows (both MinGW and native cmd.exe).
+        // Match the assignment: const npmCiResult = spawnSync(...)
+        const assignIdx = installScript.indexOf('npmCiResult = spawnSync');
+        expect(assignIdx).toBeGreaterThan(-1);
+        // Grab from the assignment to closing brace of the options object
+        const spawnBlock = installScript.slice(assignIdx, assignIdx + 300);
+        expect(spawnBlock).toMatch(/shell/);
+    });
+
+    it('gates shell:true to win32 only — not forced on Linux/macOS', () => {
+        // shell:true on Linux spawns an extra process for no reason.
+        // Must be conditional on win32.
+        const assignIdx = installScript.indexOf('npmCiResult = spawnSync');
+        const spawnBlock = installScript.slice(assignIdx, assignIdx + 300);
+        expect(spawnBlock).toMatch(/win32/);
     });
 });

@@ -43,6 +43,15 @@ function toWindowsPath(p) {
     return p;
 }
 
+// Converts a Win32 drive path (C:\Users\...) to an MSYS2 POSIX path (/c/Users/...)
+// so that MSYS2 tar never sees a bare "C:" that it might interpret as a remote hostname.
+function toPosixPath(p) {
+    if (isMinGW && /^[a-zA-Z]:/.test(p)) {
+        return '/' + p[0].toLowerCase() + p.slice(2).replace(/\\/g, '/');
+    }
+    return p;
+}
+
 // Returns the platform-appropriate directory for Cursor's global rules (.mdc files).
 function getCursorRulesDir() {
     if (os.platform() === 'win32') {
@@ -169,7 +178,14 @@ async function run() {
                 if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
                 else return false;
             }
-            spawnSync('tar', ['-xzf', tmpFile, '-C', rootDir], { stdio: 'inherit' });
+            // On Windows, BSD tar treats "C:" as a remote hostname — --force-local disables that.
+            // On MinGW (Git for Windows) we also convert paths to POSIX form (/c/Users/...)
+            // so MSYS2 tar never sees a bare "C:" regardless of --force-local support.
+            const tarArgs = os.platform() === 'win32'
+                ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
+                : ['-xzf', tmpFile, '-C', rootDir];
+            const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit' });
+            if (tarResult.status !== 0) return false;
             console.log(`${GREEN}  Re-download complete.${NC}`);
             return true;
         } catch { return false; } finally {
@@ -235,6 +251,7 @@ async function run() {
         const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
             cwd: rootDir,
             stdio: 'inherit',
+            shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
         });
         if (npmCiResult.status !== 0) {
             console.log(`${YELLOW}  Warning: npm ci failed (exit ${npmCiResult.status}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.${NC}`);
@@ -442,7 +459,8 @@ const uiProcess = spawn(npmCmd, ['run', 'preview'], {
     cwd: path.join(rootDir, 'packages/ui'),
     env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: \`http://localhost:\${API_PORT}\` },
     detached: true,
-    stdio: ['ignore', uiLog, uiLog]
+    stdio: ['ignore', uiLog, uiLog],
+    shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
 });
 uiProcess.unref();
 

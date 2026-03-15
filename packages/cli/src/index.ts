@@ -2517,7 +2517,7 @@ program
     try {
       const body: any = { evidence: options.evidence };
       if (command) body.command = command;
-      const { data } = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken } });
+      const { data } = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
       if (data.output) console.log(data.output);
       console.log(chalk.green(data.message || `\n✅ Validation passed.`));
     } catch (error: any) {
