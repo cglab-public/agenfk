@@ -157,3 +157,50 @@ describe('install.mjs — Windows tar --force-local', () => {
         expect(before).toMatch(/win32/);
     });
 });
+
+// ---------------------------------------------------------------------------
+// MCP server + CLI — validate_progress 5-minute timeout (task 9c5d2fbe)
+// ---------------------------------------------------------------------------
+const mcpServerScript = readFileSync(
+    path.resolve(__dirname, '../../../server/src/index.ts'),
+    'utf8'
+);
+
+const cliScript = readFileSync(
+    path.resolve(__dirname, '../../src/index.ts'),
+    'utf8'
+);
+
+describe('MCP server — validate_progress uses 5-minute timeout', () => {
+    it('validate_progress post call has a 300000ms timeout', () => {
+        // 30s is too short for npm run build && npm test; must be 5 minutes.
+        const validateIdx = mcpServerScript.indexOf('case "validate_progress"');
+        expect(validateIdx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(validateIdx, validateIdx + 500);
+        expect(block).toMatch(/300000/);
+    });
+
+    it('review_changes post call has a 300000ms timeout', () => {
+        const idx = mcpServerScript.indexOf('case "review_changes"');
+        expect(idx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(idx, idx + 400);
+        expect(block).toMatch(/300000/);
+    });
+
+    it('test_changes post call has a 300000ms timeout', () => {
+        const idx = mcpServerScript.indexOf('case "test_changes"');
+        expect(idx).toBeGreaterThan(-1);
+        const block = mcpServerScript.slice(idx, idx + 400);
+        expect(block).toMatch(/300000/);
+    });
+});
+
+describe('CLI — agenfk verify uses 5-minute timeout', () => {
+    it('verify command axios.post has a 300000ms timeout', () => {
+        // The verify command calls /items/:id/validate — must not time out on long builds.
+        const verifyIdx = cliScript.indexOf(".command('verify");
+        expect(verifyIdx).toBeGreaterThan(-1);
+        const block = cliScript.slice(verifyIdx, verifyIdx + 2000);
+        expect(block).toMatch(/300000/);
+    });
+});

@@ -567,7 +567,7 @@ async function callToolHandler(request: any): Promise<any> {
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/validate`, { evidence, command, cwd: process.cwd() }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/validate`, { evidence, command, cwd: process.cwd() }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
           return { content: [{ type: "text", text: data.message }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
@@ -577,7 +577,7 @@ async function callToolHandler(request: any): Promise<any> {
       case "review_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
           return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
@@ -587,7 +587,7 @@ async function callToolHandler(request: any): Promise<any> {
       case "test_changes": {
         const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
         try {
-          const { data } = await api.post(`/items/${itemId}/validate`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          const { data } = await api.post(`/items/${itemId}/validate`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
           return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
         } catch (error: any) {
           const msg = error.response?.data?.message || error.response?.data?.error || error.message;
