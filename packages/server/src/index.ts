@@ -649,7 +649,11 @@ async function callToolHandler(request: any): Promise<any> {
         const actionableItems = workingItems.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
 
         if (actionableItems.length === 0) {
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No task is currently active in project [${effectiveProjectId}]. Advance a task from TODO first.${flowStepsSummary}` }] };
+          const storyOrEpicInProgress = workingItems.find((i: any) => i.type === 'STORY' || i.type === 'EPIC');
+          const hint = storyOrEpicInProgress
+            ? `\n\n"${storyOrEpicInProgress.title}" (${storyOrEpicInProgress.type}) is at step ${storyOrEpicInProgress.status}, but work must be authorized on a TASK or BUG. Create or advance a TASK/BUG within that ${storyOrEpicInProgress.type} to an active step first.`
+            : ' Create or advance a TASK or BUG to an active step first.';
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No TASK or BUG is currently active in project [${effectiveProjectId}].${hint}${flowStepsSummary}` }] };
         }
 
         // Resolve which task to authorize
@@ -658,7 +662,7 @@ async function callToolHandler(request: any): Promise<any> {
           task = workingItems.find((i: any) => i.id === itemId);
           if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in an active working step or does not belong to project [${effectiveProjectId}].` }] };
           if (task.type === 'EPIC' || task.type === 'STORY') {
-            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type}. Please decompose into TASKS and work on those instead.` }] };
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type} [${task.id.substring(0,8)}] "${task.title}". Create or advance a TASK or BUG within this ${task.type} to an active step first, then call workflow_gatekeeper with that TASK/BUG's itemId.` }] };
           }
         } else {
           if (actionableItems.length > 1) {
