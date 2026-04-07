@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "0.2.26",
+  "version": "0.2.27",
   "description": "AgenFK Agentic Engineering Framework — installer",
   "bin": {
     "agenfk": "bin/agenfk.js"
