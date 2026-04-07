@@ -39,7 +39,8 @@ If YES:
   - **Cross-project guard**: If a commit message contains a task ID in brackets (e.g. `[1a18154d-...]`), verify it belongs to the current project by checking `.agenfk/project.json`. If the project ID does not match, omit the task reference from the release note and note it as a possible mislabelled commit.
 - Confirm the notes with the user, allow edits.
 - **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
-- **Push & Create**: Run `git push origin HEAD` to ensure the version bump is on the remote branch, then run `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes>"`.
+- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD --tags` to push both the commit and the tag to the remote.
+- **Create Release**: Run `gh release create <tag> agenfk-dist.tar.gz --title "<title>" --notes "<notes">`.
 - Show the release URL returned by `gh`.
 
 If NO:
