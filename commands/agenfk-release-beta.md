@@ -25,5 +25,6 @@ Run `git push` and show the output to the user.
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
 - Confirm the notes with the user, allow edits.
 - **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
-- **Push & Create Beta**: Run `git push origin HEAD` to ensure the version bump is on the remote branch, then run `gh release create <tag> agenfk-dist.tar.gz --prerelease --title "<title>" --notes "<notes>"`.
+- **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD --tags` to push both the commit and the tag to the remote.
+- **Create Beta Release**: Run `gh release create <tag> agenfk-dist.tar.gz --prerelease --title "<title>" --notes "<notes>"`.
 - Show the release URL returned by `gh`.
