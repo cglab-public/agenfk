@@ -482,13 +482,13 @@ describe('GET /releases/latest', () => {
 describe('POST /items/:id/validate — command required only on final step', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('advances intermediate step (REVIEW→TEST) with no command, without running anything', async () => {
+  it('advances intermediate step (CREATE_UNIT_TESTS→IN_PROGRESS) with no command, without running anything', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV1' })).body;
     // No verifyCommand set on project
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV1', projectId: p.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
-    await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
@@ -496,13 +496,15 @@ describe('POST /items/:id/validate — command required only on final step', () 
       .send({});  // no command
 
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe('TEST');
+    expect(res.body.status).toBe('IN_PROGRESS');
   });
 
   it('advances intermediate step (IN_PROGRESS→REVIEW) with no command', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV2' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV2', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -514,17 +516,17 @@ describe('POST /items/:id/validate — command required only on final step', () 
     expect(res.body.status).toBe('REVIEW');
   });
 
-  it('still returns NO_VERIFY_COMMAND when on final step (TEST→DONE) with no command and no verifyCommand', async () => {
+  it('still returns NO_VERIFY_COMMAND when on final step (REVIEW→DONE) with no command and no verifyCommand', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV3' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV3', projectId: p.id })).body;
     await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+      .send({ items: [{ id: item.id, updates: { status: 'REVIEW' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
-    if (current.status !== 'TEST') return;
+    if (current.status !== 'REVIEW') return;
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
@@ -535,7 +537,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
     expect(res.body.error).toBe('NO_VERIFY_COMMAND');
   });
 
-  it('runs verifyCommand on final step (TEST→DONE) when no explicit command given', async () => {
+  it('runs verifyCommand on final step (REVIEW→DONE) when no explicit command given', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV4' })).body;
     await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo verify-ok' });
@@ -543,10 +545,10 @@ describe('POST /items/:id/validate — command required only on final step', () 
     await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+      .send({ items: [{ id: item.id, updates: { status: 'REVIEW' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
-    if (current.status !== 'TEST') return;
+    if (current.status !== 'REVIEW') return;
 
     const res = await request(app)
       .post(`/items/${item.id}/validate`)
@@ -567,6 +569,8 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'EV1' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV1', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -585,6 +589,8 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'EV2' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV2', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -602,10 +608,12 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
 describe('POST /items/:id/review success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('moves REVIEW item to TEST on passing command', async () => {
+  it('moves REVIEW item to DONE on passing command (REVIEW is the final intermediate in the TDD default)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
@@ -616,14 +624,16 @@ describe('POST /items/:id/review success paths', () => {
 
     expect([200, 422]).toContain(res.status);
     if (res.status === 200) {
-      expect(res.body.status).toBe('TEST');
+      expect(res.body.status).toBe('DONE');
     }
   });
 
-  it('returns 422 on failing command and moves back to IN_PROGRESS', async () => {
+  it('returns 422 on failing command and moves back to IN_PROGRESS (the coding step)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
@@ -642,7 +652,7 @@ describe('POST /items/:id/review success paths', () => {
 describe('POST /items/:id/test success paths', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('moves TEST item to DONE when verifyCommand passes', async () => {
+  it('moves REVIEW item to DONE when verifyCommand passes (legacy /test endpoint)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P2' })).body;
     // Set verifyCommand on the project
@@ -650,14 +660,14 @@ describe('POST /items/:id/test success paths', () => {
 
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T2', projectId: p.id })).body;
 
-    // Force status to TEST using the bulk endpoint with internal token
+    // Force status to REVIEW (the final intermediate step in the TDD default flow)
     await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+      .send({ items: [{ id: item.id, updates: { status: 'REVIEW' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
-    if (current.status !== 'TEST') return; // skip if we couldn't set TEST
+    if (current.status !== 'REVIEW') return; // skip if we couldn't set REVIEW
 
     const res = await request(app)
       .post(`/items/${item.id}/test`)
@@ -678,10 +688,10 @@ describe('POST /items/:id/test success paths', () => {
     await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+      .send({ items: [{ id: item.id, updates: { status: 'REVIEW' } }] });
 
     const current = (await request(app).get(`/items/${item.id}`)).body;
-    if (current.status !== 'TEST') return;
+    if (current.status !== 'REVIEW') return;
 
     const res = await request(app)
       .post(`/items/${item.id}/test`)
@@ -1734,23 +1744,28 @@ describe('Flow-aware status transition validation', () => {
     expect(res.body.status).toBe('DONE');
   });
 
-  it('project using DEFAULT_FLOW allows all standard transitions', async () => {
-    // Create a project without custom flow (uses DEFAULT_FLOW)
+  it('project using DEFAULT_FLOW allows all standard TDD transitions', async () => {
+    // Create a project without custom flow (uses DEFAULT_FLOW — TDD-based:
+    // TODO → DISCOVERY → CREATE_UNIT_TESTS → IN_PROGRESS → REVIEW → DONE)
     const p2 = (await request(app).post('/projects').send({ name: 'DefaultFlowProject' })).body;
     const item = (await request(app).post('/items').send({
       type: 'TASK', title: 'T7', projectId: p2.id, status: 'TODO',
     })).body;
 
-    // TODO -> IN_PROGRESS allowed
-    let res = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    // TODO -> DISCOVERY allowed
+    let res = await request(app).put(`/items/${item.id}`).send({ status: 'DISCOVERY' });
+    expect(res.status).toBe(200);
+
+    // DISCOVERY -> CREATE_UNIT_TESTS allowed
+    res = await request(app).put(`/items/${item.id}`).send({ status: 'CREATE_UNIT_TESTS' });
+    expect(res.status).toBe(200);
+
+    // CREATE_UNIT_TESTS -> IN_PROGRESS allowed
+    res = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
     expect(res.status).toBe(200);
 
     // IN_PROGRESS -> REVIEW allowed
     res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
-    expect(res.status).toBe(200);
-
-    // REVIEW -> TEST allowed
-    res = await request(app).put(`/items/${item.id}`).send({ status: 'TEST' });
     expect(res.status).toBe(200);
   });
 });

@@ -8,22 +8,23 @@ describe('DEFAULT_FLOW', () => {
     expect(DEFAULT_FLOW.name).toBe('Default Flow');
   });
 
-  it('should have exactly 5 steps (platform statuses are not flow steps)', () => {
-    expect(DEFAULT_FLOW.steps).toHaveLength(5);
+  it('should have exactly 6 TDD steps (platform statuses are not flow steps)', () => {
+    expect(DEFAULT_FLOW.steps).toHaveLength(6);
   });
 
   it('should have steps in correct order', () => {
     const orders = DEFAULT_FLOW.steps.map((s) => s.order);
-    expect(orders).toEqual([0, 1, 2, 3, 4]);
+    expect(orders).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  it('should have steps with correct names in order', () => {
+  it('should have TDD-style step names in order', () => {
     const names = DEFAULT_FLOW.steps.map((s) => s.name);
     expect(names).toEqual([
       'TODO',
+      'DISCOVERY',
+      'CREATE_UNIT_TESTS',
       'IN_PROGRESS',
       'REVIEW',
-      'TEST',
       'DONE',
     ]);
   });
@@ -47,15 +48,22 @@ describe('DEFAULT_FLOW', () => {
     const done = DEFAULT_FLOW.steps.find((s) => s.name === 'DONE');
     expect(done).toBeDefined();
     expect(done?.isAnchor).toBe(true);
-    expect(done?.order).toBe(4);
+    expect(done?.order).toBe(5);
   });
 
-  it('should NOT mark middle steps (IN_PROGRESS, REVIEW, TEST) as isAnchor', () => {
-    const middleSteps = ['IN_PROGRESS', 'REVIEW', 'TEST'];
+  it('should NOT mark middle steps (DISCOVERY, CREATE_UNIT_TESTS, IN_PROGRESS, REVIEW) as isAnchor', () => {
+    const middleSteps = ['DISCOVERY', 'CREATE_UNIT_TESTS', 'IN_PROGRESS', 'REVIEW'];
     for (const name of middleSteps) {
       const step = DEFAULT_FLOW.steps.find((s) => s.name === name);
       expect(step?.isAnchor).toBeFalsy();
     }
+  });
+
+  it('should define exitCriteria for CREATE_UNIT_TESTS and IN_PROGRESS (TDD contract)', () => {
+    const createTests = DEFAULT_FLOW.steps.find((s) => s.name === 'CREATE_UNIT_TESTS');
+    expect(createTests?.exitCriteria).toBeTruthy();
+    const inProgress = DEFAULT_FLOW.steps.find((s) => s.name === 'IN_PROGRESS');
+    expect(inProgress?.exitCriteria).toBeTruthy();
   });
 
   it('should NOT mark any step as isSpecial (deprecated field)', () => {

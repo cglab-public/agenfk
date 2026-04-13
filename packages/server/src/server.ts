@@ -324,11 +324,15 @@ function sortedFlowSteps(flow: { steps: FlowStepInfo[] }): FlowStepInfo[] {
 }
 
 /**
- * The "coding" step: the first non-anchor step in the flow.
- * In the default flow this is IN_PROGRESS. Custom flows may use any name.
+ * The "coding" step: where implementation work happens.
+ * Prefers a non-anchor step named IN_PROGRESS (matches the built-in default
+ * flow, including TDD-shaped flows where earlier steps are DISCOVERY /
+ * CREATE_UNIT_TESTS). Falls back to the first non-anchor step for custom
+ * flows that don't include IN_PROGRESS.
  */
 function getCodingStep(sorted: FlowStepInfo[]): FlowStepInfo | undefined {
-  return sorted.find(s => !s.isAnchor);
+  const named = sorted.find(s => !s.isAnchor && s.name.toUpperCase() === 'IN_PROGRESS');
+  return named ?? sorted.find(s => !s.isAnchor);
 }
 
 /**

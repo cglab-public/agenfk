@@ -27,7 +27,7 @@ describe('Feature: README "How do I use AgEnFK" section', () => {
       expect(README).toMatch(/\/agenfk/);
     });
 
-    it('should describe the default flow steps (TODO → IN_PROGRESS → REVIEW → TEST → DONE or similar)', () => {
+    it('should describe the default flow steps (TDD-based: TODO → DISCOVERY → CREATE_UNIT_TESTS → IN_PROGRESS → REVIEW → DONE)', () => {
       // The section should reference the flow progression
       expect(README).toMatch(/TODO.*DONE/s);
     });

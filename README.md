@@ -49,7 +49,7 @@ AgEnFK is built on six core mandates to ensure your AI-assisted development is c
 
 ## How do I use AgEnFK?
 
-The core experience is simple: you describe what you want in plain language, and AgEnFK turns it into a structured, verified workflow. Here is what happens end-to-end using the default flow (TODO → IN_PROGRESS → REVIEW → TEST → DONE).
+The core experience is simple: you describe what you want in plain language, and AgEnFK turns it into a structured, verified workflow. Here is what happens end-to-end using the built-in TDD default flow (TODO → DISCOVERY → CREATE_UNIT_TESTS → IN_PROGRESS → REVIEW → DONE).
 
 ### 1. You make a request
 
@@ -61,27 +61,31 @@ Open your AI coding agent (Claude Code, Opencode, Gemini CLI, etc.) and type `/a
 
 The agent reads your request, classifies it (Task, Story, or Epic depending on complexity), and creates a card on the Kanban board in the **TODO** column.
 
-### 2. The agent plans and codes
+### 2. Discovery
 
-The agent advances the card to **IN_PROGRESS** and begins implementation. It explores your codebase, understands the context, writes the code, and logs progress comments on the card as it goes — giving you full visibility on the Kanban dashboard.
+The card advances to **DISCOVERY**. The agent asks clarifying questions when the request is ambiguous and refines the scope — for Epics and Stories it decomposes the work into sub-cards at the right granularity and waits for your go-ahead before moving on.
 
-### 3. Build verification
+### 3. Tests first
 
-Once the implementation is complete, the agent moves the card to **REVIEW** and performs a self-review of every file it modified. It then runs your project's build command (e.g. `npm run build`, `cargo build`) to verify the code compiles cleanly.
+The card advances to **CREATE_UNIT_TESTS**, where the agent writes the tests that describe the target behaviour. Tests are allowed to fail at this point — they exist to drive the implementation. AgEnFK verifies that actual behaviour is tested, not just the existence of code.
 
-### 4. Test verification
+### 4. The agent codes
 
-The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
+The agent advances the card to **IN_PROGRESS** and implements just enough code to make the tests pass. Progress comments are logged on the card as it goes — giving you full visibility on the Kanban dashboard.
 
-### 5. Done
+### 5. Review
 
-When all verification passes, the card moves to **DONE**, the agent commits the changes, and pushes the branch. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
+Once the tests pass, the card moves to **REVIEW**. The agent performs a self-review of every file it modified, checking syntax, semantics, and security concerns, and runs the project's build command (e.g. `npm run build`, `cargo build`) to verify the code compiles cleanly.
+
+### 6. Done
+
+When the review is clean and the project's `verifyCommand` passes, the card moves to **DONE**, the agent commits the changes, and pushes the branch. If verification fails the card drops back to IN_PROGRESS automatically and the agent fixes the issues — no manual intervention needed. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
 
 ---
 
 This default flow is the main workflow, but AgEnFK is designed to adapt to how **you** work — not the other way around.
 
-**Define your own flows.** The default pipeline is just a starting point. You can create custom flows with any steps and exit criteria you need — for example, a BDD flow (TODO → WRITE_TESTS → IMPLEMENT → REVIEW → DONE) or a minimal flow (TODO → CODING → DONE). Share your flows with the community via the [AgEnFK Community Registry](https://github.com/cglab-public/agenfk-flows), and download flows published by other engineers — all from the Flow Editor in the Kanban UI. See [Custom Workflow Flows](#custom-workflow-flows) for details.
+**Define your own flows.** The default TDD pipeline is just a starting point. You can create custom flows with any steps and exit criteria you need — for example, a BDD flow (TODO → WRITE_GHERKIN → IMPLEMENT → REVIEW → DONE) or a minimal flow (TODO → CODING → DONE). Share your flows with the community via the [AgEnFK Community Registry](https://github.com/cglab-public/agenfk-flows), and download flows published by other engineers — all from the Flow Editor in the Kanban UI. See [Custom Workflow Flows](#custom-workflow-flows) for details.
 
 **Bring your own cards.** You don't have to start every task from a chat prompt. Import cards from **JIRA** or **GitHub Issues** to pull work items directly into your AgEnFK board (see [GitHub Issues Sync](#github-issues-sync)), or create and organise cards manually on the **Kanban dashboard** using drag-and-drop — then let the agent pick them up when you're ready.
 
@@ -310,7 +314,7 @@ AgEnFK utilizes a **Single Owner Architecture** to ensure data consistency and r
 
 AgEnFK v0.2 ships with **Custom Workflow Flows** — one of the most requested features since launch.
 
-You are no longer locked into the built-in TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline. Flows let you define exactly how you want to organise your personal Agentic Engineering flow: name the steps, write exit criteria for each one, and AgEnFK enforces them end-to-end.
+You are no longer locked into the built-in TDD pipeline (TODO → DISCOVERY → CREATE_UNIT_TESTS → IN_PROGRESS → REVIEW → DONE). Flows let you define exactly how you want to organise your personal Agentic Engineering flow: name the steps, write exit criteria for each one, and AgEnFK enforces them end-to-end.
 
 ### How Flows Work
 
@@ -318,7 +322,7 @@ A **Flow** is an ordered list of steps with a name and exit criteria per step. T
 - **TODO** — the entry point for all new work.
 - **DONE** — the terminal state. The project's `verifyCommand` is enforced here by `validate_progress`.
 
-Everything in between is yours to define. A TDD-focused developer might use `TODO → WRITE_TESTS → IMPLEMENT → REVIEW → DONE`. Someone who prefers to keep it lean might go with just `TODO → CODING → DONE`.
+Everything in between is yours to define. The default is TDD-flavoured, but you might prefer a BDD-first pipeline (`TODO → WRITE_GHERKIN → IMPLEMENT → REVIEW → DONE`), a security-focused one (`TODO → IN_PROGRESS → SEC_REVIEW → DONE`), or something lean like `TODO → CODING → DONE`.
 
 ### Flow Editor
 
