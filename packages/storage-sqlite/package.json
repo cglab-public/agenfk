@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/storage-sqlite",
-  "version": "0.2.27",
+  "version": "0.2.28-beta.3",
   "description": "SQLite storage implementation for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
