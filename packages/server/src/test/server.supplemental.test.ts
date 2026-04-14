@@ -560,6 +560,28 @@ describe('POST /items/:id/validate — command required only on final step', () 
   });
 });
 
+// ── validate_progress: TODO advances to FIRST step (not coding step) ────────
+
+describe('POST /items/:id/validate — TODO advancement targets first step', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('advances TODO to DISCOVERY (first step) not IN_PROGRESS in the TDD default flow', async () => {
+    if (!VERIFY_TOKEN) return;
+    // Project with no custom flow — uses the TDD default (TODO → DISCOVERY → CREATE_UNIT_TESTS → IN_PROGRESS → REVIEW → DONE)
+    const p = (await request(app).post('/projects').send({ name: 'TDD-advance' })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TDD-T1', projectId: p.id })).body;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ evidence: 'Starting task' });
+
+    expect(res.status).toBe(200);
+    // Must land on DISCOVERY (sorted[1]), NOT IN_PROGRESS (coding step)
+    expect(res.body.status).toBe('DISCOVERY');
+  });
+});
+
 // ── validate_progress: evidence logging ──────────────────────────────────────
 
 describe('POST /items/:id/validate — evidence comment logging', () => {

@@ -1259,18 +1259,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (currentFlowStep.index !== 0) {
       return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
     }
-    // First anchor (TODO): advance to coding step without running a command.
-    if (!codingStep) {
-      return res.status(400).json({ error: `Cannot advance from ${item.status}: no coding step found in flow.` });
+    // First anchor (TODO): advance to the NEXT step in the flow (not the coding
+    // step — in TDD flows DISCOVERY comes before IN_PROGRESS).
+    const firstStep = sorted[1];
+    if (!firstStep) {
+      return res.status(400).json({ error: `Cannot advance from ${item.status}: no step found after TODO in flow.` });
     }
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
-    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
-    await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${firstStep.name}${exitNote}`, timestamp: new Date() };
+    await storage.updateItem(itemId, { status: firstStep.name as Status, comments: [...(item.comments || []), comment] });
     io.emit('items_updated');
-    const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
-    const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}` });
+    const firstStepCriteria = (firstStep as any).exitCriteria as string | undefined;
+    const mandatoryNote = firstStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${firstStepCriteria}` : '';
+    return res.json({ status: firstStep.name, message: `✅ Validation Passed!\n\nItem moved to ${firstStep.name}.${mandatoryNote}` });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
