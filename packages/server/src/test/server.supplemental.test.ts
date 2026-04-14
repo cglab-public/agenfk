@@ -1982,3 +1982,91 @@ describe('PUT /items/:id — comment with step field', () => {
     expect(fetched.comments[0].content).toBe('evidence text');
   });
 });
+
+// ── PUT /items/:id — parentId reparenting validation ────────────────────────
+
+describe('PUT /items/:id — parentId reparenting', () => {
+  let projectId: string;
+
+  beforeEach(async () => {
+    await initStorage();
+    const p = (await request(app).post('/projects').send({ name: 'ReparentProject' })).body;
+    projectId = p.id;
+  });
+
+  it('reparents an item to a new parent (200)', async () => {
+    const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId })).body;
+    const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId })).body;
+
+    const res = await request(app).put(`/items/${child.id}`).send({ parentId: parent.id });
+    expect(res.status).toBe(200);
+    expect(res.body.parentId).toBe(parent.id);
+  });
+
+  it('detaches an item from its parent when parentId is null (200)', async () => {
+    const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId })).body;
+    const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId, parentId: parent.id })).body;
+    expect(child.parentId).toBe(parent.id);
+
+    const res = await request(app).put(`/items/${child.id}`).send({ parentId: null });
+    expect(res.status).toBe(200);
+    expect(res.body.parentId).toBeFalsy();
+  });
+
+  it('rejects self-parenting (400)', async () => {
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'Self', projectId })).body;
+
+    const res = await request(app).put(`/items/${item.id}`).send({ parentId: item.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/own parent/i);
+  });
+
+  it('rejects non-existent target parent (400)', async () => {
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'Orphan', projectId })).body;
+
+    const res = await request(app).put(`/items/${item.id}`).send({ parentId: 'nonexistent-id' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/parent.*not found/i);
+  });
+
+  it('rejects circular parent reference (A → B → A cycle) (400)', async () => {
+    const a = (await request(app).post('/items').send({ type: 'EPIC', title: 'A', projectId })).body;
+    const b = (await request(app).post('/items').send({ type: 'STORY', title: 'B', projectId, parentId: a.id })).body;
+
+    // Try to make A a child of B — would create A → B → A cycle
+    const res = await request(app).put(`/items/${a.id}`).send({ parentId: b.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/circular/i);
+  });
+
+  it('rejects deeper cycle (A → B → C, move A under C) (400)', async () => {
+    const a = (await request(app).post('/items').send({ type: 'EPIC', title: 'A', projectId })).body;
+    const b = (await request(app).post('/items').send({ type: 'STORY', title: 'B', projectId, parentId: a.id })).body;
+    const c = (await request(app).post('/items').send({ type: 'TASK', title: 'C', projectId, parentId: b.id })).body;
+
+    // Try to make A a child of C — would create A → B → C → A cycle
+    const res = await request(app).put(`/items/${a.id}`).send({ parentId: c.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/circular/i);
+  });
+
+  it('rejects cross-project reparenting (400)', async () => {
+    const p2 = (await request(app).post('/projects').send({ name: 'OtherProject' })).body;
+    const itemInP1 = (await request(app).post('/items').send({ type: 'TASK', title: 'InP1', projectId })).body;
+    const parentInP2 = (await request(app).post('/items').send({ type: 'STORY', title: 'InP2', projectId: p2.id })).body;
+
+    const res = await request(app).put(`/items/${itemInP1.id}`).send({ parentId: parentInP2.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/same project/i);
+  });
+
+  it('allows moving item to a different valid parent (200)', async () => {
+    const parent1 = (await request(app).post('/items').send({ type: 'EPIC', title: 'Parent1', projectId })).body;
+    const parent2 = (await request(app).post('/items').send({ type: 'EPIC', title: 'Parent2', projectId })).body;
+    const child = (await request(app).post('/items').send({ type: 'TASK', title: 'Child', projectId, parentId: parent1.id })).body;
+
+    const res = await request(app).put(`/items/${child.id}`).send({ parentId: parent2.id });
+    expect(res.status).toBe(200);
+    expect(res.body.parentId).toBe(parent2.id);
+  });
+});

@@ -1108,6 +1108,28 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
+  // ── parentId reparenting validation ─────────────────────────────────────────
+  if (parentId !== undefined && parentId !== null) {
+    if (parentId === req.params.id) {
+      return res.status(400).json({ error: "Cannot set an item as its own parent." });
+    }
+    const targetParent = await storage.getItem(parentId);
+    if (!targetParent) {
+      return res.status(400).json({ error: "Target parent not found." });
+    }
+    if (targetParent.projectId !== currentItem.projectId) {
+      return res.status(400).json({ error: "Target parent must be in the same project." });
+    }
+    // Cycle detection: walk up from the target parent's ancestor chain
+    let ancestor: any = targetParent;
+    for (let depth = 0; depth < 10 && ancestor?.parentId; depth++) {
+      if (ancestor.parentId === req.params.id) {
+        return res.status(400).json({ error: "Circular parent reference detected." });
+      }
+      ancestor = await storage.getItem(ancestor.parentId);
+    }
+  }
+
   const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;

@@ -101,6 +101,7 @@ const UpdateItemSchema = z.object({
   status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]).optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   implementationPlan: z.string().optional(),
+  parentId: z.string().nullable().optional(),
 });
 
 const ListItemsSchema = z.object({
@@ -202,6 +203,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             implementationPlan: { type: "string" },
+            parentId: { type: ["string", "null"], description: "New parent item ID, or null to detach from parent." },
           },
           required: ["id"],
         },

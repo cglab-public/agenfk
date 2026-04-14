@@ -1161,6 +1161,7 @@ program
   .option('-t, --title <title>', 'New title')
   .option('-d, --description <desc>', 'New description')
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
+  .option('--parent <id>', 'New parent item ID (use "none" to detach)')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1184,6 +1185,9 @@ program
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
+      if (options.parent !== undefined) {
+        updates.parentId = options.parent.toLowerCase() === 'none' ? null : options.parent;
+      }
 
       const { data: updated } = await axios.put(`${API_URL}/items/${targetId}`, updates);
       console.log(chalk.green(`Updated item: ${updated.title} [${updated.type}] (${updated.status})`));
