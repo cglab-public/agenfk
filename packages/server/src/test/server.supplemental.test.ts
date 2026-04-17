@@ -1982,3 +1982,228 @@ describe('PUT /items/:id — comment with step field', () => {
     expect(fetched.comments[0].content).toBe('evidence text');
   });
 });
+
+// ── validate_progress: full-output log persistence + rolling window ──────────
+
+describe('POST /items/:id/validate — full-output log persistence', () => {
+  const LOGS_DIR = path.join(path.dirname(TEST_DB), 'logs');
+  const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true }); };
+
+  beforeEach(async () => { await initStorage(); rmLogs(); });
+  afterEach(() => { rmLogs(); });
+
+  const setupItemInCoding = async (name: string) => {
+    const p = (await request(app).post('/projects').send({ name })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    return { p, item };
+  };
+
+  // Node one-liner emitting a deterministic payload > 2KB with distinctive
+  // head+tail markers placed within the head/tail truncation windows.
+  const longOutputCommand = (tag: string) =>
+    `node -e "const head='HEAD_${tag}_START'+'A'.repeat(1500); const tail='Z'.repeat(900)+'TAIL_${tag}_END'; console.log(head); console.log(tail);"`;
+
+  it('writes the full command output to .agenfk/logs/<itemId>/<testId>.log', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist1');
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: longOutputCommand('r1') });
+
+    expect(res.status).toBe(200);
+
+    const itemLogDir = path.join(LOGS_DIR, item.id);
+    expect(fs.existsSync(itemLogDir)).toBe(true);
+    const files = fs.readdirSync(itemLogDir);
+    expect(files).toHaveLength(1);
+
+    const full = fs.readFileSync(path.join(itemLogDir, files[0]), 'utf8');
+    expect(full).toContain('HEAD_r1_START');
+    expect(full).toContain('TAIL_r1_END');
+    expect(full).toContain('A'.repeat(1500));
+    expect(full).toContain('Z'.repeat(900));
+    expect(full.length).toBeGreaterThan(2400);
+    expect(full).not.toContain('(truncated)');
+  });
+
+  it('returns head+tail truncated preview in response when output exceeds threshold', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist2');
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: longOutputCommand('r2') });
+
+    expect(res.status).toBe(200);
+    const preview: string = res.body.output;
+    expect(preview).toBeDefined();
+    // Preview must contain the head of output
+    expect(preview).toContain('HEAD_r2_START');
+    // Preview must contain the tail of output
+    expect(preview).toContain('TAIL_r2_END');
+    // Preview must be substantially smaller than full output (full is ~2.4KB payload + newlines)
+    // Head+tail+marker should be ~2-3KB; assert it's bounded
+    expect(preview.length).toBeLessThan(3500);
+    // Truncation marker present
+    expect(preview).toMatch(/truncated/);
+    // Log file path referenced so the agent can read full output
+    expect(preview).toContain('Full log:');
+    expect(preview).toContain(path.join('logs', item.id));
+  });
+
+  it('does not truncate when output is short (below threshold)', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist3');
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: "echo short-output-xyz" });
+
+    expect(res.status).toBe(200);
+    const preview: string = res.body.output;
+    expect(preview).toContain('short-output-xyz');
+    // No truncation marker for short output
+    expect(preview).not.toMatch(/\(truncated\)/);
+    expect(preview).not.toMatch(/bytes truncated/);
+  });
+
+  it('stores head+tail preview (not full output) in the comment and includes log path', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist4');
+
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: longOutputCommand('r4') });
+
+    const fetched = (await request(app).get(`/items/${item.id}`)).body;
+    const validationComment = fetched.comments.find((c: any) =>
+      c.author === 'ValidateTool' && typeof c.content === 'string' && c.content.includes('Validation')
+    );
+    expect(validationComment).toBeDefined();
+    // Comment should contain the head and tail markers from the output
+    expect(validationComment.content).toContain('HEAD_r4_START');
+    expect(validationComment.content).toContain('TAIL_r4_END');
+    // Full 1500-A block must not appear — output exceeds head+tail budget so it's truncated
+    expect(validationComment.content).not.toContain('A'.repeat(1500));
+    // Log path referenced in comment
+    expect(validationComment.content).toContain('Full log:');
+  });
+
+  it('stores head+tail preview (not full output) in the tests[] record on final step', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'LogPersist5', verifyCommand: longOutputCommand('r5') })).body;
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'LogPersist5', projectId: p.id })).body;
+    await request(app)
+      .post('/items/bulk')
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+
+    const current = (await request(app).get(`/items/${item.id}`)).body;
+    if (current.status !== 'TEST') return;
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({});
+    if (res.status !== 200) return;
+
+    const fetched = (await request(app).get(`/items/${item.id}`)).body;
+    expect(fetched.tests).toBeDefined();
+    expect(fetched.tests.length).toBeGreaterThan(0);
+    const lastTest = fetched.tests[fetched.tests.length - 1];
+    expect(lastTest.output).toContain('HEAD_r5_START');
+    expect(lastTest.output).toContain('TAIL_r5_END');
+    // Full output not stored inline
+    expect(lastTest.output).not.toContain('A'.repeat(1500));
+    // Log file exists on disk with full content
+    const itemLogDir = path.join(LOGS_DIR, item.id);
+    expect(fs.existsSync(itemLogDir)).toBe(true);
+    const files = fs.readdirSync(itemLogDir);
+    expect(files.length).toBeGreaterThan(0);
+    const fullLogContent = fs.readFileSync(path.join(itemLogDir, files[files.length - 1]), 'utf8');
+    expect(fullLogContent).toContain('A'.repeat(1500));
+  });
+
+  it('prunes per-item log directory to the newest 3 files (rolling window)', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist6');
+
+    const runOnce = async (tag: string) => {
+      await request(app)
+        .post(`/items/${item.id}/validate`)
+        .set('x-agenfk-internal', VERIFY_TOKEN)
+        .send({ command: `echo OUTPUT_${tag}` });
+      // bounce back to coding step so we can validate again
+      await request(app)
+        .post('/items/bulk')
+        .set('x-agenfk-internal', VERIFY_TOKEN)
+        .send({ items: [{ id: item.id, updates: { status: 'IN_PROGRESS' } }] });
+      // small delay so mtimes differ
+      await new Promise(r => setTimeout(r, 20));
+    };
+
+    await runOnce('one');
+    await runOnce('two');
+    await runOnce('three');
+    await runOnce('four');
+
+    const itemLogDir = path.join(LOGS_DIR, item.id);
+    expect(fs.existsSync(itemLogDir)).toBe(true);
+    const files = fs.readdirSync(itemLogDir);
+    expect(files).toHaveLength(3);
+
+    const contents = files.map(f => fs.readFileSync(path.join(itemLogDir, f), 'utf8'));
+    // Oldest run (one) should have been pruned; runs two, three, four retained.
+    expect(contents.some(c => c.includes('OUTPUT_one'))).toBe(false);
+    expect(contents.some(c => c.includes('OUTPUT_two'))).toBe(true);
+    expect(contents.some(c => c.includes('OUTPUT_three'))).toBe(true);
+    expect(contents.some(c => c.includes('OUTPUT_four'))).toBe(true);
+  });
+
+  it('purges the item log directory when the item is trashed via DELETE', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItemInCoding('LogPersist7');
+
+    // Create a log file by running validate
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: "echo will-be-trashed" });
+
+    const itemLogDir = path.join(LOGS_DIR, item.id);
+    expect(fs.existsSync(itemLogDir)).toBe(true);
+
+    // Delete (soft-trash)
+    const delRes = await request(app).delete(`/items/${item.id}`);
+    expect(delRes.status).toBe(204);
+
+    expect(fs.existsSync(itemLogDir)).toBe(false);
+  });
+
+  it('purges log directories of descendant items when a parent is trashed', async () => {
+    if (!VERIFY_TOKEN) return;
+    const p = (await request(app).post('/projects').send({ name: 'LogPersist8' })).body;
+    const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'parent', projectId: p.id })).body;
+    const child = (await request(app).post('/items').send({ type: 'TASK', title: 'child', projectId: p.id, parentId: parent.id })).body;
+    await request(app).put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+
+    await request(app)
+      .post(`/items/${child.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: "echo child-output" });
+
+    const childLogDir = path.join(LOGS_DIR, child.id);
+    expect(fs.existsSync(childLogDir)).toBe(true);
+
+    const delRes = await request(app).delete(`/items/${parent.id}`);
+    expect(delRes.status).toBe(204);
+
+    expect(fs.existsSync(childLogDir)).toBe(false);
+  });
+});

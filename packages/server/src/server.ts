@@ -52,6 +52,54 @@ let dbPath: string = "";
 // Anonymous usage telemetry — no-op when AGENFK_POSTHOG_KEY is unset or opted out.
 const telemetry = new TelemetryClient();
 
+// ── Validation log persistence ───────────────────────────────────────────────
+// Full command output from validate_progress is written to
+// <dbDir>/logs/<itemId>/<testId>.log. The HTTP response, comment, and tests[]
+// record carry only a head+tail truncated preview plus the log file path, so
+// MCP payloads stay small while full logs remain available on disk.
+const MAX_LOGS_PER_ITEM = 3;
+const PREVIEW_HEAD_BYTES = 1024;
+const PREVIEW_TAIL_BYTES = 1024;
+
+const getItemLogDir = (itemId: string): string =>
+  path.join(path.dirname(dbPath), 'logs', itemId);
+
+const writeValidationLog = (itemId: string, testId: string, output: string): string => {
+  const dir = getItemLogDir(itemId);
+  fs.mkdirSync(dir, { recursive: true });
+  const logPath = path.join(dir, `${testId}.log`);
+  fs.writeFileSync(logPath, output);
+  // Prune to newest MAX_LOGS_PER_ITEM by mtime.
+  const entries = fs.readdirSync(dir)
+    .map(name => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const old of entries.slice(MAX_LOGS_PER_ITEM)) {
+    try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+  }
+  return logPath;
+};
+
+const buildOutputPreview = (output: string, logPath: string): string => {
+  const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
+  let body: string;
+  if (output.length <= headTailBudget) {
+    body = output;
+  } else {
+    const head = output.substring(0, PREVIEW_HEAD_BYTES);
+    const tail = output.substring(output.length - PREVIEW_TAIL_BYTES);
+    const omitted = output.length - headTailBudget;
+    body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
+  }
+  return `${body}\n[Full log: ${logPath}]`;
+};
+
+const purgeItemLogs = (itemId: string): void => {
+  const dir = getItemLogDir(itemId);
+  if (fs.existsSync(dir)) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+};
+
 // ── Backup ───────────────────────────────────────────────────────────────────
 
 const BACKUP_DIR = path.join(os.homedir(), '.agenfk', 'backup');
@@ -125,8 +173,9 @@ const trashRecursively = async (id: string): Promise<boolean> => {
   if (!item || item.status === Status.TRASHED) return false;
 
   console.log(`[AUTO_TRASH] Trashing ${item.id} (${item.title}) and its children`);
-  
+
   await storage.updateItem(id, { status: Status.TRASHED });
+  purgeItemLogs(id);
 
   const children = await storage.listItems({ parentId: id });
   for (const child of children) {
@@ -1350,35 +1399,37 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     child.on('error', (err) => resolve({ output: err.message, code: 1 }));
   });
 
-  const truncated = output.substring(0, 2000) + (output.length > 2000 ? '\n... (truncated)' : '');
+  const testId = uuidv4();
+  const logPath = writeValidationLog(itemId, testId, output);
+  const preview = buildOutputPreview(output, logPath);
   const passed = code === 0;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
   const comments = [...(item.comments || []), {
     id: uuidv4(),
     author: 'ValidateTool',
-    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${item.status} → ${passed ? nextStatus : failureStatus}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${truncated}\n\`\`\``,
+    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${item.status} → ${passed ? nextStatus : failureStatus}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``,
     timestamp: new Date(),
   }];
 
   if (passed) {
     const updates: any = { status: nextStatus, comments };
     if (nextStatus === Status.DONE) {
-      updates.tests = [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: truncated, status: 'PASSED', executedAt: new Date() }];
+      updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
     }
     const updated = await storage.updateItem(itemId, updates);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: truncated });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
-      updates.tests = [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: truncated, status: 'FAILED', executedAt: new Date() }];
+      updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'FAILED', executedAt: new Date() }];
     }
     await storage.updateItem(itemId, updates);
     io.emit('items_updated');
-    return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${truncated}`, output: truncated });
+    return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
   }
 }
 
