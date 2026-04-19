@@ -13,6 +13,7 @@ export interface GatekeeperItem {
   type: string;
   title?: string;
   branchName?: string;
+  parentId?: string;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -39,6 +40,27 @@ export function getActiveStepItems(
     const upper = i.status.toUpperCase();
     return !anchorNames.has(upper) && !INACTIVE_STATUSES.has(upper);
   });
+}
+
+/**
+ * Returns true when an item is a STORY that can act as a leaf node:
+ * it has a parentId (belongs to an EPIC) and has no active children
+ * (TRASHED and ARCHIVED children are ignored).
+ *
+ * Such stories are allowed to advance in the flow without child TASKs.
+ */
+export function isLeafStory(
+  item: GatekeeperItem & { parentId?: string },
+  allItems: Array<GatekeeperItem & { parentId?: string }>,
+): boolean {
+  if (item.type.toUpperCase() !== 'STORY') return false;
+  if (!item.parentId) return false;
+  const activeChildren = allItems.filter(
+    c => c.parentId === item.id &&
+      c.status.toUpperCase() !== 'TRASHED' &&
+      c.status.toUpperCase() !== 'ARCHIVED',
+  );
+  return activeChildren.length === 0;
 }
 
 /**

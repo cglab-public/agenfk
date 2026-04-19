@@ -4,7 +4,7 @@
  * task exists in any non-anchor, non-terminal step and returns context.
  */
 import { describe, it, expect } from 'vitest';
-import { getActiveStepItems, GatekeeperFlow, GatekeeperItem } from '../gatekeeper-utils';
+import { getActiveStepItems, isLeafStory, GatekeeperFlow, GatekeeperItem } from '../gatekeeper-utils';
 
 const DEFAULT_FLOW: GatekeeperFlow = {
   steps: [
@@ -88,5 +88,57 @@ describe('getActiveStepItems', () => {
     const result = getActiveStepItems(mixed, DEFAULT_FLOW);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('x');
+  });
+});
+
+// ── isLeafStory ───────────────────────────────────────────────────────────────
+
+describe('isLeafStory', () => {
+  const makeItem = (overrides: Partial<GatekeeperItem & { parentId?: string }>): GatekeeperItem & { parentId?: string } => ({
+    id: 'test-id',
+    status: 'IN_PROGRESS',
+    type: 'STORY',
+    ...overrides,
+  });
+
+  it('returns true for a STORY with a parentId and no active children', () => {
+    const story = makeItem({ id: 'story-1', parentId: 'epic-1' });
+    expect(isLeafStory(story, [])).toBe(true);
+  });
+
+  it('returns false for a STORY with no parentId (standalone story)', () => {
+    const story = makeItem({ id: 'story-2' });
+    expect(isLeafStory(story, [])).toBe(false);
+  });
+
+  it('returns false for a STORY that has active children', () => {
+    const story = makeItem({ id: 'story-3', parentId: 'epic-1' });
+    const child = makeItem({ id: 'task-1', type: 'TASK', status: 'IN_PROGRESS' });
+    const allItems = [{ ...child, parentId: 'story-3' }];
+    expect(isLeafStory(story, allItems)).toBe(false);
+  });
+
+  it('returns true for a STORY with only TRASHED children (they are ignored)', () => {
+    const story = makeItem({ id: 'story-4', parentId: 'epic-1' });
+    const trashedChild = makeItem({ id: 'task-2', type: 'TASK', status: 'TRASHED' });
+    const allItems = [{ ...trashedChild, parentId: 'story-4' }];
+    expect(isLeafStory(story, allItems)).toBe(true);
+  });
+
+  it('returns true for a STORY with only ARCHIVED children (they are ignored)', () => {
+    const story = makeItem({ id: 'story-5', parentId: 'epic-1' });
+    const archivedChild = makeItem({ id: 'task-3', type: 'TASK', status: 'ARCHIVED' });
+    const allItems = [{ ...archivedChild, parentId: 'story-5' }];
+    expect(isLeafStory(story, allItems)).toBe(true);
+  });
+
+  it('returns false for a non-STORY type (EPIC)', () => {
+    const epic = makeItem({ id: 'epic-2', type: 'EPIC', parentId: 'root' });
+    expect(isLeafStory(epic, [])).toBe(false);
+  });
+
+  it('returns false for a non-STORY type (TASK)', () => {
+    const task = makeItem({ id: 'task-4', type: 'TASK', parentId: 'story-1' });
+    expect(isLeafStory(task, [])).toBe(false);
   });
 });

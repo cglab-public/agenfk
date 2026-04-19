@@ -16,7 +16,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { execSync, spawnSync, spawn } from "child_process";
-import { getActiveStepItems } from "./gatekeeper-utils";
+import { getActiveStepItems, isLeafStory } from "./gatekeeper-utils";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -384,6 +384,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "change_parent_item",
+        description: "Re-parent an item under a different parent item. Pass newParentId as null to detach the item from its current parent.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string", description: "The ID of the item to re-parent." },
+            newParentId: { type: ["string", "null"], description: "The ID of the new parent item, or null to detach." },
+          },
+          required: ["itemId", "newParentId"],
+        },
+      },
+      {
         name: "pause_work",
         description: "Pause work on an item, saving a snapshot of the current context so another agent can resume later. Sets the item to PAUSED status.",
         inputSchema: {
@@ -646,14 +658,17 @@ async function callToolHandler(request: any): Promise<any> {
 
         // Find all items in any active working step (any non-anchor, non-BLOCKED/PAUSED step)
         const workingItems = getActiveStepItems(allItems, activeFlow);
-        const actionableItems = workingItems.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
+        // TASKs/BUGs, plus leaf STORYs (part of an EPIC with no active children) are actionable.
+        const actionableItems = workingItems.filter((i: any) =>
+          i.type === 'TASK' || i.type === 'BUG' || isLeafStory(i, allItems)
+        );
 
         if (actionableItems.length === 0) {
           const storyOrEpicInProgress = workingItems.find((i: any) => i.type === 'STORY' || i.type === 'EPIC');
           const hint = storyOrEpicInProgress
-            ? `\n\n"${storyOrEpicInProgress.title}" (${storyOrEpicInProgress.type}) is at step ${storyOrEpicInProgress.status}, but work must be authorized on a TASK or BUG. Create or advance a TASK/BUG within that ${storyOrEpicInProgress.type} to an active step first.`
-            : ' Create or advance a TASK or BUG to an active step first.';
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No TASK or BUG is currently active in project [${effectiveProjectId}].${hint}${flowStepsSummary}` }] };
+            ? `\n\n"${storyOrEpicInProgress.title}" (${storyOrEpicInProgress.type}) is at step ${storyOrEpicInProgress.status}, but work must be authorized on a TASK, BUG, or a STORY that is part of an EPIC with no child tasks. Create or advance a TASK/BUG within that ${storyOrEpicInProgress.type} to an active step first.`
+            : ' Create or advance a TASK, BUG, or a leaf STORY (part of an EPIC, no child tasks) to an active step first.';
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No actionable item is currently active in project [${effectiveProjectId}].${hint}${flowStepsSummary}` }] };
         }
 
         // Resolve which task to authorize
@@ -661,8 +676,11 @@ async function callToolHandler(request: any): Promise<any> {
         if (itemId) {
           task = workingItems.find((i: any) => i.id === itemId);
           if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in an active working step or does not belong to project [${effectiveProjectId}].` }] };
-          if (task.type === 'EPIC' || task.type === 'STORY') {
-            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type} [${task.id.substring(0,8)}] "${task.title}". Create or advance a TASK or BUG within this ${task.type} to an active step first, then call workflow_gatekeeper with that TASK/BUG's itemId.` }] };
+          if (task.type === 'EPIC') {
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on an EPIC [${task.id.substring(0,8)}] "${task.title}". Create or advance a STORY or TASK within this EPIC to an active step first.` }] };
+          }
+          if (task.type === 'STORY' && !isLeafStory(task, allItems)) {
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on STORY [${task.id.substring(0,8)}] "${task.title}". This story either has no parent EPIC or has active child tasks — create or advance a TASK within this STORY to an active step first.` }] };
           }
         } else {
           if (actionableItems.length > 1) {
@@ -702,7 +720,7 @@ async function callToolHandler(request: any): Promise<any> {
         return { 
           content: [{ 
             type: "text", 
-            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: Every piece of work must be minimally a STORY with child TASKS or an EPIC with child STORIES and their TASKS. Direct coding on a STORY or EPIC without child TASKS is prohibited.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. Create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
+            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: Every piece of work must be minimally a STORY with child TASKS, or an EPIC with child STORIES. Exception: a STORY that is a direct child of an EPIC and has no child TASKS is treated as a leaf item and may be worked on directly.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. Create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
           }] 
         };
       }
@@ -849,6 +867,22 @@ async function callToolHandler(request: any): Promise<any> {
         } catch (error: any) {
           const msg = error.response?.data?.error || error.message;
           return { isError: true, content: [{ type: "text", text: `❌ Failed to move item: ${msg}` }] };
+        }
+      }
+      case "change_parent_item": {
+        const { itemId, newParentId } = z.object({
+          itemId: z.string(),
+          newParentId: z.string().nullable(),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/reparent`, { newParentId });
+          const msg = newParentId
+            ? `✅ Re-parented "${data.title}" under [${newParentId}].`
+            : `✅ Detached "${data.title}" from its parent.`;
+          return { content: [{ type: "text", text: msg }] };
+        } catch (error: any) {
+          const msg = error.response?.data?.error || error.message;
+          return { isError: true, content: [{ type: "text", text: `❌ Failed to change parent: ${msg}` }] };
         }
       }
       case "pause_work": {

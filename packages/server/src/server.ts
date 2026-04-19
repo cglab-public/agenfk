@@ -1273,6 +1273,38 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
   res.json({ item: moved, movedCount });
 }));
 
+// ── Reparent item ─────────────────────────────────────────────────────────────
+
+app.post("/items/:id/reparent", asyncHandler(async (req: any, res: any) => {
+  if (!Object.prototype.hasOwnProperty.call(req.body, 'newParentId')) {
+    return res.status(400).json({ error: "Missing required field: newParentId (use null to detach)" });
+  }
+
+  const { newParentId } = req.body;
+
+  if (newParentId !== null && typeof newParentId !== 'string') {
+    return res.status(400).json({ error: "newParentId must be a string ID or null" });
+  }
+
+  const item = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  if (newParentId !== null) {
+    const newParent = await storage.getItem(newParentId);
+    if (!newParent) return res.status(404).json({ error: "New parent item not found" });
+  }
+
+  const oldParentId = item.parentId;
+  const updated = await storage.updateItem(req.params.id, { parentId: newParentId ?? undefined });
+
+  io.emit('items_updated');
+
+  if (oldParentId) await syncParentStatus(oldParentId);
+  if (newParentId) await syncParentStatus(newParentId);
+
+  res.json(updated);
+}));
+
 // ── Verify Endpoints ─────────────────────────────────────────────────────────
 
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────

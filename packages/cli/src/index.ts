@@ -1241,6 +1241,36 @@ program
   });
 
 program
+  .command('change-parent <id> [newParentId]')
+  .description('Re-parent an item under a different parent. Omit newParentId (or pass "null") to detach.')
+  .action(async (id, newParentId) => {
+    try {
+      let targetId = id;
+      if (id.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const found = allItems.filter((i: any) => i.id.startsWith(id));
+        if (found.length === 0) {
+          console.error(chalk.red(`Item starting with ${id} not found.`));
+          return;
+        }
+        targetId = found[0].id;
+      }
+
+      const resolvedParentId = (!newParentId || newParentId === 'null') ? null : newParentId;
+
+      const { data: updated } = await axios.post(`${API_URL}/items/${targetId}/reparent`, { newParentId: resolvedParentId });
+      if (resolvedParentId) {
+        console.log(chalk.green(`✓ Re-parented "${updated.title}" under [${resolvedParentId}]`));
+      } else {
+        console.log(chalk.green(`✓ Detached "${updated.title}" from its parent`));
+      }
+    } catch (error: any) {
+      const msg = error.response?.data?.error || error.message;
+      console.error(chalk.red('Error changing parent:'), msg);
+    }
+  });
+
+program
   .command('health')
   .description('Verify framework health and configuration')
   .action(async () => {
