@@ -3215,7 +3215,7 @@ program.helpInformation = function () {
   const allCommands = program.commands;
   const groups: [string, string[]][] = [
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
-    ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
+    ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move', 'change-parent']],
     ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-tokens', 'log-test']],
     ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr']],
