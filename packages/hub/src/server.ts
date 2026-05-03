@@ -1,7 +1,10 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const cookieParser: (...a: any[]) => any = require('cookie-parser');
 import { openDb, DB } from './db.js';
 import { HubServerConfig } from './types.js';
 import { eventsRouter } from './routes/events.js';
+import { authRouter, setupRouter } from './routes/auth.js';
 
 export interface HubServerContext {
   db: DB;
@@ -20,12 +23,15 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+  app.use(cookieParser());
 
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({ ok: true, version: '0.2.28' });
   });
 
   app.use('/v1', eventsRouter(ctx));
+  app.use('/auth', authRouter(ctx));
+  app.use('/setup', setupRouter(ctx));
 
   (app as any).hubCtx = ctx;
 
