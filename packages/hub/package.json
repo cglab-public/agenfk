@@ -1,0 +1,28 @@
+{
+  "name": "@agenfk/hub",
+  "version": "0.2.28",
+  "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "agenfk-hub": "dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bin.js"
+  },
+  "dependencies": {
+    "@agenfk/core": "*",
+    "axios": "^1.13.5",
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.3.3"
+  }
+}
