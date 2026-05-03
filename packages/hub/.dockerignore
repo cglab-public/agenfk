@@ -1,6 +1,11 @@
+# Speeds up `docker build` and keeps secrets/transient state out of the image.
 **/node_modules
 **/dist
 **/.cache
 **/.git
 **/coverage
 **/*.log
+.env
+**/.env
+**/.env.*
+!**/.env.example
