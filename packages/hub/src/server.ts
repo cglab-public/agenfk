@@ -1,6 +1,7 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import { openDb, DB } from './db.js';
 import { HubServerConfig } from './types.js';
+import { eventsRouter } from './routes/events.js';
 
 export interface HubServerContext {
   db: DB;
@@ -24,8 +25,8 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
     res.json({ ok: true, version: '0.2.28' });
   });
 
-  // Routes are registered by later stories (events, auth, admin, queries).
-  // Keeping the skeleton minimal so each story owns its surface.
+  app.use('/v1', eventsRouter(ctx));
+
   (app as any).hubCtx = ctx;
 
   // Default error handler — never leak stack traces.
