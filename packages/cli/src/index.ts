@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
+import { registerHubCommands } from './commands/hub.js';
 
 const program = new Command();
 const API_URL = getApiUrl();
@@ -317,6 +318,8 @@ program
   .version(CURRENT_VERSION)
   .description('AgEnFK Engineering CLI')
 ;
+
+registerHubCommands(program);
 
 // Fire-and-forget telemetry for every command invocation (command name only — no args).
 program.hook('preAction', (thisCommand, actionCommand) => {
