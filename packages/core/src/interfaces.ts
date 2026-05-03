@@ -58,3 +58,43 @@ export interface TokenTracker extends AgEnFKPlugin {
 export interface LLMProvider extends AgEnFKPlugin {
   generate(prompt: string, context?: any): Promise<string>;
 }
+
+// ── Corporate Hub event envelope ─────────────────────────────────────────────
+// Optional component: when an installation is configured to push to a corp hub
+// (~/.agenfk/hub.json present), local mutations emit HubEvents that are buffered
+// in a local outbox and flushed to the hub via HTTPS. Pure type definitions —
+// no runtime imports — so this remains safe for browser consumers.
+
+export type HubEventType =
+  | 'item.created'
+  | 'item.updated'
+  | 'item.moved'
+  | 'item.deleted'
+  | 'step.transitioned'
+  | 'validate.invoked'
+  | 'validate.passed'
+  | 'validate.failed'
+  | 'comment.added'
+  | 'test.logged'
+  | 'tokens.logged'
+  | 'session.started'
+  | 'session.ended';
+
+export interface HubActor {
+  osUser: string;
+  gitName: string | null;
+  gitEmail: string | null;
+}
+
+export interface HubEvent {
+  eventId: string;
+  installationId: string;
+  orgId: string;
+  occurredAt: string; // ISO-8601 UTC
+  receivedAt?: string; // set by hub on ingest
+  actor: HubActor;
+  projectId?: string;
+  itemId?: string;
+  type: HubEventType;
+  payload: Record<string, unknown>;
+}
