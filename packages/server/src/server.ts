@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
-import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -35,7 +35,13 @@ export const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   }
 });
-const PORT = process.env.AGENFK_PORT || process.env.PORT || 3000;
+// Requested base port. The server probes upward from here for the first free
+// port (mirrors Vite's default behaviour) and persists the bound port to
+// ~/.agenfk/server-port so other components (CLI, MCP, scripts) can discover it.
+const REQUESTED_PORT = Number.parseInt(
+  String(process.env.AGENFK_PORT || process.env.PORT || DEFAULT_API_PORT),
+  10,
+);
 
 app.use(cors({
   origin: "*",
@@ -2468,6 +2474,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     // Backup on clean shutdown
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
+      removeServerPortFile();
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
       await telemetry.shutdown();
       process.exit(0);
@@ -2475,13 +2482,24 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
 
-    httpServer.listen(PORT, () => {
-      console.log(`AgEnFK API Server running on port ${PORT} (with WebSockets)`);
-      telemetry.capture('server_started', {
-        version: getCurrentVersion(),
-        storageBackend: 'sqlite',
-        nodeVersion: process.version,
+    findAvailablePort(REQUESTED_PORT).then((port) => {
+      httpServer.listen(port, () => {
+        writeServerPortFile(port);
+        if (port !== REQUESTED_PORT) {
+          console.log(`AgEnFK API Server: requested port ${REQUESTED_PORT} was in use, bound to ${port} instead`);
+        }
+        console.log(`AgEnFK API Server running on port ${port} (with WebSockets)`);
+        telemetry.capture('server_started', {
+          version: getCurrentVersion(),
+          storageBackend: 'sqlite',
+          nodeVersion: process.version,
+          requestedPort: REQUESTED_PORT,
+          boundPort: port,
+        });
       });
+    }).catch((err) => {
+      console.error(`[SERVER_START] Could not find a free port starting at ${REQUESTED_PORT}:`, err.message);
+      process.exit(1);
     });
   });
 }

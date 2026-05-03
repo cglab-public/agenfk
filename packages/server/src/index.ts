@@ -15,6 +15,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { toToon } from "@agenfk/core";
+import { getApiUrl } from "@agenfk/telemetry";
 import { execSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems } from "./gatekeeper-utils";
 
@@ -28,7 +29,7 @@ const VERIFY_TOKEN = (() => {
   }
 })();
 
-const API_URL = process.env.AGENFK_API_URL || "http://127.0.0.1:3000";
+const API_URL = getApiUrl();
 
 const api = axios.create({
   baseURL: API_URL,

@@ -562,7 +562,7 @@ export const KanbanBoard: React.FC = () => {
   // WebSocket setup
   /* v8 ignore start */
   useEffect(() => {
-    const socket = io('http://localhost:3000');
+    const socket = io((import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:3000');
 
     socket.on('connect', () => {
       console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');

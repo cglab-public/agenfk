@@ -108,3 +108,15 @@ export function isTelemetryEnabled(): boolean {
   const config = readConfig();
   return config.telemetry !== false;
 }
+
+export {
+  SERVER_PORT_FILE,
+  DEFAULT_API_PORT,
+  MAX_PORT_PROBE_ATTEMPTS,
+  isPortAvailable,
+  findAvailablePort,
+  writeServerPortFile,
+  removeServerPortFile,
+  readServerPort,
+  getApiUrl,
+} from './serverPort.js';

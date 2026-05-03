@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, slugifyTitle } from '@agenfk/core';
-import { TelemetryClient } from '@agenfk/telemetry';
+import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -12,7 +12,7 @@ import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 
 const program = new Command();
-const API_URL = process.env.AGENFK_API_URL || "http://localhost:3000";
+const API_URL = getApiUrl();
 const INTEGRATION_ALIASES: Record<string, string> = {
   claude: 'claude',
   'claude-code': 'claude',
@@ -503,9 +503,12 @@ program
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgEnFK Engineering Framework (agenfk)...'));
 
-    // 0. Cleanup zombies
+    // 0. Cleanup zombies — kill the previously persisted API port (if any)
+    // plus the default, in case the server crashed without unlinking the file.
     console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
-    killPort(3000); // API
+    const persistedApiPort = readServerPort();
+    if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
+    killPort(DEFAULT_API_PORT); // API default
     killPort(5173); // UI default
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
@@ -584,8 +587,13 @@ program
     console.log(chalk.red('🧹 Aggressively killing all AgEnFK related processes...'));
 
     // Kill by port
-    console.log(chalk.gray('  - Killing processes on port 3000 (API)...'));
-    killPort(3000);
+    const killApiPort = readServerPort() ?? DEFAULT_API_PORT;
+    console.log(chalk.gray(`  - Killing processes on port ${killApiPort} (API)...`));
+    killPort(killApiPort);
+    if (killApiPort !== DEFAULT_API_PORT) {
+      console.log(chalk.gray(`  - Also killing processes on default port ${DEFAULT_API_PORT}...`));
+      killPort(DEFAULT_API_PORT);
+    }
     console.log(chalk.gray('  - Killing processes on port 5173 (UI)...'));
     killPort(5173);
 
@@ -921,7 +929,7 @@ program
         configureClaudeCodeIde(rootDir);
 
     } catch (e: any) {
-        console.error(chalk.red('Could not connect to API server. Is it running on port 3000?'));
+        console.error(chalk.red(`Could not connect to API server at ${API_URL}. Is it running?`));
         if (e.response) {
             console.error(chalk.red(`Server Error: ${e.response.data.error || e.message}`));
         }
