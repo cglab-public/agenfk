@@ -5,6 +5,7 @@ import { openDb, DB } from './db.js';
 import { HubServerConfig } from './types.js';
 import { eventsRouter } from './routes/events.js';
 import { authRouter, setupRouter } from './routes/auth.js';
+import { adminRouter } from './routes/admin.js';
 
 export interface HubServerContext {
   db: DB;
@@ -32,6 +33,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   app.use('/v1', eventsRouter(ctx));
   app.use('/auth', authRouter(ctx));
   app.use('/setup', setupRouter(ctx));
+  app.use('/v1/admin', adminRouter(ctx));
 
   (app as any).hubCtx = ctx;
 
