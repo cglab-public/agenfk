@@ -79,8 +79,54 @@ export class SQLiteStorageProvider implements StorageProvider {
         id TEXT PRIMARY KEY,
         data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS hub_outbox (
+        event_id TEXT PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hub_outbox_occurred ON hub_outbox(occurred_at);
     `);
     this.migrateFlowsTable();
+  }
+
+  // ── Hub outbox helpers ─────────────────────────────────────────────────────
+  // Optional component: only used when an installation is configured to push to
+  // a corp Hub. The local server appends events here and a flusher batches them
+  // to the hub via HTTPS. Sync (better-sqlite3-style) for sub-millisecond
+  // append on the request path.
+
+  hubOutboxAppend(eventId: string, occurredAt: string, payloadJson: string): void {
+    this.database.prepare(
+      'INSERT OR IGNORE INTO hub_outbox (event_id, occurred_at, payload) VALUES (?, ?, ?)'
+    ).run(eventId, occurredAt, payloadJson);
+  }
+
+  hubOutboxPeek(limit: number = 500): Array<{ event_id: string; occurred_at: string; payload: string; attempts: number; last_error: string | null }> {
+    return this.database.prepare(
+      'SELECT event_id, occurred_at, payload, attempts, last_error FROM hub_outbox ORDER BY occurred_at ASC LIMIT ?'
+    ).all(limit) as any;
+  }
+
+  hubOutboxDelete(eventIds: string[]): void {
+    if (eventIds.length === 0) return;
+    const placeholders = eventIds.map(() => '?').join(',');
+    this.database.prepare(`DELETE FROM hub_outbox WHERE event_id IN (${placeholders})`).run(...eventIds);
+  }
+
+  hubOutboxIncrementAttempt(eventIds: string[], lastError: string | null): void {
+    if (eventIds.length === 0) return;
+    const stmt = this.database.prepare(
+      'UPDATE hub_outbox SET attempts = attempts + 1, last_error = ? WHERE event_id = ?'
+    );
+    for (const id of eventIds) stmt.run(lastError, id);
+  }
+
+  hubOutboxCount(): number {
+    const row = this.database.prepare('SELECT COUNT(*) AS c FROM hub_outbox').get() as { c: number };
+    return row.c;
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
