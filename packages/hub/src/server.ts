@@ -10,6 +10,8 @@ import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { queriesRouter } from './routes/queries.js';
 import { startRollupTimer } from './rollup.js';
+import * as fs from 'fs';
+import * as pathMod from 'path';
 
 export interface HubServerContext {
   db: DB;
@@ -42,6 +44,21 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   startRollupTimer(db);
+
+  // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
+  // production that gets copied into ../public alongside the hub bundle.
+  const candidates = [
+    process.env.AGENFK_HUB_UI_DIR,
+    pathMod.resolve(__dirname, '../public'),
+    pathMod.resolve(__dirname, '../../hub-ui/dist'),
+  ].filter(Boolean) as string[];
+  const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
+  if (uiDir) {
+    app.use(express.static(uiDir));
+    app.get(/^(?!\/(?:v1|auth|setup|healthz)).*/, (_req: Request, res: Response) => {
+      res.sendFile(pathMod.join(uiDir, 'index.html'));
+    });
+  }
 
   (app as any).hubCtx = ctx;
 

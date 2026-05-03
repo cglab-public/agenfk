@@ -11,13 +11,14 @@
     "packages/server",
     "packages/ui",
     "packages/create",
-    "packages/hub"
+    "packages/hub",
+    "packages/hub-ui"
   ],
   "bin": {
     "agenfk": "bin/agenfk.js"
   },
   "scripts": {
-    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub",
+    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
