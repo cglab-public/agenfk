@@ -4,6 +4,8 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
+import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
+import type { RecordEventInput } from "./hub/index.js";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -57,6 +59,18 @@ let dbPath: string = "";
 
 // Anonymous usage telemetry — no-op when AGENFK_POSTHOG_KEY is unset or opted out.
 const telemetry = new TelemetryClient();
+
+// Corporate Hub sender — dormant when ~/.agenfk/hub.json is absent. Storage is
+// attached after initStorage(); flusher is started at boot if configured.
+const hubClient = new HubClient(getInstallationId(), loadHubConfig());
+let hubFlusher: Flusher | null = null;
+
+// recordHubEvent is a thin wrapper kept at module scope so the many existing
+// io.emit('items_updated', ...) sites can be augmented with one line.
+const recordHubEvent = (input: RecordEventInput): void => {
+  if (!hubClient.isEnabled) return;
+  hubClient.recordEvent(input);
+};
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
@@ -302,6 +316,15 @@ const initStorage = async () => {
     } catch (e: any) {
       console.error(`[MIGRATION] Failed to import migration.json: ${e.message}`);
     }
+  }
+
+  // Attach the corporate-hub outbox to the storage layer and start the flusher
+  // when configured. No-op when ~/.agenfk/hub.json is absent.
+  hubClient.attachStorage(storage as SQLiteStorageProvider);
+  if (hubClient.isEnabled && hubClient.hubConfig) {
+    hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
+    hubFlusher.start();
+    console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
   }
 };
 
@@ -1018,6 +1041,12 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   io.emit('items_updated');
   io.emit('project_switched', { projectId: created.projectId });
   telemetry.capture('item_created', { itemType: created.type });
+  recordHubEvent({
+    type: 'item.created',
+    projectId: created.projectId,
+    itemId: created.id,
+    payload: { itemType: created.type, title: created.title, status: created.status, parentId: created.parentId ?? null },
+  });
 
   if (created.parentId) {
     await syncParentStatus(created.parentId);
@@ -1079,6 +1108,14 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         parentIdsToSync.add(updated.parentId);
       }
 
+      if (tokenUsage !== undefined) {
+        recordHubEvent({
+          type: 'tokens.logged',
+          projectId: updated.projectId,
+          itemId: updated.id,
+          payload: { tokenUsage },
+        });
+      }
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
@@ -1198,6 +1235,36 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         toStatus: status,
         itemType: updated.type,
       });
+      recordHubEvent({
+        type: 'step.transitioned',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { fromStatus: currentItem.status, toStatus: status, itemType: updated.type },
+      });
+    } else {
+      recordHubEvent({
+        type: 'item.updated',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { changedFields: Object.keys(updates) },
+      });
+    }
+    if (tokenUsage !== undefined) {
+      recordHubEvent({
+        type: 'tokens.logged',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { tokenUsage },
+      });
+    }
+    if (Array.isArray(comments) && comments.length > (currentItem.comments?.length ?? 0)) {
+      const newest = comments[comments.length - 1];
+      recordHubEvent({
+        type: 'comment.added',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { author: newest?.author, content: newest?.content, step: newest?.step },
+      });
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
@@ -1272,6 +1339,13 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [API_MOVE] Moved ${movedCount} item(s) from project ${sourceProjectId} to ${targetProjectId}`);
 
+  recordHubEvent({
+    type: 'item.moved',
+    projectId: targetProjectId,
+    itemId: req.params.id,
+    payload: { fromProjectId: sourceProjectId, toProjectId: targetProjectId, movedCount },
+  });
+
   // Notify both source and target project boards
   io.emit('items_updated');
 
@@ -1287,6 +1361,13 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
 async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
+
+  recordHubEvent({
+    type: 'validate.invoked',
+    projectId: item.projectId,
+    itemId,
+    payload: { command: command ?? null, fromStatus: item.status, hasEvidence: !!evidence },
+  });
 
   if (evidence) {
     const evidenceComment = { id: uuidv4(), author: 'agent', content: `**Evidence [${item.status}]:** ${evidence}`, timestamp: new Date(), step: item.status };
@@ -1427,6 +1508,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
+    recordHubEvent({
+      type: 'validate.passed',
+      projectId: item.projectId,
+      itemId,
+      payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand },
+    });
+    recordHubEvent({
+      type: 'test.logged',
+      projectId: item.projectId,
+      itemId,
+      payload: { command: resolvedCommand, status: 'PASSED', testId },
+    });
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
@@ -1435,6 +1528,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }
     await storage.updateItem(itemId, updates);
     io.emit('items_updated');
+    recordHubEvent({
+      type: 'validate.failed',
+      projectId: item.projectId,
+      itemId,
+      payload: { fromStatus: item.status, fellBackTo: failureStatus, command: resolvedCommand },
+    });
+    recordHubEvent({
+      type: 'test.logged',
+      projectId: item.projectId,
+      itemId,
+      payload: { command: resolvedCommand, status: 'FAILED', testId },
+    });
     return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
   }
 }
@@ -1468,6 +1573,29 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
     return res.status(403).json({ error: "Forbidden: test endpoint requires internal token." });
   }
   return handleValidateProgress(req.params.id, undefined, res);
+}));
+
+// ── Hub flush (manual trigger; used by `agenfk hub flush`) ───────────────────
+
+app.post('/internal/hub/flush', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub flush requires internal token.' });
+  }
+  if (!hubFlusher) {
+    return res.status(400).json({ error: 'Hub not configured. Run `agenfk hub login` first.' });
+  }
+  await hubFlusher.flush();
+  res.json(hubFlusher.getStatus());
+}));
+
+app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub status requires internal token.' });
+  }
+  if (!hubFlusher) {
+    return res.json({ enabled: false });
+  }
+  res.json(hubFlusher.getStatus());
 }));
 
 // ── Pause / Resume ───────────────────────────────────────────────────────────
@@ -2475,6 +2603,10 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
       removeServerPortFile();
+      if (hubFlusher) {
+        hubFlusher.stop();
+        await hubFlusher.flush().catch(e => console.error('[HUB] Shutdown drain failed:', (e as Error).message));
+      }
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
       await telemetry.shutdown();
       process.exit(0);
