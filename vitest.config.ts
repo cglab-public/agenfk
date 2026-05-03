@@ -25,7 +25,7 @@ export default defineConfig({
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {
-      include: ['packages/core/src/**', 'packages/storage-sqlite/src/**', 'packages/server/src/**'],
+      include: ['packages/core/src/**', 'packages/storage-sqlite/src/**', 'packages/server/src/**', 'packages/hub/src/**'],
       exclude: [
         '**/dist/**',
         '**/node_modules/**',
@@ -33,6 +33,7 @@ export default defineConfig({
         'packages/server/src/test-import.ts',
         'packages/server/src/test-import.js',
         'packages/server/src/bulk-updates.ts',
+        'packages/hub/src/bin.ts',
       ],
       thresholds: {
         statements: 80,
