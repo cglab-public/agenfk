@@ -7,6 +7,7 @@ import { eventsRouter } from './routes/events.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { googleRouter } from './auth/google.js';
+import { entraRouter } from './auth/entra.js';
 
 export interface HubServerContext {
   db: DB;
@@ -34,6 +35,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   app.use('/v1', eventsRouter(ctx));
   app.use('/auth', authRouter(ctx));
   app.use('/auth/google', googleRouter(ctx));
+  app.use('/auth/entra', entraRouter(ctx));
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
 
