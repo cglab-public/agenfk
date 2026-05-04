@@ -5,6 +5,7 @@ import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { mergeEventTypes } from '../eventTypes';
+import { fmtDateTime, browserTimezone } from '../dates';
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; payload: any;
@@ -20,11 +21,7 @@ function shortRemote(remote: string): string {
   return m ? m[1] : remote;
 }
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
+const formatTime = fmtDateTime;
 
 const TYPE_BADGE: Record<string, string> = {
   'item.created':       'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
@@ -171,7 +168,7 @@ export function UserDetailPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Recent events</h2>
-          <span className="text-[11px] text-slate-500">{tl.data?.events.length ?? 0} shown</span>
+          <span className="text-[11px] text-slate-500" title={`All times in ${browserTimezone()}`}>{tl.data?.events.length ?? 0} shown · times in {browserTimezone()}</span>
         </div>
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
           {(tl.data?.events ?? []).map(e => {

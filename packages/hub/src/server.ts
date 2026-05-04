@@ -82,13 +82,21 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
     // SPA fallback. Anything that isn't an API route falls through to
     // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
     // /admin/keys, /connect) resolve to the React shell rather than 404.
-    // We intentionally use middleware here instead of a regex route so it
-    // works under both Express 4 and 5 path-to-regexp dialects.
+    // We read index.html once at boot and serve it from memory — earlier
+    // versions used res.sendFile which surfaced "Not Found" 500s when the
+    // installed path resolution flickered between startup and request time.
     const API_PREFIXES = ['/v1', '/auth', '/setup', '/healthz', '/hub'];
+    let indexHtml = '';
+    try {
+      indexHtml = fs.readFileSync(pathMod.join(uiDir, 'index.html'), 'utf8');
+    } catch (e) {
+      console.warn('[HUB] Failed to preload index.html:', (e as Error).message);
+    }
     const spaFallback = (req: Request, res: Response, next: NextFunction): void => {
       if (req.method !== 'GET') return next();
       if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
-      res.sendFile(pathMod.join(uiDir, 'index.html'));
+      if (!indexHtml) return next();
+      res.type('html').send(indexHtml);
     };
     app.use(spaFallback);
     // Defence in depth: a final 404 trap that re-applies the same fallback

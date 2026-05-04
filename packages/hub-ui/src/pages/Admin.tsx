@@ -3,6 +3,7 @@ import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check } from 'lucide-react';
 import { api } from '../api';
+import { fmtDate } from '../dates';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
@@ -197,7 +198,7 @@ export function AdminKeys() {
           <div className="mt-4 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-900/20 p-4">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] uppercase tracking-[0.14em] text-indigo-700 dark:text-indigo-300 font-semibold">Share this command</span>
-              <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {new Date(invite.expiresAt).toLocaleDateString()}</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {fmtDate(invite.expiresAt)}</span>
             </div>
             <pre className="mt-2 px-3 py-2.5 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto select-all">{invite.joinCommand}</pre>
             <button
@@ -267,7 +268,7 @@ export function AdminKeys() {
                 <tr key={k.tokenHashPreview} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                   <td className="px-5 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">{k.tokenHashPreview}…</td>
                   <td className="px-2 py-2.5 text-slate-700 dark:text-slate-300">{k.label ?? <span className="text-slate-400">—</span>}</td>
-                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{new Date(k.createdAt).toLocaleDateString()}</td>
+                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{fmtDate(k.createdAt)}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
                       ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">revoked</span>
@@ -383,7 +384,7 @@ export function AdminUsers() {
                       <option value="admin">admin</option>
                     </select>
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : <span className="text-slate-400">never</span>}</td>
+                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-slate-400">never</span>}</td>
                   <td className="px-5 py-2.5 text-right">
                     <Toggle checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>

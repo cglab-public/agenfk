@@ -5,6 +5,7 @@ import { Activity, CheckCircle2, XCircle, Inbox, Coins, ArrowRightLeft, ChevronR
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { mergeEventTypes } from '../eventTypes';
+import { fmtRelative } from '../dates';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
@@ -73,17 +74,7 @@ function Tile({ label, value, icon, tone }: TileProps) {
   );
 }
 
-function formatLastSeen(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return iso;
-  const diff = Date.now() - t;
-  const m = 60_000, h = 3600_000, d = 86400_000;
-  if (diff < m) return 'just now';
-  if (diff < h) return `${Math.floor(diff / m)}m ago`;
-  if (diff < d) return `${Math.floor(diff / h)}h ago`;
-  if (diff < 30 * d) return `${Math.floor(diff / d)}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
+const formatLastSeen = fmtRelative;
 
 function useToggleSet(initial: Iterable<string> = []) {
   const [s, setS] = useState<Set<string>>(() => new Set(initial));
