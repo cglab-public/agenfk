@@ -89,8 +89,8 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
   );
 }
 
-function useToggleSet() {
-  const [s, setS] = useState<Set<string>>(new Set());
+function useToggleSet(initial: Iterable<string> = []) {
+  const [s, setS] = useState<Set<string>>(() => new Set(initial));
   return {
     set: s,
     toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
@@ -101,7 +101,9 @@ function useToggleSet() {
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
   const decoded = decodeURIComponent(userKey);
-  const eventTypeSel = useToggleSet();
+  // Default to "what did this user ship?" — closures only — until the dev
+  // widens the chip selection.
+  const eventTypeSel = useToggleSet(['item.closed']);
   const projectSel = useToggleSet();
   const itemTypeSel = useToggleSet();
 

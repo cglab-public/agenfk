@@ -85,8 +85,8 @@ function formatLastSeen(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function useToggleSet() {
-  const [s, setS] = useState<Set<string>>(new Set());
+function useToggleSet(initial: Iterable<string> = []) {
+  const [s, setS] = useState<Set<string>>(() => new Set(initial));
   return {
     set: s,
     toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
@@ -95,7 +95,9 @@ function useToggleSet() {
 }
 
 export function OrgPage() {
-  const eventTypeSel = useToggleSet();
+  // Default to "shipped today/this week" framing — answers the most common
+  // org-level question without requiring a click.
+  const eventTypeSel = useToggleSet(['item.closed']);
   const projectSel = useToggleSet();
   const itemTypeSel = useToggleSet();
 
