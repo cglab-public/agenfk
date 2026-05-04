@@ -8,6 +8,8 @@ interface HistogramResponse { bucket: 'day' | 'hour'; buckets: HistogramBucket[]
 interface Props {
   users?: string[];
   types?: string[];
+  projects?: string[];
+  itemTypes?: string[];
   className?: string;
   title?: string;
 }
@@ -73,7 +75,7 @@ function shortLabel(time: string, bucket: 'day' | 'hour'): string {
   return hh ?? time;
 }
 
-export function TimelineBar({ users, types, className, title }: Props) {
+export function TimelineBar({ users, types, projects, itemTypes, className, title }: Props) {
   const [days, setDays] = useState(30);
   const [bucket, setBucket] = useState<'day' | 'hour'>('day');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -83,11 +85,13 @@ export function TimelineBar({ users, types, className, title }: Props) {
   const params = new URLSearchParams();
   if (users?.length) params.set('users', users.join(','));
   if (types?.length) params.set('types', types.join(','));
+  if (projects?.length) params.set('projects', projects.join(','));
+  if (itemTypes?.length) params.set('itemTypes', itemTypes.join(','));
   params.set('from', fromIso);
   params.set('bucket', bucket);
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', days, bucket],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', days, bucket],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 

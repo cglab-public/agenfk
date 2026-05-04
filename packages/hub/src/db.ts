@@ -41,11 +41,15 @@ const SCHEMA = `
     type TEXT NOT NULL,
     project_id TEXT,
     item_id TEXT,
+    item_type TEXT,
+    remote_url TEXT,
     payload TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(org_id, type, occurred_at);
+  CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at);
+  CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at);
 
   CREATE TABLE IF NOT EXISTS rollups_daily (
     org_id TEXT NOT NULL,
@@ -111,5 +115,12 @@ export function openDb(dbPath: string): DB {
   db.prepare('PRAGMA journal_mode = WAL').run();
   db.prepare('PRAGMA foreign_keys = ON').run();
   db.exec(SCHEMA);
+  // Backfill columns on pre-existing event tables created before item_type/remote_url existed.
+  const cols = db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+  const have = new Set(cols.map(c => c.name));
+  if (!have.has('item_type'))  db.exec("ALTER TABLE events ADD COLUMN item_type TEXT");
+  if (!have.has('remote_url')) db.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   return db;
 }

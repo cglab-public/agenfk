@@ -68,7 +68,9 @@ export class HubClient {
         occurredAt: input.occurredAt ?? new Date().toISOString(),
         actor,
         projectId: input.projectId,
+        remoteUrl: (input as any).remoteUrl ?? null,
         itemId: input.itemId,
+        itemType: (input as any).itemType,
         type: input.type,
         payload: input.payload ?? {},
       };

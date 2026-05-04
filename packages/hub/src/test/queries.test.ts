@@ -55,12 +55,16 @@ describe('hub query endpoints', () => {
       supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
     await send([
-      sample({ eventId: 'a1', occurredAt: '2026-05-03T08:00:00Z', type: 'item.created' }),
+      sample({ eventId: 'a1', occurredAt: '2026-05-03T08:00:00Z', type: 'item.created',
+        itemType: 'TASK', remoteUrl: 'git@github.com:acme/web.git' }),
       sample({ eventId: 'a2', occurredAt: '2026-05-03T09:00:00Z', type: 'step.transitioned',
+        itemType: 'TASK', remoteUrl: 'git@github.com:acme/web.git',
         payload: { fromStatus: 'TEST', toStatus: 'DONE' } }),
-      sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed' }),
+      sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed',
+        itemType: 'BUG', remoteUrl: 'git@github.com:acme/web.git' }),
       sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
+        itemType: 'STORY', remoteUrl: 'git@github.com:acme/api.git',
         payload: { tokenUsage: [{ input: 100, output: 50 }] } }),
     ]);
   });
@@ -179,5 +183,69 @@ describe('hub query endpoints', () => {
     expect(r.body.types).toEqual(
       ['item.created', 'step.transitioned', 'tokens.logged', 'validate.passed'].sort(),
     );
+  });
+
+  it('GET /v1/projects returns distinct remoteUrls observed in the org', async () => {
+    const r = await supertest(app).get('/v1/projects').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.projects).toEqual([
+      'git@github.com:acme/api.git',
+      'git@github.com:acme/web.git',
+    ]);
+  });
+
+  it('GET /v1/projects requires session', async () => {
+    const r = await supertest(app).get('/v1/projects');
+    expect(r.status).toBe(401);
+  });
+
+  it('GET /v1/item-types returns distinct EPIC/STORY/TASK/BUG values', async () => {
+    const r = await supertest(app).get('/v1/item-types').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.itemTypes).toEqual(['BUG', 'STORY', 'TASK']);
+  });
+
+  it('GET /v1/timeline filters by remoteUrl (projects=)', async () => {
+    const r = await supertest(app)
+      .get('/v1/timeline?projects=git@github.com:acme/api.git')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.events.length).toBe(1);
+    expect(r.body.events[0].event_id).toBe('b1');
+  });
+
+  it('GET /v1/timeline filters by itemType (itemTypes=)', async () => {
+    const r = await supertest(app)
+      .get('/v1/timeline?itemTypes=BUG')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.events.length).toBe(1);
+    expect(r.body.events[0].event_id).toBe('a3');
+  });
+
+  it('GET /v1/timeline rows expose item_type and remote_url', async () => {
+    const r = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const a1 = r.body.events.find((e: any) => e.event_id === 'a1');
+    expect(a1.item_type).toBe('TASK');
+    expect(a1.remote_url).toBe('git@github.com:acme/web.git');
+  });
+
+  it('GET /v1/histogram filters by projects+itemTypes', async () => {
+    const r = await supertest(app)
+      .get('/v1/histogram?projects=git@github.com:acme/web.git&itemTypes=TASK')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const total = r.body.buckets.reduce((a: number, b: any) => a + b.total, 0);
+    expect(total).toBe(2); // a1 + a2
+  });
+
+  it('GET /v1/users filters by remoteUrl', async () => {
+    const r = await supertest(app)
+      .get('/v1/users?projects=git@github.com:acme/api.git')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.length).toBe(1);
+    expect(r.body[0].user_key).toBe('bob@acme.com');
   });
 });

@@ -1,15 +1,24 @@
 import { Link, useParams } from 'react-router-dom';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ChevronDown } from 'lucide-react';
+import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { mergeEventTypes } from '../eventTypes';
 
 interface TimelineRow {
-  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; user_key: string; payload: any;
+  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; user_key: string; payload: any;
 }
 interface EventTypesResponse { types: string[] }
+interface ProjectsResponse { projects: string[] }
+interface ItemTypesResponse { itemTypes: string[] }
+
+const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
+
+function shortRemote(remote: string): string {
+  const m = remote.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
+  return m ? m[1] : remote;
+}
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -33,33 +42,95 @@ const TYPE_BADGE: Record<string, string> = {
 };
 const DEFAULT_BADGE = 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700';
 
+const ITEM_TYPE_BADGE: Record<string, string> = {
+  EPIC:  'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800',
+  STORY: 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
+  TASK:  'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700',
+  BUG:   'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+};
+
+function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
+  label: string;
+  options: string[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+  optionLabel?: (v: string) => string;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</h3>
+        {selected.size > 0 && (
+          <button onClick={onClear} className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+            Clear ({selected.size})
+          </button>
+        )}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {options.map(t => {
+          const on = selected.has(t);
+          return (
+            <button
+              key={t}
+              onClick={() => onToggle(t)}
+              title={t}
+              className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
+                ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
+                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300'}`}
+            >
+              {optionLabel ? optionLabel(t) : t}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function useToggleSet() {
+  const [s, setS] = useState<Set<string>>(new Set());
+  return {
+    set: s,
+    toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
+    clear: () => setS(new Set()),
+  };
+}
+
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const decoded = decodeURIComponent(userKey);
+  const eventTypeSel = useToggleSet();
+  const projectSel = useToggleSet();
+  const itemTypeSel = useToggleSet();
 
   const eventTypes = useQuery<EventTypesResponse>({
     queryKey: ['event-types'],
     queryFn: async () => (await api.get('/v1/event-types')).data,
   });
+  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  const itemTypes = useQuery<ItemTypesResponse>({ queryKey: ['item-types'], queryFn: async () => (await api.get('/v1/item-types')).data });
 
   const params = new URLSearchParams();
   params.set('users', decoded);
-  if (selected.size) params.set('types', [...selected].join(','));
+  if (eventTypeSel.set.size) params.set('types', [...eventTypeSel.set].join(','));
+  if (projectSel.set.size) params.set('projects', [...projectSel.set].join(','));
+  if (itemTypeSel.set.size) params.set('itemTypes', [...itemTypeSel.set].join(','));
   params.set('limit', '200');
 
   const tl = useQuery<{ events: TimelineRow[] }>({
-    queryKey: ['timeline', userKey, [...selected].sort().join(',')],
+    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(',')],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
   });
 
-  const toggle = (t: string) => {
-    const next = new Set(selected);
-    if (next.has(t)) next.delete(t); else next.add(t);
-    setSelected(next);
-  };
-
   const types = mergeEventTypes(eventTypes.data?.types);
+  const projectOptions = projects.data?.projects ?? [];
+  const itemTypeOptions = useMemo(() => {
+    const set = new Set<string>(KNOWN_ITEM_TYPES);
+    for (const t of itemTypes.data?.itemTypes ?? []) set.add(t);
+    return [...set].sort();
+  }, [itemTypes.data]);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
@@ -77,39 +148,23 @@ export function UserDetailPage() {
         </div>
       </header>
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Filter by event type</h2>
-          {selected.size > 0 && (
-            <button
-              onClick={() => setSelected(new Set())}
-              className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400"
-            >
-              Clear ({selected.size})
-            </button>
-          )}
+      <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
+        <div className="flex items-center gap-2">
+          <GitBranch className="w-4 h-4 text-indigo-500" />
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Filters</h2>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {types.length === 0 && (
-            <span className="text-[11px] text-slate-400">No events recorded for this user yet.</span>
-          )}
-          {types.map(t => {
-            const on = selected.has(t);
-            return (
-              <button
-                key={t}
-                onClick={() => toggle(t)}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${on
-                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300'}`}
-              >
-                {t}
-              </button>
-            );
-          })}
-        </div>
-        <TimelineBar users={[decoded]} types={[...selected]} title="Activity timeline" />
+        <ChipRow label="Project (git remote)" options={projectOptions} selected={projectSel.set} onToggle={projectSel.toggle} onClear={projectSel.clear} optionLabel={shortRemote} />
+        <ChipRow label="Item type" options={itemTypeOptions} selected={itemTypeSel.set} onToggle={itemTypeSel.toggle} onClear={itemTypeSel.clear} />
+        <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </section>
+
+      <TimelineBar
+        users={[decoded]}
+        types={[...eventTypeSel.set]}
+        projects={[...projectSel.set]}
+        itemTypes={[...itemTypeSel.set]}
+        title="Activity timeline"
+      />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
@@ -119,11 +174,18 @@ export function UserDetailPage() {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
           {(tl.data?.events ?? []).map(e => {
             const badge = TYPE_BADGE[e.type] ?? DEFAULT_BADGE;
+            const itemBadge = e.item_type ? (ITEM_TYPE_BADGE[e.item_type] ?? DEFAULT_BADGE) : null;
             return (
               <details key={e.event_id} className="group">
                 <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-open:rotate-180 transition-transform shrink-0" />
                   <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${badge}`}>{e.type}</span>
+                  {itemBadge && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${itemBadge}`}>{e.item_type}</span>}
+                  {e.remote_url && (
+                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 max-w-[200px] truncate">
+                      <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
+                    </span>
+                  )}
                   <span className="text-[12px] text-slate-700 dark:text-slate-300 truncate flex-1">{e.item_id ?? e.project_id ?? '—'}</span>
                   <span className="text-[11px] text-slate-400 tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
                 </summary>
@@ -132,7 +194,7 @@ export function UserDetailPage() {
             );
           })}
           {tl.data?.events.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-slate-500">No events match the current filter.</div>
+            <div className="px-5 py-8 text-center text-sm text-slate-500">No events match the current filters.</div>
           )}
         </div>
       </section>

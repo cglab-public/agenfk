@@ -95,7 +95,13 @@ export interface HubEvent {
   receivedAt?: string; // set by hub on ingest
   actor: HubActor;
   projectId?: string;
+  // Stable cross-installation project identity. Populated from the project's
+  // `git remote get-url origin` (or repo equivalent) by the agenfk client.
+  // Hub queries use this to group activity by repo across users.
+  remoteUrl?: string | null;
   itemId?: string;
+  // EPIC | STORY | TASK | BUG (when the event refers to an item).
+  itemType?: string;
   type: HubEventType;
   payload: Record<string, unknown>;
 }

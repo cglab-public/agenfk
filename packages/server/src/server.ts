@@ -67,10 +67,45 @@ let hubFlusher: Flusher | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
+//
+// The wrapper enriches each event with two cross-cutting fields:
+// - itemType: lifted from the payload when present so the hub can index it.
+// - remoteUrl: resolved from the project's git origin via projectRemoteCache,
+//   populated lazily by warmProjectRemote() the first time a project is seen.
 const recordHubEvent = (input: RecordEventInput): void => {
   if (!hubClient.isEnabled) return;
-  hubClient.recordEvent(input);
+  const payloadItemType = (input.payload && typeof (input.payload as any).itemType === 'string')
+    ? (input.payload as any).itemType : undefined;
+  const itemType = (input as any).itemType ?? payloadItemType ?? null;
+  let remoteUrl: string | null = (input as any).remoteUrl ?? null;
+  if (!remoteUrl && input.projectId) {
+    remoteUrl = projectRemoteCache.get(input.projectId) ?? null;
+    if (remoteUrl === null && !projectRemoteCache.has(input.projectId)) {
+      warmProjectRemote(input.projectId).catch(() => { /* best-effort */ });
+    }
+  }
+  hubClient.recordEvent({ ...input, itemType, remoteUrl } as RecordEventInput);
 };
+
+// projectId → git remote URL ("" when no remote, null when not yet resolved).
+const projectRemoteCache = new Map<string, string | null>();
+
+async function warmProjectRemote(projectId: string): Promise<void> {
+  try {
+    const proj = await storage.getProject(projectId);
+    const root = (proj as any)?.projectRoot;
+    if (!root) { projectRemoteCache.set(projectId, ''); return; }
+    const { execSync } = await import('child_process');
+    try {
+      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      projectRemoteCache.set(projectId, out || '');
+    } catch {
+      projectRemoteCache.set(projectId, '');
+    }
+  } catch {
+    projectRemoteCache.set(projectId, '');
+  }
+}
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
