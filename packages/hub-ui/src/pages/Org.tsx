@@ -1,13 +1,24 @@
 import { Link } from 'react-router-dom';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { TimelineBar } from '../components/TimelineBar';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
 
+const TYPES = ['item.created', 'item.updated', 'item.moved', 'step.transitioned', 'validate.invoked', 'validate.passed', 'validate.failed', 'comment.added', 'tokens.logged', 'test.logged'];
+
 export function OrgPage() {
   const metrics = useQuery<MetricsResponse>({ queryKey: ['metrics'], queryFn: async () => (await api.get('/v1/metrics')).data });
   const users = useQuery<UsersResponse[]>({ queryKey: ['users'], queryFn: async () => (await api.get('/v1/users')).data });
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const toggle = (t: string) => {
+    const next = new Set(selected);
+    if (next.has(t)) next.delete(t); else next.add(t);
+    setSelected(next);
+  };
 
   const totals = (metrics.data?.series ?? []).reduce(
     (a, r) => ({
@@ -24,6 +35,22 @@ export function OrgPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">Org rollup</h1>
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2 text-xs">
+          {TYPES.map(t => (
+            <button key={t} onClick={() => toggle(t)}
+                    className={'px-2 py-1 rounded border ' + (selected.has(t) ? 'bg-zinc-900 text-white' : 'hover:bg-zinc-100')}>
+              {t}
+            </button>
+          ))}
+          {selected.size > 0 && (
+            <button onClick={() => setSelected(new Set())} className="px-2 py-1 rounded border text-zinc-500 hover:bg-zinc-100">
+              clear
+            </button>
+          )}
+        </div>
+        <TimelineBar types={[...selected]} />
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <Tile label="Events" value={totals.events} />
         <Tile label="Items closed" value={totals.closed} />

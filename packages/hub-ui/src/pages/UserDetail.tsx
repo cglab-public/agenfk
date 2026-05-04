@@ -2,6 +2,7 @@ import { useParams } from 'react-router-dom';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { TimelineBar } from '../components/TimelineBar';
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; user_key: string; payload: any;
@@ -40,6 +41,7 @@ export function UserDetailPage() {
           </button>
         ))}
       </div>
+      <TimelineBar users={[decodeURIComponent(userKey)]} types={[...selected]} />
       <ul className="space-y-1">
         {(tl.data?.events ?? []).map(e => (
           <li key={e.event_id} className="border rounded px-3 py-2">

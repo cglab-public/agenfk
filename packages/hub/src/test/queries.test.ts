@@ -111,4 +111,58 @@ describe('hub query endpoints', () => {
     expect(r.body.bucket).toBe('day');
     expect(r.body.series.length).toBeGreaterThan(0);
   });
+
+  it('GET /v1/histogram requires session', async () => {
+    const r = await supertest(app).get('/v1/histogram');
+    expect(r.status).toBe(401);
+  });
+
+  it('GET /v1/histogram defaults to day bucket and aggregates by type', async () => {
+    const r = await supertest(app).get('/v1/histogram').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.bucket).toBe('day');
+    expect(Array.isArray(r.body.buckets)).toBe(true);
+    const may3 = r.body.buckets.find((b: any) => b.time === '2026-05-03');
+    const may4 = r.body.buckets.find((b: any) => b.time === '2026-05-04');
+    expect(may3.total).toBe(3);
+    expect(may3.by_type['item.created']).toBe(1);
+    expect(may3.by_type['step.transitioned']).toBe(1);
+    expect(may3.by_type['validate.passed']).toBe(1);
+    expect(may4.total).toBe(1);
+    expect(may4.by_type['tokens.logged']).toBe(1);
+  });
+
+  it('GET /v1/histogram filters by user and type', async () => {
+    const r = await supertest(app)
+      .get('/v1/histogram?users=alice@acme.com&types=item.created')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const total = r.body.buckets.reduce((a: number, b: any) => a + b.total, 0);
+    expect(total).toBe(1);
+    expect(r.body.buckets[0].by_type['item.created']).toBe(1);
+  });
+
+  it('GET /v1/histogram supports hour bucket', async () => {
+    const r = await supertest(app).get('/v1/histogram?bucket=hour').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.bucket).toBe('hour');
+    const slot = r.body.buckets.find((b: any) => b.time === '2026-05-03T08:00');
+    expect(slot.total).toBe(1);
+    expect(slot.by_type['item.created']).toBe(1);
+  });
+
+  it('GET /v1/histogram filters by date range', async () => {
+    const r = await supertest(app)
+      .get('/v1/histogram?from=2026-05-04T00:00:00Z')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.length).toBe(1);
+    expect(r.body.buckets[0].time).toBe('2026-05-04');
+    expect(r.body.buckets[0].total).toBe(1);
+  });
+
+  it('GET /v1/histogram rejects invalid bucket value', async () => {
+    const r = await supertest(app).get('/v1/histogram?bucket=year').set('Cookie', cookie);
+    expect(r.status).toBe(400);
+  });
 });

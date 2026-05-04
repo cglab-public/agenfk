@@ -79,5 +79,48 @@ export function queriesRouter(ctx: HubServerContext): Router {
     res.json({ bucket: 'day', series: rows });
   });
 
+  // Time-bucketed event histogram. Bars on the timeline UI consume this.
+  // Returns one row per time bucket with per-type counts and total.
+  router.get('/histogram', guard, (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const bucket = (req.query.bucket as string | undefined) ?? 'day';
+    if (bucket !== 'day' && bucket !== 'hour') {
+      res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
+      return;
+    }
+    const users = parseList(req.query.users as string | undefined);
+    const types = parseList(req.query.types as string | undefined);
+    const from = (req.query.from as string | undefined) ?? null;
+    const to = (req.query.to as string | undefined) ?? null;
+
+    const where: string[] = ['org_id = ?'];
+    const params: any[] = [orgId];
+    if (users) { where.push(`user_key IN (${users.map(() => '?').join(',')})`); params.push(...users); }
+    if (types) { where.push(`type IN (${types.map(() => '?').join(',')})`); params.push(...types); }
+    if (from) { where.push('occurred_at >= ?'); params.push(from); }
+    if (to) { where.push('occurred_at <= ?'); params.push(to); }
+
+    const fmt = bucket === 'day' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
+    const rows = ctx.db.prepare(
+      `SELECT strftime('${fmt}', occurred_at) AS time, type, COUNT(*) AS n
+       FROM events WHERE ${where.join(' AND ')}
+       GROUP BY time, type
+       ORDER BY time ASC`
+    ).all(...params) as Array<{ time: string; type: string; n: number }>;
+
+    const byTime = new Map<string, { time: string; total: number; by_type: Record<string, number> }>();
+    for (const r of rows) {
+      let entry = byTime.get(r.time);
+      if (!entry) {
+        entry = { time: r.time, total: 0, by_type: {} };
+        byTime.set(r.time, entry);
+      }
+      entry.by_type[r.type] = r.n;
+      entry.total += r.n;
+    }
+
+    res.json({ bucket, buckets: [...byTime.values()] });
+  });
+
   return router;
 }
