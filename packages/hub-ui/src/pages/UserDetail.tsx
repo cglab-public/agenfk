@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
+import { FacetMultiselect } from '../components/FacetMultiselect';
+import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 
@@ -15,11 +17,6 @@ interface ProjectsResponse { projects: string[] }
 interface ItemTypesResponse { itemTypes: string[] }
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
-
-function shortRemote(remote: string): string {
-  const m = remote.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
-  return m ? m[1] : remote;
-}
 
 const formatTime = fmtDateTime;
 
@@ -152,7 +149,16 @@ export function UserDetailPage() {
           <GitBranch className="w-4 h-4 text-indigo-500" />
           <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Filters</h2>
         </div>
-        <ChipRow label="Project (git remote)" options={projectOptions} selected={projectSel.set} onToggle={projectSel.toggle} onClear={projectSel.clear} optionLabel={shortRemote} />
+        <FacetMultiselect
+          label="Project (git remote)"
+          options={projectOptions}
+          selected={projectSel.set}
+          onToggle={projectSel.toggle}
+          onClear={projectSel.clear}
+          optionLabel={shortRemote}
+          inlineThreshold={6}
+          placeholder="Search projects…"
+        />
         <ChipRow label="Item type" options={itemTypeOptions} selected={itemTypeSel.set} onToggle={itemTypeSel.toggle} onClear={itemTypeSel.clear} />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </section>
