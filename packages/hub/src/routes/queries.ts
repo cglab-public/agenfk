@@ -79,6 +79,14 @@ export function queriesRouter(ctx: HubServerContext): Router {
     res.json({ bucket: 'day', series: rows });
   });
 
+  // Distinct event types observed in this org — used to populate filter chips.
+  router.get('/event-types', guard, (req: Request, res: Response) => {
+    const rows = ctx.db.prepare(
+      `SELECT DISTINCT type FROM events WHERE org_id = ? ORDER BY type ASC`
+    ).all(req.session!.orgId) as Array<{ type: string }>;
+    res.json({ types: rows.map(r => r.type) });
+  });
+
   // Time-bucketed event histogram. Bars on the timeline UI consume this.
   // Returns one row per time bucket with per-type counts and total.
   router.get('/histogram', guard, (req: Request, res: Response) => {

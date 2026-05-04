@@ -165,4 +165,19 @@ describe('hub query endpoints', () => {
     const r = await supertest(app).get('/v1/histogram?bucket=year').set('Cookie', cookie);
     expect(r.status).toBe(400);
   });
+
+  it('GET /v1/event-types requires session', async () => {
+    const r = await supertest(app).get('/v1/event-types');
+    expect(r.status).toBe(401);
+  });
+
+  it('GET /v1/event-types returns distinct types observed in the org', async () => {
+    const r = await supertest(app).get('/v1/event-types').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.types)).toBe(true);
+    // Seeded events: item.created, step.transitioned, validate.passed, tokens.logged
+    expect(r.body.types).toEqual(
+      ['item.created', 'step.transitioned', 'tokens.logged', 'validate.passed'].sort(),
+    );
+  });
 });
