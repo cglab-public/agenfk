@@ -43,6 +43,8 @@ const SCHEMA = `
     item_id TEXT,
     item_type TEXT,
     remote_url TEXT,
+    item_title TEXT,
+    external_id TEXT,
     payload TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
@@ -121,7 +123,10 @@ export function openDb(dbPath: string): DB {
   const have = new Set(cols.map(c => c.name));
   if (!have.has('item_type'))  db.exec("ALTER TABLE events ADD COLUMN item_type TEXT");
   if (!have.has('remote_url')) db.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
+  if (!have.has('item_title')) db.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
+  if (!have.has('external_id')) db.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
   return db;
 }

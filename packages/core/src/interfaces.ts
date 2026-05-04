@@ -102,6 +102,11 @@ export interface HubEvent {
   itemId?: string;
   // EPIC | STORY | TASK | BUG (when the event refers to an item).
   itemType?: string;
+  // Human-readable title of the item at the time of the event. Persisted as a
+  // first-class column on the hub so timelines can render names, not UUIDs.
+  itemTitle?: string;
+  // Reference into an external tracker (e.g. Jira issue key like "WEB-123").
+  externalId?: string;
   type: HubEventType;
   payload: Record<string, unknown>;
 }

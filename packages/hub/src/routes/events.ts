@@ -39,8 +39,8 @@ export function eventsRouter(ctx: HubServerContext): Router {
 
     const insertEvent = ctx.db.prepare(`
       INSERT OR IGNORE INTO events
-      (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, payload)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, payload)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const upsertInstallation = ctx.db.prepare(`
       INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
@@ -69,9 +69,16 @@ export function eventsRouter(ctx: HubServerContext): Router {
         const itemType = (e as any).itemType
           ?? (e.payload && typeof (e.payload as any).itemType === 'string' ? (e.payload as any).itemType : null);
         const remoteUrl = (e as any).remoteUrl ?? null;
+        // itemTitle and externalId can come either as envelope fields (newer
+        // emitters) or inside the payload (item.created already includes
+        // payload.title since well before this rollout).
+        const itemTitle = (e as any).itemTitle
+          ?? (e.payload && typeof (e.payload as any).title === 'string' ? (e.payload as any).title : null);
+        const externalId = (e as any).externalId
+          ?? (e.payload && typeof (e.payload as any).externalId === 'string' ? (e.payload as any).externalId : null);
         const result = insertEvent.run(
           e.eventId, e.orgId, e.installationId, userKey, e.occurredAt, now,
-          e.type, e.projectId ?? null, e.itemId ?? null, itemType, remoteUrl, JSON.stringify(e),
+          e.type, e.projectId ?? null, e.itemId ?? null, itemType, remoteUrl, itemTitle, externalId, JSON.stringify(e),
         );
         if (result.changes === 0) { skipped++; continue; }
         ingested++;

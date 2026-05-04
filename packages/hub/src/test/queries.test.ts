@@ -56,15 +56,19 @@ describe('hub query endpoints', () => {
 
     await send([
       sample({ eventId: 'a1', occurredAt: '2026-05-03T08:00:00Z', type: 'item.created',
-        itemType: 'TASK', remoteUrl: 'git@github.com:acme/web.git' }),
+        itemType: 'TASK', remoteUrl: 'git@github.com:acme/web.git',
+        itemTitle: 'Refactor login flow', externalId: 'WEB-123' }),
       sample({ eventId: 'a2', occurredAt: '2026-05-03T09:00:00Z', type: 'step.transitioned',
         itemType: 'TASK', remoteUrl: 'git@github.com:acme/web.git',
+        itemTitle: 'Refactor login flow', externalId: 'WEB-123',
         payload: { fromStatus: 'TEST', toStatus: 'DONE' } }),
       sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed',
-        itemType: 'BUG', remoteUrl: 'git@github.com:acme/web.git' }),
+        itemType: 'BUG', remoteUrl: 'git@github.com:acme/web.git',
+        itemTitle: 'Crash on signup' }),
       sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
         itemType: 'STORY', remoteUrl: 'git@github.com:acme/api.git',
+        itemTitle: 'Pagination',
         payload: { tokenUsage: [{ input: 100, output: 50 }] } }),
     ]);
   });
@@ -229,6 +233,17 @@ describe('hub query endpoints', () => {
     const a1 = r.body.events.find((e: any) => e.event_id === 'a1');
     expect(a1.item_type).toBe('TASK');
     expect(a1.remote_url).toBe('git@github.com:acme/web.git');
+  });
+
+  it('GET /v1/timeline rows expose item_title and external_id (Jira key)', async () => {
+    const r = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const a1 = r.body.events.find((e: any) => e.event_id === 'a1');
+    expect(a1.item_title).toBe('Refactor login flow');
+    expect(a1.external_id).toBe('WEB-123');
+    const a3 = r.body.events.find((e: any) => e.event_id === 'a3');
+    expect(a3.item_title).toBe('Crash on signup');
+    expect(a3.external_id).toBeNull();
   });
 
   it('GET /v1/histogram filters by projects+itemTypes', async () => {

@@ -7,7 +7,7 @@ import { TimelineBar } from '../components/TimelineBar';
 import { mergeEventTypes } from '../eventTypes';
 
 interface TimelineRow {
-  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; user_key: string; payload: any;
+  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; payload: any;
 }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -183,12 +183,19 @@ export function UserDetailPage() {
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-open:rotate-180 transition-transform shrink-0" />
                   <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${badge}`}>{e.type}</span>
                   {itemBadge && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${itemBadge}`}>{e.item_type}</span>}
+                  {e.external_id && (
+                    <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                      {e.external_id}
+                    </span>
+                  )}
                   {e.remote_url && (
-                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 max-w-[200px] truncate">
+                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 max-w-[180px] truncate">
                       <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
                     </span>
                   )}
-                  <span className="text-[12px] text-slate-700 dark:text-slate-300 truncate flex-1">{e.item_id ?? e.project_id ?? '—'}</span>
+                  <span className="text-[12px] text-slate-800 dark:text-slate-200 truncate flex-1" title={e.item_id ?? undefined}>
+                    {e.item_title ?? <span className="text-slate-400 font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
+                  </span>
                   <span className="text-[11px] text-slate-400 tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
                 </summary>
                 <pre className="px-5 pb-3 text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words bg-slate-50/60 dark:bg-slate-950/40 border-t border-slate-100 dark:border-slate-800 -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>

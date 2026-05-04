@@ -74,9 +74,11 @@ let hubFlusher: Flusher | null = null;
 //   populated lazily by warmProjectRemote() the first time a project is seen.
 const recordHubEvent = (input: RecordEventInput): void => {
   if (!hubClient.isEnabled) return;
-  const payloadItemType = (input.payload && typeof (input.payload as any).itemType === 'string')
-    ? (input.payload as any).itemType : undefined;
-  const itemType = (input as any).itemType ?? payloadItemType ?? null;
+  const payload: any = input.payload ?? {};
+  const itemType = (input as any).itemType ?? (typeof payload.itemType === 'string' ? payload.itemType : null);
+  const payloadTitle = typeof payload.title === 'string' ? payload.title : undefined;
+  const payloadExternalId = typeof payload.externalId === 'string' ? payload.externalId : undefined;
+
   let remoteUrl: string | null = (input as any).remoteUrl ?? null;
   if (!remoteUrl && input.projectId) {
     remoteUrl = projectRemoteCache.get(input.projectId) ?? null;
@@ -84,11 +86,49 @@ const recordHubEvent = (input: RecordEventInput): void => {
       warmProjectRemote(input.projectId).catch(() => { /* best-effort */ });
     }
   }
-  hubClient.recordEvent({ ...input, itemType, remoteUrl } as RecordEventInput);
+
+  let itemTitle: string | null = (input as any).itemTitle ?? payloadTitle ?? null;
+  let externalId: string | null = (input as any).externalId ?? payloadExternalId ?? null;
+  if (input.itemId) {
+    const cached = itemMetaCache.get(input.itemId);
+    if (cached) {
+      itemTitle = itemTitle ?? cached.title ?? null;
+      externalId = externalId ?? cached.externalId ?? null;
+    } else {
+      warmItemMeta(input.itemId).catch(() => { /* best-effort */ });
+    }
+    // Prime the cache when this very event already carries the metadata, so
+    // subsequent events for the same item don't need a storage round-trip.
+    if (itemTitle || externalId) {
+      itemMetaCache.set(input.itemId, {
+        title: itemTitle ?? cached?.title ?? null,
+        externalId: externalId ?? cached?.externalId ?? null,
+      });
+    }
+  }
+
+  hubClient.recordEvent({ ...input, itemType, remoteUrl, itemTitle, externalId } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when no remote, null when not yet resolved).
 const projectRemoteCache = new Map<string, string | null>();
+
+// itemId → { title, externalId }. Best-effort cache, populated lazily by
+// warmItemMeta() and primed inline by recordHubEvent when an event arrives
+// already carrying the metadata.
+const itemMetaCache = new Map<string, { title: string | null; externalId: string | null }>();
+async function warmItemMeta(itemId: string): Promise<void> {
+  try {
+    const it = await storage.getItem(itemId);
+    if (!it) { itemMetaCache.set(itemId, { title: null, externalId: null }); return; }
+    itemMetaCache.set(itemId, {
+      title: typeof (it as any).title === 'string' ? (it as any).title : null,
+      externalId: typeof (it as any).externalId === 'string' ? (it as any).externalId : null,
+    });
+  } catch {
+    itemMetaCache.set(itemId, { title: null, externalId: null });
+  }
+}
 
 async function warmProjectRemote(projectId: string): Promise<void> {
   try {
