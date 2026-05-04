@@ -77,6 +77,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   ].filter(Boolean) as string[];
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
+    console.log(`[HUB] Serving SPA bundle from ${uiDir}`);
     app.use(express.static(uiDir));
     // SPA fallback. Anything that isn't an API route falls through to
     // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
@@ -84,10 +85,19 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
     // We intentionally use middleware here instead of a regex route so it
     // works under both Express 4 and 5 path-to-regexp dialects.
     const API_PREFIXES = ['/v1', '/auth', '/setup', '/healthz', '/hub'];
-    app.use((req: Request, res: Response, next: NextFunction) => {
+    const spaFallback = (req: Request, res: Response, next: NextFunction): void => {
       if (req.method !== 'GET') return next();
       if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
       res.sendFile(pathMod.join(uiDir, 'index.html'));
+    };
+    app.use(spaFallback);
+    // Defence in depth: a final 404 trap that re-applies the same fallback
+    // for anything that snuck past, e.g. a router calling res.sendStatus(404)
+    // or an unmatched mount point. Idempotent — if the response is already
+    // sent it short-circuits.
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (res.headersSent) return next();
+      spaFallback(req, res, next);
     });
   } else {
     console.warn('[HUB] No SPA bundle found — searched:\n  ' + candidates.join('\n  '));

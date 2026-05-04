@@ -26,12 +26,14 @@ const TYPE_COLORS = ['#6366f1', '#a855f7', '#22d3ee', '#10b981', '#f59e0b', '#ef
 const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
 
 function pad2(n: number) { return String(n).padStart(2, '0'); }
+// Bucket keys are computed in the user's local timezone (mirroring the
+// backend's tzOffsetMin shift) so axis labels and histogram counts agree.
 function fmtBucketKey(d: Date, bucket: 'day' | 'hour'): string {
-  const yyyy = d.getUTCFullYear();
-  const mm = pad2(d.getUTCMonth() + 1);
-  const dd = pad2(d.getUTCDate());
+  const yyyy = d.getFullYear();
+  const mm = pad2(d.getMonth() + 1);
+  const dd = pad2(d.getDate());
   if (bucket === 'day') return `${yyyy}-${mm}-${dd}`;
-  return `${yyyy}-${mm}-${dd}T${pad2(d.getUTCHours())}:00`;
+  return `${yyyy}-${mm}-${dd}T${pad2(d.getHours())}:00`;
 }
 
 function buildAxis(days: number, bucket: 'day' | 'hour'): string[] {
@@ -39,13 +41,13 @@ function buildAxis(days: number, bucket: 'day' | 'hour'): string[] {
   const now = new Date();
   const start = new Date(now.getTime() - days * 86400_000);
   if (bucket === 'day') {
-    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    while (d <= end) { out.push(fmtBucketKey(d, 'day')); d.setUTCDate(d.getUTCDate() + 1); }
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    while (d <= end) { out.push(fmtBucketKey(d, 'day')); d.setDate(d.getDate() + 1); }
   } else {
-    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), start.getUTCHours()));
-    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours()));
-    while (d <= end) { out.push(fmtBucketKey(d, 'hour')); d.setUTCHours(d.getUTCHours() + 1); }
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate(), start.getHours());
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
+    while (d <= end) { out.push(fmtBucketKey(d, 'hour')); d.setHours(d.getHours() + 1); }
   }
   return out;
 }
@@ -82,6 +84,10 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
 
   const fromIso = useMemo(() => new Date(Date.now() - days * 86400_000).toISOString(), [days]);
 
+  // JS getTimezoneOffset returns minutes WEST of UTC; the hub expects minutes
+  // EAST of UTC (positive for tz ahead of UTC). Negate to align.
+  const tzOffsetMin = -new Date().getTimezoneOffset();
+
   const params = new URLSearchParams();
   if (users?.length) params.set('users', users.join(','));
   if (types?.length) params.set('types', types.join(','));
@@ -89,9 +95,10 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   if (itemTypes?.length) params.set('itemTypes', itemTypes.join(','));
   params.set('from', fromIso);
   params.set('bucket', bucket);
+  params.set('tzOffsetMin', String(tzOffsetMin));
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', days, bucket],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', days, bucket, tzOffsetMin],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 

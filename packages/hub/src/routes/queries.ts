@@ -165,16 +165,31 @@ export function queriesRouter(ctx: HubServerContext): Router {
       res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
       return;
     }
+    // Caller supplies its tz offset in minutes east of UTC (matches what JS
+    // gives us as -getTimezoneOffset()). When set, we shift occurred_at into
+    // local time before strftime so day/hour buckets line up with the user's
+    // calendar instead of UTC. Range-clamped to ±14h, the widest real offset.
+    const tzRaw = req.query.tzOffsetMin;
+    const tzOffsetMin = typeof tzRaw === 'string' ? Number.parseInt(tzRaw, 10) : NaN;
+    const tzShift = Number.isFinite(tzOffsetMin)
+      ? Math.max(-14 * 60, Math.min(14 * 60, tzOffsetMin))
+      : 0;
     const f = readEventFilters(req);
     const { where, params } = applyEventFilters(orgId, f);
 
     const fmt = bucket === 'day' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
+    // Placeholder order matters: strftime's ? comes BEFORE the WHERE clause
+    // ?s in the query, so the tz modifier must be the first bound value.
+    const tzModifier = tzShift !== 0 ? `, ?` : '';
+    const sqlParams: any[] = [];
+    if (tzShift !== 0) sqlParams.push(`${tzShift >= 0 ? '+' : ''}${tzShift} minutes`);
+    sqlParams.push(...params);
     const rows = ctx.db.prepare(
-      `SELECT strftime('${fmt}', occurred_at) AS time, type, COUNT(*) AS n
+      `SELECT strftime('${fmt}', occurred_at${tzModifier}) AS time, type, COUNT(*) AS n
        FROM events WHERE ${where.join(' AND ')}
        GROUP BY time, type
        ORDER BY time ASC`
-    ).all(...params) as Array<{ time: string; type: string; n: number }>;
+    ).all(...sqlParams) as Array<{ time: string; type: string; n: number }>;
 
     const byTime = new Map<string, { time: string; total: number; by_type: Record<string, number> }>();
     for (const r of rows) {

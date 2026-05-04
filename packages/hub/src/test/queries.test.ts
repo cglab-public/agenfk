@@ -150,6 +150,19 @@ describe('hub query endpoints', () => {
     expect(r.body.buckets[0].by_type['item.created']).toBe(1);
   });
 
+  it('GET /v1/histogram applies tzOffsetMin so buckets match the caller local calendar', async () => {
+    // Seeded a1/a2/a3 occurred on 2026-05-03 UTC; b1 on 2026-05-04 UTC.
+    // With tzOffsetMin=-1440 (1-day shift back) every event must land in a
+    // bucket one day earlier than its UTC date.
+    const noShift = await supertest(app).get('/v1/histogram?tzOffsetMin=0').set('Cookie', cookie);
+    expect(noShift.body.buckets.find((b: any) => b.time === '2026-05-03')?.total).toBe(3);
+
+    const r = await supertest(app).get('/v1/histogram?tzOffsetMin=-1440').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.find((b: any) => b.time === '2026-05-02')?.total).toBe(3);
+    expect(r.body.buckets.find((b: any) => b.time === '2026-05-03')?.total).toBe(1); // b1 shifted from 05-04
+  });
+
   it('GET /v1/histogram supports hour bucket', async () => {
     const r = await supertest(app).get('/v1/histogram?bucket=hour').set('Cookie', cookie);
     expect(r.status).toBe(200);
