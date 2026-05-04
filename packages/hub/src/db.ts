@@ -73,6 +73,23 @@ const SCHEMA = `
     last_login_at TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    org_id TEXT,
+    token_hash TEXT,
+    approved_at TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_device_codes_user_code ON device_codes(user_code);
+
+  CREATE TABLE IF NOT EXISTS used_invites (
+    nonce TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    used_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS auth_config (
     org_id TEXT PRIMARY KEY,
     password_enabled INTEGER NOT NULL DEFAULT 1,

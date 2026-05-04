@@ -9,6 +9,7 @@ import { adminRouter } from './routes/admin.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { queriesRouter } from './routes/queries.js';
+import { connectRouter } from './routes/connect.js';
 import { startRollupTimer } from './rollup.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
@@ -43,6 +44,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
+  app.use('/hub', connectRouter(ctx));
   startRollupTimer(db);
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
@@ -55,7 +57,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
     app.use(express.static(uiDir));
-    app.get(/^(?!\/(?:v1|auth|setup|healthz)).*/, (_req: Request, res: Response) => {
+    app.get(/^(?!\/(?:v1|auth|setup|healthz|hub)).*/, (_req: Request, res: Response) => {
       res.sendFile(pathMod.join(uiDir, 'index.html'));
     });
   }

@@ -93,11 +93,51 @@ export function AdminKeys() {
     mutationFn: (preview: string) => api.delete(`/v1/admin/api-keys/${preview}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
   });
+  const createInvite = useMutation({
+    mutationFn: () => api.post('/hub/invite/create'),
+  });
   const [label, setLabel] = useState('');
   const [issued, setIssued] = useState<string | null>(null);
+  const [invite, setInvite] = useState<{ joinCommand: string; expiresAt: string } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="space-y-6 max-w-2xl">
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Magic-link invite</h3>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Generate a single-use, signed join command developers can paste into their terminal. They never see the underlying token.
+        </p>
+        <button
+          onClick={async () => {
+            const r = await createInvite.mutateAsync();
+            setInvite(r.data as any);
+            setCopied(false);
+          }}
+          disabled={createInvite.isPending}
+          className="mt-3 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
+        >
+          {createInvite.isPending ? 'Generating…' : 'Generate invite'}
+        </button>
+        {invite && (
+          <div className="mt-4 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-900/20 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-[0.14em] text-indigo-600 dark:text-indigo-400 font-semibold">Share this command</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {new Date(invite.expiresAt).toLocaleDateString()}</span>
+            </div>
+            <pre className="mt-2 px-3 py-2 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto select-all">{invite.joinCommand}</pre>
+            <button
+              onClick={async () => {
+                try { await navigator.clipboard.writeText(invite.joinCommand); setCopied(true); } catch { /* ignore */ }
+              }}
+              className="mt-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+            >
+              {copied ? '✓ Copied' : 'Copy to clipboard'}
+            </button>
+          </div>
+        )}
+      </section>
+
       <form className="flex gap-2" onSubmit={async (e) => {
         e.preventDefault();
         const r = await create.mutateAsync(label);

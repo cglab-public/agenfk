@@ -4,6 +4,7 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { exec } from 'child_process';
 import { getApiUrl } from '@agenfk/telemetry';
 
 const HUB_CONFIG_FILE = path.join(os.homedir(), '.agenfk', 'hub.json');
@@ -37,22 +38,114 @@ export function registerHubCommands(program: Command): void {
     .command('login')
     .description('Configure this installation to push events to a corporate Hub')
     .requiredOption('--url <url>', 'Hub base URL, e.g. https://hub.acme.com')
-    .requiredOption('--token <token>', 'Installation API key issued by the Hub admin')
-    .requiredOption('--org <orgId>', 'Org identifier as registered with the Hub')
+    .option('--token <token>', 'Installation API key (legacy: skips browser flow)')
+    .option('--org <orgId>', 'Org identifier (only required with --token)')
+    .option('--no-open', 'Do not auto-open the browser; just print the URL')
     .action(async (opts) => {
-      const cfg: HubConfig = { url: String(opts.url).replace(/\/$/, ''), token: String(opts.token), orgId: String(opts.org) };
+      const url = String(opts.url).replace(/\/$/, '');
+
+      // Legacy path — explicit token + org, no browser.
+      if (opts.token) {
+        if (!opts.org) {
+          console.error(chalk.red('--org is required when using --token.'));
+          process.exit(1);
+        }
+        const cfg: HubConfig = { url, token: String(opts.token), orgId: String(opts.org) };
+        try {
+          await axios.get(`${cfg.url}/v1/ping`, {
+            headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-login' },
+            timeout: 10_000,
+          });
+        } catch (e: any) {
+          console.error(chalk.red(`Hub /v1/ping failed: ${e?.response?.status ?? ''} ${e?.message}`));
+          console.error(chalk.gray('Refusing to write hub.json — fix the URL/token and try again.'));
+          process.exit(1);
+        }
+        writeHubConfig(cfg);
+        console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+        return;
+      }
+
+      // Device-code flow.
+      let start;
       try {
-        await axios.get(`${cfg.url}/v1/ping`, {
-          headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-login' },
-          timeout: 10_000,
-        });
+        start = (await axios.post(`${url}/hub/device/start`, {}, { timeout: 10_000 })).data;
       } catch (e: any) {
-        console.error(chalk.red(`Hub /v1/ping failed: ${e?.response?.status ?? ''} ${e?.message}`));
-        console.error(chalk.gray('Refusing to write hub.json — fix the URL/token and try again.'));
+        console.error(chalk.red(`Could not reach ${url}: ${e?.message ?? 'unknown'}`));
+        console.error(chalk.gray('Tip: pass --token <key> --org <id> to skip the browser flow.'));
         process.exit(1);
       }
-      writeHubConfig(cfg);
-      console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+      console.log();
+      console.log(chalk.bold('Device code: ') + chalk.cyan(start.userCode));
+      console.log(chalk.gray('Open this URL in your browser to approve:'));
+      console.log('  ' + chalk.underline(start.verificationUri));
+      if (opts.open !== false) {
+        const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start ""' : 'xdg-open';
+        exec(`${opener} ${JSON.stringify(start.verificationUri)}`, () => { /* best-effort */ });
+      }
+
+      const interval = Math.max(1, Number(start.interval) || 2);
+      const expiresAt = Date.now() + Math.max(60, Number(start.expiresIn) || 600) * 1000;
+      process.stdout.write(chalk.gray('Waiting for approval'));
+      while (Date.now() < expiresAt) {
+        await new Promise(r => setTimeout(r, interval * 1000));
+        process.stdout.write(chalk.gray('.'));
+        try {
+          const { data } = await axios.post(`${url}/hub/device/poll`, { deviceCode: start.deviceCode }, { timeout: 10_000 });
+          if (data.status === 'approved') {
+            console.log();
+            const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
+            writeHubConfig(cfg);
+            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+            return;
+          }
+          if (data.status === 'expired') {
+            console.log();
+            console.error(chalk.red('Device code expired. Re-run `agenfk hub login --url <hub>`.'));
+            process.exit(1);
+          }
+        } catch (e: any) {
+          // 404/410/etc — keep going until expiry, surface message at end.
+          if (e?.response?.status === 410) {
+            console.log();
+            console.error(chalk.red('Login session ended unexpectedly. Re-run the command.'));
+            process.exit(1);
+          }
+        }
+      }
+      console.log();
+      console.error(chalk.red('Timed out waiting for approval.'));
+      process.exit(1);
+    });
+
+  hub
+    .command('join <inviteToken>')
+    .description('Redeem a magic-link invite issued by your Hub admin')
+    .action(async (inviteToken: string) => {
+      // Try every known hub URL: prefer existing config, else encoded URL prefix.
+      const existing = readHubConfig();
+      const candidates: string[] = [];
+      if (existing?.url) candidates.push(existing.url);
+      // Allow `agenfk hub join <hubUrl>:<token>` as a future extension.
+      // For v1, require AGENFK_HUB_URL or an existing config to know where to redeem.
+      if (process.env.AGENFK_HUB_URL) candidates.unshift(process.env.AGENFK_HUB_URL.replace(/\/$/, ''));
+      if (candidates.length === 0) {
+        console.error(chalk.red('No Hub URL known. Set AGENFK_HUB_URL or run `agenfk hub login --url <hub>` first.'));
+        process.exit(1);
+      }
+      for (const url of candidates) {
+        try {
+          const { data } = await axios.post(`${url}/hub/invite/redeem`, { inviteToken }, { timeout: 10_000 });
+          const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
+          writeHubConfig(cfg);
+          console.log(chalk.green(`✓ Joined ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+          return;
+        } catch (e: any) {
+          const msg = e?.response?.data?.error ?? e?.message;
+          console.error(chalk.red(`Redeem at ${url} failed: ${msg}`));
+        }
+      }
+      process.exit(1);
     });
 
   hub

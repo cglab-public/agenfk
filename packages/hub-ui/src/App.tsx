@@ -6,6 +6,7 @@ import { LoginPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
 import { OrgPage } from './pages/Org';
 import { UserDetailPage } from './pages/UserDetail';
+import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers } from './pages/Admin';
 import { Layout } from './components/Layout';
 
@@ -45,6 +46,7 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup" element={<SetupPage />} />
+      <Route path="/connect" element={<RequireAuth><ConnectPage /></RequireAuth>} />
       <Route path="/" element={<RequireAuth><Layout><OrgPage /></Layout></RequireAuth>} />
       <Route path="/users/:userKey" element={<RequireAuth><Layout><UserDetailPage /></Layout></RequireAuth>} />
       <Route path="/admin" element={<RequireAuth><Layout><AdminLayout /></Layout></RequireAuth>}>

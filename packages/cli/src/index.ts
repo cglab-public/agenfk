@@ -327,7 +327,34 @@ program.hook('preAction', (thisCommand, actionCommand) => {
     command: actionCommand.name(),
     version: CURRENT_VERSION,
   });
+  // Surface a one-line warning when the local hub flusher has given up on
+  // delivery (5 consecutive 4xx, typically a revoked or rotated token).
+  // Synchronous, best-effort: no top-level await, swallow every error.
+  void warnIfHubFlusherHalted();
 });
+
+async function warnIfHubFlusherHalted(): Promise<void> {
+  try {
+    const hubConfigPath = path.join(os.homedir(), '.agenfk', 'hub.json');
+    if (!fs.existsSync(hubConfigPath)) return;
+    const verifyTokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(verifyTokenPath)) return;
+    const verifyToken = fs.readFileSync(verifyTokenPath, 'utf8').trim();
+    if (!verifyToken) return;
+    const { default: axiosLib } = await import('axios');
+    const { data } = await axiosLib.get(`${getApiUrl()}/internal/hub/status`, {
+      headers: { 'x-agenfk-internal': verifyToken }, timeout: 1500,
+    });
+    if (data?.halted) {
+      console.error(chalk.yellow(
+        `⚠ Hub flusher halted (last error: ${data.lastError ?? 'unknown'}). ` +
+        `Run \`agenfk hub status\` for details, or \`agenfk hub login --url <hub>\` to re-authenticate.`
+      ));
+    }
+  } catch {
+    // Local server not running, banner not relevant.
+  }
+}
 
 program
   .action(async () => {
