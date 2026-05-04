@@ -91,6 +91,39 @@ describe('createHubApp', () => {
     expect(names.has('remote_url')).toBe(true);
   });
 
+  it('SPA fallback serves index.html for client-side routes (regression: refresh 404)', async () => {
+    // The hub serves a React SPA from packages/hub-ui/dist via express.static
+    // plus a catch-all that re-serves index.html for any non-API URL so that
+    // hard-refreshing /users/foo, /admin/keys, /connect, etc. resolves to the
+    // SPA shell rather than 404. This pins that fallback for both unencoded
+    // and percent-encoded paths.
+    const fs = await import('fs');
+    const path = await import('path');
+    const tmp = path.join(require('os').tmpdir(), `hub-ui-fixture-${process.pid}`);
+    fs.mkdirSync(tmp, { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'index.html'), '<html data-test-spa="1"></html>', 'utf8');
+    process.env.AGENFK_HUB_UI_DIR = tmp;
+
+    const { app, ctx } = createHubApp({
+      dbPath: TEST_DB,
+      secretKey: '0'.repeat(64),
+      sessionSecret: 'sess',
+      defaultOrgId: 'org',
+    });
+    teardown = () => { try { ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true }); };
+
+    const supertest = (await import('supertest')).default;
+    for (const route of ['/users/alice%40acme.com', '/admin/keys', '/connect', '/anything/deep/here']) {
+      const res = await supertest(app).get(route);
+      expect(res.status, `route ${route} should serve SPA shell`).toBe(200);
+      expect(res.text).toContain('data-test-spa');
+    }
+    // API prefixes must NOT be intercepted.
+    const apiRes = await supertest(app).get('/v1/timeline');
+    expect(apiRes.status).not.toBe(200); // some 4xx is fine; 200 with SPA HTML would mean we hijacked the API.
+    expect(apiRes.text).not.toContain('data-test-spa');
+  });
+
   it('healthz reports the live hub package version (not a hardcoded literal)', async () => {
     const { app, ctx } = createHubApp({
       dbPath: TEST_DB,

@@ -65,18 +65,33 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   startRollupTimer(db);
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
-  // production that gets copied into ../public alongside the hub bundle.
+  // the released tarball that lives next to the hub package. We probe a few
+  // sensible roots so both source-checkout and npx-extracted layouts work.
   const candidates = [
     process.env.AGENFK_HUB_UI_DIR,
     pathMod.resolve(__dirname, '../public'),
     pathMod.resolve(__dirname, '../../hub-ui/dist'),
+    // npx flow extracts the dist tarball into ~/.agenfk-system; if __dirname
+    // is anywhere under that tree, hub-ui/dist is a sibling of packages/hub.
+    pathMod.resolve(__dirname, '../../../packages/hub-ui/dist'),
   ].filter(Boolean) as string[];
   const uiDir = candidates.find((d) => fs.existsSync(pathMod.join(d, 'index.html')));
   if (uiDir) {
     app.use(express.static(uiDir));
-    app.get(/^(?!\/(?:v1|auth|setup|healthz|hub)).*/, (_req: Request, res: Response) => {
+    // SPA fallback. Anything that isn't an API route falls through to
+    // index.html so deep-link refreshes (e.g. /users/alice@acme.com,
+    // /admin/keys, /connect) resolve to the React shell rather than 404.
+    // We intentionally use middleware here instead of a regex route so it
+    // works under both Express 4 and 5 path-to-regexp dialects.
+    const API_PREFIXES = ['/v1', '/auth', '/setup', '/healthz', '/hub'];
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (req.method !== 'GET') return next();
+      if (API_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
       res.sendFile(pathMod.join(uiDir, 'index.html'));
     });
+  } else {
+    console.warn('[HUB] No SPA bundle found — searched:\n  ' + candidates.join('\n  '));
+    console.warn('[HUB] Set AGENFK_HUB_UI_DIR to the directory containing index.html if your layout is non-standard.');
   }
 
   (app as any).hubCtx = ctx;
