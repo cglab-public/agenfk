@@ -44,7 +44,6 @@ async function run() {
         'packages/ui/dist/',
         'packages/hub/package.json',
         'packages/hub/dist/',
-        'packages/hub/public/',
         'packages/hub-ui/package.json',
         'packages/hub-ui/dist/'
     ];
