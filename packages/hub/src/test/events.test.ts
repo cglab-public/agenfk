@@ -32,15 +32,15 @@ describe('hub /v1 events', () => {
   let ctx: any;
   let token: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     cleanup();
-    const out = createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
+    const out = await createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
     app = out.app;
     ctx = out.ctx;
-    token = issueApiKey(ctx.db, 'org', 'test');
+    token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   it('rejects requests without bearer', async () => {
     const r = await supertest(app).get('/v1/ping');
@@ -59,7 +59,7 @@ describe('hub /v1 events', () => {
   });
 
   it('rejects revoked token', async () => {
-    ctx.db.prepare('UPDATE api_keys SET revoked_at = datetime(\'now\')').run();
+    await ctx.db.run('UPDATE api_keys SET revoked_at = datetime(\'now\')');
     const r = await supertest(app).get('/v1/ping').set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(401);
   });
@@ -73,9 +73,9 @@ describe('hub /v1 events', () => {
     expect(r.status).toBe(200);
     expect(r.body).toEqual(expect.objectContaining({ ingested: 2, skipped: 0, rejected: 0 }));
 
-    const count = (ctx.db.prepare('SELECT COUNT(*) AS c FROM events').get() as any).c;
-    expect(count).toBe(2);
-    const inst = ctx.db.prepare('SELECT * FROM installations WHERE id = ?').get('inst-1') as any;
+    const countRow = await ctx.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM events');
+    expect(countRow!.c).toBe(2);
+    const inst = await ctx.db.get<any>('SELECT * FROM installations WHERE id = ?', ['inst-1']);
     expect(inst.os_user).toBe('alice');
     expect(inst.git_email).toBe('alice@example.com');
   });
@@ -87,8 +87,8 @@ describe('hub /v1 events', () => {
     r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
     expect(r.body.ingested).toBe(0);
     expect(r.body.skipped).toBe(1);
-    const count = (ctx.db.prepare('SELECT COUNT(*) AS c FROM events').get() as any).c;
-    expect(count).toBe(1);
+    const countRow = await ctx.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM events');
+    expect(countRow!.c).toBe(1);
   });
 
   it('rejects events with mismatched orgId', async () => {
@@ -111,7 +111,7 @@ describe('hub /v1 events', () => {
     const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1', actor: { osUser: 'alice', gitName: 'A', gitEmail: 'Alice@Example.COM' } })] });
     expect(r.status).toBe(200);
-    const row = ctx.db.prepare('SELECT user_key FROM events').get() as any;
-    expect(row.user_key).toBe('alice@example.com');
+    const row = await ctx.db.get<{ user_key: string }>('SELECT user_key FROM events');
+    expect(row?.user_key).toBe('alice@example.com');
   });
 });

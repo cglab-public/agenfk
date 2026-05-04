@@ -35,27 +35,27 @@ const cleanup = () => {
   }
 };
 
-const enableEntra = (db: any, allowlist?: string[]) => {
-  db.prepare(`UPDATE auth_config SET
+const enableEntra = async (db: any, allowlist?: string[]) => {
+  await db.run(`UPDATE auth_config SET
     entra_enabled = 1,
     entra_tenant_id = 'tenant-uuid',
     entra_client_id = 'app-client-id',
     entra_client_secret_enc = ?,
     email_allowlist = ?
-    WHERE org_id = 'org'`).run(
+    WHERE org_id = 'org'`, [
     encryptSecret('e-secret', SECRET),
     allowlist ? JSON.stringify(allowlist) : null,
-  );
+  ]);
 };
 
 describe('Entra OIDC flow', () => {
   let app: any;
   let ctx: any;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     cleanup();
     _resetEntraDiscoveryCache();
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: TEST_DB,
       secretKey: SECRET,
       sessionSecret: 'test-session-secret',
@@ -66,7 +66,7 @@ describe('Entra OIDC flow', () => {
     vi.restoreAllMocks();
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   it('returns 404 when not configured', async () => {
     const r = await supertest(app).get('/auth/entra/start');
@@ -74,7 +74,7 @@ describe('Entra OIDC flow', () => {
   });
 
   it('start fetches discovery and redirects to authorization endpoint', async () => {
-    enableEntra(ctx.db);
+    await enableEntra(ctx.db);
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: {
         authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
@@ -90,13 +90,13 @@ describe('Entra OIDC flow', () => {
   });
 
   it('callback rejects bad state', async () => {
-    enableEntra(ctx.db);
+    await enableEntra(ctx.db);
     const r = await supertest(app).get('/auth/entra/callback?code=x&state=wrong');
     expect(r.status).toBe(400);
   });
 
   it('callback exchanges code, verifies id_token, upserts user', async () => {
-    enableEntra(ctx.db);
+    await enableEntra(ctx.db);
     const discovery = {
       authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
       token_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/token',
@@ -117,7 +117,7 @@ describe('Entra OIDC flow', () => {
       .redirects(0);
     expect(cb.status).toBe(302);
     expect(cb.headers['set-cookie']?.some((c: string) => c.startsWith('agenfk_hub_session='))).toBe(true);
-    const row = ctx.db.prepare('SELECT * FROM users').get() as any;
+    const row = await ctx.db.get<any>('SELECT * FROM users');
     expect(row.email).toBe('bob@acme.com');
     expect(row.provider).toBe('entra');
     expect(row.provider_subject).toBe('entra-oid-1');

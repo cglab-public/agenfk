@@ -37,7 +37,7 @@ describe('hub query endpoints', () => {
 
   beforeEach(async () => {
     cleanup();
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: TEST_DB,
       secretKey: SECRET,
       sessionSecret: 'test-session-secret',
@@ -45,12 +45,12 @@ describe('hub query endpoints', () => {
     });
     app = out.app;
     ctx = out.ctx;
-    createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
     const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
 
     // Seed a few events directly via the ingest endpoint.
-    const token = issueApiKey(ctx.db, 'org', 'test');
+    const token = await issueApiKey(ctx.db, 'org', 'test');
     const send = (events: any[]) =>
       supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
@@ -73,7 +73,7 @@ describe('hub query endpoints', () => {
     ]);
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   it('GET /v1/users requires session', async () => {
     const r = await supertest(app).get('/v1/users');
@@ -100,10 +100,10 @@ describe('hub query endpoints', () => {
     expect(r.body.events[0].user_key).toBe('bob@acme.com');
   });
 
-  it('rollup recomputes daily aggregates', () => {
-    const r = recomputeRollups(ctx.db);
+  it('rollup recomputes daily aggregates', async () => {
+    const r = await recomputeRollups(ctx.db);
     expect(r.days).toBeGreaterThan(0);
-    const rows = ctx.db.prepare('SELECT * FROM rollups_daily ORDER BY day ASC, user_key ASC').all() as any[];
+    const rows = await ctx.db.all<any>('SELECT * FROM rollups_daily ORDER BY day ASC, user_key ASC');
     const day3 = rows.find((x) => x.day === '2026-05-03' && x.user_key === 'alice@acme.com');
     expect(day3?.events_count).toBe(3);
     expect(day3?.items_closed).toBe(1);

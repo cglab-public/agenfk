@@ -18,9 +18,9 @@ describe('hub auth + setup', () => {
   let app: any;
   let ctx: any;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     cleanup();
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: TEST_DB,
       secretKey: '0'.repeat(64),
       sessionSecret: 'test-session-secret-min-32-bytes-please',
@@ -32,7 +32,7 @@ describe('hub auth + setup', () => {
     ctx = out.ctx;
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   it('GET /auth/providers reflects requiresSetup when no users exist', async () => {
     const r = await supertest(app).get('/auth/providers');
@@ -65,19 +65,19 @@ describe('hub auth + setup', () => {
   });
 
   it('login fails with wrong password', async () => {
-    createPasswordUser(ctx.db, 'org', 'alice@example.com', 'rightpassword', 'viewer');
+    await createPasswordUser(ctx.db, 'org', 'alice@example.com', 'rightpassword', 'viewer');
     const r = await supertest(app).post('/auth/login').send({ email: 'alice@example.com', password: 'wrongpassword' });
     expect(r.status).toBe(401);
   });
 
   it('login is case-insensitive on email', async () => {
-    createPasswordUser(ctx.db, 'org', 'Alice@Example.com', 'rightpassword', 'viewer');
+    await createPasswordUser(ctx.db, 'org', 'Alice@Example.com', 'rightpassword', 'viewer');
     const r = await supertest(app).post('/auth/login').send({ email: 'alice@example.COM', password: 'rightpassword' });
     expect(r.status).toBe(200);
   });
 
   it('logout clears the session cookie', async () => {
-    createPasswordUser(ctx.db, 'org', 'a@b.com', 'rightpassword', 'viewer');
+    await createPasswordUser(ctx.db, 'org', 'a@b.com', 'rightpassword', 'viewer');
     const login = await supertest(app).post('/auth/login').send({ email: 'a@b.com', password: 'rightpassword' });
     const cookie = login.headers['set-cookie']?.[0];
     const out = await supertest(app).post('/auth/logout').set('Cookie', cookie);

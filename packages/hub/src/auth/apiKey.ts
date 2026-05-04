@@ -20,33 +20,41 @@ declare module 'express-serve-static-core' {
 }
 
 export function requireApiKey(db: DB) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Missing bearer token' });
-      return;
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = req.headers.authorization;
+      if (!auth || !auth.startsWith('Bearer ')) {
+        res.status(401).json({ error: 'Missing bearer token' });
+        return;
+      }
+      const token = auth.slice('Bearer '.length).trim();
+      if (!token) {
+        res.status(401).json({ error: 'Missing bearer token' });
+        return;
+      }
+      const tokenHash = hashToken(token);
+      const row = await db.get<{ org_id: string; revoked_at: string | null }>(
+        'SELECT org_id, revoked_at FROM api_keys WHERE token_hash = ?',
+        [tokenHash],
+      );
+      if (!row || row.revoked_at) {
+        res.status(401).json({ error: 'Invalid or revoked token' });
+        return;
+      }
+      req.hubApiKey = { orgId: row.org_id, tokenHash };
+      next();
+    } catch (err) {
+      next(err);
     }
-    const token = auth.slice('Bearer '.length).trim();
-    if (!token) {
-      res.status(401).json({ error: 'Missing bearer token' });
-      return;
-    }
-    const tokenHash = hashToken(token);
-    const row = db.prepare('SELECT org_id, revoked_at FROM api_keys WHERE token_hash = ?').get(tokenHash) as
-      | { org_id: string; revoked_at: string | null }
-      | undefined;
-    if (!row || row.revoked_at) {
-      res.status(401).json({ error: 'Invalid or revoked token' });
-      return;
-    }
-    req.hubApiKey = { orgId: row.org_id, tokenHash };
-    next();
   };
 }
 
 /** Insert an API key row. Returns the raw token (caller must show it once). */
-export function issueApiKey(db: DB, orgId: string, label?: string): string {
+export async function issueApiKey(db: DB, orgId: string, label?: string): Promise<string> {
   const token = generateApiKey();
-  db.prepare('INSERT INTO api_keys (token_hash, org_id, label) VALUES (?, ?, ?)').run(hashToken(token), orgId, label ?? null);
+  await db.run(
+    'INSERT INTO api_keys (token_hash, org_id, label) VALUES (?, ?, ?)',
+    [hashToken(token), orgId, label ?? null],
+  );
   return token;
 }

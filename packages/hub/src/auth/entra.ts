@@ -24,10 +24,11 @@ interface DiscoveryDoc {
 const discoveryCache = new Map<string, { doc: DiscoveryDoc; jwks: JwksClient; fetchedAt: number }>();
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 
-function readEntraConfig(ctx: HubServerContext): EntraCfg | undefined {
-  return ctx.db.prepare(
-    'SELECT entra_enabled, entra_tenant_id, entra_client_id, entra_client_secret_enc, email_allowlist FROM auth_config WHERE org_id = ?'
-  ).get(ctx.config.defaultOrgId) as unknown as EntraCfg | undefined;
+async function readEntraConfig(ctx: HubServerContext): Promise<EntraCfg | undefined> {
+  return ctx.db.get<EntraCfg>(
+    'SELECT entra_enabled, entra_tenant_id, entra_client_id, entra_client_secret_enc, email_allowlist FROM auth_config WHERE org_id = ?',
+    [ctx.config.defaultOrgId],
+  );
 }
 
 async function getDiscovery(tenantId: string) {
@@ -65,7 +66,7 @@ export function entraRouter(ctx: HubServerContext): Router {
   const router = Router();
 
   router.get('/start', async (req: Request, res: Response) => {
-    const cfg = readEntraConfig(ctx);
+    const cfg = await readEntraConfig(ctx);
     if (!cfg?.entra_enabled || !cfg.entra_tenant_id || !cfg.entra_client_id) {
       return res.status(404).json({ error: 'Entra sign-in is not enabled' });
     }
@@ -85,7 +86,7 @@ export function entraRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/callback', async (req: Request, res: Response) => {
-    const cfg = readEntraConfig(ctx);
+    const cfg = await readEntraConfig(ctx);
     if (!cfg?.entra_enabled || !cfg.entra_tenant_id || !cfg.entra_client_id || !cfg.entra_client_secret_enc) {
       return res.status(404).json({ error: 'Entra sign-in is not enabled' });
     }
@@ -121,9 +122,9 @@ export function entraRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
+    const user = await upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
-    completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
+    await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');
   });
 

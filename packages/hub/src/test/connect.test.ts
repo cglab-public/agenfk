@@ -22,7 +22,7 @@ describe('hub plug-and-play onboarding', () => {
 
   beforeEach(async () => {
     cleanup();
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: TEST_DB,
       secretKey: SECRET,
       sessionSecret: 'test-session-secret',
@@ -30,12 +30,12 @@ describe('hub plug-and-play onboarding', () => {
     });
     app = out.app;
     ctx = out.ctx;
-    createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
     const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   describe('device-code login', () => {
     it('start returns a deviceCode + userCode + verificationUri (no auth needed)', async () => {

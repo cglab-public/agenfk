@@ -44,7 +44,7 @@ describe('admin routes', () => {
 
   beforeEach(async () => {
     cleanup();
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: TEST_DB,
       secretKey: SECRET,
       sessionSecret: 'test-session-secret',
@@ -52,11 +52,11 @@ describe('admin routes', () => {
     });
     app = out.app;
     ctx = out.ctx;
-    createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    createPasswordUser(ctx.db, 'org', 'view@x', 'longenough1', 'viewer');
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    await createPasswordUser(ctx.db, 'org', 'view@x', 'longenough1', 'viewer');
   });
 
-  afterEach(() => { ctx.db.close(); cleanup(); });
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
 
   it('rejects non-admin sessions', async () => {
     const cookie = await loginAs(app, 'view@x', 'longenough1');
@@ -82,7 +82,7 @@ describe('admin routes', () => {
     expect(r.status).toBe(200);
     expect(r.body.google.clientSecretSet).toBe(true);
 
-    const row = ctx.db.prepare('SELECT google_client_secret_enc FROM auth_config').get() as any;
+    const row = await ctx.db.get<any>('SELECT google_client_secret_enc FROM auth_config');
     expect(row.google_client_secret_enc.startsWith('v1:')).toBe(true);
     expect(decryptSecret(row.google_client_secret_enc, SECRET)).toBe('top-secret');
   });

@@ -50,27 +50,47 @@ export interface SsoIdentity {
 }
 
 /** Find existing SSO user or create one. Throws if email allowlist rejects. */
-export function upsertSsoUser(db: DB, orgId: string, identity: SsoIdentity, defaultRole: 'admin' | 'viewer' = 'viewer'): UserRow {
-  const existing = db.prepare(
-    'SELECT * FROM users WHERE provider = ? AND provider_subject = ?'
-  ).get(identity.provider, identity.subject) as unknown as UserRow | undefined;
+export async function upsertSsoUser(
+  db: DB,
+  orgId: string,
+  identity: SsoIdentity,
+  defaultRole: 'admin' | 'viewer' = 'viewer',
+): Promise<UserRow> {
+  const existing = await db.get<UserRow>(
+    'SELECT * FROM users WHERE provider = ? AND provider_subject = ?',
+    [identity.provider, identity.subject],
+  );
   if (existing) return existing;
 
-  const byEmail = db.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').get(identity.email) as unknown as UserRow | undefined;
+  const byEmail = await db.get<UserRow>(
+    'SELECT * FROM users WHERE lower(email) = lower(?)',
+    [identity.email],
+  );
   if (byEmail) {
-    db.prepare('UPDATE users SET provider = ?, provider_subject = ? WHERE id = ?')
-      .run(identity.provider, identity.subject, byEmail.id);
+    await db.run(
+      'UPDATE users SET provider = ?, provider_subject = ? WHERE id = ?',
+      [identity.provider, identity.subject, byEmail.id],
+    );
     return { ...byEmail, provider: identity.provider, provider_subject: identity.subject };
   }
 
   const id = randomUUID();
-  db.prepare('INSERT INTO users (id, org_id, email, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(id, orgId, identity.email, identity.provider, identity.subject, defaultRole);
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as unknown as UserRow;
+  await db.run(
+    'INSERT INTO users (id, org_id, email, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, orgId, identity.email, identity.provider, identity.subject, defaultRole],
+  );
+  const created = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
+  if (!created) throw new Error('Failed to read back newly inserted SSO user');
+  return created;
 }
 
-export function completeSsoLogin(db: DB, res: Response, user: UserRow, sessionSecret: string): void {
-  recordLogin(db, user.id);
+export async function completeSsoLogin(
+  db: DB,
+  res: Response,
+  user: UserRow,
+  sessionSecret: string,
+): Promise<void> {
+  await recordLogin(db, user.id);
   const payload: SessionPayload = { userId: user.id, orgId: user.org_id, role: user.role };
   setSessionCookie(res, signSession(payload, sessionSecret));
 }

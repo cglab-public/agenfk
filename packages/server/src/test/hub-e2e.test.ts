@@ -35,7 +35,7 @@ describe('hub end-to-end: outbox → ingest → query', () => {
     sender = new SQLiteStorageProvider();
     await sender.init({ path: SENDER_DB });
 
-    const out = createHubApp({
+    const out = await createHubApp({
       dbPath: HUB_DB,
       secretKey: SECRET,
       sessionSecret: 'sess-secret',
@@ -46,12 +46,12 @@ describe('hub end-to-end: outbox → ingest → query', () => {
     await new Promise<void>((resolve) => hubServer.once('listening', () => resolve()));
     const addr = hubServer.address() as any;
     baseUrl = `http://127.0.0.1:${addr.port}`;
-    token = issueApiKey(hubCtx.db, 'org', 'e2e');
+    token = await issueApiKey(hubCtx.db, 'org', 'e2e');
   });
 
   afterEach(async () => {
     await new Promise<void>((resolve) => hubServer.close(() => resolve()));
-    hubCtx.db.close();
+    await hubCtx.db.close();
     await sender.shutdown();
     cleanup();
   });
@@ -71,11 +71,11 @@ describe('hub end-to-end: outbox → ingest → query', () => {
     await flusher.flush();
     expect(sender.hubOutboxCount()).toBe(0);
 
-    const row = hubCtx.db.prepare('SELECT * FROM events').get() as any;
+    const row = await hubCtx.db.get('SELECT * FROM events') as any;
     expect(row.type).toBe('item.created');
     expect(row.installation_id).toBe('e2e-installation');
     expect(JSON.parse(row.payload).payload.title).toBe('Demo');
-    const inst = hubCtx.db.prepare('SELECT * FROM installations').get() as any;
+    const inst = await hubCtx.db.get('SELECT * FROM installations') as any;
     expect(inst.id).toBe('e2e-installation');
   });
 
@@ -92,8 +92,8 @@ describe('hub end-to-end: outbox → ingest → query', () => {
     sender.hubOutboxAppend(peeked.event_id, peeked.occurred_at, peeked.payload);
     expect(sender.hubOutboxCount()).toBe(1);
     await flusher.flush();
-    const c = (hubCtx.db.prepare('SELECT COUNT(*) AS c FROM events').get() as any).c;
-    expect(c).toBe(1);
+    const cRow = await hubCtx.db.get('SELECT COUNT(*) AS c FROM events') as any;
+    expect(cRow.c).toBe(1);
   });
 
   it('halts on persistent 4xx (bad token)', async () => {

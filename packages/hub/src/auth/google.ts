@@ -10,10 +10,11 @@ const GOOGLE_USERINFO = 'https://openidconnect.googleapis.com/v1/userinfo';
 
 interface GoogleCfg { google_enabled: number; google_client_id: string | null; google_client_secret_enc: string | null; email_allowlist: string | null }
 
-function readGoogleConfig(ctx: HubServerContext) {
-  return ctx.db.prepare(
-    'SELECT google_enabled, google_client_id, google_client_secret_enc, email_allowlist FROM auth_config WHERE org_id = ?'
-  ).get(ctx.config.defaultOrgId) as unknown as GoogleCfg | undefined;
+async function readGoogleConfig(ctx: HubServerContext): Promise<GoogleCfg | undefined> {
+  return ctx.db.get<GoogleCfg>(
+    'SELECT google_enabled, google_client_id, google_client_secret_enc, email_allowlist FROM auth_config WHERE org_id = ?',
+    [ctx.config.defaultOrgId],
+  );
 }
 
 function callbackUrl(req: Request): string {
@@ -24,8 +25,8 @@ function callbackUrl(req: Request): string {
 export function googleRouter(ctx: HubServerContext): Router {
   const router = Router();
 
-  router.get('/start', (req: Request, res: Response) => {
-    const cfg = readGoogleConfig(ctx);
+  router.get('/start', async (req: Request, res: Response) => {
+    const cfg = await readGoogleConfig(ctx);
     if (!cfg?.google_enabled || !cfg.google_client_id) {
       return res.status(404).json({ error: 'Google sign-in is not enabled' });
     }
@@ -40,7 +41,7 @@ export function googleRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/callback', async (req: Request, res: Response) => {
-    const cfg = readGoogleConfig(ctx);
+    const cfg = await readGoogleConfig(ctx);
     if (!cfg?.google_enabled || !cfg.google_client_id || !cfg.google_client_secret_enc) {
       return res.status(404).json({ error: 'Google sign-in is not enabled' });
     }
@@ -75,9 +76,9 @@ export function googleRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(userinfo.email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
+    const user = await upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
-    completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
+    await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');
   });
 

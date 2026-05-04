@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
@@ -20,7 +19,6 @@ interface AuthConfigRow {
 }
 
 function publicAuthConfig(row: AuthConfigRow) {
-  // Never echo encrypted secrets — only flag whether each is set.
   return {
     passwordEnabled: !!row.password_enabled,
     googleEnabled: !!row.google_enabled,
@@ -40,12 +38,13 @@ export function adminRouter(ctx: HubServerContext): Router {
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────
-  router.get('/auth-config', guard, (req: Request, res: Response) => {
-    const row = ctx.db.prepare('SELECT * FROM auth_config WHERE org_id = ?').get(req.session!.orgId) as unknown as AuthConfigRow;
+  router.get('/auth-config', guard, async (req: Request, res: Response) => {
+    const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [req.session!.orgId]);
+    if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
   });
 
-  router.put('/auth-config', guard, (req: Request, res: Response) => {
+  router.put('/auth-config', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
     const updates: string[] = [];
@@ -68,16 +67,18 @@ export function adminRouter(ctx: HubServerContext): Router {
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     params.push(orgId);
-    ctx.db.prepare(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`).run(...params);
-    const row = ctx.db.prepare('SELECT * FROM auth_config WHERE org_id = ?').get(orgId) as unknown as AuthConfigRow;
+    await ctx.db.run(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`, params);
+    const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
   });
 
   // ── API keys (installation tokens) ───────────────────────────────────────
-  router.get('/api-keys', guard, (req: Request, res: Response) => {
-    const rows = ctx.db.prepare(
-      'SELECT token_hash, label, created_at, revoked_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC'
-    ).all(req.session!.orgId) as any[];
+  router.get('/api-keys', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<any>(
+      'SELECT token_hash, label, created_at, revoked_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
+      [req.session!.orgId],
+    );
     res.json(rows.map(r => ({
       tokenHashPreview: r.token_hash.slice(0, 8),
       label: r.label,
@@ -86,45 +87,45 @@ export function adminRouter(ctx: HubServerContext): Router {
     })));
   });
 
-  router.post('/api-keys', guard, (req: Request, res: Response) => {
+  router.post('/api-keys', guard, async (req: Request, res: Response) => {
     const label = typeof req.body?.label === 'string' ? req.body.label : null;
-    const token = issueApiKey(ctx.db, req.session!.orgId, label ?? undefined);
-    // Raw token shown once — caller must capture immediately.
+    const token = await issueApiKey(ctx.db, req.session!.orgId, label ?? undefined);
     res.status(201).json({ token, label });
   });
 
-  router.delete('/api-keys/:tokenHashPreview', guard, (req: Request, res: Response) => {
+  router.delete('/api-keys/:tokenHashPreview', guard, async (req: Request, res: Response) => {
     const preview = req.params.tokenHashPreview;
-    const result = ctx.db
-      .prepare("UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL")
-      .run(req.session!.orgId, `${preview}%`);
+    const result = await ctx.db.run(
+      "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
+      [req.session!.orgId, `${preview}%`],
+    );
     res.json({ revoked: result.changes });
   });
 
   // ── Users ────────────────────────────────────────────────────────────────
-  router.get('/users', guard, (req: Request, res: Response) => {
-    const rows = ctx.db.prepare(
-      'SELECT id, email, provider, role, active, created_at, last_login_at FROM users WHERE org_id = ? ORDER BY created_at DESC'
-    ).all(req.session!.orgId);
+  router.get('/users', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all(
+      'SELECT id, email, provider, role, active, created_at, last_login_at FROM users WHERE org_id = ? ORDER BY created_at DESC',
+      [req.session!.orgId],
+    );
     res.json(rows);
   });
 
-  router.post('/users/invite', guard, (req: Request, res: Response) => {
+  router.post('/users/invite', guard, async (req: Request, res: Response) => {
     const { email, password, role } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ error: 'email + password (≥8 chars) required' });
     }
     if (role !== 'admin' && role !== 'viewer') return res.status(400).json({ error: 'role must be admin or viewer' });
     try {
-      const u = createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
+      const u = await createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
       res.status(201).json({ id: u.id, email: u.email, role: u.role });
     } catch (e: any) {
-      // UNIQUE constraint
       res.status(409).json({ error: 'A user with that email already exists' });
     }
   });
 
-  router.put('/users/:id', guard, (req: Request, res: Response) => {
+  router.put('/users/:id', guard, async (req: Request, res: Response) => {
     const { role, active, password } = req.body ?? {};
     const sets: string[] = [];
     const params: any[] = [];
@@ -133,14 +134,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
     params.push(req.params.id, req.session!.orgId);
-    const result = ctx.db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`).run(...params);
+    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
   });
 
-  router.delete('/users/:id', guard, (req: Request, res: Response) => {
+  router.delete('/users/:id', guard, async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
-    const result = ctx.db.prepare('DELETE FROM users WHERE id = ? AND org_id = ?').run(req.params.id, req.session!.orgId);
+    const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
   });

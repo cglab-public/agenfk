@@ -5,23 +5,21 @@ import { DB } from './db.js';
  * occurred_at on or after the latest rollup's day. Runs in a single
  * transaction; safe to call frequently.
  */
-export function recomputeRollups(db: DB): { days: number } {
-  const lastRow = db.prepare('SELECT MAX(day) AS day FROM rollups_daily').get() as { day: string | null };
-  const lastDay = lastRow.day || '1970-01-01';
-  const days = db.prepare(`
-    SELECT DISTINCT date(occurred_at) AS day FROM events WHERE date(occurred_at) >= ?
-  `).all(lastDay) as { day: string }[];
+export async function recomputeRollups(db: DB): Promise<{ days: number }> {
+  const lastRow = await db.get<{ day: string | null }>('SELECT MAX(day) AS day FROM rollups_daily');
+  const lastDay = lastRow?.day || '1970-01-01';
+  const days = await db.all<{ day: string }>(
+    `SELECT DISTINCT date(occurred_at) AS day FROM events WHERE date(occurred_at) >= ?`,
+    [lastDay],
+  );
 
-  const stmt = db.prepare(`
+  const upsertSql = `
     INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails)
     SELECT
       org_id,
       user_key,
       date(occurred_at) AS day,
       COUNT(*) AS events_count,
-      -- Count either flavour of closure signal but de-dup per item so we don't
-      -- double-count when both 'item.closed' and a 'step.transitioned'-to-DONE
-      -- fire for the same item.
       COUNT(DISTINCT CASE
         WHEN type = 'item.closed' THEN item_id
         WHEN type = 'step.transitioned'
@@ -43,22 +41,19 @@ export function recomputeRollups(db: DB): { days: number } {
       tokens_out = excluded.tokens_out,
       validate_passes = excluded.validate_passes,
       validate_fails = excluded.validate_fails
-  `);
+  `;
 
-  db.exec('BEGIN');
-  try {
-    for (const { day } of days) stmt.run(day);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+  await db.transaction(async () => {
+    for (const { day } of days) {
+      await db.run(upsertSql, [day]);
+    }
+  });
   return { days: days.length };
 }
 
 export function startRollupTimer(db: DB, intervalMs: number = 5 * 60_000): NodeJS.Timeout {
   const t = setInterval(() => {
-    try { recomputeRollups(db); } catch (e) { console.error('[ROLLUP]', (e as Error).message); }
+    recomputeRollups(db).catch((e) => console.error('[ROLLUP]', (e as Error).message));
   }, intervalMs);
   t.unref?.();
   return t;

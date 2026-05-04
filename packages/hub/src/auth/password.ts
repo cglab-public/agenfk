@@ -25,28 +25,33 @@ export function verifyPassword(plain: string, hash: string): boolean {
   return bcrypt.compareSync(plain, hash);
 }
 
-export function findUserByEmail(db: DB, email: string): UserRow | null {
-  return (db.prepare('SELECT * FROM users WHERE lower(email) = lower(?)').get(email) as UserRow | undefined) ?? null;
+export async function findUserByEmail(db: DB, email: string): Promise<UserRow | null> {
+  const row = await db.get<UserRow>('SELECT * FROM users WHERE lower(email) = lower(?)', [email]);
+  return row ?? null;
 }
 
-export function createPasswordUser(
+export async function createPasswordUser(
   db: DB,
   orgId: string,
   email: string,
   plainPassword: string,
   role: 'admin' | 'viewer',
-): UserRow {
+): Promise<UserRow> {
   const id = randomUUID();
-  db.prepare(
-    'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, orgId, email, hashPassword(plainPassword), 'password', role);
-  return findUserByEmail(db, email)!;
+  await db.run(
+    'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, orgId, email, hashPassword(plainPassword), 'password', role],
+  );
+  const created = await findUserByEmail(db, email);
+  if (!created) throw new Error('Failed to read back newly inserted user');
+  return created;
 }
 
-export function countUsers(db: DB): number {
-  return (db.prepare('SELECT COUNT(*) AS c FROM users').get() as any).c;
+export async function countUsers(db: DB): Promise<number> {
+  const row = await db.get<{ c: number }>('SELECT COUNT(*) AS c FROM users');
+  return row?.c ?? 0;
 }
 
-export function recordLogin(db: DB, userId: string): void {
-  db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(userId);
+export async function recordLogin(db: DB, userId: string): Promise<void> {
+  await db.run("UPDATE users SET last_login_at = datetime('now') WHERE id = ?", [userId]);
 }

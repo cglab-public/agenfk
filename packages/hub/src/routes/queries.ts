@@ -46,36 +46,34 @@ export function queriesRouter(ctx: HubServerContext): Router {
   const router = Router();
   const guard = requireSession(ctx.config.sessionSecret);
 
-  // Distinct event-actor users (for chip multi-select). Honours project /
-  // item-type filters so the user list shrinks when a developer narrows scope.
-  router.get('/users', guard, (req: Request, res: Response) => {
+  router.get('/users', guard, async (req: Request, res: Response) => {
     const f = readEventFilters(req);
-    // user_key filter doesn't make sense here — it's the field we're returning.
     const { where, params } = applyEventFilters(req.session!.orgId, { ...f, users: null });
-    const rows = ctx.db.prepare(
+    const rows = await ctx.db.all(
       `SELECT user_key,
               MAX(occurred_at) AS last_seen,
               COUNT(*) AS events_count
        FROM events WHERE ${where.join(' AND ')}
        GROUP BY user_key
-       ORDER BY last_seen DESC`
-    ).all(...params);
+       ORDER BY last_seen DESC`,
+      params,
+    );
     res.json(rows);
   });
 
-  // Paginated event timeline.
-  router.get('/timeline', guard, (req: Request, res: Response) => {
+  router.get('/timeline', guard, async (req: Request, res: Response) => {
     const f = readEventFilters(req);
     const limit = Math.min(Number.parseInt((req.query.limit as string) ?? '100', 10) || 100, 500);
     const offset = Math.max(Number.parseInt((req.query.offset as string) ?? '0', 10) || 0, 0);
     const { where, params } = applyEventFilters(req.session!.orgId, f);
 
-    const rows = ctx.db.prepare(
+    const rows = await ctx.db.all<any>(
       `SELECT event_id, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, user_key, payload
        FROM events WHERE ${where.join(' AND ')}
        ORDER BY occurred_at DESC
-       LIMIT ? OFFSET ?`
-    ).all(...params, limit, offset);
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
+    );
 
     res.json({
       events: rows.map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })),
@@ -83,19 +81,14 @@ export function queriesRouter(ctx: HubServerContext): Router {
     });
   });
 
-  // Time-bucketed metrics from rollups_daily. v1 supports bucket=day only.
-  // Project / item-type filters fall through to the events table because the
-  // daily rollup intentionally aggregates across them.
-  router.get('/metrics', guard, (req: Request, res: Response) => {
-    recomputeRollups(ctx.db);
+  router.get('/metrics', guard, async (req: Request, res: Response) => {
+    await recomputeRollups(ctx.db);
     const f = readEventFilters(req);
     const orgId = req.session!.orgId;
 
     if (f.projects || f.itemTypes) {
-      // Compute the same shape on-the-fly from the events table when the
-      // caller is asking for a slice the rollup table doesn't pre-aggregate.
       const { where, params } = applyEventFilters(orgId, f);
-      const rows = ctx.db.prepare(
+      const rows = await ctx.db.all(
         `SELECT user_key, date(occurred_at) AS day,
                 COUNT(*) AS events_count,
                 COUNT(DISTINCT CASE
@@ -111,64 +104,58 @@ export function queriesRouter(ctx: HubServerContext): Router {
                 SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails
          FROM events WHERE ${where.join(' AND ')}
          GROUP BY user_key, day
-         ORDER BY day ASC, user_key ASC`
-      ).all(...params);
+         ORDER BY day ASC, user_key ASC`,
+        params,
+      );
       res.json({ bucket: 'day', series: rows });
       return;
     }
 
     const { where, params } = applyEventFilters(orgId, f, 'day');
-    const rows = ctx.db.prepare(
+    const rows = await ctx.db.all(
       `SELECT user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails
        FROM rollups_daily WHERE ${where.join(' AND ')}
-       ORDER BY day ASC, user_key ASC`
-    ).all(...params);
+       ORDER BY day ASC, user_key ASC`,
+      params,
+    );
     res.json({ bucket: 'day', series: rows });
   });
 
-  // Distinct event types observed in this org — used to populate filter chips.
-  router.get('/event-types', guard, (req: Request, res: Response) => {
-    const rows = ctx.db.prepare(
-      `SELECT DISTINCT type FROM events WHERE org_id = ? ORDER BY type ASC`
-    ).all(req.session!.orgId) as Array<{ type: string }>;
+  router.get('/event-types', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<{ type: string }>(
+      `SELECT DISTINCT type FROM events WHERE org_id = ? ORDER BY type ASC`,
+      [req.session!.orgId],
+    );
     res.json({ types: rows.map(r => r.type) });
   });
 
-  // Distinct git remote URLs observed in this org. The agenfk client uses the
-  // remote URL as a stable cross-installation "project" key — projectId itself
-  // is per-user so it can't group activity from two devs on the same repo.
-  router.get('/projects', guard, (req: Request, res: Response) => {
-    const rows = ctx.db.prepare(
+  router.get('/projects', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<{ remote_url: string }>(
       `SELECT DISTINCT remote_url FROM events
        WHERE org_id = ? AND remote_url IS NOT NULL AND remote_url != ''
-       ORDER BY remote_url ASC`
-    ).all(req.session!.orgId) as Array<{ remote_url: string }>;
+       ORDER BY remote_url ASC`,
+      [req.session!.orgId],
+    );
     res.json({ projects: rows.map(r => r.remote_url) });
   });
 
-  // Distinct EPIC/STORY/TASK/BUG values observed (for the item-type chip row).
-  router.get('/item-types', guard, (req: Request, res: Response) => {
-    const rows = ctx.db.prepare(
+  router.get('/item-types', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<{ item_type: string }>(
       `SELECT DISTINCT item_type FROM events
        WHERE org_id = ? AND item_type IS NOT NULL AND item_type != ''
-       ORDER BY item_type ASC`
-    ).all(req.session!.orgId) as Array<{ item_type: string }>;
+       ORDER BY item_type ASC`,
+      [req.session!.orgId],
+    );
     res.json({ itemTypes: rows.map(r => r.item_type) });
   });
 
-  // Time-bucketed event histogram. Bars on the timeline UI consume this.
-  // Returns one row per time bucket with per-type counts and total.
-  router.get('/histogram', guard, (req: Request, res: Response) => {
+  router.get('/histogram', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const bucket = (req.query.bucket as string | undefined) ?? 'day';
     if (bucket !== 'day' && bucket !== 'hour') {
       res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
       return;
     }
-    // Caller supplies its tz offset in minutes east of UTC (matches what JS
-    // gives us as -getTimezoneOffset()). When set, we shift occurred_at into
-    // local time before strftime so day/hour buckets line up with the user's
-    // calendar instead of UTC. Range-clamped to ±14h, the widest real offset.
     const tzRaw = req.query.tzOffsetMin;
     const tzOffsetMin = typeof tzRaw === 'string' ? Number.parseInt(tzRaw, 10) : NaN;
     const tzShift = Number.isFinite(tzOffsetMin)
@@ -178,18 +165,17 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const { where, params } = applyEventFilters(orgId, f);
 
     const fmt = bucket === 'day' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
-    // Placeholder order matters: strftime's ? comes BEFORE the WHERE clause
-    // ?s in the query, so the tz modifier must be the first bound value.
     const tzModifier = tzShift !== 0 ? `, ?` : '';
     const sqlParams: any[] = [];
     if (tzShift !== 0) sqlParams.push(`${tzShift >= 0 ? '+' : ''}${tzShift} minutes`);
     sqlParams.push(...params);
-    const rows = ctx.db.prepare(
+    const rows = await ctx.db.all<{ time: string; type: string; n: number }>(
       `SELECT strftime('${fmt}', occurred_at${tzModifier}) AS time, type, COUNT(*) AS n
        FROM events WHERE ${where.join(' AND ')}
        GROUP BY time, type
-       ORDER BY time ASC`
-    ).all(...sqlParams) as Array<{ time: string; type: string; n: number }>;
+       ORDER BY time ASC`,
+      sqlParams,
+    );
 
     const byTime = new Map<string, { time: string; total: number; by_type: Record<string, number> }>();
     for (const r of rows) {

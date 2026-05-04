@@ -13,41 +13,41 @@ const cleanup = () => {
 };
 
 describe('createHubApp', () => {
-  let teardown: () => void = () => {};
+  let teardown: () => Promise<void> = async () => {};
 
   beforeEach(() => cleanup());
-  afterEach(() => { teardown(); cleanup(); });
+  afterEach(async () => { await teardown(); cleanup(); teardown = async () => {}; });
 
-  it('initializes schema and seeds default org+auth_config', () => {
-    const { ctx } = createHubApp({
+  it('initializes schema and seeds default org+auth_config', async () => {
+    const { ctx } = await createHubApp({
       dbPath: TEST_DB,
       secretKey: '0'.repeat(64),
       sessionSecret: 'sess',
       defaultOrgId: 'acme',
     });
-    teardown = () => ctx.db.close();
+    teardown = async () => { await ctx.db.close(); };
 
-    const tables = ctx.db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[];
+    const tables = await ctx.db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
     const names = tables.map(t => t.name);
     for (const expected of ['orgs', 'api_keys', 'installations', 'events', 'rollups_daily', 'users', 'auth_config']) {
       expect(names).toContain(expected);
     }
 
-    const org = ctx.db.prepare('SELECT id FROM orgs').get() as { id: string };
-    expect(org.id).toBe('acme');
+    const org = await ctx.db.get<{ id: string }>('SELECT id FROM orgs');
+    expect(org?.id).toBe('acme');
 
-    const cfg = ctx.db.prepare('SELECT password_enabled FROM auth_config WHERE org_id = ?').get('acme') as { password_enabled: number };
-    expect(cfg.password_enabled).toBe(1);
+    const cfg = await ctx.db.get<{ password_enabled: number }>('SELECT password_enabled FROM auth_config WHERE org_id = ?', ['acme']);
+    expect(cfg?.password_enabled).toBe(1);
   });
 
   it('healthz returns ok', async () => {
-    const { app, ctx } = createHubApp({
+    const { app, ctx } = await createHubApp({
       dbPath: TEST_DB,
       secretKey: '0'.repeat(64),
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
-    teardown = () => ctx.db.close();
+    teardown = async () => { await ctx.db.close(); };
 
     // Use http via supertest for a clean assertion
     const supertest = (await import('supertest')).default;
@@ -57,15 +57,11 @@ describe('createHubApp', () => {
   });
 
   it('openDb migrates a legacy events table without item_type/remote_url columns', async () => {
-    // Simulate a pre-beta.9 DB: create the events table with the old shape
-    // and call openDb(). The migration must add the missing columns + indexes
-    // without throwing — the bug we're guarding against was that CREATE INDEX
-    // on the new columns ran *before* ALTER TABLE.
     const { openDb } = await import('../db');
     cleanup();
-    const legacy = openDb(TEST_DB);
-    legacy.exec("DROP TABLE IF EXISTS events");
-    legacy.exec(`
+    const legacy = await openDb(TEST_DB);
+    await legacy.exec("DROP TABLE IF EXISTS events");
+    await legacy.exec(`
       CREATE TABLE events (
         event_id TEXT PRIMARY KEY,
         org_id TEXT NOT NULL,
@@ -79,13 +75,11 @@ describe('createHubApp', () => {
         payload TEXT NOT NULL
       )
     `);
-    legacy.close();
+    await legacy.close();
 
-    // Re-open: this must not throw, even though the legacy table is missing
-    // the item_type and remote_url columns referenced by the new indexes.
-    const db = openDb(TEST_DB);
-    teardown = () => { try { db.close(); } catch { /* already closed */ } };
-    const cols = db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+    const db = await openDb(TEST_DB);
+    teardown = async () => { try { await db.close(); } catch { /* already closed */ } };
+    const cols = await db.all<{ name: string }>("PRAGMA table_info(events)");
     const names = new Set(cols.map((c: any) => c.name));
     expect(names.has('item_type')).toBe(true);
     expect(names.has('remote_url')).toBe(true);
@@ -104,13 +98,13 @@ describe('createHubApp', () => {
     fs.writeFileSync(path.join(tmp, 'index.html'), '<html data-test-spa="1"></html>', 'utf8');
     process.env.AGENFK_HUB_UI_DIR = tmp;
 
-    const { app, ctx } = createHubApp({
+    const { app, ctx } = await createHubApp({
       dbPath: TEST_DB,
       secretKey: '0'.repeat(64),
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
-    teardown = () => { try { ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true }); };
+    teardown = async () => { try { await ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true }); };
 
     const supertest = (await import('supertest')).default;
     for (const route of ['/users/alice%40acme.com', '/admin/keys', '/connect', '/anything/deep/here']) {
@@ -125,13 +119,13 @@ describe('createHubApp', () => {
   });
 
   it('healthz reports the live hub package version (not a hardcoded literal)', async () => {
-    const { app, ctx } = createHubApp({
+    const { app, ctx } = await createHubApp({
       dbPath: TEST_DB,
       secretKey: '0'.repeat(64),
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
-    teardown = () => ctx.db.close();
+    teardown = async () => { await ctx.db.close(); };
 
     const expectedVersion = (
       await import('fs')

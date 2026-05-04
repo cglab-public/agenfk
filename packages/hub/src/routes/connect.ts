@@ -74,18 +74,18 @@ export function connectRouter(ctx: HubServerContext): Router {
 
   // ── Device-code flow ──────────────────────────────────────────────────────
 
-  router.post('/device/start', (req: Request, res: Response) => {
+  router.post('/device/start', async (req: Request, res: Response) => {
     const deviceCode = randomBytes(32).toString('base64url');
     let code = userCode();
-    // Tiny retry loop on the (astronomically unlikely) UNIQUE collision.
     for (let i = 0; i < 5; i++) {
-      const exists = ctx.db.prepare('SELECT 1 FROM device_codes WHERE user_code = ?').get(code);
+      const exists = await ctx.db.get('SELECT 1 AS x FROM device_codes WHERE user_code = ?', [code]);
       if (!exists) break;
       code = userCode();
     }
-    ctx.db.prepare(
-      `INSERT INTO device_codes (device_code, user_code, expires_at) VALUES (?, ?, ?)`
-    ).run(deviceCode, code, isoPlus(DEVICE_CODE_TTL_S));
+    await ctx.db.run(
+      `INSERT INTO device_codes (device_code, user_code, expires_at) VALUES (?, ?, ?)`,
+      [deviceCode, code, isoPlus(DEVICE_CODE_TTL_S)],
+    );
     res.json({
       deviceCode,
       userCode: code,
@@ -95,12 +95,13 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/device/poll', (req: Request, res: Response) => {
+  router.post('/device/poll', async (req: Request, res: Response) => {
     const { deviceCode } = req.body ?? {};
     if (typeof deviceCode !== 'string' || !deviceCode) { res.status(400).json({ error: 'deviceCode required' }); return; }
-    const row = ctx.db.prepare(
-      'SELECT org_id, token_hash, approved_at, expires_at FROM device_codes WHERE device_code = ?'
-    ).get(deviceCode) as { org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string } | undefined;
+    const row = await ctx.db.get<{ org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string }>(
+      'SELECT org_id, token_hash, approved_at, expires_at FROM device_codes WHERE device_code = ?',
+      [deviceCode],
+    );
     if (!row) { res.status(404).json({ error: 'unknown device code' }); return; }
     if (new Date(row.expires_at).getTime() < Date.now()) {
       res.json({ status: 'expired' });
@@ -123,21 +124,23 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/device/approve', guard, (req: Request, res: Response) => {
+  router.post('/device/approve', guard, async (req: Request, res: Response) => {
     const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
     if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
-    const row = ctx.db.prepare(
-      'SELECT device_code, expires_at, approved_at FROM device_codes WHERE user_code = ?'
-    ).get(userCodeIn) as { device_code: string; expires_at: string; approved_at: string | null } | undefined;
+    const row = await ctx.db.get<{ device_code: string; expires_at: string; approved_at: string | null }>(
+      'SELECT device_code, expires_at, approved_at FROM device_codes WHERE user_code = ?',
+      [userCodeIn],
+    );
     if (!row) { res.status(404).json({ error: 'unknown user code' }); return; }
     if (new Date(row.expires_at).getTime() < Date.now()) { res.status(410).json({ error: 'code expired' }); return; }
     if (row.approved_at) { res.status(409).json({ error: 'code already approved' }); return; }
 
     const orgId = req.session!.orgId;
-    const token = issueApiKey(ctx.db, orgId, `device:${userCodeIn}`);
-    ctx.db.prepare(
-      `UPDATE device_codes SET org_id = ?, token_hash = 'issued', approved_at = datetime('now') WHERE device_code = ?`
-    ).run(orgId, row.device_code);
+    const token = await issueApiKey(ctx.db, orgId, `device:${userCodeIn}`);
+    await ctx.db.run(
+      `UPDATE device_codes SET org_id = ?, token_hash = 'issued', approved_at = datetime('now') WHERE device_code = ?`,
+      [orgId, row.device_code],
+    );
 
     // Park the bearer in-memory keyed by device_code so /poll hands it over
     // exactly once. It's never persisted to disk in plain form.
@@ -161,17 +164,17 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/invite/redeem', (req: Request, res: Response) => {
+  router.post('/invite/redeem', async (req: Request, res: Response) => {
     const inviteToken = String(req.body?.inviteToken ?? '');
     if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
     const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey);
     if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
     if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
-    const seen = ctx.db.prepare('SELECT 1 FROM used_invites WHERE nonce = ?').get(parsed.nonce);
+    const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);
     if (seen) { res.status(400).json({ error: 'invite token already used' }); return; }
 
-    const token = issueApiKey(ctx.db, parsed.orgId, 'invite');
-    ctx.db.prepare('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)').run(parsed.nonce, parsed.orgId);
+    const token = await issueApiKey(ctx.db, parsed.orgId, 'invite');
+    await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
   });
 

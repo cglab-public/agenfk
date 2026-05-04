@@ -36,13 +36,13 @@ export interface HubServerContext {
   config: HubServerConfig;
 }
 
-export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubServerContext } {
-  const db = openDb(config.dbPath);
+export async function createHubApp(config: HubServerConfig): Promise<{ app: Express; ctx: HubServerContext }> {
+  const db = await openDb(config.dbPath);
 
   // Default org row (single-tenant v1).
-  db.prepare('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)').run(config.defaultOrgId, config.defaultOrgId);
+  await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
   // Default auth_config row for the default org.
-  db.prepare('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)').run(config.defaultOrgId);
+  await db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', [config.defaultOrgId]);
 
   const ctx: HubServerContext = { db, config };
 

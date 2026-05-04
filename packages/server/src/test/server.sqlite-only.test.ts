@@ -14,6 +14,7 @@ vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
   mockAxios.post = vi.fn();
+  mockAxios.create = vi.fn(() => mockAxios);
   return { default: mockAxios };
 });
 
