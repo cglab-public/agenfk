@@ -62,13 +62,37 @@ function downloadAsset(repo, tag, pattern, outputPath) {
   execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
 }
 
+function ensureHubDeps(baseDir) {
+  const hubNodeModules = path.join(baseDir, 'packages/hub/node_modules/cookie-parser');
+  const rootNodeModules = path.join(baseDir, 'node_modules/cookie-parser');
+  if (fs.existsSync(hubNodeModules) || fs.existsSync(rootNodeModules)) return;
+
+  console.log(`${GREEN}Installing hub runtime dependencies...${RESET}`);
+  try {
+    execSync('npm install -w packages/hub --omit=dev --no-audit --no-fund', {
+      cwd: baseDir,
+      stdio: 'inherit',
+    });
+  } catch {
+    console.log(`${YELLOW}Workspace install failed; falling back to flat install in packages/hub...${RESET}`);
+    execSync('npm install --omit=dev --no-audit --no-fund --no-package-lock', {
+      cwd: path.join(baseDir, 'packages/hub'),
+      stdio: 'inherit',
+    });
+  }
+}
+
 function startHub(baseDir) {
   const binPath = path.join(baseDir, 'packages/hub/dist/bin.js');
   if (!fs.existsSync(binPath)) {
     console.error(`\n${YELLOW}Hub binary not found at ${binPath}.${RESET}`);
-    console.error(`Run with --rebuild to force a fresh build.\n`);
+    console.error(`The downloaded release tarball did not contain packages/hub/dist/bin.js.`);
+    console.error(`If you ran without ${CYAN}--beta${YELLOW}, the latest stable release likely predates the hub package.`);
+    console.error(`Re-run with ${CYAN}--beta${YELLOW} to pull the latest pre-release, or with ${CYAN}--rebuild${YELLOW} to force a fresh source build.${RESET}\n`);
     process.exit(1);
   }
+
+  ensureHubDeps(baseDir);
 
   const missing = [];
   if (!process.env.AGENFK_HUB_SECRET_KEY)     missing.push('AGENFK_HUB_SECRET_KEY');
@@ -137,6 +161,12 @@ if (!isNpxCache) {
       downloadAsset(REPO, tag, 'agenfk-dist.tar.gz', path.join(installDir, 'agenfk-dist.tar.gz'));
       execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(installDir, 'agenfk-dist.tar.gz'));
+      if (!fs.existsSync(path.join(installDir, 'packages/hub/dist/bin.js'))) {
+        throw new Error(
+          `Release tarball did not contain packages/hub/dist/bin.js — ` +
+          `the resolved release likely predates the hub package. Re-run with --beta.`
+        );
+      }
     } catch (e) {
       console.error(`${YELLOW}Failed to download pre-built binary: ${e.message}${RESET}`);
       console.log(`${BLUE}Falling back to source build...${RESET}`);
