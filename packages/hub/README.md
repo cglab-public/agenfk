@@ -79,12 +79,65 @@ survives image rebuilds.
 
 | Variable                              | Default                       |
 | ------------------------------------- | ----------------------------- |
+| `AGENFK_HUB_DB`                       | `sqlite` (also: `postgres`)   |
 | `AGENFK_HUB_DB_PATH`                  | `/var/lib/agenfk-hub/hub.sqlite` (Docker: `/data/hub.sqlite`) |
+| `AGENFK_HUB_PG_URL`                   | (required when `AGENFK_HUB_DB=postgres`) |
 | `AGENFK_HUB_PORT`                     | `4000`                        |
 | `AGENFK_HUB_ORG_ID`                   | `default`                     |
 | `AGENFK_HUB_INITIAL_ADMIN_EMAIL`      | (none — uses /setup wizard)   |
 | `AGENFK_HUB_INITIAL_ADMIN_PASSWORD`   | (none — uses /setup wizard)   |
 | `AGENFK_HUB_UI_DIR`                   | (auto-detected `../public` or `../../hub-ui/dist`) |
+
+## Enterprise: Postgres backend
+
+For fleet-scale deployments where SQLite's single-file model is impractical
+(many concurrent writers, cross-AZ HA, point-in-time recovery, fleet-wide
+backup/audit tooling), the hub also supports Postgres. Opt in by setting:
+
+```bash
+export AGENFK_HUB_DB=postgres
+export AGENFK_HUB_PG_URL='postgres://hub:hub-password@db.internal.acme.com:5432/agenfk_hub?sslmode=require'
+```
+
+Anything `pg`-driver-compatible works — including connection pooling proxies
+like PgBouncer (transaction-pool mode is fine; the hub does not use prepared
+statements that span requests).
+
+**You provision the Postgres server yourself.** Common production paths:
+
+- **AWS** — RDS for PostgreSQL or Aurora PostgreSQL (recommended for managed
+  backups, multi-AZ, and read replicas).
+- **GCP** — Cloud SQL for PostgreSQL or AlloyDB.
+- **Azure** — Azure Database for PostgreSQL (Flexible Server).
+- **Self-hosted** — any PostgreSQL ≥ 13 reachable on `AGENFK_HUB_PG_URL` (Docker,
+  k8s with the Zalando or CrunchyData operator, plain VMs, etc.).
+
+The hub deliberately does **not** ship a `docker-compose` Postgres service:
+production Postgres is a database operator's call, not a hub-vendor opinion.
+
+### What happens on first connect
+
+1. The hub probes the connection at boot and fails fast with a redacted-DSN
+   error if the server is unreachable.
+2. Schema bootstrap runs `CREATE TABLE IF NOT EXISTS` for every hub table
+   (`orgs`, `api_keys`, `installations`, `events`, `rollups_daily`, `users`,
+   `device_codes`, `used_invites`, `auth_config`) plus the indexes used by the
+   timeline / histogram queries.
+3. A column-backfill pass adds `item_type`, `remote_url`, `item_title`, and
+   `external_id` to a pre-existing `events` table if any are missing — same
+   shape as the SQLite backend so legacy installs migrate cleanly.
+4. The default org row + default `auth_config` row are upserted by
+   `createHubApp` itself.
+
+The hub user only needs `CREATE`, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and
+`ALTER` on its own database. No superuser, no extensions required.
+
+### Migrating from SQLite to Postgres
+
+Not built into this beta. Treat the SQLite hub as the single-tenant on-ramp and
+the Postgres hub as a fresh deployment for the enterprise-fleet phase. If you
+need the historical events copied over, raise an issue and we'll prioritise the
+one-shot migration tool.
 
 ## Issuing installation tokens
 
