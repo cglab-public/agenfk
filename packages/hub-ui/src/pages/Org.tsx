@@ -13,7 +13,7 @@ interface MetricsResponse { bucket: string; series: Array<{ user_key: string; da
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
-interface ItemTypesResponse { itemTypes: string[] }
+interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, number> }
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
@@ -96,6 +96,17 @@ export function OrgPage() {
     return p.toString();
   }, [projectSel.set, itemTypeSel.set]);
 
+  // For per-itemType counts we honour project + event-type selections but
+  // intentionally drop the itemTypes filter — the chip count answers
+  // "what would I see if I picked this", which is meaningless if we
+  // pre-filter by the active selection.
+  const itemTypesQs = useMemo(() => {
+    const p = new URLSearchParams();
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    return p.toString();
+  }, [projectSel.set, eventTypeSel.set]);
+
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', qs],
     queryFn: async () => (await api.get(`/v1/metrics${qs ? `?${qs}` : ''}`)).data,
@@ -106,7 +117,10 @@ export function OrgPage() {
   });
   const eventTypes = useQuery<EventTypesResponse>({ queryKey: ['event-types'], queryFn: async () => (await api.get('/v1/event-types')).data });
   const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
-  const itemTypes = useQuery<ItemTypesResponse>({ queryKey: ['item-types'], queryFn: async () => (await api.get('/v1/item-types')).data });
+  const itemTypes = useQuery<ItemTypesResponse>({
+    queryKey: ['item-types', itemTypesQs],
+    queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
+  });
 
   const totals = (metrics.data?.series ?? []).reduce(
     (a, r) => ({
@@ -161,7 +175,17 @@ export function OrgPage() {
           inlineThreshold={6}
           placeholder="Search projects…"
         />
-        <ChipRow label="Item type" options={itemTypeOptions} selected={itemTypeSel.set} onToggle={itemTypeSel.toggle} onClear={itemTypeSel.clear} />
+        <ChipRow
+          label="Item type"
+          options={itemTypeOptions}
+          selected={itemTypeSel.set}
+          onToggle={itemTypeSel.toggle}
+          onClear={itemTypeSel.clear}
+          optionLabel={(t) => {
+            const n = itemTypes.data?.counts?.[t];
+            return n == null ? t : `${t} (${n})`;
+          }}
+        />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </section>
 

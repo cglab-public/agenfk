@@ -14,7 +14,7 @@ interface TimelineRow {
 }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
-interface ItemTypesResponse { itemTypes: string[] }
+interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, number> }
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
@@ -106,7 +106,21 @@ export function UserDetailPage() {
     queryFn: async () => (await api.get('/v1/event-types')).data,
   });
   const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
-  const itemTypes = useQuery<ItemTypesResponse>({ queryKey: ['item-types'], queryFn: async () => (await api.get('/v1/item-types')).data });
+
+  // Per-itemType counts honour the user, project, and event-type filters but
+  // ignore the itemTypes filter (the chip answers "what would I see if I
+  // selected this", which can't pre-filter by the current selection).
+  const itemTypesQs = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set('users', decoded);
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    return p.toString();
+  }, [decoded, projectSel.set, eventTypeSel.set]);
+  const itemTypes = useQuery<ItemTypesResponse>({
+    queryKey: ['item-types', itemTypesQs],
+    queryFn: async () => (await api.get(`/v1/item-types?${itemTypesQs}`)).data,
+  });
 
   const params = new URLSearchParams();
   params.set('users', decoded);
@@ -159,7 +173,17 @@ export function UserDetailPage() {
           inlineThreshold={6}
           placeholder="Search projects…"
         />
-        <ChipRow label="Item type" options={itemTypeOptions} selected={itemTypeSel.set} onToggle={itemTypeSel.toggle} onClear={itemTypeSel.clear} />
+        <ChipRow
+          label="Item type"
+          options={itemTypeOptions}
+          selected={itemTypeSel.set}
+          onToggle={itemTypeSel.toggle}
+          onClear={itemTypeSel.clear}
+          optionLabel={(t) => {
+            const n = itemTypes.data?.counts?.[t];
+            return n == null ? t : `${t} (${n})`;
+          }}
+        />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </section>
 

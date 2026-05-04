@@ -222,6 +222,38 @@ describe('hub query endpoints', () => {
     expect(r.body.itemTypes).toEqual(['BUG', 'STORY', 'TASK']);
   });
 
+  it('GET /v1/item-types returns counts respecting current filters', async () => {
+    // No filters: org-wide totals.
+    const all = await supertest(app).get('/v1/item-types').set('Cookie', cookie);
+    expect(all.status).toBe(200);
+    // Seeded events: 2 TASK (a1,a2), 1 BUG (a3), 1 STORY (b1)
+    expect(all.body.counts).toEqual({ TASK: 2, BUG: 1, STORY: 1 });
+
+    // Project filter narrows to web.git → only TASK and BUG remain visible.
+    const byProject = await supertest(app)
+      .get('/v1/item-types?projects=git@github.com:acme/web.git')
+      .set('Cookie', cookie);
+    expect(byProject.status).toBe(200);
+    expect(byProject.body.counts).toEqual({ TASK: 2, BUG: 1 });
+    // The list of all known itemTypes stays org-wide so chips remain selectable.
+    expect(byProject.body.itemTypes).toEqual(['BUG', 'STORY', 'TASK']);
+
+    // Event-type filter: only validate.passed → BUG=1.
+    const byType = await supertest(app)
+      .get('/v1/item-types?types=validate.passed')
+      .set('Cookie', cookie);
+    expect(byType.status).toBe(200);
+    expect(byType.body.counts).toEqual({ BUG: 1 });
+
+    // The current itemTypes filter must NOT constrain its own counts —
+    // chips still show the totals you would get if you toggled them on.
+    const ignoresOwnFilter = await supertest(app)
+      .get('/v1/item-types?itemTypes=BUG')
+      .set('Cookie', cookie);
+    expect(ignoresOwnFilter.status).toBe(200);
+    expect(ignoresOwnFilter.body.counts).toEqual({ TASK: 2, BUG: 1, STORY: 1 });
+  });
+
   it('GET /v1/timeline filters by remoteUrl (projects=)', async () => {
     const r = await supertest(app)
       .get('/v1/timeline?projects=git@github.com:acme/api.git')

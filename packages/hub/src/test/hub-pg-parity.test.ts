@@ -192,6 +192,7 @@ describe('PG parity: queries + rollup', () => {
     expect(projects.body.projects.sort()).toEqual(['git@x:api.git', 'git@x:web.git']);
     const itypes = await supertest(fx.app).get('/v1/item-types').set('Cookie', fx.cookie);
     expect(itypes.body.itemTypes.sort()).toEqual(['BUG', 'STORY', 'TASK']);
+    expect(itypes.body.counts).toEqual({ TASK: 2, BUG: 1, STORY: 1 });
   });
 
   it('GET /v1/histogram day-bucket aggregates by type', async () => {

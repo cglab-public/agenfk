@@ -140,13 +140,32 @@ export function queriesRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/item-types', guard, async (req: Request, res: Response) => {
-    const rows = await ctx.db.all<{ item_type: string }>(
+    const orgId = req.session!.orgId;
+
+    // The list of all known item types stays org-wide so chips remain
+    // selectable even when the current filter set produces zero hits.
+    const allRows = await ctx.db.all<{ item_type: string }>(
       `SELECT DISTINCT item_type FROM events
        WHERE org_id = ? AND item_type IS NOT NULL AND item_type != ''
        ORDER BY item_type ASC`,
-      [req.session!.orgId],
+      [orgId],
     );
-    res.json({ itemTypes: rows.map(r => r.item_type) });
+
+    // Counts respect projects + event-type filters but ignore the itemTypes
+    // filter — the UI uses these to show "what would I get if I selected
+    // this chip", which is meaningless if we constrain by current selection.
+    const f = readEventFilters(req);
+    const { where, params } = applyEventFilters(orgId, { ...f, itemTypes: null });
+    const countRows = await ctx.db.all<{ item_type: string; n: number }>(
+      `SELECT item_type, COUNT(*) AS n FROM events
+       WHERE ${where.join(' AND ')} AND item_type IS NOT NULL AND item_type != ''
+       GROUP BY item_type`,
+      params,
+    );
+    const counts: Record<string, number> = {};
+    for (const r of countRows) counts[r.item_type] = Number(r.n);
+
+    res.json({ itemTypes: allRows.map(r => r.item_type), counts });
   });
 
   router.get('/histogram', guard, async (req: Request, res: Response) => {
