@@ -1,7 +1,8 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const cookieParser: (...a: any[]) => any = require('cookie-parser');
-import { openDb, DB } from './db.js';
+import { openHubDb, DB, HubBackend } from './db.js';
+import type { HubDb } from './db/types.js';
 import { HubServerConfig } from './types.js';
 import { eventsRouter } from './routes/events.js';
 import { authRouter, setupRouter } from './routes/auth.js';
@@ -36,8 +37,17 @@ export interface HubServerContext {
   config: HubServerConfig;
 }
 
-export async function createHubApp(config: HubServerConfig): Promise<{ app: Express; ctx: HubServerContext }> {
-  const db = await openDb(config.dbPath);
+export async function createHubApp(
+  config: HubServerConfig & { backend?: HubBackend; pgUrl?: string; db?: HubDb },
+): Promise<{ app: Express; ctx: HubServerContext }> {
+  // `db` override is the test escape hatch: tests that already hold an open
+  // HubDb (e.g. a shared pg-mem instance) inject it here instead of paying
+  // the bootstrap+open cost a second time.
+  const db = config.db ?? await openHubDb({
+    dbPath: config.dbPath,
+    backend: config.backend,
+    pgUrl: config.pgUrl,
+  });
 
   // Default org row (single-tenant v1).
   await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
@@ -124,11 +134,14 @@ export async function createHubApp(config: HubServerConfig): Promise<{ app: Expr
   return { app, ctx };
 }
 
-export function configFromEnv(): HubServerConfig {
+export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {
   const secretKey = process.env.AGENFK_HUB_SECRET_KEY;
   const sessionSecret = process.env.AGENFK_HUB_SESSION_SECRET;
   if (!secretKey) throw new Error('AGENFK_HUB_SECRET_KEY is required (32-byte hex/base64).');
   if (!sessionSecret) throw new Error('AGENFK_HUB_SESSION_SECRET is required.');
+  const rawBackend = process.env.AGENFK_HUB_DB?.trim().toLowerCase();
+  const backend: HubBackend | undefined =
+    rawBackend === 'sqlite' || rawBackend === 'postgres' ? rawBackend : undefined;
   return {
     dbPath: process.env.AGENFK_HUB_DB_PATH || '/var/lib/agenfk-hub/hub.sqlite',
     secretKey,
@@ -136,8 +149,11 @@ export function configFromEnv(): HubServerConfig {
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
     initialAdminEmail: process.env.AGENFK_HUB_INITIAL_ADMIN_EMAIL,
     initialAdminPassword: process.env.AGENFK_HUB_INITIAL_ADMIN_PASSWORD,
+    backend,
+    pgUrl: process.env.AGENFK_HUB_PG_URL,
   };
 }
 
 export type { HubServerConfig, SessionPayload } from './types.js';
-export { openDb } from './db.js';
+export { openDb, openHubDb } from './db.js';
+export type { HubBackend } from './db.js';
