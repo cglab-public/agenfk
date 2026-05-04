@@ -1514,6 +1514,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand },
     });
+    if (nextStatus !== item.status) {
+      recordHubEvent({
+        type: 'step.transitioned',
+        projectId: item.projectId,
+        itemId,
+        payload: { fromStatus: item.status, toStatus: nextStatus, itemType: item.type },
+      });
+    }
     recordHubEvent({
       type: 'test.logged',
       projectId: item.projectId,
