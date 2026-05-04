@@ -33,7 +33,7 @@ export async function recomputeRollups(db: DB): Promise<{ days: number }> {
       SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails
     FROM events
     WHERE date(occurred_at) = ?
-    GROUP BY org_id, user_key
+    GROUP BY org_id, user_key, date(occurred_at)
     ON CONFLICT(org_id, user_key, day) DO UPDATE SET
       events_count = excluded.events_count,
       items_closed = excluded.items_closed,

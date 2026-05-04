@@ -44,14 +44,14 @@ describe('SQLite → Postgres dialect translator', () => {
     expect(out).toContain("to_char((occurred_at)::timestamptz + ($1)::interval, 'YYYY-MM-DD')");
   });
 
-  it('rewrites json_extract to #>> with a json path array', () => {
+  it('rewrites json_extract to jsonb_extract_path_text', () => {
     const out = toPostgres("SELECT json_extract(payload, '$.payload.toStatus') FROM events");
-    expect(out).toContain("(payload)::jsonb #>> '{payload,toStatus}'");
+    expect(out).toContain("jsonb_extract_path_text((payload)::jsonb, 'payload', 'toStatus')");
   });
 
   it('rewrites json_extract with array index in path', () => {
     const out = toPostgres("SELECT json_extract(payload, '$.payload.tokenUsage[0].input') FROM events");
-    expect(out).toContain("(payload)::jsonb #>> '{payload,tokenUsage,0,input}'");
+    expect(out).toContain("jsonb_extract_path_text((payload)::jsonb, 'payload', 'tokenUsage', '0', 'input')");
   });
 
   it('preserves ON CONFLICT(col) DO UPDATE clauses (PG-compatible already)', () => {

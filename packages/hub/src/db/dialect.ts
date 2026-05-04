@@ -120,15 +120,18 @@ function rewriteJsonExtract(sql: string): string {
   return sql.replace(
     /\bjson_extract\s*\(\s*([a-zA-Z_][\w.]*)\s*,\s*'\$([^']*)'\s*\)/g,
     (_m, col, jsonPath: string) => {
-      // Convert a path like ".payload.tokenUsage[0].input" to "payload,tokenUsage,0,input"
+      // Convert a path like ".payload.tokenUsage[0].input" to ['payload','tokenUsage','0','input'].
+      // Emit jsonb_extract_path_text rather than the #>> operator — both work
+      // in real Postgres but jsonb_extract_path_text is also supported by
+      // pg-mem natively, which we use in tests.
       const parts: string[] = [];
       const re = /\.([a-zA-Z_][\w]*)|\[(\d+)\]/g;
       let mm: RegExpExecArray | null;
       while ((mm = re.exec(jsonPath)) !== null) {
         parts.push(mm[1] ?? mm[2]);
       }
-      const pgPath = '{' + parts.join(',') + '}';
-      return `(${col})::jsonb #>> '${pgPath}'`;
+      const args = parts.map(p => `'${p}'`).join(', ');
+      return `jsonb_extract_path_text((${col})::jsonb, ${args})`;
     },
   );
 }

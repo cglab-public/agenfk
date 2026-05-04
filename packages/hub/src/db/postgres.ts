@@ -217,15 +217,86 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
 /** Test-only entry point: spin up an in-process pg-mem instance. */
 export async function openPgMemDb(): Promise<HubDb> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { newDb } = require('pg-mem') as typeof import('pg-mem');
+  const { newDb, DataType } = require('pg-mem') as typeof import('pg-mem');
   const memDb = newDb({ autoCreateForeignKeyIndices: true });
-  // pg-mem's now() returns a fresh timestamp each call — good enough for tests.
+  registerPgMemPolyfills(memDb, DataType);
   const { Pool } = memDb.adapters.createPg();
   const pool = new Pool() as unknown as Pool;
   const state: PgState = { pool, txClient: null };
   const adapter = new PgAdapter(state);
   await bootstrap(adapter);
   return adapter;
+}
+
+/**
+ * pg-mem ships only a small subset of Postgres' native functions. Register the
+ * ones the hub's call-site SQL needs (after dialect translation) so the same
+ * queries that run on real PG also run under pg-mem in tests.
+ */
+function registerPgMemPolyfills(memDb: any, DataType: any): void {
+  // to_char(timestamptz, fmt) — the only patterns the hub emits are
+  // 'YYYY-MM-DD' and 'YYYY-MM-DD"T"HH24":00"'. Implement them straight rather
+  // than parsing arbitrary PG format strings.
+  const toChar = (ts: Date, fmt: string): string => {
+    const d = ts instanceof Date ? ts : new Date(ts);
+    const Y = d.getUTCFullYear().toString().padStart(4, '0');
+    const M = (d.getUTCMonth() + 1).toString().padStart(2, '0');
+    const D = d.getUTCDate().toString().padStart(2, '0');
+    const H = d.getUTCHours().toString().padStart(2, '0');
+    if (fmt === 'YYYY-MM-DD') return `${Y}-${M}-${D}`;
+    if (fmt === 'YYYY-MM-DD"T"HH24":00"') return `${Y}-${M}-${D}T${H}:00`;
+    return d.toISOString();
+  };
+  memDb.public.registerFunction({
+    name: 'to_char',
+    args: [DataType.timestamptz, DataType.text],
+    returns: DataType.text,
+    implementation: toChar,
+    impure: false,
+  });
+  // jsonb_extract_path_text(jsonb, VARIADIC text[]) — pg-mem doesn't ship this,
+  // so we register one variant per arity the hub actually emits (2 and 4).
+  const extractPath = (jb: any, ...keys: string[]): string | null => {
+    let cur: any = jb;
+    for (const k of keys) {
+      if (cur == null) return null;
+      // pg-mem hands us already-parsed JSON for jsonb columns
+      if (Array.isArray(cur)) {
+        const idx = Number(k);
+        cur = Number.isFinite(idx) ? cur[idx] : undefined;
+      } else if (typeof cur === 'object') {
+        cur = cur[k];
+      } else {
+        return null;
+      }
+    }
+    if (cur == null) return null;
+    return typeof cur === 'string' ? cur : String(cur);
+  };
+  for (let arity = 1; arity <= 6; arity++) {
+    memDb.public.registerFunction({
+      name: 'jsonb_extract_path_text',
+      args: [DataType.jsonb, ...Array(arity).fill(DataType.text)],
+      returns: DataType.text,
+      implementation: extractPath,
+      impure: false,
+    });
+  }
+  // pg-mem's interval addition support is patchy. Implement it as a
+  // string-arg function: timestamptz + (text)::interval where text is "+N
+  // minutes" or "-N minutes". The hub only uses minute-shifts.
+  memDb.public.registerOperator?.({
+    operator: '+',
+    left: DataType.timestamptz,
+    right: DataType.text,
+    returns: DataType.timestamptz,
+    implementation: (ts: Date, intervalText: string) => {
+      const m = /^([+-]?\d+)\s+minutes?$/i.exec(String(intervalText).trim());
+      if (!m) return ts;
+      const minutes = Number(m[1]);
+      return new Date(ts.getTime() + minutes * 60_000);
+    },
+  });
 }
 
 function redactDsn(dsn: string): string {
