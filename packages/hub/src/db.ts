@@ -48,8 +48,9 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(org_id, type, occurred_at);
-  CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at);
-  CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at);
+  -- idx_events_remote_time and idx_events_item_type_time are created after the
+  -- ALTER TABLE migration below so this SCHEMA block stays safe to run against
+  -- pre-existing databases that don't yet have remote_url / item_type columns.
 
   CREATE TABLE IF NOT EXISTS rollups_daily (
     org_id TEXT NOT NULL,

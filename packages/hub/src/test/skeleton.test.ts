@@ -56,6 +56,41 @@ describe('createHubApp', () => {
     expect(res.body.ok).toBe(true);
   });
 
+  it('openDb migrates a legacy events table without item_type/remote_url columns', async () => {
+    // Simulate a pre-beta.9 DB: create the events table with the old shape
+    // and call openDb(). The migration must add the missing columns + indexes
+    // without throwing — the bug we're guarding against was that CREATE INDEX
+    // on the new columns ran *before* ALTER TABLE.
+    const { openDb } = await import('../db');
+    cleanup();
+    const legacy = openDb(TEST_DB);
+    legacy.exec("DROP TABLE IF EXISTS events");
+    legacy.exec(`
+      CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        installation_id TEXT NOT NULL,
+        user_key TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        type TEXT NOT NULL,
+        project_id TEXT,
+        item_id TEXT,
+        payload TEXT NOT NULL
+      )
+    `);
+    legacy.close();
+
+    // Re-open: this must not throw, even though the legacy table is missing
+    // the item_type and remote_url columns referenced by the new indexes.
+    const db = openDb(TEST_DB);
+    teardown = () => { try { db.close(); } catch { /* already closed */ } };
+    const cols = db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c: any) => c.name));
+    expect(names.has('item_type')).toBe(true);
+    expect(names.has('remote_url')).toBe(true);
+  });
+
   it('healthz reports the live hub package version (not a hardcoded literal)', async () => {
     const { app, ctx } = createHubApp({
       dbPath: TEST_DB,
