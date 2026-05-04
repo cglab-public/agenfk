@@ -65,7 +65,7 @@ export function OrgPage() {
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header>
         <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">Dashboard</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Organisation rollup</h1>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Organization rollup</h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 

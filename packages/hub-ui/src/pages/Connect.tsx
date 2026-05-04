@@ -30,7 +30,7 @@ export function ConnectPage() {
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">Connect a device</p>
-            <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100">Authorise this installation</h1>
+            <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100">Authorize this installation</h1>
           </div>
         </div>
 
