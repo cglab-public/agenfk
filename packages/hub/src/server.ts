@@ -14,6 +14,23 @@ import { startRollupTimer } from './rollup.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
 
+// Read the package version once at module load. Resolved from this file's dir
+// so it works under both ts source (../package.json) and the built dist
+// (./package.json colocated with dist/server.js after `npm pack`).
+const HUB_VERSION: string = (() => {
+  const candidates = [
+    pathMod.resolve(__dirname, '../package.json'),
+    pathMod.resolve(__dirname, '../../package.json'),
+  ];
+  for (const c of candidates) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(c, 'utf8'));
+      if (typeof raw.version === 'string' && raw.name === '@agenfk/hub') return raw.version;
+    } catch { /* keep trying */ }
+  }
+  return '0.0.0';
+})();
+
 export interface HubServerContext {
   db: DB;
   config: HubServerConfig;
@@ -34,7 +51,7 @@ export function createHubApp(config: HubServerConfig): { app: Express; ctx: HubS
   app.use(cookieParser());
 
   app.get('/healthz', (_req: Request, res: Response) => {
-    res.json({ ok: true, version: '0.2.28' });
+    res.json({ ok: true, version: HUB_VERSION });
   });
 
   app.use('/v1', eventsRouter(ctx));

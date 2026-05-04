@@ -55,4 +55,24 @@ describe('createHubApp', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
   });
+
+  it('healthz reports the live hub package version (not a hardcoded literal)', async () => {
+    const { app, ctx } = createHubApp({
+      dbPath: TEST_DB,
+      secretKey: '0'.repeat(64),
+      sessionSecret: 'sess',
+      defaultOrgId: 'org',
+    });
+    teardown = () => ctx.db.close();
+
+    const expectedVersion = (
+      await import('fs')
+    ).readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8');
+    const expected = JSON.parse(expectedVersion).version;
+
+    const supertest = (await import('supertest')).default;
+    const res = await supertest(app).get('/healthz');
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe(expected);
+  });
 });
