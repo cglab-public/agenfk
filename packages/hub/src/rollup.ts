@@ -19,8 +19,14 @@ export function recomputeRollups(db: DB): { days: number } {
       user_key,
       date(occurred_at) AS day,
       COUNT(*) AS events_count,
-      SUM(CASE WHEN type = 'step.transitioned'
-                AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN 1 ELSE 0 END) AS items_closed,
+      -- Count either flavour of closure signal but de-dup per item so we don't
+      -- double-count when both 'item.closed' and a 'step.transitioned'-to-DONE
+      -- fire for the same item.
+      COUNT(DISTINCT CASE
+        WHEN type = 'item.closed' THEN item_id
+        WHEN type = 'step.transitioned'
+             AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
+      END) AS items_closed,
       SUM(CASE WHEN type = 'tokens.logged'
                THEN COALESCE(CAST(json_extract(payload, '$.payload.tokenUsage[0].input') AS INTEGER), 0) ELSE 0 END) AS tokens_in,
       SUM(CASE WHEN type = 'tokens.logged'

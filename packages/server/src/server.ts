@@ -1268,6 +1268,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
+      recordHubEvent({
+        type: 'item.closed',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { fromStatus: currentItem.status, toStatus: Status.DONE, itemType: updated.type },
+      });
       if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         const proj = await storage.getProject(updated.projectId);
         const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
@@ -1521,6 +1527,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         itemId,
         payload: { fromStatus: item.status, toStatus: nextStatus, itemType: item.type },
       });
+      if (nextStatus === Status.DONE && item.status !== Status.DONE) {
+        recordHubEvent({
+          type: 'item.closed',
+          projectId: item.projectId,
+          itemId,
+          payload: { fromStatus: item.status, toStatus: Status.DONE, itemType: item.type },
+        });
+      }
     }
     recordHubEvent({
       type: 'test.logged',

@@ -70,6 +70,7 @@ export type HubEventType =
   | 'item.updated'
   | 'item.moved'
   | 'item.deleted'
+  | 'item.closed'
   | 'step.transitioned'
   | 'validate.invoked'
   | 'validate.passed'

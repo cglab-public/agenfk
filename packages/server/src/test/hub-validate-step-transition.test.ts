@@ -50,4 +50,13 @@ describe('validate_progress emits step.transitioned for hub rollups', () => {
             expect(m[0]).toMatch(/toStatus/);
         }
     });
+
+    // item.closed is a first-class hub event distinct from step.transitioned, so
+    // hub UI users can filter for closures specifically (the chip filter cannot
+    // express "step.transitioned WHERE toStatus=DONE"). It must be emitted at
+    // every site that lands an item on DONE.
+    it('source emits item.closed at least twice (update_item + validate_progress paths)', () => {
+        const matches = [...serverSource.matchAll(/type:\s*['"]item\.closed['"]/g)];
+        expect(matches.length).toBeGreaterThanOrEqual(2);
+    });
 });

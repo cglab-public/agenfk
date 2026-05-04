@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Activity, CheckCircle2, XCircle, Inbox, Coins, ArrowRightLeft, ChevronRight } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
+import { mergeEventTypes } from '../eventTypes';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
@@ -58,7 +59,7 @@ export function OrgPage() {
     { events: 0, closed: 0, tokensIn: 0, tokensOut: 0, passes: 0, fails: 0 },
   );
 
-  const types = eventTypes.data?.types ?? [];
+  const types = mergeEventTypes(eventTypes.data?.types);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">

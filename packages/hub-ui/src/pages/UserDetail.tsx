@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
+import { mergeEventTypes } from '../eventTypes';
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; user_key: string; payload: any;
@@ -27,6 +28,8 @@ const TYPE_BADGE: Record<string, string> = {
   'comment.added':      'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
   'tokens.logged':      'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800',
   'test.logged':        'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
+  'item.closed':        'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+  'item.deleted':       'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
 };
 const DEFAULT_BADGE = 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700';
 
@@ -56,7 +59,7 @@ export function UserDetailPage() {
     setSelected(next);
   };
 
-  const types = eventTypes.data?.types ?? [];
+  const types = mergeEventTypes(eventTypes.data?.types);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
