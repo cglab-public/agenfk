@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/hub",
-  "version": "0.3.0-beta.9",
+  "version": "0.3.0-beta.10",
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
