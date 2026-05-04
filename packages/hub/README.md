@@ -5,6 +5,27 @@ Optional **Corporate Hub** for AgEnFK. Receives events from each AgEnFK installa
 with org rollup, per-user timelines, and admin tooling. Sign-in via email/password,
 Google OAuth, and Microsoft Entra (configurable from the admin UI).
 
+## Quick start (npx from GitHub)
+
+No npm publish required — run directly from the GitHub repo:
+
+```bash
+export AGENFK_HUB_SECRET_KEY="$(openssl rand -hex 32)"
+export AGENFK_HUB_SESSION_SECRET="$(openssl rand -hex 32)"
+export AGENFK_HUB_INITIAL_ADMIN_EMAIL=you@example.com
+export AGENFK_HUB_INITIAL_ADMIN_PASSWORD=changeme123
+
+npx --package github:cglab-public/agenfk agenfk-hub
+```
+
+Add `--beta` to pull the latest pre-release instead of the latest stable:
+
+```bash
+npx --package github:cglab-public/agenfk agenfk-hub --beta
+```
+
+Then open `http://localhost:4000/`.
+
 ## Quick start (Docker)
 
 The build context must be the **monorepo root**, not `packages/hub`, so workspace deps resolve:

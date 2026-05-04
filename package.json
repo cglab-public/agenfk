@@ -15,7 +15,8 @@
     "packages/hub-ui"
   ],
   "bin": {
-    "agenfk": "bin/agenfk.js"
+    "agenfk": "bin/agenfk.js",
+    "agenfk-hub": "bin/agenfk-hub.js"
   },
   "scripts": {
     "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui",

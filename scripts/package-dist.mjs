@@ -41,7 +41,12 @@ async function run() {
         'packages/telemetry/package.json',
         'packages/telemetry/dist/',
         'packages/ui/package.json',
-        'packages/ui/dist/'
+        'packages/ui/dist/',
+        'packages/hub/package.json',
+        'packages/hub/dist/',
+        'packages/hub/public/',
+        'packages/hub-ui/package.json',
+        'packages/hub-ui/dist/'
     ];
 
     // 4. Create the archive
