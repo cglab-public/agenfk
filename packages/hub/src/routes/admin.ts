@@ -192,6 +192,21 @@ export function adminRouter(ctx: HubServerContext): Router {
     return null;
   };
 
+  // ── Project discovery (for assignment UI pickers) ───────────────────────
+  // Returns the distinct project ids ever ingested for this org, with the
+  // most-recent occurrence timestamp. Used by the hub-ui Assignments panel.
+  router.get('/projects', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<{ project_id: string; last_seen: string }>(
+      `SELECT project_id, MAX(occurred_at) AS last_seen
+       FROM events
+       WHERE org_id = ? AND project_id IS NOT NULL AND project_id != ''
+       GROUP BY project_id
+       ORDER BY last_seen DESC`,
+      [req.session!.orgId],
+    );
+    res.json(rows.map(r => ({ projectId: r.project_id, lastSeen: r.last_seen })));
+  });
+
   // Built-in default flow — declared BEFORE /flows/:id so the literal ":id"
   // doesn't swallow `/flows/default`.
   router.get('/flows/default', guard, (_req: Request, res: Response) => {
