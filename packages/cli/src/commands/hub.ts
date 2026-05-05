@@ -4,7 +4,7 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { exec, execFileSync } from 'child_process';
+import { exec, execFileSync, execSync, spawn } from 'child_process';
 import { getApiUrl, getInstallationId } from '@agenfk/telemetry';
 
 function readGitConfig(key: string): string | null {
@@ -140,7 +140,8 @@ export function registerHubCommands(program: Command): void {
   hub
     .command('join <inviteToken>')
     .description('Redeem a magic-link invite issued by your Hub admin')
-    .action(async (inviteToken: string) => {
+    .option('--no-restart', 'Do not restart the local API server after a successful join (useful for scripted/CI flows that manage services themselves).')
+    .action(async (inviteToken: string, opts: { restart?: boolean }) => {
       // Try every known hub URL: prefer existing config, else encoded URL prefix.
       const existing = readHubConfig();
       const candidates: string[] = [];
@@ -161,7 +162,39 @@ export function registerHubCommands(program: Command): void {
           );
           const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
           writeHubConfig(cfg);
-          console.log(chalk.green(`✓ Joined ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+          console.log(chalk.green(`✓ Joined ${cfg.url} (org=${cfg.orgId}).`));
+
+          // Story 6: probe the local API server and bounce it so the new
+          // hub.json is picked up without manual intervention. --no-restart
+          // (commander parses to `opts.restart === false`) skips this for
+          // scripted flows.
+          if (opts.restart === false) {
+            console.log(chalk.gray('Skipping restart per --no-restart. Run `agenfk down && agenfk up` when convenient.'));
+            return;
+          }
+          let servicesRunning = false;
+          try {
+            await axios.get(`${getApiUrl()}/`, { timeout: 2_000 });
+            servicesRunning = true;
+          } catch { /* not running — leave alone */ }
+          if (!servicesRunning) {
+            console.log(chalk.gray('Local API server is not running; the next `agenfk up` will pick up the new hub config.'));
+            return;
+          }
+          const rootDir = path.resolve(__dirname, '../../../..');
+          console.log(chalk.blue('Restarting local API server so it picks up the new hub config...'));
+          try {
+            execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+          } catch { /* may already be down */ }
+          try {
+            const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
+              cwd: rootDir, detached: true, stdio: 'inherit',
+            });
+            start.unref();
+            console.log(chalk.green('✓ Restarted local API server.'));
+          } catch (e: any) {
+            console.error(chalk.red(`Auto-restart failed: ${e?.message ?? e}. Run \`agenfk up\` manually.`));
+          }
           return;
         } catch (e: any) {
           const msg = e?.response?.data?.error ?? e?.message;
