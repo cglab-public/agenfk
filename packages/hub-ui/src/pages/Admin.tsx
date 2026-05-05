@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 
@@ -30,6 +30,9 @@ export function AdminLayout() {
         </NavLink>
         <NavLink to="flows" className={link}>
           <span className="inline-flex items-center gap-1.5"><GitBranch className="w-3.5 h-3.5" /> Flows</span>
+        </NavLink>
+        <NavLink to="upgrades" className={link}>
+          <span className="inline-flex items-center gap-1.5"><ArrowUpCircle className="w-3.5 h-3.5" /> Upgrades</span>
         </NavLink>
       </nav>
 
