@@ -70,11 +70,19 @@ let flowSyncHandle: FlowSyncHandle | null = null;
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
 //
-// The wrapper enriches each event with two cross-cutting fields:
+// The wrapper enriches each event with cross-cutting fields:
 // - itemType: lifted from the payload when present so the hub can index it.
-// - remoteUrl: resolved from the project's git origin via projectRemoteCache,
-//   populated lazily by warmProjectRemote() the first time a project is seen.
-const recordHubEvent = (input: RecordEventInput): void => {
+// - remoteUrl: resolved from the project's git origin via projectRemoteCache.
+//   On cache miss the function AWAITS warmProjectRemote so the FIRST event for
+//   any project still ships with its remoteUrl populated. (Bug 0bc7669b: the
+//   prior implementation did fire-and-forget warming, leaving the first event
+//   for every project with remoteUrl=null.)
+// - itemTitle / externalId: same lazy-cache pattern via itemMetaCache.
+//
+// Returns a Promise so internal awaits work; existing call sites that ignore
+// the return value remain correct because hubClient.recordEvent itself only
+// enqueues into the local outbox (the flusher delivers asynchronously).
+const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
   if (!hubClient.isEnabled) return;
   const payload: any = input.payload ?? {};
   const itemType = (input as any).itemType ?? (typeof payload.itemType === 'string' ? payload.itemType : null);
@@ -83,10 +91,13 @@ const recordHubEvent = (input: RecordEventInput): void => {
 
   let remoteUrl: string | null = (input as any).remoteUrl ?? null;
   if (!remoteUrl && input.projectId) {
-    remoteUrl = projectRemoteCache.get(input.projectId) ?? null;
-    if (remoteUrl === null && !projectRemoteCache.has(input.projectId)) {
-      warmProjectRemote(input.projectId).catch(() => { /* best-effort */ });
+    if (!projectRemoteCache.has(input.projectId)) {
+      // First event for this project — wait for the git lookup so we don't
+      // ship a null remoteUrl. Subsequent events hit the cache and skip this.
+      await warmProjectRemote(input.projectId);
     }
+    const cached = projectRemoteCache.get(input.projectId);
+    remoteUrl = cached && cached.length > 0 ? cached : null;
   }
 
   let itemTitle: string | null = (input as any).itemTitle ?? payloadTitle ?? null;
