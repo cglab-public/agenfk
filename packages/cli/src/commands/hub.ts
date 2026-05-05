@@ -4,8 +4,27 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { exec } from 'child_process';
-import { getApiUrl } from '@agenfk/telemetry';
+import { exec, execFileSync } from 'child_process';
+import { getApiUrl, getInstallationId } from '@agenfk/telemetry';
+
+function readGitConfig(key: string): string | null {
+  try {
+    return execFileSync('git', ['config', '--get', key], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500,
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function localInstallationIdentity(): { installationId: string; osUser: string; gitName: string | null; gitEmail: string | null } {
+  return {
+    installationId: getInstallationId(),
+    osUser: os.userInfo().username,
+    gitName: readGitConfig('user.name'),
+    gitEmail: readGitConfig('user.email'),
+  };
+}
 
 const HUB_CONFIG_FILE = path.join(os.homedir(), '.agenfk', 'hub.json');
 const VERIFY_TOKEN_FILE = path.join(os.homedir(), '.agenfk', 'verify-token');
@@ -135,7 +154,11 @@ export function registerHubCommands(program: Command): void {
       }
       for (const url of candidates) {
         try {
-          const { data } = await axios.post(`${url}/hub/invite/redeem`, { inviteToken }, { timeout: 10_000 });
+          const { data } = await axios.post(
+            `${url}/hub/invite/redeem`,
+            { inviteToken, installation: localInstallationIdentity() },
+            { timeout: 10_000 },
+          );
           const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
           writeHubConfig(cfg);
           console.log(chalk.green(`✓ Joined ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));

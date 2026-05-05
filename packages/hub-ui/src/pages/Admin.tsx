@@ -149,7 +149,16 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
   );
 }
 
-interface KeyRow { tokenHashPreview: string; label: string | null; createdAt: string; revokedAt: string | null }
+interface KeyRow {
+  tokenHashPreview: string;
+  label: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+  installationId?: string | null;
+  osUser?: string | null;
+  gitName?: string | null;
+  gitEmail?: string | null;
+}
 
 export function AdminKeys() {
   const qc = useQueryClient();
@@ -258,16 +267,33 @@ export function AdminKeys() {
               <tr className="text-[10px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500 font-semibold">
                 <th className="text-left px-5 py-2">Preview</th>
                 <th className="text-left px-2 py-2">Label</th>
+                <th className="text-left px-2 py-2">Installation</th>
                 <th className="text-left px-2 py-2">Created</th>
                 <th className="text-left px-2 py-2">Status</th>
                 <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {(keys.data ?? []).map(k => (
+              {(keys.data ?? []).map(k => {
+                const ident = k.gitEmail ?? k.osUser;
+                return (
                 <tr key={k.tokenHashPreview} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                   <td className="px-5 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">{k.tokenHashPreview}…</td>
                   <td className="px-2 py-2.5 text-slate-700 dark:text-slate-300">{k.label ?? <span className="text-slate-400">—</span>}</td>
+                  <td className="px-2 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+                    {ident ? (
+                      <span className="font-mono" title={k.installationId ? `installation: ${k.installationId}` : undefined}>
+                        {ident}
+                        {k.installationId && (
+                          <span className="ml-1 text-slate-400 dark:text-slate-500">· {k.installationId.slice(0, 8)}…</span>
+                        )}
+                      </span>
+                    ) : k.installationId ? (
+                      <span className="font-mono text-slate-500" title={k.installationId}>{k.installationId.slice(0, 8)}…</span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
                   <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{fmtDate(k.createdAt)}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
@@ -283,9 +309,10 @@ export function AdminKeys() {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {keys.data?.length === 0 && (
-                <tr><td colSpan={5} className="px-5 py-6 text-center text-sm text-slate-500">No keys yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No keys yet.</td></tr>
               )}
             </tbody>
           </table>

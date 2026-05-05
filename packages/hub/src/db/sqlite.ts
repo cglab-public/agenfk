@@ -18,7 +18,11 @@ const SCHEMA_SQLITE = `
     org_id TEXT NOT NULL,
     label TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    revoked_at TEXT
+    revoked_at TEXT,
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS installations (
@@ -172,6 +176,14 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('remote_url')) raw.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+
+  // api_keys columns added when binding installation identity to magic-link tokens.
+  const akCols = raw.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
+  const akHave = new Set(akCols.map(c => c.name));
+  if (!akHave.has('installation_id')) raw.exec("ALTER TABLE api_keys ADD COLUMN installation_id TEXT");
+  if (!akHave.has('os_user'))         raw.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
+  if (!akHave.has('git_name'))        raw.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
+  if (!akHave.has('git_email'))       raw.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");

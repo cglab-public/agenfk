@@ -133,6 +133,20 @@ describe('PG parity: connect (device + invite)', () => {
     const second = await supertest(fx.app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
     expect(second.status).toBe(400);
   });
+
+  it('invite redeem binds installation identity onto api_key (parity)', async () => {
+    const created = await supertest(fx.app).post('/hub/invite/create').set('Cookie', fx.cookie).send({});
+    const r = await supertest(fx.app).post('/hub/invite/redeem').send({
+      inviteToken: created.body.inviteToken,
+      installation: { installationId: 'inst-pg-1', osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
+    });
+    expect(r.status).toBe(200);
+    const list = await supertest(fx.app).get('/v1/admin/api-keys').set('Cookie', fx.cookie);
+    const inviteRow = (list.body as any[]).find(k => (k.label ?? '').startsWith('invite'));
+    expect(inviteRow.installationId).toBe('inst-pg-1');
+    expect(inviteRow.osUser).toBe('bob');
+    expect(inviteRow.gitEmail).toBe('bob@acme.com');
+  });
 });
 
 describe('PG parity: queries + rollup', () => {

@@ -133,5 +133,42 @@ describe('hub plug-and-play onboarding', () => {
       const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: tampered });
       expect(r.status).toBe(400);
     });
+
+    it('redeem persists installation identity onto the issued api_key', async () => {
+      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(app).post('/hub/invite/redeem').send({
+        inviteToken: created.body.inviteToken,
+        installation: {
+          installationId: 'inst-magic-1',
+          osUser: 'alice',
+          gitName: 'Alice Example',
+          gitEmail: 'alice@example.com',
+        },
+      });
+      expect(r.status).toBe(200);
+
+      // Admin endpoint must surface the bound installation alongside the key.
+      const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+      expect(list.status).toBe(200);
+      const inviteRow = (list.body as any[]).find(k => (k.label ?? '').startsWith('invite'));
+      expect(inviteRow).toBeTruthy();
+      expect(inviteRow.installationId).toBe('inst-magic-1');
+      expect(inviteRow.osUser).toBe('alice');
+      expect(inviteRow.gitEmail).toBe('alice@example.com');
+      // Key is labelled with the redeemer's identity for human-readable revocation.
+      expect(inviteRow.label).toContain('alice@example.com');
+    });
+
+    it('redeem still works without an installation body (back-compat)', async () => {
+      const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });
+      expect(r.status).toBe(200);
+
+      const list = await supertest(app).get('/v1/admin/api-keys').set('Cookie', cookie);
+      const inviteRow = (list.body as any[]).find(k => (k.label ?? '').startsWith('invite'));
+      expect(inviteRow).toBeTruthy();
+      expect(inviteRow.installationId).toBeNull();
+      expect(inviteRow.osUser).toBeNull();
+    });
   });
 });

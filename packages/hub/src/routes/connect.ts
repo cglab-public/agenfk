@@ -173,7 +173,23 @@ export function connectRouter(ctx: HubServerContext): Router {
     const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);
     if (seen) { res.status(400).json({ error: 'invite token already used' }); return; }
 
-    const token = await issueApiKey(ctx.db, parsed.orgId, 'invite');
+    // Bind the issued token to the redeeming installation when the CLI
+    // supplied one, so admins can see who's behind the key and revoke it
+    // surgically. Each field is sanitised to a string-or-null.
+    const inst = (req.body?.installation ?? {}) as Record<string, unknown>;
+    const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    const bind = {
+      installationId: str(inst.installationId),
+      osUser: str(inst.osUser),
+      gitName: str(inst.gitName),
+      gitEmail: str(inst.gitEmail),
+    };
+    // Use the most identifying field we have for the human-readable label,
+    // so admins can tell tokens apart at a glance in the UI.
+    const ident = bind.gitEmail ?? bind.osUser ?? bind.installationId;
+    const label = ident ? `invite:${ident}` : 'invite';
+
+    const token = await issueApiKey(ctx.db, parsed.orgId, label, bind);
     await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
   });

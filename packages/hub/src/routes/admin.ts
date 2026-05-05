@@ -76,7 +76,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // ── API keys (installation tokens) ───────────────────────────────────────
   router.get('/api-keys', guard, async (req: Request, res: Response) => {
     const rows = await ctx.db.all<any>(
-      'SELECT token_hash, label, created_at, revoked_at FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
+      'SELECT token_hash, label, created_at, revoked_at, installation_id, os_user, git_name, git_email FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
       [req.session!.orgId],
     );
     res.json(rows.map(r => ({
@@ -84,6 +84,10 @@ export function adminRouter(ctx: HubServerContext): Router {
       label: r.label,
       createdAt: r.created_at,
       revokedAt: r.revoked_at,
+      installationId: r.installation_id ?? null,
+      osUser: r.os_user ?? null,
+      gitName: r.git_name ?? null,
+      gitEmail: r.git_email ?? null,
     })));
   });
 

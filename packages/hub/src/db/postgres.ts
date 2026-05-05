@@ -17,7 +17,11 @@ const SCHEMA_PG = `
     org_id TEXT NOT NULL,
     label TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    revoked_at TIMESTAMPTZ
+    revoked_at TIMESTAMPTZ,
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS installations (
@@ -193,6 +197,16 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+
+  // api_keys columns added when binding installation identity to magic-link tokens.
+  const akCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys'"
+  );
+  const akHave = new Set(akCols.map(c => c.column_name));
+  if (!akHave.has('installation_id')) await adapter.exec("ALTER TABLE api_keys ADD COLUMN installation_id TEXT");
+  if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
+  if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
+  if (!akHave.has('git_email'))       await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
 }
 
 export async function openPgDb(connectionString: string): Promise<HubDb> {

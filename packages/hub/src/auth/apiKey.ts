@@ -49,12 +49,32 @@ export function requireApiKey(db: DB) {
   };
 }
 
+export interface IssueApiKeyOptions {
+  installationId?: string | null;
+  osUser?: string | null;
+  gitName?: string | null;
+  gitEmail?: string | null;
+}
+
 /** Insert an API key row. Returns the raw token (caller must show it once). */
-export async function issueApiKey(db: DB, orgId: string, label?: string): Promise<string> {
+export async function issueApiKey(
+  db: DB,
+  orgId: string,
+  label?: string,
+  bind: IssueApiKeyOptions = {},
+): Promise<string> {
   const token = generateApiKey();
   await db.run(
-    'INSERT INTO api_keys (token_hash, org_id, label) VALUES (?, ?, ?)',
-    [hashToken(token), orgId, label ?? null],
+    'INSERT INTO api_keys (token_hash, org_id, label, installation_id, os_user, git_name, git_email) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [
+      hashToken(token),
+      orgId,
+      label ?? null,
+      bind.installationId ?? null,
+      bind.osUser ?? null,
+      bind.gitName ?? null,
+      bind.gitEmail ?? null,
+    ],
   );
   return token;
 }
