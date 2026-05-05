@@ -397,6 +397,14 @@ const initStorage = async () => {
 
   // Attach the corporate-hub outbox to the storage layer and start the flusher
   // when configured. No-op when ~/.agenfk/hub.json is absent.
+  //
+  // Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
+  // in tests (each setup calls it), and without these stops every re-entry
+  // would leak a setInterval timer holding a stale storage reference, which
+  // races against the live test's writes and causes hard-to-diagnose flakes
+  // (item.id undefined, GET /flows 500, etc).
+  hubFlusher?.stop();
+  flowSyncHandle?.stop();
   hubClient.attachStorage(storage as SQLiteStorageProvider);
   if (hubClient.isEnabled && hubClient.hubConfig) {
     hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
@@ -406,7 +414,6 @@ const initStorage = async () => {
     // Start pulling the org-assigned flow from the Hub. Poll interval can be
     // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
     const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
-    flowSyncHandle?.stop();
     flowSyncHandle = startFlowSync({
       storage: storage as SQLiteStorageProvider,
       hubConfig: hubClient.hubConfig,

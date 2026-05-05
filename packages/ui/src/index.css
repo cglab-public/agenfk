@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* The shared @agenfk/flow-editor workspace package contains JIT utilities used
+ * by FlowEditorModal. Tailwind v4 only auto-scans the importing package's
+ * src/, so we must opt the shared package's source in explicitly. */
+@source "../../flow-editor/src/**/*.{ts,tsx}";
+
 @variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 
 @keyframes search-highlight {

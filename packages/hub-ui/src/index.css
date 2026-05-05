@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Tailwind v4 only auto-scans the importing package's source by default.
+ * The shared @agenfk/flow-editor workspace package contains JIT utilities
+ * (w-[calc(100vw-2rem)], h-[90vh], w-64, flex-1, etc.) that need to land in
+ * hub-ui's compiled CSS — otherwise the modal renders unsized. */
+@source "../../flow-editor/src/**/*.{ts,tsx}";
+
 :root { color-scheme: light dark; }
 
 html, body, #root { height: 100%; }
