@@ -116,6 +116,42 @@ function killPattern(pattern: string) {
   } catch (e) {}
 }
 
+// Strict semver allowlist — prevents shell injection via `--version` flowing into execSync calls.
+// Accepts: 1.2.3, v1.2.3, 0.3.0-beta.22, 1.0.0-rc.1+build.5, etc.
+const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+async function fetchReleaseTagByVersion(repo: string, version: string): Promise<string> {
+  if (!SEMVER_TAG_RE.test(version)) {
+    throw new Error(`Invalid version "${version}" — must match semver (e.g. 0.3.0 or 0.3.0-beta.22)`);
+  }
+  const tag = version.startsWith('v') ? version : `v${version}`;
+  try {
+    const resp = await axios.get(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, {
+      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
+      timeout: 10000,
+      validateStatus: (s) => s < 500,
+    });
+    if (resp.status === 200 && resp.data?.tag_name) return resp.data.tag_name as string;
+    if (resp.status === 404) throw new Error(`Release ${tag} not found in ${repo}`);
+  } catch (e: any) {
+    if (e?.message?.startsWith('Release ')) throw e;
+    // Network/etc — fall through to gh CLI
+  }
+  try {
+    return execSync(`gh release view ${tag} --repo ${repo} --json tagName --template '{{.tagName}}'`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    throw new Error(`Release ${tag} not found in ${repo}`);
+  }
+}
+
+async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: boolean }): Promise<string> {
+  if (opts.version) return fetchReleaseTagByVersion(repo, opts.version);
+  return fetchLatestReleaseTag(repo, !!opts.beta);
+}
+
 async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
   // Try GitHub REST API first — no auth required for public repos
   try {
@@ -315,7 +351,7 @@ function applyUpgradeTierAction(tier: string, latestVersion: string): void {
 }
 
 program
-  .version(CURRENT_VERSION)
+  .version(CURRENT_VERSION, '-V, --cli-version', 'output the CLI version number')
   .description('AgEnFK Engineering CLI')
 ;
 
@@ -411,12 +447,24 @@ program
   .description('Check for updates and upgrade to the latest version if available')
   .option('-f, --force', 'Force upgrade even if versions match')
   .option('-b, --beta', 'Include beta/pre-release versions')
+  .option('--version <ver>', 'Pin to a specific release version instead of latest (e.g. 0.3.0-beta.22)')
+  .option('--json', 'Emit a single JSON line {status, fromVersion, toVersion, error?} on stdout (status: noop|upgraded|failed)')
   .option('--debuglog', 'Enable verbose diagnostic logging in the install script')
   .action(async (options) => {
     const REPO = 'cglab-public/agenfk';
-    console.log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}...`));
-    console.log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
+    const isJson: boolean = !!options.json;
+    const log = (...a: any[]) => { if (!isJson) console.log(...a); };
+    const errLog = (...a: any[]) => { if (!isJson) console.error(...a); };
+    const emitResult = (result: { status: 'noop' | 'upgraded' | 'failed'; fromVersion: string; toVersion: string; error?: string }) => {
+      if (isJson) process.stdout.write(JSON.stringify(result) + '\n');
+      if (result.status === 'failed') process.exit(1);
+    };
 
+    log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}${options.version ? ` (target ${options.version})` : ''}...`));
+    log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
+
+    let resolvedTag = '';
+    let targetVersion = '';
     try {
       // Check if services are currently running
       let servicesRunning = false;
@@ -427,100 +475,105 @@ program
         // Services not running
       }
 
-      // Fetch latest release tag via GitHub REST API (no auth), falling back to gh CLI
-      let latestTag = '';
       try {
-        latestTag = await fetchLatestReleaseTag(REPO, options.beta);
-      } catch (e) {
-        throw new Error(`Failed to fetch latest ${options.beta ? 'beta ' : ''}release from GitHub. Check your network connection or install the "gh" CLI and run "gh auth login".`);
+        resolvedTag = await resolveReleaseTag(REPO, { version: options.version, beta: options.beta });
+      } catch (e: any) {
+        const msg = options.version
+          ? `Failed to resolve release ${options.version} in ${REPO}: ${e?.message ?? e}`
+          : `Failed to fetch latest ${options.beta ? 'beta ' : ''}release from GitHub. Check your network connection or install the "gh" CLI and run "gh auth login".`;
+        emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: options.version ?? '', error: msg });
+        errLog(chalk.red(msg));
+        return;
       }
-      
-      const latestVersion = latestTag.replace(/^v/, '');
-      console.log(chalk.gray(`Remote version: ${latestVersion}`));
-      
-      if (latestVersion !== CURRENT_VERSION || options.force) {
-        if (options.force && latestVersion === CURRENT_VERSION) {
-          console.log(chalk.yellow('Versions match, but --force was specified. Proceeding with upgrade...'));
-        } else {
-          console.log(chalk.yellow(`New version available: ${latestVersion} (current: ${CURRENT_VERSION})`));
-        }
-        
-        console.log(chalk.blue('Upgrading...'));
 
-        const rootDir = path.resolve(__dirname, '../../..');
+      targetVersion = resolvedTag.replace(/^v/, '');
+      log(chalk.gray(`Remote version: ${targetVersion}`));
 
-        // Stop server before upgrading so the new binary can start cleanly
-        if (servicesRunning) {
-          console.log(chalk.blue('Stopping services before upgrade...'));
-          try {
-            execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
-          } catch (e) {
-            // ignore — server may have already stopped
-          }
-        }
+      // Idempotent skip: target === current and not forced.
+      if (targetVersion === CURRENT_VERSION && !options.force) {
+        emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
+        log(chalk.green('You are already on the requested version. Use --force to reinstall.'));
+        return;
+      }
 
-        // Always try pre-built binaries from the release first (regardless of git repo)
-        const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
-        fs.mkdirSync(tempDir, { recursive: true });
-        let downloadedFromRelease = false;
-        try {
-          console.log(chalk.gray(`Downloading pre-built binary for ${latestTag}...`));
-          downloadReleaseAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
-
-          console.log(chalk.gray('Extracting update...'));
-          execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: 'inherit' });
-          downloadedFromRelease = true;
-        } catch (e: any) {
-          console.log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
-        } finally {
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        }
-
-        const installScript = path.join(rootDir, 'scripts', 'install.mjs');
-        if (!fs.existsSync(installScript)) {
-          console.log(chalk.red('Install script not found. Please upgrade manually from GitHub.'));
-          return;
-        }
-
-        // Stage any existing db.json for migration to SQLite before running install
-        const localAgenfkDir = path.join(rootDir, '.agenfk');
-        if (stageJsonMigration(localAgenfkDir)) {
-          console.log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
-        }
-
-        const debuglogFlag = options.debuglog ? ' --debuglog' : '';
-        console.log(chalk.gray('Running install script (pre-built mode)...'));
-        try {
-          execSync(`node scripts/install.mjs${debuglogFlag}`, { cwd: rootDir, stdio: 'inherit' });
-        } catch (e) {
-          console.error(chalk.red('Upgrade failed during installation.'));
-          return;
-        }
-
-        console.log(chalk.green(`Successfully upgraded to ${latestVersion}`));
-
-        // Start server with new version if it was running before the upgrade
-        if (servicesRunning) {
-          console.log(chalk.blue('Starting services with new version...'));
-          try {
-            const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
-              cwd: rootDir,
-              detached: true,
-              stdio: 'inherit',
-            });
-            start.unref();
-            console.log(chalk.green('Services started in background.'));
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } catch (e) {
-            console.error(chalk.red('Auto-start failed. Please run "agenfk up" manually.'));
-          }
-        }
+      if (options.force && targetVersion === CURRENT_VERSION) {
+        log(chalk.yellow('Versions match, but --force was specified. Proceeding with upgrade...'));
       } else {
-        console.log(chalk.green('You are already on the latest version. Use --force to reinstall.'));
+        log(chalk.yellow(`New version available: ${targetVersion} (current: ${CURRENT_VERSION})`));
       }
+
+      log(chalk.blue('Upgrading...'));
+
+      const rootDir = path.resolve(__dirname, '../../..');
+
+      if (servicesRunning) {
+        log(chalk.blue('Stopping services before upgrade...'));
+        try {
+          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: isJson ? 'ignore' : 'inherit' });
+        } catch (e) { /* ignore */ }
+      }
+
+      const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      try {
+        log(chalk.gray(`Downloading pre-built binary for ${resolvedTag}...`));
+        downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
+        log(chalk.gray('Extracting update...'));
+        execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
+      } catch (e: any) {
+        log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+
+      const installScript = path.join(rootDir, 'scripts', 'install.mjs');
+      if (!fs.existsSync(installScript)) {
+        const msg = 'Install script not found. Please upgrade manually from GitHub.';
+        emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion, error: msg });
+        errLog(chalk.red(msg));
+        return;
+      }
+
+      const localAgenfkDir = path.join(rootDir, '.agenfk');
+      if (stageJsonMigration(localAgenfkDir)) {
+        log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
+      }
+
+      const debuglogFlag = options.debuglog ? ' --debuglog' : '';
+      log(chalk.gray('Running install script (pre-built mode)...'));
+      try {
+        execSync(`node scripts/install.mjs${debuglogFlag}`, { cwd: rootDir, stdio: isJson ? 'ignore' : 'inherit' });
+      } catch (e: any) {
+        const msg = `Upgrade failed during installation: ${e?.message ?? e}`;
+        emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion, error: msg });
+        errLog(chalk.red(msg));
+        return;
+      }
+
+      log(chalk.green(`Successfully upgraded to ${targetVersion}`));
+
+      if (servicesRunning) {
+        log(chalk.blue('Starting services with new version...'));
+        try {
+          const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
+            cwd: rootDir,
+            detached: true,
+            stdio: isJson ? 'ignore' : 'inherit',
+          });
+          start.unref();
+          log(chalk.green('Services started in background.'));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (e) {
+          errLog(chalk.red('Auto-start failed. Please run "agenfk up" manually.'));
+        }
+      }
+
+      emitResult({ status: 'upgraded', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
     } catch (error: any) {
-      console.error(chalk.red(`Error checking for updates: ${error.message}`));
-      console.error(chalk.gray(`Repo: ${REPO}`));
+      const msg = `Error during upgrade: ${error?.message ?? error}`;
+      emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion || (options.version ?? ''), error: msg });
+      errLog(chalk.red(msg));
+      errLog(chalk.gray(`Repo: ${REPO}`));
     }
   });
 
