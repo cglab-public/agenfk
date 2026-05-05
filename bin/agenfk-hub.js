@@ -170,6 +170,11 @@ if (!isNpxCache) {
     } catch (e) {
       console.error(`${YELLOW}Failed to download pre-built binary: ${e.message}${RESET}`);
       console.log(`${BLUE}Falling back to source build...${RESET}`);
+      // Source build needs typescript (devDependency). Earlier ensureHubDeps
+      // installs with --omit=dev, so tsc isn't on PATH yet — install full deps
+      // here before invoking the build scripts.
+      console.log(`${GREEN}Installing build toolchain (devDependencies)...${RESET}`);
+      execSync('npm install --include=dev --no-audit --no-fund --no-package-lock', { cwd: installDir, stdio: 'inherit' });
       execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: installDir, stdio: 'inherit' });
     }
   }
