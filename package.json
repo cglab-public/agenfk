@@ -10,6 +10,7 @@
     "packages/cli",
     "packages/server",
     "packages/ui",
+    "packages/flow-editor",
     "packages/create",
     "packages/hub",
     "packages/hub-ui"

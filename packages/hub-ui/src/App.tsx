@@ -8,6 +8,7 @@ import { OrgPage } from './pages/Org';
 import { UserDetailPage } from './pages/UserDetail';
 import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers } from './pages/Admin';
+import { AdminFlows } from './pages/AdminFlows';
 import { Layout } from './components/Layout';
 
 function useMe() {
@@ -53,6 +54,7 @@ export function App() {
         <Route path="auth" element={<AdminAuth />} />
         <Route path="keys" element={<AdminKeys />} />
         <Route path="users" element={<AdminUsers />} />
+        <Route path="flows" element={<AdminFlows />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

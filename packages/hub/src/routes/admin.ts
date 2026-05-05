@@ -5,6 +5,7 @@ import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
+import { DEFAULT_FLOW } from '@agenfk/core';
 
 interface AuthConfigRow {
   org_id: string;
@@ -191,6 +192,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     return null;
   };
 
+  // Built-in default flow — declared BEFORE /flows/:id so the literal ":id"
+  // doesn't swallow `/flows/default`.
+  router.get('/flows/default', guard, (_req: Request, res: Response) => {
+    res.json(DEFAULT_FLOW);
+  });
+
   router.get('/flows', guard, async (req: Request, res: Response) => {
     const rows = await ctx.db.all<FlowRow>(
       'SELECT * FROM flows WHERE org_id = ? ORDER BY updated_at DESC',
@@ -280,6 +287,112 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.session!.orgId],
     );
     res.json({ flowId: row?.flow_id ?? null });
+  });
+
+  // ── Community registry proxy ────────────────────────────────────────────
+  // Mirrors the local server's /registry/flows surface so the FlowEditorModal
+  // running inside hub-ui can browse and install community flows without
+  // talking to a per-installation agenfk server.
+  const REGISTRY_OWNER = process.env.AGENFK_REGISTRY_OWNER ?? 'cglab-public';
+  const REGISTRY_REPO = process.env.AGENFK_REGISTRY_REPO ?? 'agenfk-flows';
+  const REGISTRY_BRANCH = process.env.AGENFK_REGISTRY_BRANCH ?? 'main';
+  const GITHUB_API = 'https://api.github.com';
+
+  interface RegistryFlowEntry {
+    filename: string;
+    name: string;
+    author?: string;
+    version?: string;
+    stepCount: number;
+    description?: string;
+    steps?: { name: string; label: string }[];
+  }
+
+  router.get('/registry/flows', guard, async (_req: Request, res: Response) => {
+    const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows?ref=${REGISTRY_BRANCH}`;
+    try {
+      const resp = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-hub' } });
+      if (resp.status === 404) return res.json([]);
+      if (!resp.ok) return res.status(resp.status).json({ error: 'Failed to fetch registry' });
+      const entries: any = await resp.json();
+      if (!Array.isArray(entries)) return res.json([]);
+      const jsonFiles = entries.filter((e: any) => e.type === 'file' && e.name.endsWith('.json'));
+      const flows: RegistryFlowEntry[] = await Promise.all(
+        jsonFiles.map(async (file: any) => {
+          try {
+            const r = await fetch(file.download_url, { headers: { 'User-Agent': 'agenfk-hub' } });
+            if (!r.ok) throw new Error(`download ${r.status}`);
+            const content: any = await r.json();
+            return {
+              filename: file.name,
+              name: content.name ?? file.name.replace('.json', ''),
+              author: content.author,
+              version: content.version,
+              stepCount: Array.isArray(content.steps) ? content.steps.length : 0,
+              description: content.description,
+              steps: Array.isArray(content.steps)
+                ? content.steps.map((s: any) => ({ name: s.name ?? '', label: s.label ?? s.name ?? '' }))
+                : undefined,
+            };
+          } catch {
+            return { filename: file.name, name: file.name.replace('.json', ''), stepCount: 0 };
+          }
+        }),
+      );
+      res.json(flows);
+    } catch (e: any) {
+      res.status(502).json({ error: 'Failed to fetch registry', detail: e?.message });
+    }
+  });
+
+  // ── Install from registry into the org's flows table (source='community') ──
+  router.post('/flows/install', guard, async (req: Request, res: Response) => {
+    const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
+    if (!filename) return res.status(400).json({ error: 'filename is required' });
+    const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}?ref=${REGISTRY_BRANCH}`;
+    try {
+      const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-hub' } });
+      if (!r.ok) return res.status(r.status).json({ error: 'Failed to fetch registry file' });
+      const fileInfo: any = await r.json();
+      const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
+      const flowData = JSON.parse(rawContent);
+
+      // Normalise step shape: drop anchors and add fresh ones (matches local
+      // server's /registry/flows/install transform, so installed flows behave
+      // identically wherever they land).
+      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
+      const middle = rawSteps
+        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
+        .map((s: any, i: number) => ({
+          id: randomUUID(),
+          name: s.name ?? `step-${i}`,
+          label: s.label ?? s.name ?? `Step ${i + 1}`,
+          order: i + 1,
+          exitCriteria: s.exitCriteria ?? '',
+          isSpecial: s.isSpecial ?? false,
+        }));
+      const steps = [
+        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        ...middle,
+        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
+      ];
+      const definition = {
+        name: flowData.name ?? filename.replace('.json', ''),
+        description: flowData.description ?? '',
+        steps,
+      };
+
+      const id = randomUUID();
+      await ctx.db.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, created_by_user_id)
+         VALUES (?, ?, ?, ?, ?, 'community', 1, ?)`,
+        [id, req.session!.orgId, definition.name, definition.description, JSON.stringify(definition), req.session!.userId ?? null],
+      );
+      const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [id]);
+      res.status(201).json(presentFlow(row!));
+    } catch (e: any) {
+      res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
+    }
   });
 
   router.put('/flow-assignments', guard, async (req: Request, res: Response) => {
