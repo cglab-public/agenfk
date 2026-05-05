@@ -5,6 +5,7 @@ import { openHubDb, DB, HubBackend } from './db.js';
 import type { HubDb } from './db/types.js';
 import { HubServerConfig } from './types.js';
 import { eventsRouter } from './routes/events.js';
+import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { googleRouter } from './auth/google.js';
@@ -65,6 +66,7 @@ export async function createHubApp(
   });
 
   app.use('/v1', eventsRouter(ctx));
+  app.use('/v1', flowsRouter(ctx));
   app.use('/auth', authRouter(ctx));
   app.use('/auth/google', googleRouter(ctx));
   app.use('/auth/entra', entraRouter(ctx));

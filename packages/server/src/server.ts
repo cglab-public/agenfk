@@ -6,6 +6,7 @@ import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, m
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
+import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -64,6 +65,7 @@ const telemetry = new TelemetryClient();
 // attached after initStorage(); flusher is started at boot if configured.
 const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
+let flowSyncHandle: FlowSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -400,6 +402,18 @@ const initStorage = async () => {
     hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
     hubFlusher.start();
     console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
+
+    // Start pulling the org-assigned flow from the Hub. Poll interval can be
+    // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
+    const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
+    flowSyncHandle?.stop();
+    flowSyncHandle = startFlowSync({
+      storage: storage as SQLiteStorageProvider,
+      hubConfig: hubClient.hubConfig,
+      intervalMs,
+      emit: (event, payload) => io.emit(event, payload),
+    });
+    console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
   }
 };
 
