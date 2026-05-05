@@ -96,6 +96,35 @@ export class Flusher {
     return this.inflight;
   }
 
+  /**
+   * Synchronously drain the outbox or give up after `timeoutMs`. Used by
+   * Story 3b's upgradeSync to make sure a `fleet:upgrade:started` event
+   * reaches the hub BEFORE the running server is killed by its own upgrade.
+   *
+   * Caller-resilient: never throws on transport errors. Events that fail to
+   * deliver remain in the local outbox and replay on next boot.
+   */
+  async flushNow(timeoutMs: number = 5_000): Promise<void> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    // Bypass the rate-limiter — flushNow is an explicit "go now" request.
+    this.nextEligibleAt = 0;
+    while (Date.now() < deadline) {
+      if (this.storage.hubOutboxCount() === 0) return;
+      try {
+        // Wait for any in-flight flush, then run one more cycle.
+        if (this.inflight) {
+          await this.inflight;
+        } else {
+          this.inflight = this.flushOnce().finally(() => { this.inflight = null; });
+          await this.inflight;
+        }
+      } catch { /* swallowed: event stays in outbox for next attempt */ }
+      // If the cycle pushed us into backoff or halted state, stop trying.
+      if (this.status.halted) return;
+      if (Date.now() < this.nextEligibleAt) return;
+    }
+  }
+
   private async flushOnce(): Promise<void> {
     const rows = this.storage.hubOutboxPeek(this.batchSize);
     if (rows.length === 0) {
