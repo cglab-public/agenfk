@@ -671,10 +671,15 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
   res.json(flows);
 }));
 
+const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
+
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
+  // Always force `source = 'local'` on REST-driven creation. The reconciler
+  // writes hub-managed rows directly via storage.createFlow(); this route is
+  // for user/admin-driven local flow authoring only.
   const flow: Flow = {
     id: uuidv4(),
     name,
@@ -683,6 +688,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     steps: steps || [],
     createdAt: new Date(),
     updatedAt: new Date(),
+    source: 'local',
   };
 
   const created = await storage.createFlow(flow);
@@ -697,6 +703,11 @@ app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
+  const existing = await storage.getFlow(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Flow not found" });
+  if (existing.source === 'hub') {
+    return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
+  }
   try {
     const { name, description, version, steps } = req.body;
     const updates: Partial<Flow> = {};
@@ -716,6 +727,9 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
 app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
   const flow = await storage.getFlow(req.params.id);
   if (!flow) return res.status(404).json({ error: "Flow not found" });
+  if (flow.source === 'hub') {
+    return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
+  }
 
   await storage.deleteFlow(req.params.id);
   io.emit('flow:updated', { flowId: req.params.id, deleted: true });
