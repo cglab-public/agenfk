@@ -1,4 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
 
@@ -6,6 +8,32 @@ const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
 const HALT_AFTER_4XX_ATTEMPTS = 5;
 const MAX_BACKOFF_MS = 5 * 60_000;
+
+/**
+ * Resolve the running agenfk version once at module load. Story 7 of
+ * EPIC 541c12b3 — the value is sent on every /v1/events batch via the
+ * X-Agenfk-Version header so the hub can show "currently running" alongside
+ * each installation.
+ */
+const CURRENT_VERSION: string = (() => {
+  // Walk a few candidate package.json paths — this code runs from
+  // packages/server/dist/hub/flusher.js after build, so __dirname differs
+  // between source-checkout and the installed tarball.
+  const candidates = [
+    path.resolve(__dirname, '../../package.json'),
+    path.resolve(__dirname, '../../../package.json'),
+    path.resolve(__dirname, '../../../cli/package.json'),
+    path.resolve(__dirname, '../../../../packages/cli/package.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (typeof pkg?.version === 'string' && pkg.version) return pkg.version;
+    } catch { /* keep trying */ }
+  }
+  return '0.0.0';
+})();
 
 export class Flusher {
   private timer: NodeJS.Timeout | null = null;
@@ -28,6 +56,7 @@ export class Flusher {
       headers: {
         'Authorization': `Bearer ${config.token}`,
         'X-Installation-Id': installationId,
+        'X-Agenfk-Version': CURRENT_VERSION,
         'Content-Type': 'application/json',
       },
     });

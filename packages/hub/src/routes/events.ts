@@ -74,9 +74,17 @@ export function eventsRouter(ctx: HubServerContext): Router {
     });
   });
 
+  // Strict semver allowlist for the X-Agenfk-Version batch header. Same shape
+  // as the CLI/admin-route allowlist — the value will eventually be displayed
+  // in the admin UI and used to drive downgrade-detection logic, so we never
+  // accept anything malformed.
+  const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
   router.post('/events', requireKey, async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const installationFromHeader = (req.headers['x-installation-id'] as string | undefined) ?? null;
+    const headerVerRaw = (req.headers['x-agenfk-version'] as string | undefined) ?? null;
+    const agenfkVersion = headerVerRaw && SEMVER_TAG_RE.test(headerVerRaw) ? headerVerRaw : null;
     const body = req.body;
     const events: any[] = Array.isArray(body?.events) ? body.events : [];
     if (events.length === 0) {
@@ -110,6 +118,17 @@ export function eventsRouter(ctx: HubServerContext): Router {
           e.installationId, e.orgId, now, now,
           e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
         ]);
+
+        // Story 7: persist the running agenfk version when the batch header
+        // carried one. We only update when present so an absent header doesn't
+        // clobber a previously-known version.
+        if (agenfkVersion) {
+          await ctx.db.run(
+            `UPDATE installations SET agenfk_version = ?, agenfk_version_updated_at = ?
+             WHERE id = ? AND org_id = ?`,
+            [agenfkVersion, now, e.installationId, e.orgId],
+          );
+        }
 
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.

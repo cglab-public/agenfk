@@ -603,9 +603,13 @@ export function adminRouter(ctx: HubServerContext): Router {
         installation_id: string; state: string;
         attempted_at: string | null; finished_at: string | null;
         result_version: string | null; error_message: string | null;
+        agenfk_version: string | null; agenfk_version_updated_at: string | null;
       }>(
-        `SELECT installation_id, state, attempted_at, finished_at, result_version, error_message
-         FROM upgrade_directive_targets WHERE directive_id = ?`,
+        `SELECT t.installation_id, t.state, t.attempted_at, t.finished_at, t.result_version, t.error_message,
+                i.agenfk_version, i.agenfk_version_updated_at
+         FROM upgrade_directive_targets t
+         LEFT JOIN installations i ON i.id = t.installation_id
+         WHERE t.directive_id = ?`,
         [d.id],
       );
       const progress = { pending: 0, in_progress: 0, succeeded: 0, failed: 0 };
@@ -627,6 +631,8 @@ export function adminRouter(ctx: HubServerContext): Router {
           finishedAt: t.finished_at,
           resultVersion: t.result_version,
           errorMessage: t.error_message,
+          agenfkVersion: t.agenfk_version,
+          agenfkVersionUpdatedAt: t.agenfk_version_updated_at,
         })),
       });
     }

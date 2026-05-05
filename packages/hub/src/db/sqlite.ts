@@ -32,7 +32,9 @@ const SCHEMA_SQLITE = `
     last_seen TEXT NOT NULL,
     os_user TEXT,
     git_name TEXT,
-    git_email TEXT
+    git_email TEXT,
+    agenfk_version TEXT,
+    agenfk_version_updated_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -228,6 +230,12 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('remote_url')) raw.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+
+  // installations.agenfk_version + agenfk_version_updated_at — Story 7 of EPIC 541c12b3.
+  const instCols = raw.prepare("PRAGMA table_info(installations)").all() as Array<{ name: string }>;
+  const instHave = new Set(instCols.map(c => c.name));
+  if (!instHave.has('agenfk_version')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version TEXT");
+  if (!instHave.has('agenfk_version_updated_at')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version_updated_at TEXT");
 
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = raw.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
