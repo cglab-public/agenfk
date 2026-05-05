@@ -233,6 +233,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
 
+  // Backfill: collapse mixed-casing remote_urls so /v1/projects shows one chip
+  // per repo. Idempotent — only rows that aren't already lowercase get touched.
+  raw.exec("UPDATE events SET remote_url = LOWER(remote_url) WHERE remote_url IS NOT NULL AND remote_url <> LOWER(remote_url)");
+
   // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
   const udCols = raw.prepare("PRAGMA table_info(upgrade_directives)").all() as Array<{ name: string }>;
   const udHave = new Set(udCols.map(c => c.name));

@@ -7,6 +7,17 @@ function userKeyFor(actor: HubEvent['actor']): string {
   return (actor.gitEmail?.toLowerCase() || actor.osUser || 'unknown').trim();
 }
 
+// Strip ASCII whitespace + control characters from a git remote URL, then
+// lowercase it. This collapses the same repo across fleet members that may
+// have different casings or accidental whitespace in their git config — the
+// hub UI's project filter relies on exact-match SQL DISTINCT, so noise here
+// shows up as duplicate chips.
+const REMOTE_URL_NOISE_RE = /[\s\x00-\x1f\x7f]+/g;
+export function sanitizeRemoteUrl(input: string): string {
+  return input.replace(REMOTE_URL_NOISE_RE, '').toLowerCase();
+}
+
+
 function isValidEvent(e: any): e is HubEvent {
   return (
     e &&
@@ -103,7 +114,17 @@ export function eventsRouter(ctx: HubServerContext): Router {
         const userKey = userKeyFor(e.actor);
         const itemType = (e as any).itemType
           ?? (e.payload && typeof (e.payload as any).itemType === 'string' ? (e.payload as any).itemType : null);
-        const remoteUrl = (e as any).remoteUrl ?? null;
+        // Sanitise the git remote URL for de-duplication in the projects filter.
+        // - trim leading/trailing whitespace
+        // - strip ALL whitespace + ASCII control characters (URLs never contain them)
+        // - lowercase (GitHub paths are case-insensitive)
+        // Without this, the hub UI shows the same repo as multiple chips when
+        // different fleet machines store the URL with different casing or
+        // accidental whitespace in their git config.
+        const remoteUrlRaw = (e as any).remoteUrl ?? null;
+        const remoteUrl = typeof remoteUrlRaw === 'string'
+          ? sanitizeRemoteUrl(remoteUrlRaw)
+          : remoteUrlRaw;
         const itemTitle = (e as any).itemTitle
           ?? (e.payload && typeof (e.payload as any).title === 'string' ? (e.payload as any).title : null);
         const externalId = (e as any).externalId
