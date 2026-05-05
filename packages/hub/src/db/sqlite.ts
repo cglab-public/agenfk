@@ -128,10 +128,11 @@ const SCHEMA_SQLITE = `
   CREATE TABLE IF NOT EXISTS flow_assignments (
     org_id TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT 'org',
+    target_id TEXT NOT NULL DEFAULT '',
     flow_id TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_by_user_id TEXT,
-    PRIMARY KEY (org_id, scope)
+    PRIMARY KEY (org_id, scope, target_id)
   );
 `;
 
@@ -207,6 +208,32 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!akHave.has('os_user'))         raw.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        raw.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       raw.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // flow_assignments multi-scope migration. Pre-existing tables had PK
+  // (org_id, scope). New PK is (org_id, scope, target_id). SQLite can't
+  // alter PK in place — recreate the table when needed.
+  const faCols = raw.prepare("PRAGMA table_info(flow_assignments)").all() as Array<{ name: string }>;
+  const faHave = new Set(faCols.map(c => c.name));
+  if (faCols.length > 0 && !faHave.has('target_id')) {
+    raw.exec(`
+      BEGIN;
+      CREATE TABLE flow_assignments_new (
+        org_id TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'org',
+        target_id TEXT NOT NULL DEFAULT '',
+        flow_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_by_user_id TEXT,
+        PRIMARY KEY (org_id, scope, target_id)
+      );
+      INSERT INTO flow_assignments_new (org_id, scope, target_id, flow_id, updated_at, updated_by_user_id)
+        SELECT org_id, scope, '', flow_id, updated_at, updated_by_user_id FROM flow_assignments;
+      DROP TABLE flow_assignments;
+      ALTER TABLE flow_assignments_new RENAME TO flow_assignments;
+      COMMIT;
+    `);
+  }
+
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");

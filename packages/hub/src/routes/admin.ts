@@ -265,12 +265,18 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
-    const assignment = await ctx.db.get<{ flow_id: string }>(
-      "SELECT flow_id FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
-      [req.session!.orgId],
+    // Refuse to delete a flow that is currently assigned at any scope.
+    const assignments = await ctx.db.all<{ scope: string; target_id: string }>(
+      'SELECT scope, target_id FROM flow_assignments WHERE org_id = ? AND flow_id = ?',
+      [req.session!.orgId, req.params.id],
     );
-    if (assignment?.flow_id === req.params.id) {
-      return res.status(409).json({ error: 'Flow is currently assigned as the org default — clear the assignment first.' });
+    if (assignments.length > 0) {
+      const summary = assignments
+        .map(a => a.scope === 'org' ? 'org default' : `${a.scope} ${a.target_id}`)
+        .join(', ');
+      return res.status(409).json({
+        error: `Flow is currently assigned (${summary}) — clear the assignment(s) first.`,
+      });
     }
     const result = await ctx.db.run(
       'DELETE FROM flows WHERE id = ? AND org_id = ?',
@@ -280,13 +286,20 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ ok: true });
   });
 
-  // ── Flow assignments (org-default) ───────────────────────────────────────
+  // ── Flow assignments (multi-scope) ───────────────────────────────────────
+  // List shape: array of { scope, targetId, flowId, updatedAt } so hub-ui can
+  // render org/project/installation overrides in one pass.
   router.get('/flow-assignments', guard, async (req: Request, res: Response) => {
-    const row = await ctx.db.get<{ flow_id: string }>(
-      "SELECT flow_id FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
+    const rows = await ctx.db.all<{ scope: string; target_id: string; flow_id: string; updated_at: string }>(
+      'SELECT scope, target_id, flow_id, updated_at FROM flow_assignments WHERE org_id = ? ORDER BY scope, target_id',
       [req.session!.orgId],
     );
-    res.json({ flowId: row?.flow_id ?? null });
+    res.json(rows.map(r => ({
+      scope: r.scope,
+      targetId: r.target_id,
+      flowId: r.flow_id,
+      updatedAt: r.updated_at,
+    })));
   });
 
   // ── Community registry proxy ────────────────────────────────────────────
@@ -396,35 +409,63 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   router.put('/flow-assignments', guard, async (req: Request, res: Response) => {
-    const flowId = req.body?.flowId;
-    if (flowId === null || flowId === undefined) {
-      await ctx.db.run(
-        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
-        [req.session!.orgId],
-      );
-      return res.json({ flowId: null });
+    const orgId = req.session!.orgId;
+    const body = req.body ?? {};
+    // Default scope to 'org' for legacy callers that send only `{ flowId }`.
+    const scope: 'org' | 'project' | 'installation' = body.scope ?? 'org';
+    if (!['org', 'project', 'installation'].includes(scope)) {
+      return res.status(400).json({ error: "scope must be 'org', 'project', or 'installation'" });
     }
-    if (typeof flowId !== 'string') return res.status(400).json({ error: 'flowId must be a string or null' });
+    const targetId: string = scope === 'org' ? '' : (body.targetId ?? '');
+    if (scope !== 'org' && !targetId) {
+      return res.status(400).json({ error: `targetId is required for scope='${scope}'` });
+    }
+    const flowId = body.flowId;
+
+    // Clear path: flowId === null deletes the assignment row.
+    if (flowId === null) {
+      await ctx.db.run(
+        'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
+        [orgId, scope, targetId],
+      );
+      return res.json({ scope, targetId: targetId || null, flowId: null });
+    }
+    if (typeof flowId !== 'string' || !flowId) {
+      return res.status(400).json({ error: 'flowId must be a string or null' });
+    }
+
+    // Validate flowId belongs to this org.
     const owned = await ctx.db.get<FlowRow>(
       'SELECT id FROM flows WHERE id = ? AND org_id = ?',
-      [flowId, req.session!.orgId],
+      [flowId, orgId],
     );
     if (!owned) return res.status(404).json({ error: 'Flow not found in this org' });
-    // Upsert: SQLite (INSERT OR REPLACE) and PG-via-dialect both round-trip
-    // through the dialect translator. Use a portable upsert pattern: delete +
-    // insert in a transaction.
+
+    // Validate targetId for installation scope.
+    if (scope === 'installation') {
+      const inst = await ctx.db.get<{ id: string }>(
+        'SELECT id FROM installations WHERE id = ? AND org_id = ?',
+        [targetId, orgId],
+      );
+      if (!inst) return res.status(404).json({ error: 'Installation not found in this org' });
+    }
+    // Project scope: project ids are not enforced here — the events table is
+    // the only source of project ids and we don't want to refuse pre-creating
+    // an override before any event has been ingested. Validation could be added
+    // later via /v1/admin/projects discovery.
+
     await ctx.db.transaction(async () => {
       await ctx.db.run(
-        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
-        [req.session!.orgId],
+        'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
+        [orgId, scope, targetId],
       );
       await ctx.db.run(
-        `INSERT INTO flow_assignments (org_id, scope, flow_id, updated_by_user_id)
-         VALUES (?, 'org', ?, ?)`,
-        [req.session!.orgId, flowId, req.session!.userId ?? null],
+        `INSERT INTO flow_assignments (org_id, scope, target_id, flow_id, updated_by_user_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        [orgId, scope, targetId, flowId, req.session!.userId ?? null],
       );
     });
-    res.json({ flowId });
+    res.json({ scope, targetId: targetId || null, flowId });
   });
 
   return router;

@@ -53,17 +53,26 @@ export function AdminFlows() {
     queryKey: ['admin-flows'],
     queryFn: () => flowClient.listFlows(),
   });
-  const { data: assignment } = useQuery<{ flowId: string | null }>({
-    queryKey: ['admin-flow-assignment'],
-    queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
+  // Hub now returns an array of assignments (org/project/installation). For
+  // the v1 list-page badge we only care about the org-default; later stories
+  // surface project + installation overrides.
+  const { data: orgAssignment } = useQuery<{ flowId: string | null }>({
+    queryKey: ['admin-flow-assignment-org'],
+    queryFn: async () => {
+      const all: Array<{ scope: string; targetId: string; flowId: string }> =
+        (await api.get('/v1/admin/flow-assignments')).data;
+      const org = all.find(a => a.scope === 'org');
+      return { flowId: org?.flowId ?? null };
+    },
   });
+  const assignment = orgAssignment;
 
   // Refresh local queries whenever the editor closes — the modal manages its
   // own react-query invalidations under different keys, so we mirror them.
   useEffect(() => {
     if (!editorOpen) {
       qc.invalidateQueries({ queryKey: ['admin-flows'] });
-      qc.invalidateQueries({ queryKey: ['admin-flow-assignment'] });
+      qc.invalidateQueries({ queryKey: ['admin-flow-assignment-org'] });
     }
   }, [editorOpen, qc]);
 

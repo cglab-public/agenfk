@@ -169,11 +169,11 @@ describe('admin flow routes', () => {
   });
 
   // ── Assignments ────────────────────────────────────────────────────────────
-  it('GET /flow-assignments returns null when none set', async () => {
+  it('GET /flow-assignments returns an empty array when none set', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
     const r = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ flowId: null });
+    expect(r.body).toEqual([]);
   });
 
   it('PUT /flow-assignments sets and overwrites the org default flow', async () => {
@@ -194,7 +194,8 @@ describe('admin flow routes', () => {
     expect(a2.body.flowId).toBe(f2.body.id);
 
     const get = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
-    expect(get.body.flowId).toBe(f2.body.id);
+    const orgRow = get.body.find((a: any) => a.scope === 'org');
+    expect(orgRow.flowId).toBe(f2.body.id);
   });
 
   it('PUT /flow-assignments rejects flowId from another org', async () => {

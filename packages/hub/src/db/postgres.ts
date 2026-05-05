@@ -127,10 +127,11 @@ const SCHEMA_PG = `
   CREATE TABLE IF NOT EXISTS flow_assignments (
     org_id TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT 'org',
+    target_id TEXT NOT NULL DEFAULT '',
     flow_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by_user_id TEXT,
-    PRIMARY KEY (org_id, scope)
+    PRIMARY KEY (org_id, scope, target_id)
   );
 `;
 
@@ -230,6 +231,18 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // flow_assignments multi-scope migration. PG can DROP / ADD CONSTRAINT in
+  // place — simpler than the SQLite recreate dance.
+  const faCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='flow_assignments'",
+  );
+  const faHave = new Set(faCols.map(c => c.column_name));
+  if (faCols.length > 0 && !faHave.has('target_id')) {
+    await adapter.exec("ALTER TABLE flow_assignments ADD COLUMN target_id TEXT NOT NULL DEFAULT ''");
+    await adapter.exec("ALTER TABLE flow_assignments DROP CONSTRAINT IF EXISTS flow_assignments_pkey");
+    await adapter.exec("ALTER TABLE flow_assignments ADD PRIMARY KEY (org_id, scope, target_id)");
+  }
 }
 
 export async function openPgDb(connectionString: string): Promise<HubDb> {
