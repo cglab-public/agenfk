@@ -196,15 +196,30 @@ export function adminRouter(ctx: HubServerContext): Router {
   // Returns the distinct project ids ever ingested for this org, with the
   // most-recent occurrence timestamp. Used by the hub-ui Assignments panel.
   router.get('/projects', guard, async (req: Request, res: Response) => {
-    const rows = await ctx.db.all<{ project_id: string; last_seen: string }>(
-      `SELECT project_id, MAX(occurred_at) AS last_seen
-       FROM events
-       WHERE org_id = ? AND project_id IS NOT NULL AND project_id != ''
-       GROUP BY project_id
+    // remote_url enrichment (BUG b976a525): the hub admin sees these IDs in
+    // the Flow Assignments UI, but project IDs are unique-per-installation
+    // and meaningless across the fleet. Surface the latest known git remote
+    // URL alongside, so chips and pickers can render the recognizable name.
+    const rows = await ctx.db.all<{ project_id: string; last_seen: string; remote_url: string | null }>(
+      `SELECT
+         e.project_id,
+         MAX(e.occurred_at) AS last_seen,
+         (
+           SELECT remote_url FROM events e2
+           WHERE e2.org_id = e.org_id AND e2.project_id = e.project_id AND e2.remote_url IS NOT NULL
+           ORDER BY e2.occurred_at DESC LIMIT 1
+         ) AS remote_url
+       FROM events e
+       WHERE e.org_id = ? AND e.project_id IS NOT NULL AND e.project_id != ''
+       GROUP BY e.project_id
        ORDER BY last_seen DESC`,
       [req.session!.orgId],
     );
-    res.json(rows.map(r => ({ projectId: r.project_id, lastSeen: r.last_seen })));
+    res.json(rows.map(r => ({
+      projectId: r.project_id,
+      lastSeen: r.last_seen,
+      remoteUrl: r.remote_url ?? null,
+    })));
   });
 
   // Built-in default flow — declared BEFORE /flows/:id so the literal ":id"
@@ -309,11 +324,34 @@ export function adminRouter(ctx: HubServerContext): Router {
       'SELECT scope, target_id, flow_id, updated_at FROM flow_assignments WHERE org_id = ? ORDER BY scope, target_id',
       [req.session!.orgId],
     );
+
+    // BUG b976a525: enrich project-scoped rows with their git remote URL so
+    // the admin UI can render a recognizable identity instead of a UUID.
+    const projectTargetIds = rows
+      .filter(r => r.scope === 'project')
+      .map(r => r.target_id);
+    const remoteByProjectId = new Map<string, string | null>();
+    if (projectTargetIds.length > 0) {
+      const placeholders = projectTargetIds.map(() => '?').join(',');
+      const remoteRows = await ctx.db.all<{ project_id: string; remote_url: string | null }>(
+        `SELECT e.project_id,
+           (SELECT remote_url FROM events e2
+            WHERE e2.org_id = e.org_id AND e2.project_id = e.project_id AND e2.remote_url IS NOT NULL
+            ORDER BY e2.occurred_at DESC LIMIT 1) AS remote_url
+         FROM events e
+         WHERE e.org_id = ? AND e.project_id IN (${placeholders})
+         GROUP BY e.project_id`,
+        [req.session!.orgId, ...projectTargetIds],
+      );
+      for (const rr of remoteRows) remoteByProjectId.set(rr.project_id, rr.remote_url ?? null);
+    }
+
     res.json(rows.map(r => ({
       scope: r.scope,
       targetId: r.target_id,
       flowId: r.flow_id,
       updatedAt: r.updated_at,
+      remoteUrl: r.scope === 'project' ? (remoteByProjectId.get(r.target_id) ?? null) : null,
     })));
   });
 

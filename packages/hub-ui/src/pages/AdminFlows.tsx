@@ -24,9 +24,12 @@ interface Assignment {
   targetId: string;
   flowId: string;
   updatedAt: string;
+  // Populated server-side for project-scoped rows so the UI can render the
+  // git remote URL instead of the raw (unique-per-installation) project UUID.
+  remoteUrl?: string | null;
 }
 
-interface ProjectInfo { projectId: string; lastSeen: string }
+interface ProjectInfo { projectId: string; lastSeen: string; remoteUrl: string | null }
 interface ApiKeyRow { tokenHashPreview: string; label: string | null; installationId: string | null; gitName: string | null; gitEmail: string | null; revokedAt: string | null }
 
 const flowClient: FlowClient = {
@@ -321,7 +324,7 @@ function ScopeSection({
       {rows.map((r) => (
         <div key={r.targetId} className="flex items-center justify-between bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5">
           <span className={'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' + chipClass}>
-            {r.targetId}
+            {r.remoteUrl ?? r.targetId}
           </span>
           <button
             onClick={() => onRemove(r.targetId)}
@@ -357,7 +360,13 @@ function AddOverridePicker({
 
   const options = useMemo(() => {
     if (scope === 'project') {
-      return (projectsQ.data ?? []).map(p => ({ id: p.projectId, label: p.projectId, sub: `last seen ${p.lastSeen}` }));
+      // The picker submits id=projectId (assignments key on installation-scoped IDs),
+      // but shows label=remoteUrl when known so admins can recognise the repo.
+      return (projectsQ.data ?? []).map(p => ({
+        id: p.projectId,
+        label: p.remoteUrl ?? p.projectId,
+        sub: p.remoteUrl ? `${p.projectId} · last seen ${p.lastSeen}` : `last seen ${p.lastSeen}`,
+      }));
     }
     return (apiKeysQ.data ?? [])
       .filter(k => k.installationId && !k.revokedAt)
