@@ -11,7 +11,12 @@ export function generateApiKey(): string {
   return 'agk_' + randomBytes(32).toString('hex');
 }
 
-export interface ApiKeyContext { orgId: string; tokenHash: string }
+export interface ApiKeyContext {
+  orgId: string;
+  tokenHash: string;
+  /** Installation id bound to this token at issue time (magic-link flow). NULL for legacy tokens. */
+  installationId?: string | null;
+}
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -33,15 +38,15 @@ export function requireApiKey(db: DB) {
         return;
       }
       const tokenHash = hashToken(token);
-      const row = await db.get<{ org_id: string; revoked_at: string | null }>(
-        'SELECT org_id, revoked_at FROM api_keys WHERE token_hash = ?',
+      const row = await db.get<{ org_id: string; revoked_at: string | null; installation_id: string | null }>(
+        'SELECT org_id, revoked_at, installation_id FROM api_keys WHERE token_hash = ?',
         [tokenHash],
       );
       if (!row || row.revoked_at) {
         res.status(401).json({ error: 'Invalid or revoked token' });
         return;
       }
-      req.hubApiKey = { orgId: row.org_id, tokenHash };
+      req.hubApiKey = { orgId: row.org_id, tokenHash, installationId: row.installation_id ?? null };
       next();
     } catch (err) {
       next(err);

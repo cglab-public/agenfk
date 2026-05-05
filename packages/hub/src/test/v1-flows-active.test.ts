@@ -82,7 +82,7 @@ describe('GET /v1/flows/active', () => {
     expect(r.body.flow.id).toBe(created.body.id);
     expect(r.body.flow.name).toBe('Active Flow');
     expect(r.body.hubVersion).toBe(1);
-    expect(r.headers.etag).toBe(`W/"1"`);
+    expect(r.headers.etag).toBe(`W/"1:org:"`);
   });
 
   it('returns 304 when If-None-Match matches the current ETag', async () => {
@@ -94,7 +94,7 @@ describe('GET /v1/flows/active', () => {
 
     const r = await supertest(app).get('/v1/flows/active')
       .set('Authorization', `Bearer ${tokenA}`)
-      .set('If-None-Match', 'W/"1"');
+      .set('If-None-Match', 'W/"1:org:"');
     expect(r.status).toBe(304);
   });
 
@@ -110,7 +110,7 @@ describe('GET /v1/flows/active', () => {
 
     const stale = await supertest(app).get('/v1/flows/active')
       .set('Authorization', `Bearer ${tokenA}`)
-      .set('If-None-Match', 'W/"1"');
+      .set('If-None-Match', 'W/"1:org:"');
     expect(stale.status).toBe(200);
     expect(stale.body.hubVersion).toBe(2);
     expect(stale.body.flow.name).toBe('Renamed');

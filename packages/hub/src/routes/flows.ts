@@ -1,21 +1,19 @@
 import { Router, Request, Response } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
-
-interface FlowRow {
-  id: string;
-  name: string;
-  description: string | null;
-  definition_json: string;
-  source: 'hub' | 'community';
-  version: number;
-  updated_at: string;
-}
+import { resolveEffectiveFlow } from '../services/flowResolution.js';
 
 /**
  * Client-facing flow distribution: a connected agenfk installation calls
- * `GET /v1/flows/active` (auth'd by api_key → org) to fetch the org's
- * currently-assigned flow. Honours `If-None-Match` for cheap polling.
+ * `GET /v1/flows/active` (auth'd by api_key → org) to fetch the flow assigned
+ * to it. Resolution honours installation > project > org precedence.
+ *
+ * - `?projectId=<id>` (optional) — provides project scope for precedence.
+ * - Installation scope is derived from the api_key's bound installation_id.
+ *
+ * ETag is keyed on `(version, scope, targetId)` so a scope change (e.g. an
+ * installation override added or cleared) busts the client's cache even when
+ * the underlying flow's version didn't change.
  */
 export function flowsRouter(ctx: HubServerContext): Router {
   const router = Router();
@@ -23,36 +21,31 @@ export function flowsRouter(ctx: HubServerContext): Router {
 
   router.get('/flows/active', requireKey, async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
-    const assignment = await ctx.db.get<{ flow_id: string }>(
-      "SELECT flow_id FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
-      [orgId],
-    );
-    if (!assignment) {
+    const installationId = req.hubApiKey!.installationId ?? null;
+    const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : null;
+
+    const resolved = await resolveEffectiveFlow({ db: ctx.db, orgId, projectId, installationId });
+    if (!resolved) {
       return res.json({ flow: null });
     }
-    const row = await ctx.db.get<FlowRow>(
-      'SELECT id, name, description, definition_json, source, version, updated_at FROM flows WHERE id = ? AND org_id = ?',
-      [assignment.flow_id, orgId],
-    );
-    if (!row) {
-      // Assigned flow has been deleted out-of-band — surface "no assignment"
-      // rather than 500 so clients keep their existing local cache.
-      return res.json({ flow: null });
-    }
-    const etag = `W/"${row.version}"`;
+
+    const etag = `W/"${resolved.flow.version}:${resolved.scope}:${resolved.targetId}"`;
     res.setHeader('ETag', etag);
     if (req.headers['if-none-match'] === etag) {
       res.status(304).end();
       return;
     }
+    const def = (resolved.flow.definition ?? {}) as Record<string, unknown>;
     res.json({
       flow: {
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        ...JSON.parse(row.definition_json),
+        id: resolved.flow.id,
+        name: resolved.flow.name,
+        description: resolved.flow.description,
+        ...def,
       },
-      hubVersion: row.version,
+      hubVersion: resolved.flow.version,
+      scope: resolved.scope,
+      targetId: resolved.targetId,
     });
   });
 
