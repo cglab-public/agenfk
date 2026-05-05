@@ -148,6 +148,8 @@ const SCHEMA_SQLITE = `
     scope_type TEXT NOT NULL,    -- 'all' | 'installation'
     scope_id TEXT,               -- installation_id when scope_type='installation', else NULL
     created_by_user_id TEXT,
+    created_by_email TEXT,       -- denormalised audit field (Story 5)
+    request_ip TEXT,             -- audit (Story 5)
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT
   );
@@ -230,6 +232,14 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('remote_url')) raw.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+
+  // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
+  const udCols = raw.prepare("PRAGMA table_info(upgrade_directives)").all() as Array<{ name: string }>;
+  const udHave = new Set(udCols.map(c => c.name));
+  if (udCols.length > 0) {
+    if (!udHave.has('created_by_email')) raw.exec("ALTER TABLE upgrade_directives ADD COLUMN created_by_email TEXT");
+    if (!udHave.has('request_ip'))      raw.exec("ALTER TABLE upgrade_directives ADD COLUMN request_ip TEXT");
+  }
 
   // installations.agenfk_version + agenfk_version_updated_at — Story 7 of EPIC 541c12b3.
   const instCols = raw.prepare("PRAGMA table_info(installations)").all() as Array<{ name: string }>;

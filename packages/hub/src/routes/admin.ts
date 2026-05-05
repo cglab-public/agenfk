@@ -528,7 +528,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
   router.post('/upgrade', guard, async (req: Request, res: Response) => {
-    const { targetVersion, scope } = req.body ?? {};
+    const { targetVersion, scope, confirmDowngrade } = req.body ?? {};
     if (typeof targetVersion !== 'string' || !SEMVER_TAG_RE.test(targetVersion)) {
       return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
     }
@@ -539,8 +539,6 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'scope.installationId required when scope.type=installation' });
     }
 
-    // Validate version actually exists upstream so we don't fan a directive
-    // that no installation can satisfy. Defaults to GitHub when not stubbed.
     const releaseExists = ctx.config.releaseExists ?? defaultReleaseExists;
     const exists = await releaseExists(targetVersion);
     if (!exists) {
@@ -548,52 +546,112 @@ export function adminRouter(ctx: HubServerContext): Router {
     }
 
     const orgId = req.session!.orgId;
-    let installationIds: string[];
+    type Inst = { id: string; agenfk_version: string | null };
+    let installations: Inst[];
     if (scope.type === 'all') {
-      const rows = await ctx.db.all<{ id: string }>(
-        'SELECT id FROM installations WHERE org_id = ?',
+      installations = await ctx.db.all<Inst>(
+        'SELECT id, agenfk_version FROM installations WHERE org_id = ?',
         [orgId],
       );
-      installationIds = rows.map(r => r.id);
     } else {
-      const inst = await ctx.db.get<{ id: string }>(
-        'SELECT id FROM installations WHERE id = ? AND org_id = ?',
+      const inst = await ctx.db.get<Inst>(
+        'SELECT id, agenfk_version FROM installations WHERE id = ? AND org_id = ?',
         [scope.installationId, orgId],
       );
       if (!inst) return res.status(404).json({ error: 'Installation not found in this org' });
-      installationIds = [inst.id];
+      installations = [inst];
+    }
+
+    // Story 5: single-pending guard. Refuse if any in-scope installation
+    // already has a pending or in_progress target on a prior directive.
+    if (installations.length > 0) {
+      const ids = installations.map(i => i.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const conflicts = await ctx.db.all<{ installation_id: string; directive_id: string }>(
+        `SELECT t.installation_id, t.directive_id
+         FROM upgrade_directive_targets t
+         JOIN upgrade_directives d ON d.id = t.directive_id
+         WHERE d.org_id = ?
+           AND t.installation_id IN (${placeholders})
+           AND t.state IN ('pending', 'in_progress')`,
+        [orgId, ...ids],
+      );
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error: 'One or more installations already have an upgrade in progress',
+          conflicts: conflicts.map(c => ({
+            installationId: c.installation_id,
+            conflictingDirectiveId: c.directive_id,
+          })),
+        });
+      }
+    }
+
+    // Story 5: downgrade confirmation. Compare against each installation's
+    // last-known agenfk_version; if the target moves any of them backwards,
+    // require confirmDowngrade=true.
+    if (confirmDowngrade !== true) {
+      const downgrades: Array<{ installationId: string; currentVersion: string; targetVersion: string }> = [];
+      for (const inst of installations) {
+        if (inst.agenfk_version && compareSemver(targetVersion, inst.agenfk_version) < 0) {
+          downgrades.push({
+            installationId: inst.id,
+            currentVersion: inst.agenfk_version,
+            targetVersion,
+          });
+        }
+      }
+      if (downgrades.length > 0) {
+        return res.status(409).json({
+          error: 'Directive would downgrade one or more installations. Re-submit with confirmDowngrade=true to proceed.',
+          downgrades,
+        });
+      }
     }
 
     const directiveId = randomUUID();
+    const requestIp = (req.ip || req.socket?.remoteAddress || '').toString();
+    let createdByEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?',
+        [req.session.userId],
+      );
+      createdByEmail = u?.email ?? null;
+    }
     await ctx.db.transaction(async () => {
       await ctx.db.run(
-        `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id, created_by_user_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO upgrade_directives
+           (id, org_id, target_version, scope_type, scope_id, created_by_user_id, created_by_email, request_ip)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           directiveId, orgId, targetVersion,
           scope.type, scope.type === 'installation' ? scope.installationId : null,
           req.session!.userId ?? null,
+          createdByEmail,
+          requestIp,
         ],
       );
-      for (const installationId of installationIds) {
+      for (const inst of installations) {
         await ctx.db.run(
           `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
            VALUES (?, ?, 'pending')`,
-          [directiveId, installationId],
+          [directiveId, inst.id],
         );
       }
     });
 
-    res.status(201).json({ directiveId, targetVersion, targetCount: installationIds.length });
+    res.status(201).json({ directiveId, targetVersion, targetCount: installations.length });
   });
 
   router.get('/upgrade', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directives = await ctx.db.all<{
       id: string; target_version: string; scope_type: string; scope_id: string | null;
-      created_by_user_id: string | null; created_at: string; expires_at: string | null;
+      created_by_user_id: string | null; created_by_email: string | null; request_ip: string | null;
+      created_at: string; expires_at: string | null;
     }>(
-      `SELECT id, target_version, scope_type, scope_id, created_by_user_id, created_at, expires_at
+      `SELECT id, target_version, scope_type, scope_id, created_by_user_id, created_by_email, request_ip, created_at, expires_at
        FROM upgrade_directives WHERE org_id = ? ORDER BY created_at DESC`,
       [orgId],
     );
@@ -622,6 +680,8 @@ export function adminRouter(ctx: HubServerContext): Router {
         scope: { type: d.scope_type, installationId: d.scope_id },
         createdAt: d.created_at,
         createdByUserId: d.created_by_user_id,
+        createdByEmail: d.created_by_email,
+        requestIp: d.request_ip,
         expiresAt: d.expires_at,
         progress,
         targets: targets.map(t => ({
@@ -640,6 +700,30 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   return router;
+}
+
+/**
+ * Lightweight semver comparator (returns negative/zero/positive) for the
+ * downgrade-detection guard. Handles the 0.x.y[-prerelease] shape the agenfk
+ * release pipeline emits; falls back to lexical comparison for anything we
+ * can't parse, which is conservative — unknown shapes won't trigger a false
+ * downgrade-warning.
+ */
+function compareSemver(a: string, b: string): number {
+  const parse = (s: string) => {
+    const m = s.replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+    if (!m) return null;
+    return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: m[4] ?? '' };
+  };
+  const pa = parse(a); const pb = parse(b);
+  if (!pa || !pb) return a.localeCompare(b);
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  // Per semver: a release is greater than its prerelease ("1.0.0" > "1.0.0-rc.1").
+  if (pa.pre === '' && pb.pre !== '') return 1;
+  if (pa.pre !== '' && pb.pre === '') return -1;
+  return pa.pre.localeCompare(pb.pre);
 }
 
 /**

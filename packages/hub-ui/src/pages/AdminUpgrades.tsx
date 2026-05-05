@@ -28,6 +28,8 @@ interface Directive {
   scope: { type: 'all' | 'installation'; installationId?: string | null };
   createdAt: string;
   createdByUserId: string | null;
+  createdByEmail: string | null;
+  requestIp: string | null;
   expiresAt: string | null;
   progress: { pending: number; in_progress: number; succeeded: number; failed: number };
   targets: UpgradeTarget[];
@@ -72,7 +74,7 @@ export function AdminUpgrades() {
   );
 
   const issueMut = useMutation({
-    mutationFn: async (body: { targetVersion: string; scope: { type: 'all' | 'installation'; installationId?: string } }) => {
+    mutationFn: async (body: { targetVersion: string; scope: { type: 'all' | 'installation'; installationId?: string }; confirmDowngrade?: boolean }) => {
       const r = await api.post('/v1/admin/upgrade', body);
       return r.data;
     },
@@ -85,7 +87,27 @@ export function AdminUpgrades() {
       qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
     },
     onError: (e: any) => {
-      setError(e?.response?.data?.error ?? e?.message ?? 'Failed to issue directive');
+      const status = e?.response?.status;
+      const data = e?.response?.data;
+      if (status === 409 && Array.isArray(data?.downgrades) && data.downgrades.length > 0) {
+        // Story 5: distinct red confirm for downgrades.
+        const lines = data.downgrades.map((d: any) => `  • ${d.installationId}: v${d.currentVersion} → v${d.targetVersion}`).join('\n');
+        const ok = confirm(
+          `⚠️ This is a DOWNGRADE for the following installations:\n\n${lines}\n\nProceed anyway?`
+        );
+        if (ok) {
+          // Re-submit with the confirmation flag.
+          const lastBody = (issueMut.variables as any) ?? null;
+          if (lastBody) issueMut.mutate({ ...lastBody, confirmDowngrade: true });
+        }
+        return;
+      }
+      if (status === 409 && Array.isArray(data?.conflicts) && data.conflicts.length > 0) {
+        const lines = data.conflicts.map((c: any) => `  • ${c.installationId} (directive ${c.conflictingDirectiveId})`).join('\n');
+        setError(`Cannot issue: an upgrade is already pending or running on:\n${lines}`);
+        return;
+      }
+      setError(data?.error ?? e?.message ?? 'Failed to issue directive');
     },
   });
 
@@ -197,6 +219,7 @@ export function AdminUpgrades() {
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                     {d.scope.type === 'all' ? 'all installations' : `installation ${d.scope.installationId}`}
                     {' · '}{new Date(d.createdAt).toLocaleString()}
+                    {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>
                 </span>
                 <span className="flex items-center gap-1.5 text-[11px]">

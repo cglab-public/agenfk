@@ -144,6 +144,8 @@ const SCHEMA_PG = `
     scope_type TEXT NOT NULL,
     scope_id TEXT,
     created_by_user_id TEXT,
+    created_by_email TEXT,
+    request_ip TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ
   );
@@ -248,6 +250,16 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+
+  // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
+  const udCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='upgrade_directives'"
+  );
+  const udHave = new Set(udCols.map(c => c.column_name));
+  if (udCols.length > 0) {
+    if (!udHave.has('created_by_email')) await adapter.exec("ALTER TABLE upgrade_directives ADD COLUMN created_by_email TEXT");
+    if (!udHave.has('request_ip'))      await adapter.exec("ALTER TABLE upgrade_directives ADD COLUMN request_ip TEXT");
+  }
 
   // installations.agenfk_version + agenfk_version_updated_at — Story 7 of EPIC 541c12b3.
   const instCols = await adapter.all<{ column_name: string }>(
