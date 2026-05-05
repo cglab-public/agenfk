@@ -215,15 +215,24 @@ describe('PG parity: queries + rollup', () => {
     expect(r.body.bucket).toBe('day');
     const may3 = r.body.buckets.find((b: any) => b.time === '2026-05-03');
     const may4 = r.body.buckets.find((b: any) => b.time === '2026-05-04');
-    expect(Number(may3.total)).toBe(3);
-    expect(Number(may4.total)).toBe(1);
+    // Bug 307a9fbe: under Postgres, COUNT(*) comes back as a bigint string and
+    // `entry.total += r.n` concatenates instead of summing. Assert NUMBER type
+    // (not just numerically-equal value) so the tooltip in the UI receives a
+    // real number and renders correctly without client-side coercion.
+    expect(typeof may3.total).toBe('number');
+    expect(may3.total).toBe(3);
+    expect(typeof may3.by_type['item.created']).toBe('number');
+    expect(may3.by_type['item.created']).toBe(1);
+    expect(typeof may4.total).toBe('number');
+    expect(may4.total).toBe(1);
   });
 
   it('GET /v1/histogram supports tzOffsetMin shift', async () => {
     const r = await supertest(fx.app).get('/v1/histogram?tzOffsetMin=-1440').set('Cookie', fx.cookie);
     expect(r.status).toBe(200);
     const may2 = r.body.buckets.find((b: any) => b.time === '2026-05-02');
-    expect(Number(may2.total)).toBe(3);
+    expect(typeof may2.total).toBe('number');
+    expect(may2.total).toBe(3);
   });
 
   it('GET /v1/histogram filters by projects + itemTypes', async () => {
@@ -231,7 +240,10 @@ describe('PG parity: queries + rollup', () => {
       .get('/v1/histogram?projects=git@x:web.git&itemTypes=TASK')
       .set('Cookie', fx.cookie);
     expect(r.status).toBe(200);
-    const total = r.body.buckets.reduce((a: number, b: any) => a + Number(b.total), 0);
+    // Sum WITHOUT Number() coercion — if total is a string this collapses to
+    // concatenation (the user-visible bug).
+    const total = r.body.buckets.reduce((a: number, b: any) => a + b.total, 0);
+    expect(typeof total).toBe('number');
     expect(total).toBe(2);
   });
 

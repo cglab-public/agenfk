@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
+import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 
 function parseList(s: string | undefined): string[] | null {
   if (!s) return null;
@@ -188,7 +189,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const sqlParams: any[] = [];
     if (tzShift !== 0) sqlParams.push(`${tzShift >= 0 ? '+' : ''}${tzShift} minutes`);
     sqlParams.push(...params);
-    const rows = await ctx.db.all<{ time: string; type: string; n: number }>(
+    const rows = await ctx.db.all<{ time: string; type: string; n: number | string }>(
       `SELECT strftime('${fmt}', occurred_at${tzModifier}) AS time, type, COUNT(*) AS n
        FROM events WHERE ${where.join(' AND ')}
        GROUP BY time, type
@@ -196,18 +197,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       sqlParams,
     );
 
-    const byTime = new Map<string, { time: string; total: number; by_type: Record<string, number> }>();
-    for (const r of rows) {
-      let entry = byTime.get(r.time);
-      if (!entry) {
-        entry = { time: r.time, total: 0, by_type: {} };
-        byTime.set(r.time, entry);
-      }
-      entry.by_type[r.type] = r.n;
-      entry.total += r.n;
-    }
-
-    res.json({ bucket, buckets: [...byTime.values()] });
+    res.json({ bucket, buckets: aggregateHistogramRows(rows) });
   });
 
   return router;
