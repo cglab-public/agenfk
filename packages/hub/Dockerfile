@@ -31,6 +31,7 @@ COPY packages/telemetry/package.json packages/telemetry/
 COPY packages/cli/package.json packages/cli/
 COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
+COPY packages/flow-editor/package.json packages/flow-editor/
 COPY packages/create/package.json packages/create/
 COPY packages/hub/package.json packages/hub/
 COPY packages/hub-ui/package.json packages/hub-ui/
@@ -38,6 +39,7 @@ COPY packages/hub-ui/package.json packages/hub-ui/
 RUN npm ci --no-audit --no-fund
 
 COPY packages/core packages/core
+COPY packages/flow-editor packages/flow-editor
 COPY packages/hub packages/hub
 COPY packages/hub-ui packages/hub-ui
 
