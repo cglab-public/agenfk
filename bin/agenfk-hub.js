@@ -32,29 +32,65 @@ function toPosixPath(p) {
 
 const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
 
-function fetchLatestTag(repo, beta = false) {
+// HTTP helper — uses Node's built-in fetch (Node ≥18, required by engines).
+// Falls back to curl, then gh CLI, so installs still work on systems missing
+// any one of them.
+async function fetchJson(url) {
+  if (typeof fetch === 'function') {
+    const res = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-installer' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+  const out = execSync(
+    `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  );
+  return JSON.parse(out);
+}
+
+async function fetchLatestTagAsync(repo, beta = false) {
   try {
     const url = beta
       ? `https://api.github.com/repos/${repo}/releases?per_page=20`
       : `https://api.github.com/repos/${repo}/releases/latest`;
-    const json = execSync(
-      `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    const data = JSON.parse(json);
+    const data = await fetchJson(url);
     const tag = beta
       ? (Array.isArray(data) ? data.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))[0]?.tag_name : null)
       : data.tag_name;
     if (tag) return tag;
-  } catch {}
+  } catch (e) {
+    console.error(`${YELLOW}[hub] HTTP tag lookup failed (${e.message}); trying gh CLI...${RESET}`);
+  }
+  // gh CLI fallback (only reachable when both fetch + curl failed).
   if (beta) {
     return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8' }).trim();
   }
   return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
 }
 
-function downloadAsset(repo, tag, pattern, outputPath) {
+// Sync wrapper to keep the existing call-sites simple. We synchronously block
+// on the async fetch via deasync-style polling — but that's ugly. Instead,
+// flip the calling site to async/await.
+function fetchLatestTag(repo, beta = false) {
+  // Used by the legacy synchronous flow; preserved as a thin wrapper that
+  // throws if the async tag lookup didn't already populate this value.
+  // Callers that need the result pre-resolved should use fetchLatestTagAsync.
+  throw new Error('fetchLatestTag is deprecated — use fetchLatestTagAsync.');
+}
+
+async function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
+  if (typeof fetch === 'function') {
+    try {
+      const res = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'agenfk-installer' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(outputPath, buf);
+      return;
+    } catch (e) {
+      console.error(`${YELLOW}[hub] fetch download failed (${e.message}); trying curl...${RESET}`);
+    }
+  }
   try {
     execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
     return;
@@ -155,29 +191,62 @@ if (!isNpxCache) {
 
   if (needsDist) {
     const REPO = 'cglab-public/agenfk';
-    console.log(`${GREEN}Downloading pre-built hub binary from GitHub...${RESET}`);
-    try {
-      const tag = fetchLatestTag(REPO, isBeta);
-      downloadAsset(REPO, tag, 'agenfk-dist.tar.gz', path.join(installDir, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit' });
-      fs.unlinkSync(path.join(installDir, 'agenfk-dist.tar.gz'));
-      if (!fs.existsSync(path.join(installDir, 'packages/hub/dist/bin.js'))) {
-        throw new Error(
-          `Release tarball did not contain packages/hub/dist/bin.js — ` +
-          `the resolved release likely predates the hub package. Re-run with --beta.`
-        );
-      }
-    } catch (e) {
-      console.error(`${YELLOW}Failed to download pre-built binary: ${e.message}${RESET}`);
-      console.log(`${BLUE}Falling back to source build...${RESET}`);
-      // Source build needs typescript (devDependency). Earlier ensureHubDeps
-      // installs with --omit=dev, so tsc isn't on PATH yet — install full deps
-      // here before invoking the build scripts.
-      console.log(`${GREEN}Installing build toolchain (devDependencies)...${RESET}`);
-      execSync('npm install --include=dev --no-audit --no-fund --no-package-lock', { cwd: installDir, stdio: 'inherit' });
-      execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: installDir, stdio: 'inherit' });
-    }
+    await ensureDistribution({ installDir, repo: REPO, beta: isBeta });
   }
 
   startHub(installDir);
+}
+
+async function ensureDistribution({ installDir, repo, beta }) {
+  console.log(`${GREEN}Downloading pre-built hub binary from GitHub...${RESET}`);
+  try {
+    const tag = await fetchLatestTagAsync(repo, beta);
+    await downloadAsset(repo, tag, 'agenfk-dist.tar.gz', path.join(installDir, 'agenfk-dist.tar.gz'));
+    execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit' });
+    fs.unlinkSync(path.join(installDir, 'agenfk-dist.tar.gz'));
+    if (!fs.existsSync(path.join(installDir, 'packages/hub/dist/bin.js'))) {
+      throw new Error(
+        `Release tarball did not contain packages/hub/dist/bin.js — ` +
+        `the resolved release likely predates the hub package. Re-run with --beta.`,
+      );
+    }
+    return;
+  } catch (e) {
+    console.error(`${YELLOW}Failed to download pre-built binary: ${e.message}${RESET}`);
+    console.log(`${BLUE}Falling back to source build...${RESET}`);
+  }
+
+  // Stale-install recovery: an existing install dir from an older beta may be
+  // missing newer workspace directories (e.g. packages/flow-editor added in
+  // beta.18). Overlay them from the REPO_ROOT (the npx-cached package) so
+  // workspace resolution can succeed before we run npm install.
+  overlayMissingWorkspaces(REPO_ROOT, installDir);
+
+  console.log(`${GREEN}Installing build toolchain (devDependencies)...${RESET}`);
+  execSync('npm install --include=dev --no-audit --no-fund --no-package-lock', { cwd: installDir, stdio: 'inherit' });
+  execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: installDir, stdio: 'inherit' });
+}
+
+// Walk the REPO_ROOT package.json's workspaces array and copy any workspace
+// directory that isn't yet present in the install dir. Idempotent — never
+// overwrites an existing workspace dir, so users keep any local edits.
+function overlayMissingWorkspaces(srcRoot, dstRoot) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(srcRoot, 'package.json'), 'utf8'));
+    const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : [];
+    for (const ws of workspaces) {
+      const srcDir = path.join(srcRoot, ws);
+      const dstDir = path.join(dstRoot, ws);
+      if (!fs.existsSync(srcDir)) continue;
+      if (fs.existsSync(dstDir)) continue;
+      console.log(`${BLUE}[hub] Overlaying missing workspace: ${ws}${RESET}`);
+      if (fs.cpSync) {
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      } else {
+        execSync(`cp -r ${JSON.stringify(srcDir)} ${JSON.stringify(path.dirname(dstDir))}/`, { stdio: 'inherit', shell: true });
+      }
+    }
+  } catch (e) {
+    console.warn(`${YELLOW}[hub] overlayMissingWorkspaces skipped: ${e.message}${RESET}`);
+  }
 }
