@@ -145,12 +145,23 @@ function startHub(baseDir) {
   }
 
   const port = process.env.AGENFK_HUB_PORT || '4000';
+
+  // Default to a per-user data dir when the operator hasn't supplied one. The
+  // hub's own default is /var/lib/agenfk-hub which only works when running as
+  // root; non-root launches via npx should land somewhere writable instead.
+  const env = { ...process.env };
+  if (!env.AGENFK_HUB_DB_PATH) {
+    env.AGENFK_HUB_DB_PATH = path.join(os.homedir(), '.agenfk-hub', 'hub.sqlite');
+    console.log(`${BLUE}  Using default DB path: ${env.AGENFK_HUB_DB_PATH}${RESET}`);
+    console.log(`${BLUE}  (override with AGENFK_HUB_DB_PATH=/your/path/hub.sqlite)${RESET}`);
+  }
+
   console.log(`\n${GREEN}Starting AgEnFK Hub on port ${port}...${RESET}`);
   console.log(`${CYAN}  Open http://localhost:${port}/ in your browser${RESET}\n`);
 
   const child = spawn(process.execPath, [binPath], {
     stdio: 'inherit',
-    env: { ...process.env },
+    env,
     cwd: baseDir,
   });
   child.on('exit', code => process.exit(code ?? 0));
