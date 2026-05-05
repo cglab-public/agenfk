@@ -7,6 +7,8 @@ import { TelemetryClient, getInstallationId, isTelemetryEnabled, findAvailablePo
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
+import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -66,6 +68,7 @@ const telemetry = new TelemetryClient();
 const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
 let flowSyncHandle: FlowSyncHandle | null = null;
+let upgradeSyncHandle: UpgradeSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -416,6 +419,7 @@ const initStorage = async () => {
   // (item.id undefined, GET /flows 500, etc).
   hubFlusher?.stop();
   flowSyncHandle?.stop();
+  upgradeSyncHandle?.stop();
   hubClient.attachStorage(storage as SQLiteStorageProvider);
   if (hubClient.isEnabled && hubClient.hubConfig) {
     hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
@@ -432,6 +436,59 @@ const initStorage = async () => {
       emit: (event, payload) => io.emit(event, payload),
     });
     console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
+
+    // Story 3 — fleet upgrade reconciler.
+    const dbDir = path.dirname(dbPath);
+    const installationId = getInstallationId();
+    const currentVersion: string = (() => {
+      try {
+        const pkg = JSON.parse(require('fs').readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'));
+        return typeof pkg?.version === 'string' ? pkg.version : '0.0.0';
+      } catch { return '0.0.0'; }
+    })();
+    const recordEvent = (e: { installationId: string; type: any; payload: any; occurredAt?: string }) => {
+      hubClient.recordEvent({
+        installationId: e.installationId,
+        orgId: hubClient.hubConfig!.orgId,
+        type: e.type,
+        payload: e.payload,
+        occurredAt: e.occurredAt,
+      } as any);
+    };
+    // Boot-time replay: a previous run may have spawned an upgrade that killed
+    // this very process before its outcome event drained. Reconcile by
+    // comparing currentVersion to the directive's intent and emit accordingly.
+    replayPendingUpgradeOutcome({
+      dbDir,
+      currentVersion,
+      installationId,
+      recordEvent,
+    }).catch((e) => console.error('[HUB_UPGRADE_SYNC] replay failed:', (e as Error).message));
+
+    const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
+    upgradeSyncHandle = startUpgradeSync({
+      dbDir,
+      currentVersion,
+      installationId,
+      hubUrl: hubClient.hubConfig.url,
+      hubToken: hubClient.hubConfig.token,
+      intervalMs: upgradeIntervalMs,
+      fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
+        const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
+          headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
+          timeout: 10_000,
+          validateStatus: (s) => s < 500,
+        });
+        return { status: r.status, json: async () => r.data };
+      },
+      recordEvent,
+      flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
+      spawnImpl: (cmd, args) => {
+        const r = spawnSync(cmd, args, { encoding: 'utf8' });
+        return { exitCode: r.status, stdout: r.stdout ?? '' };
+      },
+    });
+    console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
   }
 };
 
