@@ -9,22 +9,23 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
+import { flattenAdminFlow } from './adminFlowShape';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
 const flowClient: FlowClient = {
-  listFlows: async () => (await api.get('/v1/admin/flows')).data,
+  listFlows: async () => ((await api.get('/v1/admin/flows')).data as any[]).map(flattenAdminFlow),
   getDefaultFlow: async () => (await api.get('/v1/admin/flows/default')).data,
   createFlow: async (payload) => {
     // The hub admin endpoint expects { definition: <Flow JSON minus id/createdAt/updatedAt> }.
     const { id: _id, createdAt: _c, updatedAt: _u, ...definition } = payload as any;
     const r = await api.post('/v1/admin/flows', { definition });
-    return r.data;
+    return flattenAdminFlow(r.data);
   },
   updateFlow: async (id, payload) => {
     const { id: _id, createdAt: _c, updatedAt: _u, ...definition } = payload as any;
     const r = await api.put(`/v1/admin/flows/${id}`, { definition });
-    return r.data;
+    return flattenAdminFlow(r.data);
   },
   deleteFlow: async (id) => { await api.delete(`/v1/admin/flows/${id}`); },
   setProjectFlow: async (_projectId, flowId) => {
@@ -35,7 +36,7 @@ const flowClient: FlowClient = {
 
 const registryClient: RegistryClient = {
   browseRegistry: async () => (await api.get('/v1/admin/registry/flows')).data,
-  installFromRegistry: async (filename) => (await api.post('/v1/admin/flows/install', { filename })).data,
+  installFromRegistry: async (filename) => flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename })).data),
   publishToRegistry: async () => {
     // Publishing back to the GitHub community registry is reserved to the
     // local agenfk client (which has gh CLI auth). Surface a clean error here.
