@@ -44,6 +44,36 @@ export function eventsRouter(ctx: HubServerContext): Router {
     res.json({ ok: true, orgId: req.hubApiKey!.orgId });
   });
 
+  // Fleet poll endpoint (Story 2 of EPIC 541c12b3 — remote upgrade).
+  // Returns the oldest pending upgrade directive whose target row matches
+  // the calling installation, or 204 if none. The caller (Story 3 client)
+  // decides whether to act on it; the hub does NOT transition state here —
+  // it waits for the corresponding `fleet:upgrade:*` event in /v1/events.
+  router.get('/upgrade-directive', requireKey, async (req: Request, res: Response) => {
+    const installationId = req.hubApiKey!.installationId;
+    if (!installationId) {
+      return res.status(204).end();
+    }
+    const row = await ctx.db.get<{
+      directive_id: string; target_version: string; created_at: string;
+    }>(
+      `SELECT d.id AS directive_id, d.target_version, d.created_at
+       FROM upgrade_directive_targets t
+       JOIN upgrade_directives d ON d.id = t.directive_id
+       WHERE t.installation_id = ? AND d.org_id = ?
+         AND t.state = 'pending'
+       ORDER BY d.created_at ASC
+       LIMIT 1`,
+      [installationId, req.hubApiKey!.orgId],
+    );
+    if (!row) return res.status(204).end();
+    res.json({
+      directiveId: row.directive_id,
+      targetVersion: row.target_version,
+      issuedAt: row.created_at,
+    });
+  });
+
   router.post('/events', requireKey, async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const installationFromHeader = (req.headers['x-installation-id'] as string | undefined) ?? null;
@@ -77,8 +107,34 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (result.changes === 0) { skipped++; continue; }
         ingested++;
         await ctx.db.run(UPSERT_INSTALLATION_SQL, [
-          e.installationId, e.orgId, now, now, e.actor.osUser, e.actor.gitName, e.actor.gitEmail,
+          e.installationId, e.orgId, now, now,
+          e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
         ]);
+
+        // Fleet upgrade events transition the matching directive_target.
+        // Identified by directiveId in the payload + the event's installation_id.
+        if (e.type === 'fleet:upgrade:started'
+          || e.type === 'fleet:upgrade:succeeded'
+          || e.type === 'fleet:upgrade:failed') {
+          const directiveId = (e.payload as any)?.directiveId;
+          if (typeof directiveId === 'string' && directiveId) {
+            const nextState = e.type === 'fleet:upgrade:started' ? 'in_progress'
+              : e.type === 'fleet:upgrade:succeeded' ? 'succeeded'
+              : 'failed';
+            const resultVersion = (e.payload as any)?.resultVersion ?? null;
+            const errorMessage = (e.payload as any)?.error ?? null;
+            await ctx.db.run(
+              `UPDATE upgrade_directive_targets
+                 SET state = ?,
+                     attempted_at = COALESCE(attempted_at, ?),
+                     finished_at = CASE WHEN ? IN ('succeeded', 'failed') THEN ? ELSE finished_at END,
+                     result_version = COALESCE(?, result_version),
+                     error_message = COALESCE(?, error_message)
+               WHERE directive_id = ? AND installation_id = ?`,
+              [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
+            );
+          }
+        }
       }
     });
 

@@ -521,5 +521,133 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ scope, targetId: targetId || null, flowId });
   });
 
+  // ── Fleet upgrade directives (Story 2 of EPIC 541c12b3) ────────────────
+  // Strict semver allowlist mirrors the CLI's SEMVER_TAG_RE — a directive's
+  // targetVersion is interpolated into shell calls on the fleet side
+  // (gh release view / git tag), so we never accept anything else.
+  const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+  router.post('/upgrade', guard, async (req: Request, res: Response) => {
+    const { targetVersion, scope } = req.body ?? {};
+    if (typeof targetVersion !== 'string' || !SEMVER_TAG_RE.test(targetVersion)) {
+      return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
+    }
+    if (!scope || (scope.type !== 'all' && scope.type !== 'installation')) {
+      return res.status(400).json({ error: "scope.type must be 'all' or 'installation'" });
+    }
+    if (scope.type === 'installation' && (typeof scope.installationId !== 'string' || !scope.installationId)) {
+      return res.status(400).json({ error: 'scope.installationId required when scope.type=installation' });
+    }
+
+    // Validate version actually exists upstream so we don't fan a directive
+    // that no installation can satisfy. Defaults to GitHub when not stubbed.
+    const releaseExists = ctx.config.releaseExists ?? defaultReleaseExists;
+    const exists = await releaseExists(targetVersion);
+    if (!exists) {
+      return res.status(422).json({ error: `Release ${targetVersion} not found` });
+    }
+
+    const orgId = req.session!.orgId;
+    let installationIds: string[];
+    if (scope.type === 'all') {
+      const rows = await ctx.db.all<{ id: string }>(
+        'SELECT id FROM installations WHERE org_id = ?',
+        [orgId],
+      );
+      installationIds = rows.map(r => r.id);
+    } else {
+      const inst = await ctx.db.get<{ id: string }>(
+        'SELECT id FROM installations WHERE id = ? AND org_id = ?',
+        [scope.installationId, orgId],
+      );
+      if (!inst) return res.status(404).json({ error: 'Installation not found in this org' });
+      installationIds = [inst.id];
+    }
+
+    const directiveId = randomUUID();
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id, created_by_user_id)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          directiveId, orgId, targetVersion,
+          scope.type, scope.type === 'installation' ? scope.installationId : null,
+          req.session!.userId ?? null,
+        ],
+      );
+      for (const installationId of installationIds) {
+        await ctx.db.run(
+          `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
+           VALUES (?, ?, 'pending')`,
+          [directiveId, installationId],
+        );
+      }
+    });
+
+    res.status(201).json({ directiveId, targetVersion, targetCount: installationIds.length });
+  });
+
+  router.get('/upgrade', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const directives = await ctx.db.all<{
+      id: string; target_version: string; scope_type: string; scope_id: string | null;
+      created_by_user_id: string | null; created_at: string; expires_at: string | null;
+    }>(
+      `SELECT id, target_version, scope_type, scope_id, created_by_user_id, created_at, expires_at
+       FROM upgrade_directives WHERE org_id = ? ORDER BY created_at DESC`,
+      [orgId],
+    );
+    const out: any[] = [];
+    for (const d of directives) {
+      const targets = await ctx.db.all<{
+        installation_id: string; state: string;
+        attempted_at: string | null; finished_at: string | null;
+        result_version: string | null; error_message: string | null;
+      }>(
+        `SELECT installation_id, state, attempted_at, finished_at, result_version, error_message
+         FROM upgrade_directive_targets WHERE directive_id = ?`,
+        [d.id],
+      );
+      const progress = { pending: 0, in_progress: 0, succeeded: 0, failed: 0 };
+      for (const t of targets) {
+        if (t.state in progress) (progress as any)[t.state] = Number((progress as any)[t.state]) + 1;
+      }
+      out.push({
+        directiveId: d.id,
+        targetVersion: d.target_version,
+        scope: { type: d.scope_type, installationId: d.scope_id },
+        createdAt: d.created_at,
+        createdByUserId: d.created_by_user_id,
+        expiresAt: d.expires_at,
+        progress,
+        targets: targets.map(t => ({
+          installationId: t.installation_id,
+          state: t.state,
+          attemptedAt: t.attempted_at,
+          finishedAt: t.finished_at,
+          resultVersion: t.result_version,
+          errorMessage: t.error_message,
+        })),
+      });
+    }
+    res.json({ directives: out });
+  });
+
   return router;
+}
+
+/**
+ * Default version-existence check: hits the GitHub Releases API. Replaced by
+ * the test stub via HubServerConfig.releaseExists.
+ */
+async function defaultReleaseExists(version: string): Promise<boolean> {
+  const tag = version.startsWith('v') ? version : `v${version}`;
+  try {
+    const resp = await fetch(`https://api.github.com/repos/cglab-public/agenfk/releases/tags/${tag}`, {
+      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-hub' },
+    });
+    return resp.status === 200;
+  } catch {
+    return false;
+  }
 }

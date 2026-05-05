@@ -133,6 +133,30 @@ const SCHEMA_PG = `
     updated_by_user_id TEXT,
     PRIMARY KEY (org_id, scope, target_id)
   );
+
+  CREATE TABLE IF NOT EXISTS upgrade_directives (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_version TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT,
+    created_by_user_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_upgrade_directives_org_time ON upgrade_directives(org_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS upgrade_directive_targets (
+    directive_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempted_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    result_version TEXT,
+    error_message TEXT,
+    PRIMARY KEY (directive_id, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_udt_install_state ON upgrade_directive_targets(installation_id, state);
 `;
 
 /**

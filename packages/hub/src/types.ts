@@ -5,6 +5,13 @@ export interface HubServerConfig {
   defaultOrgId: string;       // single-tenant v1: one org per hub deployment
   initialAdminEmail?: string;
   initialAdminPassword?: string;
+  /**
+   * Validates that a given agenfk version actually exists as a published
+   * release. Used by the fleet-upgrade-directive admin POST so we never fan
+   * out a directive that no installation can resolve. Defaults to a GitHub
+   * Releases lookup at runtime; tests inject a stub.
+   */
+  releaseExists?: (version: string) => Promise<boolean>;
 }
 
 export interface SessionPayload {

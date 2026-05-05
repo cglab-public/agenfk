@@ -134,6 +134,34 @@ const SCHEMA_SQLITE = `
     updated_by_user_id TEXT,
     PRIMARY KEY (org_id, scope, target_id)
   );
+
+  -- Fleet upgrade directives. Story 2 of EPIC 541c12b3 (remote upgrade).
+  -- Each directive records an admin's intent to push a specific agenfk
+  -- version to a scoped subset of installations. Per-installation delivery
+  -- state lives in upgrade_directive_targets.
+  CREATE TABLE IF NOT EXISTS upgrade_directives (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_version TEXT NOT NULL,
+    scope_type TEXT NOT NULL,    -- 'all' | 'installation'
+    scope_id TEXT,               -- installation_id when scope_type='installation', else NULL
+    created_by_user_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_upgrade_directives_org_time ON upgrade_directives(org_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS upgrade_directive_targets (
+    directive_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',   -- pending | in_progress | succeeded | failed
+    attempted_at TEXT,
+    finished_at TEXT,
+    result_version TEXT,
+    error_message TEXT,
+    PRIMARY KEY (directive_id, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_udt_install_state ON upgrade_directive_targets(installation_id, state);
 `;
 
 class SqliteAdapter implements HubDb {
