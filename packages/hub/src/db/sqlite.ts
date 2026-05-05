@@ -110,6 +110,29 @@ const SCHEMA_SQLITE = `
     entra_client_secret_enc TEXT,
     email_allowlist TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS flows (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    definition_json TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community')),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by_user_id TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_flows_org ON flows(org_id);
+
+  CREATE TABLE IF NOT EXISTS flow_assignments (
+    org_id TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'org',
+    flow_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_by_user_id TEXT,
+    PRIMARY KEY (org_id, scope)
+  );
 `;
 
 class SqliteAdapter implements HubDb {

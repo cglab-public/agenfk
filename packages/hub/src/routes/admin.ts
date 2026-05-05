@@ -4,6 +4,7 @@ import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
+import { randomUUID } from 'crypto';
 
 interface AuthConfigRow {
   org_id: string;
@@ -148,6 +149,169 @@ export function adminRouter(ctx: HubServerContext): Router {
     const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
+  });
+
+  // ── Flows ────────────────────────────────────────────────────────────────
+  interface FlowRow {
+    id: string;
+    org_id: string;
+    name: string;
+    description: string | null;
+    definition_json: string;
+    source: 'hub' | 'community';
+    version: number;
+    created_at: string;
+    updated_at: string;
+    created_by_user_id: string | null;
+  }
+
+  const presentFlow = (r: FlowRow) => ({
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    source: r.source,
+    version: r.version,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    definition: JSON.parse(r.definition_json),
+  });
+
+  // Validate that a flow definition body has the minimal shape we expect.
+  // Mirrors core's `Flow` type contract (name + non-empty steps[] with id/name/order).
+  const validateDefinition = (def: any): string | null => {
+    if (!def || typeof def !== 'object') return 'definition must be an object';
+    if (typeof def.name !== 'string' || !def.name.trim()) return 'definition.name is required';
+    if (!Array.isArray(def.steps) || def.steps.length === 0) return 'definition.steps must be a non-empty array';
+    for (const s of def.steps) {
+      if (!s || typeof s !== 'object') return 'each step must be an object';
+      if (typeof s.id !== 'string' || !s.id) return 'each step requires an id';
+      if (typeof s.name !== 'string' || !s.name) return 'each step requires a name';
+      if (typeof s.order !== 'number') return 'each step requires a numeric order';
+    }
+    return null;
+  };
+
+  router.get('/flows', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<FlowRow>(
+      'SELECT * FROM flows WHERE org_id = ? ORDER BY updated_at DESC',
+      [req.session!.orgId],
+    );
+    res.json(rows.map(presentFlow));
+  });
+
+  router.post('/flows', guard, async (req: Request, res: Response) => {
+    const definition = req.body?.definition;
+    const sourceIn = req.body?.source;
+    const source: 'hub' | 'community' = sourceIn === 'community' ? 'community' : 'hub';
+    const err = validateDefinition(definition);
+    if (err) return res.status(400).json({ error: err });
+    const id = randomUUID();
+    await ctx.db.run(
+      `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, created_by_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+      [
+        id,
+        req.session!.orgId,
+        definition.name,
+        definition.description ?? null,
+        JSON.stringify(definition),
+        source,
+        req.session!.userId ?? null,
+      ],
+    );
+    const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [id]);
+    res.status(201).json(presentFlow(row!));
+  });
+
+  router.get('/flows/:id', guard, async (req: Request, res: Response) => {
+    const row = await ctx.db.get<FlowRow>(
+      'SELECT * FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (!row) return res.status(404).json({ error: 'Flow not found' });
+    res.json(presentFlow(row));
+  });
+
+  router.put('/flows/:id', guard, async (req: Request, res: Response) => {
+    const existing = await ctx.db.get<FlowRow>(
+      'SELECT * FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Flow not found' });
+    const definition = req.body?.definition;
+    const err = validateDefinition(definition);
+    if (err) return res.status(400).json({ error: err });
+    await ctx.db.run(
+      `UPDATE flows
+       SET name = ?, description = ?, definition_json = ?, version = version + 1, updated_at = datetime('now')
+       WHERE id = ? AND org_id = ?`,
+      [
+        definition.name,
+        definition.description ?? null,
+        JSON.stringify(definition),
+        req.params.id,
+        req.session!.orgId,
+      ],
+    );
+    const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [req.params.id]);
+    res.json(presentFlow(row!));
+  });
+
+  router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
+    const assignment = await ctx.db.get<{ flow_id: string }>(
+      "SELECT flow_id FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
+      [req.session!.orgId],
+    );
+    if (assignment?.flow_id === req.params.id) {
+      return res.status(409).json({ error: 'Flow is currently assigned as the org default — clear the assignment first.' });
+    }
+    const result = await ctx.db.run(
+      'DELETE FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (result.changes === 0) return res.status(404).json({ error: 'Flow not found' });
+    res.json({ ok: true });
+  });
+
+  // ── Flow assignments (org-default) ───────────────────────────────────────
+  router.get('/flow-assignments', guard, async (req: Request, res: Response) => {
+    const row = await ctx.db.get<{ flow_id: string }>(
+      "SELECT flow_id FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
+      [req.session!.orgId],
+    );
+    res.json({ flowId: row?.flow_id ?? null });
+  });
+
+  router.put('/flow-assignments', guard, async (req: Request, res: Response) => {
+    const flowId = req.body?.flowId;
+    if (flowId === null || flowId === undefined) {
+      await ctx.db.run(
+        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
+        [req.session!.orgId],
+      );
+      return res.json({ flowId: null });
+    }
+    if (typeof flowId !== 'string') return res.status(400).json({ error: 'flowId must be a string or null' });
+    const owned = await ctx.db.get<FlowRow>(
+      'SELECT id FROM flows WHERE id = ? AND org_id = ?',
+      [flowId, req.session!.orgId],
+    );
+    if (!owned) return res.status(404).json({ error: 'Flow not found in this org' });
+    // Upsert: SQLite (INSERT OR REPLACE) and PG-via-dialect both round-trip
+    // through the dialect translator. Use a portable upsert pattern: delete +
+    // insert in a transaction.
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'org'",
+        [req.session!.orgId],
+      );
+      await ctx.db.run(
+        `INSERT INTO flow_assignments (org_id, scope, flow_id, updated_by_user_id)
+         VALUES (?, 'org', ?, ?)`,
+        [req.session!.orgId, flowId, req.session!.userId ?? null],
+      );
+    });
+    res.json({ flowId });
   });
 
   return router;
