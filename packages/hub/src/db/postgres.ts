@@ -52,6 +52,7 @@ const SCHEMA_PG = `
     remote_url TEXT,
     item_title TEXT,
     external_id TEXT,
+    reporting_version TEXT,
     payload TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
@@ -248,6 +249,10 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!have.has('remote_url'))  await adapter.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
   if (!have.has('item_title')) await adapter.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) await adapter.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+  // events.reporting_version — captures the X-Agenfk-Version header that
+  // delivered each event, so the admin Recent Events view can show stuck-
+  // process drift (recent events still tagged with old version after upgrade).
+  if (!have.has('reporting_version')) await adapter.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");

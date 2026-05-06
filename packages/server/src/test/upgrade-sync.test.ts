@@ -339,6 +339,45 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(stateAtFlush?.lastDirectiveId).toBe('d-4');
     expect(stateAtFlush?.outcome).toBe('started');
   });
+
+  it('awaits an async spawnImpl (production uses spawn-as-Promise so the API event loop stays responsive — without await, the same-process success path would observe pre-spawn state)', async () => {
+    // Repro: the production spawnImpl returns a Promise (using spawn() not
+    // spawnSync) so the API event loop keeps serving HTTP probes during the
+    // upgrade. If the reconcile call did not `await` the impl, it would
+    // proceed to readInstalledVersion / emit-succeeded BEFORE the spawn
+    // actually finished — same external symptom as the spawnSync-blocks-loop
+    // bug, just inverted in time.
+    let spawnFinished = false;
+    const f = makeFakes({ directive: { directiveId: 'd-async', targetVersion: '0.3.0-beta.32' } });
+    f.spawnImpl.mockImplementation((_cmd, _args) => new Promise(resolve => {
+      // Defer to a later tick so any non-awaited caller would observe
+      // spawnFinished=false and proceed prematurely.
+      setImmediate(() => {
+        spawnFinished = true;
+        resolve({ exitCode: 0, stdout: '{"status":"upgraded","fromVersion":"0.3.0-beta.31","toVersion":"0.3.0-beta.32"}' });
+      });
+    }) as any);
+    f.readInstalledVersionImpl.mockImplementation(() => spawnFinished ? '0.3.0-beta.32' : '0.3.0-beta.31');
+
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.3.0-beta.31',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+
+    // The succeeded path requires the post-spawn on-disk read to match the
+    // target — only true if the impl was actually awaited.
+    const succeeded = f.events.find(e => e.type === 'fleet:upgrade:succeeded');
+    expect(succeeded).toBeDefined();
+    expect(succeeded!.payload.resultVersion).toBe('0.3.0-beta.32');
+  });
 });
 
 describe('Story 3b — replayPendingUpgradeOutcome (boot-time replay)', () => {

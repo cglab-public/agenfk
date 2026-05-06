@@ -74,7 +74,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const { where, params } = applyEventFilters(req.session!.orgId, f);
 
     const rows = await ctx.db.all<any>(
-      `SELECT event_id, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, user_key, payload
+      `SELECT event_id, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, user_key, reporting_version, payload
        FROM events WHERE ${where.join(' AND ')}
        ORDER BY occurred_at DESC
        LIMIT ? OFFSET ?`,

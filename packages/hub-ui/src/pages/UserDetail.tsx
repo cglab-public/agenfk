@@ -10,7 +10,7 @@ import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 
 interface TimelineRow {
-  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; payload: any;
+  event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
 }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -223,6 +223,14 @@ export function UserDetailPage() {
                   <span className="text-[12px] text-slate-800 dark:text-slate-200 truncate flex-1" title={e.item_id ?? undefined}>
                     {e.item_title ?? <span className="text-slate-400 font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
                   </span>
+                  {e.reporting_version && (
+                    <span
+                      title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
+                      className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
+                    >
+                      v{e.reporting_version}
+                    </span>
+                  )}
                   <span className="text-[11px] text-slate-400 tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
                 </summary>
                 <pre className="px-5 pb-3 text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words bg-slate-50/60 dark:bg-slate-950/40 border-t border-slate-100 dark:border-slate-800 -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>

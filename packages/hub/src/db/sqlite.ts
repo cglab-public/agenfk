@@ -52,6 +52,7 @@ const SCHEMA_SQLITE = `
     remote_url TEXT,
     item_title TEXT,
     external_id TEXT,
+    reporting_version TEXT,
     payload TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
@@ -233,6 +234,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('remote_url')) raw.exec("ALTER TABLE events ADD COLUMN remote_url TEXT");
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
+  // events.reporting_version — captures the X-Agenfk-Version header that
+  // delivered each event, so the admin Recent Events view can show "this
+  // event was emitted by version X" and surface stuck-process drift.
+  if (!have.has('reporting_version')) raw.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
   // so /v1/projects shows one chip per repo. Idempotent — rows already at the

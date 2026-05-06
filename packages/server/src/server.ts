@@ -502,10 +502,20 @@ const initStorage = async () => {
       },
       recordEvent,
       flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
-      spawnImpl: (cmd, args) => {
-        const r = spawnSync(cmd, args, { encoding: 'utf8' });
-        return { exitCode: r.status, stdout: r.stdout ?? '' };
-      },
+      // Async spawn keeps the API event loop responsive while `agenfk
+      // upgrade` runs. spawnSync would block every probe (the CLI's own
+      // `is the server running?` curl, install.mjs's pre-install probe)
+      // so all of them would falsely report "not running" and skip the
+      // down/up restart — leaving the upgrade landed on disk while the
+      // in-memory process keeps executing the old code.
+      spawnImpl: (cmd, args) => new Promise((resolve) => {
+        const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '';
+        child.stdout?.on('data', (d) => { stdout += d.toString(); });
+        child.stderr?.on('data', () => { /* ignore — agenfk upgrade --json puts everything on stdout */ });
+        child.on('exit', (code) => resolve({ exitCode: code, stdout }));
+        child.on('error', () => resolve({ exitCode: 1, stdout }));
+      }),
     });
     console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
   }

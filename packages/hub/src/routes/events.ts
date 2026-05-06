@@ -26,8 +26,8 @@ function isValidEvent(e: any): e is HubEvent {
 
 const INSERT_EVENT_SQL = `
   INSERT OR IGNORE INTO events
-  (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, payload)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, reporting_version, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const UPSERT_INSTALLATION_SQL = `
@@ -126,7 +126,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
           ?? (e.payload && typeof (e.payload as any).externalId === 'string' ? (e.payload as any).externalId : null);
         const result = await ctx.db.run(INSERT_EVENT_SQL, [
           e.eventId, e.orgId, e.installationId, userKey, e.occurredAt, now,
-          e.type, e.projectId ?? null, e.itemId ?? null, itemType, remoteUrl, itemTitle, externalId, JSON.stringify(e),
+          e.type, e.projectId ?? null, e.itemId ?? null, itemType, remoteUrl, itemTitle, externalId,
+          agenfkVersion, // validated X-Agenfk-Version header (or null)
+          JSON.stringify(e),
         ]);
         if (result.changes === 0) { skipped++; continue; }
         ingested++;
@@ -157,21 +159,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
                WHERE directive_id = ? AND installation_id = ?`,
               [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
             );
-
-            // Defense in depth: a fleet:upgrade:succeeded carries the
-            // post-restart on-disk version in resultVersion. Stamp the
-            // installations row directly so the admin view refreshes even
-            // if the next /v1/events batch is duplicate-only or arrives
-            // without the X-Agenfk-Version header.
-            if (e.type === 'fleet:upgrade:succeeded'
-              && typeof resultVersion === 'string'
-              && SEMVER_TAG_RE.test(resultVersion)) {
-              await ctx.db.run(
-                `UPDATE installations SET agenfk_version = ?, agenfk_version_updated_at = ?
-                 WHERE id = ? AND org_id = ?`,
-                [resultVersion, now, e.installationId, e.orgId],
-              );
-            }
+            // Note: do NOT stamp installations.agenfk_version from
+            // resultVersion here. resultVersion reflects on-disk after the
+            // upgrade, but installations.agenfk_version is the actually-
+            // running version (header from flusher's in-memory CURRENT_VERSION).
+            // They diverge when the local process upgrades files but doesn't
+            // restart — and that divergence is a signal worth surfacing in
+            // the admin view, not papering over.
           }
         }
       }

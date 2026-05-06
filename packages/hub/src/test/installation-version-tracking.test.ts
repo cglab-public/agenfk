@@ -163,13 +163,16 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
   });
 
-  describe('fleet:upgrade:succeeded stamps installations.agenfk_version', () => {
-    // Defense in depth: even if the X-Agenfk-Version header is missing on the
-    // batch carrying the success event (e.g. an old client), the resultVersion
-    // payload is the post-restart on-disk version and is just as authoritative.
-    it('writes resultVersion to installations.agenfk_version when header is absent', async () => {
-      // Seed the directive_target row so the existing succeeded-handler has
-      // something to update too (mirrors the real flow).
+  describe('fleet:upgrade:succeeded does NOT stamp installations.agenfk_version', () => {
+    // installations.agenfk_version reflects the actually-running version
+    // (header from the flusher's in-memory CURRENT_VERSION), not the on-disk
+    // version. resultVersion in fleet:upgrade:succeeded is on-disk after the
+    // upgrade — those can legitimately diverge when the local process
+    // upgrades files but doesn't restart, and showing on-disk would mislead.
+    // The directive_target row gets resultVersion (already covered elsewhere);
+    // the installation row stays untouched until the running process reports
+    // its real version on a subsequent batch.
+    it('leaves installations.agenfk_version alone when only resultVersion is present', async () => {
       await ctx.db.run(
         `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
          VALUES ('dir-2', 'org-a', '0.3.0-beta.31', 'installation', 'inst-1')`,
@@ -190,39 +193,47 @@ describe('Story 7 — per-installation agenfk version', () => {
           })],
         });
 
-      const row = await ctx.db.get<{ agenfk_version: string; agenfk_version_updated_at: string }>(
-        'SELECT agenfk_version, agenfk_version_updated_at FROM installations WHERE id = ?',
+      // installations.agenfk_version stays null — the running version is
+      // unknown to the hub until the next header-bearing batch.
+      const row = await ctx.db.get<{ agenfk_version: string | null }>(
+        'SELECT agenfk_version FROM installations WHERE id = ?',
         ['inst-1'],
       );
-      expect(row.agenfk_version).toBe('0.3.0-beta.31');
-      expect(row.agenfk_version_updated_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
+      expect(row.agenfk_version).toBeFalsy();
+
+      // But the directive_target DOES capture resultVersion as on-disk truth.
+      const target = await ctx.db.get<{ result_version: string }>(
+        `SELECT result_version FROM upgrade_directive_targets
+         WHERE directive_id = 'dir-2' AND installation_id = 'inst-1'`,
+      );
+      expect(target.result_version).toBe('0.3.0-beta.31');
     });
 
-    it('rejects malformed resultVersion (does not clobber a known version)', async () => {
-      // Pre-stamp a known good version via a normal batch.
-      await supertest(app)
-        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
-        .set('x-agenfk-version', '0.3.0-beta.30')
-        .send({ events: [sample({ eventId: 'pre-1' })] });
-
+    it('header still wins when batch contains fleet:upgrade:succeeded with a different resultVersion', async () => {
+      // Real Nathan-shaped scenario: process upgraded files (resultVersion
+      // says .32) but didn't restart, so the flusher header still says .30.
+      // The hub must show what's actually running (.30), not on-disk (.32).
       await ctx.db.run(
         `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
-         VALUES ('dir-3', 'org-a', '0.3.0-beta.31', 'installation', 'inst-1')`,
+         VALUES ('dir-mix', 'org-a', '0.3.0-beta.32', 'installation', 'inst-1')`,
       );
       await ctx.db.run(
         `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
-         VALUES ('dir-3', 'inst-1', 'in_progress')`,
+         VALUES ('dir-mix', 'inst-1', 'in_progress')`,
       );
 
-      // Malformed resultVersion in the payload — must NOT be written.
       await supertest(app)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', '0.3.0-beta.30') // running process
         .send({
-          events: [sample({
-            eventId: 'fu-bad',
-            type: 'fleet:upgrade:succeeded',
-            payload: { directiveId: 'dir-3', resultVersion: '0.0.0; rm -rf /' },
-          })],
+          events: [
+            sample({ eventId: 'mix-other', type: 'item.created' }),
+            sample({
+              eventId: 'mix-success',
+              type: 'fleet:upgrade:succeeded',
+              payload: { directiveId: 'dir-mix', resultVersion: '0.3.0-beta.32' },
+            }),
+          ],
         });
 
       const row = await ctx.db.get<{ agenfk_version: string }>(
@@ -230,6 +241,45 @@ describe('Story 7 — per-installation agenfk version', () => {
         ['inst-1'],
       );
       expect(row.agenfk_version).toBe('0.3.0-beta.30');
+    });
+  });
+
+  describe('per-event reporting_version', () => {
+    // Each event row carries the X-Agenfk-Version header that delivered it,
+    // so admins can spot stuck processes (recent events from this hour
+    // tagged with old version after the upgrade landed) directly in the
+    // Recent Events admin view.
+    it('GET /v1/timeline rows include reporting_version from the batch header', async () => {
+      // Need a user-level cookie to call /v1/timeline (it's session-guarded).
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', '0.3.0-beta.32')
+        .send({ events: [sample({ eventId: 'rv-1', actor: { osUser: 'rv-user', gitName: null, gitEmail: 'rv@example.com' } })] });
+
+      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      expect(r.status).toBe(200);
+      const ev = r.body.events.find((e: any) => e.event_id === 'rv-1');
+      expect(ev).toBeDefined();
+      expect(ev.reporting_version).toBe('0.3.0-beta.32');
+    });
+
+    it('reporting_version is null when the batch had no header', async () => {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .send({ events: [sample({ eventId: 'rv-noheader' })] });
+      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      const ev = r.body.events.find((e: any) => e.event_id === 'rv-noheader');
+      expect(ev.reporting_version).toBeFalsy();
+    });
+
+    it('reporting_version is null when the header was malformed (semver allowlist applies to the row too)', async () => {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', 'not-a-version!')
+        .send({ events: [sample({ eventId: 'rv-bad' })] });
+      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      const ev = r.body.events.find((e: any) => e.event_id === 'rv-bad');
+      expect(ev.reporting_version).toBeFalsy();
     });
   });
 

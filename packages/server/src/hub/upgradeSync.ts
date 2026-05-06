@@ -97,7 +97,13 @@ export interface SpawnUpgradeResult {
   stdout: string;
 }
 
-export type SpawnUpgradeImpl = (cmd: string, args: string[]) => SpawnUpgradeResult;
+// Async-by-design: a synchronous spawn (spawnSync) blocks the API event
+// loop, which makes every probe inside the spawned `agenfk upgrade` (and
+// `install.mjs`) fail to reach the running server. That falsely marks
+// services as "not running" and skips the down/up restart, so the upgrade
+// lands on disk but the in-memory process keeps executing the old code.
+// Return either a result (test impls) or a Promise (production).
+export type SpawnUpgradeImpl = (cmd: string, args: string[]) => SpawnUpgradeResult | Promise<SpawnUpgradeResult>;
 
 /**
  * Reads the agenfk version actually installed on disk *now*. We cannot trust
@@ -217,7 +223,7 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
     // 4. Spawn the CLI.
     const cliArgs = (args.cliArgs ?? DEFAULT_CLI_ARGS)(body.targetVersion);
     const cliCommand = args.cliCommand ?? DEFAULT_CLI_COMMAND;
-    const result = args.spawnImpl(cliCommand, cliArgs);
+    const result = await args.spawnImpl(cliCommand, cliArgs);
 
     // 5. Parse the CLI's JSON outcome (Story 1 contract).
     let parsed: { status?: string; fromVersion?: string; toVersion?: string; error?: string } = {};
