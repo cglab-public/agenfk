@@ -133,6 +133,19 @@ const projectRemoteCache = new Map<string, string | null>();
 // warmItemMeta() and primed inline by recordHubEvent when an event arrives
 // already carrying the metadata.
 const itemMetaCache = new Map<string, { title: string | null; externalId: string | null }>();
+async function resolveFlowName(projectId: string | undefined): Promise<string> {
+  if (!projectId) return DEFAULT_FLOW.name;
+  try {
+    const project = await storage.getProject(projectId);
+    const flowId = project ? (project as any).flowId : null;
+    if (!flowId) return DEFAULT_FLOW.name;
+    const flow = await storage.getFlow(flowId);
+    return flow?.name ?? DEFAULT_FLOW.name;
+  } catch {
+    return DEFAULT_FLOW.name;
+  }
+}
+
 async function warmItemMeta(itemId: string): Promise<void> {
   try {
     const it = await storage.getItem(itemId);
@@ -670,7 +683,10 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   const created = await storage.createProject(project);
   io.emit('items_updated');
   if (!existing) {
-    telemetry.capture('project_created', { storageBackend: 'sqlite' });
+    telemetry.capture('project_created', {
+      storageBackend: 'sqlite',
+      flow_name: await resolveFlowName(created.id),
+    });
   }
   res.status(201).json(created);
 }));
@@ -1218,7 +1234,10 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
   io.emit('items_updated');
   io.emit('project_switched', { projectId: created.projectId });
-  telemetry.capture('item_created', { itemType: created.type });
+  telemetry.capture('item_created', {
+    itemType: created.type,
+    flow_name: await resolveFlowName(created.projectId),
+  });
   recordHubEvent({
     type: 'item.created',
     projectId: created.projectId,
@@ -1412,6 +1431,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         fromStatus: currentItem.status,
         toStatus: status,
         itemType: updated.type,
+        flow_name: await resolveFlowName(updated.projectId),
       });
       recordHubEvent({
         type: 'step.transitioned',

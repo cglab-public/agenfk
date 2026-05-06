@@ -16,6 +16,22 @@ const AGENFK_VERSION: string = (() => {
 const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
 const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
 const INSTALLATION_ID_PATH = path.join(AGENFK_DIR, 'installation-id');
+const HUB_CONFIG_PATH = path.join(AGENFK_DIR, 'hub.json');
+
+export type InstallSource = 'hub' | 'local';
+
+export function getInstallSource(): InstallSource {
+  try {
+    const raw = fs.readFileSync(HUB_CONFIG_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof parsed.url === 'string' && parsed.url.length > 0) {
+      return 'hub';
+    }
+    return 'local';
+  } catch {
+    return 'local';
+  }
+}
 
 function readConfig(): Record<string, unknown> {
   try {
@@ -80,7 +96,12 @@ export class TelemetryClient {
       this.client.capture({
         distinctId: this.installationId,
         event,
-        properties: { ...properties, $lib: 'agenfk', agenfk_version: AGENFK_VERSION },
+        properties: {
+          ...properties,
+          $lib: 'agenfk',
+          agenfk_version: AGENFK_VERSION,
+          install_source: getInstallSource(),
+        },
       });
     } catch {
       // Telemetry must never throw or crash calling code
