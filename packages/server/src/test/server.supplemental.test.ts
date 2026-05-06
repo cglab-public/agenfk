@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -18,6 +18,20 @@ vi.mock('axios', () => {
   mockAxios.create = vi.fn(() => mockAxios);
   return { default: mockAxios };
 });
+
+// CRITICAL: install a no-op exec impl for POST /releases/update *before any
+// test runs*. Without this, the supplemental test below shells out for real
+// via `npx -y github:cglab-public/agenfk`, which downgrades ~/.agenfk-system/
+// to the latest non-prerelease tag during every `npm test`. Bug 28635f38.
+//
+// This uses the dedicated injection (setReleasesUpdateExecImpl) instead of
+// vi.mock('child_process') so we don't break unrelated tests in this file
+// that depend on real exec/spawn for the verifyCommand path.
+const stubReleasesUpdateExec = (() => {
+  const fakeChild = { stdout: { on: vi.fn() }, stderr: { on: vi.fn() }, on: vi.fn() };
+  return vi.fn(() => fakeChild as any);
+})();
+setReleasesUpdateExecImpl(stubReleasesUpdateExec as any);
 
 const TEST_DB = path.resolve('./server-supplemental-test-db.sqlite');
 
@@ -1115,6 +1129,18 @@ describe('GET /releases/update/:jobId success', () => {
     const res = await request(app).get(`/releases/update/${jobId}`);
     expect(res.status).toBe(200);
     expect(['running', 'success', 'error']).toContain(res.body.status);
+  });
+
+  it('does not actually run the npx upgrade child process during tests', async () => {
+    // Regression for bug 28635f38: this test file used to leak a real
+    // `npx -y github:cglab-public/agenfk` invocation, downgrading the
+    // developer's ~/.agenfk-system/ install on every `npm test`. The fix
+    // is the dedicated setReleasesUpdateExecImpl injection at the top of
+    // this file — verify the stub captured the call.
+    const callsBefore = stubReleasesUpdateExec.mock.calls.length;
+    await request(app).post('/releases/update');
+    expect(stubReleasesUpdateExec.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(stubReleasesUpdateExec.mock.calls.at(-1)![0]).toMatch(/npx -y github:cglab-public\/agenfk/);
   });
 });
 

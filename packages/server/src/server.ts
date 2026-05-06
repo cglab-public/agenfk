@@ -2525,6 +2525,23 @@ interface UpdateJob {
 }
 const updateJobs = new Map<string, UpdateJob>();
 
+// Injectable exec for /releases/update so tests can swap out the real shellout.
+// Without this, any test that hits POST /releases/update without mocking the
+// `child_process` module would actually run `npx -y github:cglab-public/agenfk`
+// on the developer's machine, downgrading ~/.agenfk-system/. (Bug 28635f38.)
+//
+// We resolve the default impl lazily (not at module load) so that other test
+// files which partial-mock `child_process` without providing `exec` don't
+// trigger vitest's strict missing-export error during server.ts import.
+type ReleasesUpdateExecImpl = typeof exec;
+let releasesUpdateExecImpl: ReleasesUpdateExecImpl | null = null;
+export const setReleasesUpdateExecImpl = (impl: ReleasesUpdateExecImpl): void => {
+  releasesUpdateExecImpl = impl;
+};
+export const resetReleasesUpdateExecImpl = (): void => {
+  releasesUpdateExecImpl = null;
+};
+
 app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   const jobId = uuidv4();
   const job: UpdateJob = { status: 'running', output: [] };
@@ -2534,7 +2551,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   const command = 'npx -y github:cglab-public/agenfk';
   const cwd = os.homedir();
 
-  const child = exec(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
+  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
   child.stdout?.on('data', (d) => job.output.push(d.toString()));
   child.stderr?.on('data', (d) => job.output.push(d.toString()));
   child.on('close', (code) => {

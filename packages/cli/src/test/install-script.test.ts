@@ -107,6 +107,32 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
 // ---------------------------------------------------------------------------
 // bin/agenfk.js — --beta flag (task ece8514b)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// bin/agenfk.js — Downgrade guard
+// `npx github:cglab-public/agenfk` (no --beta) on an existing prerelease
+// install used to fetch /releases/latest (which excludes prereleases),
+// resolve to v0.2.28, and tar -xzf over the install — silently downgrading
+// any beta installation. The bootstrap must refuse to extract any tag whose
+// version is older than the existing install's package.json.
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — refuses to downgrade an existing install', () => {
+    it('reads the existing install\'s package.json before deciding to extract', () => {
+        // Must read INSTALL_DIR/package.json to know the local version.
+        expect(bootstrapScript).toMatch(/readLocalVersion\(\s*INSTALL_DIR\s*\)|readFileSync\([^)]*['"]package\.json['"]/);
+        expect(bootstrapScript).toMatch(/INSTALL_DIR/);
+    });
+
+    it('compares resolved tag against local version and skips extraction when local is newer', () => {
+        // A semver-aware comparison gating the tar -xzf call.
+        expect(bootstrapScript).toMatch(/compareSemver|compareVersion|isOlder|localIsNewer|isDowngrade/i);
+    });
+
+    it('logs a clear skip message when refusing to downgrade', () => {
+        // User-visible feedback so this isn't silent.
+        expect(bootstrapScript).toMatch(/skip.*downgrade|local.*newer|refus.*downgrade|already on a newer/i);
+    });
+});
+
 describe('bin/agenfk.js — --beta flag for npx beta installs', () => {
     it('detects --beta flag from process.argv', () => {
         // The bootstrap must check process.argv for --beta
