@@ -111,6 +111,28 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   // ── Users ────────────────────────────────────────────────────────────────
+  router.get('/installations', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT id, agenfk_version, agenfk_version_updated_at, first_seen, last_seen, os_user, git_name, git_email
+         FROM installations
+         WHERE org_id = ?
+         ORDER BY last_seen DESC`,
+      [req.session!.orgId],
+    );
+    res.json(
+      rows.map((r: any) => ({
+        id: r.id,
+        agenfkVersion: r.agenfk_version ?? null,
+        agenfkVersionUpdatedAt: r.agenfk_version_updated_at ?? null,
+        firstSeen: r.first_seen ?? null,
+        lastSeen: r.last_seen ?? null,
+        osUser: r.os_user ?? null,
+        gitName: r.git_name ?? null,
+        gitEmail: r.git_email ?? null,
+      })),
+    );
+  });
+
   router.get('/users', guard, async (req: Request, res: Response) => {
     const rows = await ctx.db.all(
       'SELECT id, email, provider, role, active, created_at, last_login_at FROM users WHERE org_id = ? ORDER BY created_at DESC',

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 
@@ -33,6 +33,9 @@ export function AdminLayout() {
         </NavLink>
         <NavLink to="upgrades" className={link}>
           <span className="inline-flex items-center gap-1.5"><ArrowUpCircle className="w-3.5 h-3.5" /> Upgrades</span>
+        </NavLink>
+        <NavLink to="installations" className={link}>
+          <span className="inline-flex items-center gap-1.5"><Server className="w-3.5 h-3.5" /> Installations</span>
         </NavLink>
       </nav>
 
@@ -425,6 +428,82 @@ export function AdminUsers() {
               ))}
               {users.data?.length === 0 && (
                 <tr><td colSpan={5} className="px-5 py-6 text-center text-sm text-slate-500">No users yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+interface InstallationRow {
+  id: string;
+  agenfkVersion: string | null;
+  agenfkVersionUpdatedAt: string | null;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  osUser: string | null;
+  gitName: string | null;
+  gitEmail: string | null;
+}
+
+export function AdminInstallations() {
+  const installations = useQuery<InstallationRow[]>({
+    queryKey: ['admin-installations'],
+    queryFn: async () => (await api.get('/v1/admin/installations')).data,
+  });
+
+  const rows = installations.data ?? [];
+
+  return (
+    <div className="space-y-6">
+      <section className={cardCls}>
+        <header className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Installations</h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
+            </p>
+          </div>
+          <span className="text-[11px] text-slate-500">{rows.length} total</span>
+        </header>
+        <div className="mt-3 -mx-5 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500 font-semibold">
+                <th className="text-left px-5 py-2">Installation</th>
+                <th className="text-left px-2 py-2">User</th>
+                <th className="text-left px-2 py-2">Version</th>
+                <th className="text-left px-2 py-2">Version updated</th>
+                <th className="text-right px-5 py-2">Last seen</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {rows.map(r => (
+                <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                  <td className="px-5 py-2.5">
+                    <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300">{r.id}</span>
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <div className="text-xs text-slate-700 dark:text-slate-200">{r.gitName ?? r.osUser ?? <span className="text-slate-400">—</span>}</div>
+                    {r.gitEmail && <div className="text-[11px] text-slate-500 font-mono">{r.gitEmail}</div>}
+                  </td>
+                  <td className="px-2 py-2.5">
+                    {r.agenfkVersion
+                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">{r.agenfkVersion}</span>
+                      : <span className="text-[11px] text-slate-400 italic">unknown</span>}
+                  </td>
+                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">
+                    {r.agenfkVersionUpdatedAt ? fmtDate(r.agenfkVersionUpdatedAt) : <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className="px-5 py-2.5 text-right text-xs text-slate-500 tabular-nums">
+                    {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-slate-400">—</span>}
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr><td colSpan={5} className="px-5 py-6 text-center text-sm text-slate-500">No installations have reported yet.</td></tr>
               )}
             </tbody>
           </table>

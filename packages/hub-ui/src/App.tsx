@@ -7,7 +7,7 @@ import { SetupPage } from './pages/Setup';
 import { OrgPage } from './pages/Org';
 import { UserDetailPage } from './pages/UserDetail';
 import { ConnectPage } from './pages/Connect';
-import { AdminLayout, AdminAuth, AdminKeys, AdminUsers } from './pages/Admin';
+import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } from './pages/Admin';
 import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
 import { Layout } from './components/Layout';
@@ -57,6 +57,7 @@ export function App() {
         <Route path="users" element={<AdminUsers />} />
         <Route path="flows" element={<AdminFlows />} />
         <Route path="upgrades" element={<AdminUpgrades />} />
+        <Route path="installations" element={<AdminInstallations />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
