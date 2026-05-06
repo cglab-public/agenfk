@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { HubDb, Params, RunResult } from './types';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -233,9 +234,19 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!have.has('item_title')) raw.exec("ALTER TABLE events ADD COLUMN item_title TEXT");
   if (!have.has('external_id')) raw.exec("ALTER TABLE events ADD COLUMN external_id TEXT");
 
-  // Backfill: collapse mixed-casing remote_urls so /v1/projects shows one chip
-  // per repo. Idempotent — only rows that aren't already lowercase get touched.
-  raw.exec("UPDATE events SET remote_url = LOWER(remote_url) WHERE remote_url IS NOT NULL AND remote_url <> LOWER(remote_url)");
+  // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
+  // so /v1/projects shows one chip per repo. Idempotent — rows already at the
+  // canonical value are skipped. SQLite has no regex, so we transform in JS.
+  {
+    const distinct = raw.prepare(
+      "SELECT DISTINCT remote_url FROM events WHERE remote_url IS NOT NULL AND remote_url <> ''"
+    ).all() as Array<{ remote_url: string }>;
+    const update = raw.prepare("UPDATE events SET remote_url = ? WHERE remote_url = ?");
+    for (const { remote_url } of distinct) {
+      const canonical = sanitizeRemoteUrl(remote_url);
+      if (canonical !== remote_url) update.run(canonical, remote_url);
+    }
+  }
 
   // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
   const udCols = raw.prepare("PRAGMA table_info(upgrade_directives)").all() as Array<{ name: string }>;

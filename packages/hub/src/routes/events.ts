@@ -7,15 +7,8 @@ function userKeyFor(actor: HubEvent['actor']): string {
   return (actor.gitEmail?.toLowerCase() || actor.osUser || 'unknown').trim();
 }
 
-// Strip ASCII whitespace + control characters from a git remote URL, then
-// lowercase it. This collapses the same repo across fleet members that may
-// have different casings or accidental whitespace in their git config — the
-// hub UI's project filter relies on exact-match SQL DISTINCT, so noise here
-// shows up as duplicate chips.
-const REMOTE_URL_NOISE_RE = /[\s\x00-\x1f\x7f]+/g;
-export function sanitizeRemoteUrl(input: string): string {
-  return input.replace(REMOTE_URL_NOISE_RE, '').toLowerCase();
-}
+export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 
 function isValidEvent(e: any): e is HubEvent {

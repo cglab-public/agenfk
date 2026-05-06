@@ -34,7 +34,9 @@ const sample = (overrides: any = {}) => ({
   ...overrides,
 });
 
-describe('Hub /v1/projects collapses casings of the same git remote', () => {
+// hookTimeout bumped: under full-repo parallel runs the sqlite/express boot in
+// beforeEach occasionally exceeds the default 10s.
+describe('Hub /v1/projects collapses casings of the same git remote', { hookTimeout: 30_000 }, () => {
   let app: any;
   let ctx: any;
   let cookieAdmin: string;
@@ -120,6 +122,81 @@ describe('Hub /v1/projects collapses casings of the same git remote', () => {
     // events should still match (defense-in-depth).
     const r = await supertest(app)
       .get('/v1/timeline?projects=git@github.com:cglab-PRIVATE/horizon-lab.git')
+      .set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    expect(r.body.events.length).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Canonical-form collapse: https / ssh / no-.git variants of the same repo
+  // must merge into a single project chip.
+  // -------------------------------------------------------------------------
+
+  it('collapses https vs ssh vs trailing-.git variants of the same repo at ingest', async () => {
+    const variants = [
+      'git@github.com:cglab-private/horizon-lab.git',
+      'https://github.com/cglab-private/horizon-lab.git',
+      'https://github.com/cglab-private/horizon-lab',
+      'ssh://git@github.com/cglab-private/horizon-lab.git',
+    ];
+    for (const [i, url] of variants.entries()) {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${token}`)
+        .send({ events: [sample({ eventId: `v-${i}`, remoteUrl: url })] });
+    }
+    const r = await supertest(app).get('/v1/projects').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    expect(r.body.projects).toEqual(['git@github.com:cglab-private/horizon-lab.git']);
+  });
+
+  it('boot-time backfill collapses pre-existing distinct-form rows into one canonical value', async () => {
+    // Insert legacy rows with three different forms of the same repo, bypassing
+    // the route's normaliser.
+    const legacy = [
+      ['legacy-a', 'https://github.com/cglab-private/horizon-lab.git'],
+      ['legacy-b', 'https://github.com/cglab-private/horizon-lab'],
+      ['legacy-c', 'git@github.com:cglab-private/horizon-lab.git'],
+    ];
+    for (const [id, url] of legacy) {
+      await ctx.db.run(
+        `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, remote_url, payload)
+         VALUES (?, 'org-a', 'inst-1', 'tester', ?, ?, 'item.created', ?, '{}')`,
+        [id, '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z', url],
+      );
+    }
+    await ctx.db.close();
+
+    const out = await createHubApp({
+      dbPath: TEST_DB,
+      secretKey: SECRET,
+      sessionSecret: 'test-session-secret',
+      defaultOrgId: 'org-a',
+    });
+    ctx = out.ctx;
+    const rows = await ctx.db.all<{ remote_url: string }>(
+      "SELECT DISTINCT remote_url FROM events WHERE event_id LIKE 'legacy-%'",
+    );
+    expect(rows.map((r: { remote_url: string }) => r.remote_url)).toEqual([
+      'git@github.com:cglab-private/horizon-lab.git',
+    ]);
+  });
+
+  it('preserves non-parseable remote_url values unchanged (apart from existing whitespace+lowercase rules)', async () => {
+    await supertest(app)
+      .post('/v1/events').set('Authorization', `Bearer ${token}`)
+      .send({ events: [sample({ remoteUrl: '  Some-Weird-String  ' })] });
+    const row = await ctx.db.get<{ remote_url: string }>('SELECT remote_url FROM events LIMIT 1');
+    expect(row.remote_url).toBe('some-weird-string');
+  });
+
+  it('?projects filter accepts any variant form of the canonical URL', async () => {
+    await supertest(app)
+      .post('/v1/events').set('Authorization', `Bearer ${token}`)
+      .send({ events: [sample({ remoteUrl: 'git@github.com:cglab-private/horizon-lab.git' })] });
+    // User's saved selection might be the https form — should still match the
+    // canonical row stored in the DB.
+    const r = await supertest(app)
+      .get('/v1/timeline?projects=https://github.com/cglab-private/horizon-lab')
       .set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.events.length).toBe(1);

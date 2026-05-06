@@ -3,6 +3,7 @@ import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
+import { sanitizeRemoteUrl } from './events.js';
 
 function parseList(s: string | undefined): string[] | null {
   if (!s) return null;
@@ -36,9 +37,10 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
   const params: any[] = [orgId];
   if (f.users)     { where.push(`user_key IN (${f.users.map(() => '?').join(',')})`);   params.push(...f.users); }
   if (f.types)     { where.push(`type IN (${f.types.map(() => '?').join(',')})`);       params.push(...f.types); }
-  // remote_url is stored lowercase post-fix; lowercase the query input too so
-  // links/URLs that were generated before the fix still resolve correctly.
-  if (f.projects)  { where.push(`remote_url IN (${f.projects.map(() => '?').join(',')})`); params.push(...f.projects.map(s => s.toLowerCase())); }
+  // remote_url is stored in its canonical ssh form post-fix; canonicalise the
+  // query input the same way so saved selections (https / no-.git / mixed
+  // case) still resolve correctly.
+  if (f.projects)  { where.push(`remote_url IN (${f.projects.map(() => '?').join(',')})`); params.push(...f.projects.map(s => sanitizeRemoteUrl(s))); }
   if (f.itemTypes) { where.push(`item_type IN (${f.itemTypes.map(() => '?').join(',')})`); params.push(...f.itemTypes); }
   if (f.from)      { where.push(`${timeCol} >= ?`); params.push(f.from); }
   if (f.to)        { where.push(`${timeCol} <= ?`); params.push(f.to); }

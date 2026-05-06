@@ -1,5 +1,6 @@
 import type { HubDb, Params, RunResult } from './types';
 import { toPostgres } from './dialect';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 // `pg` is loaded lazily so installations that only use SQLite don't pay the
 // require cost. The Pool / Client types are imported from `pg` directly.
@@ -251,9 +252,23 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
 
-  // Lower-case backfill for events.remote_url so the projects filter in the
-  // hub UI doesn't show duplicates for mixed-cased repos.
-  await adapter.exec("UPDATE events SET remote_url = LOWER(remote_url) WHERE remote_url IS NOT NULL AND remote_url <> LOWER(remote_url)");
+  // Canonicalise events.remote_url so the projects filter in the hub UI
+  // doesn't show duplicates for repos expressed as ssh / https / with-or-
+  // without-.git. Idempotent — already-canonical rows are skipped.
+  {
+    const distinct = await adapter.all<{ remote_url: string }>(
+      "SELECT DISTINCT remote_url FROM events WHERE remote_url IS NOT NULL AND remote_url <> ''"
+    );
+    for (const { remote_url } of distinct) {
+      const canonical = sanitizeRemoteUrl(remote_url);
+      if (canonical !== remote_url) {
+        await adapter.run(
+          "UPDATE events SET remote_url = ? WHERE remote_url = ?",
+          [canonical, remote_url],
+        );
+      }
+    }
+  }
 
   // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
   const udCols = await adapter.all<{ column_name: string }>(
