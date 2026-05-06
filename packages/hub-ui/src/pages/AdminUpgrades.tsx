@@ -40,6 +40,7 @@ interface ApiKeyRow { tokenHashPreview: string; label: string | null; installati
 interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | null }
 
 import { canIssueDirective } from './adminUpgradesGate';
+import { installationDisplayName } from './installationDisplayName';
 
 export function AdminUpgrades() {
   const qc = useQueryClient();
@@ -99,7 +100,10 @@ export function AdminUpgrades() {
       const data = e?.response?.data;
       if (status === 409 && Array.isArray(data?.downgrades) && data.downgrades.length > 0) {
         // Story 5: distinct red confirm for downgrades.
-        const lines = data.downgrades.map((d: any) => `  • ${d.installationId}: v${d.currentVersion} → v${d.targetVersion}`).join('\n');
+        const keys = apiKeysQ.data ?? [];
+        const lines = data.downgrades.map((d: any) =>
+          `  • ${installationDisplayName(keys, d.installationId)}: v${d.currentVersion} → v${d.targetVersion}`
+        ).join('\n');
         const ok = confirm(
           `⚠️ This is a DOWNGRADE for the following installations:\n\n${lines}\n\nProceed anyway?`
         );
@@ -111,7 +115,10 @@ export function AdminUpgrades() {
         return;
       }
       if (status === 409 && Array.isArray(data?.conflicts) && data.conflicts.length > 0) {
-        const lines = data.conflicts.map((c: any) => `  • ${c.installationId} (directive ${c.conflictingDirectiveId})`).join('\n');
+        const keys = apiKeysQ.data ?? [];
+        const lines = data.conflicts.map((c: any) =>
+          `  • ${installationDisplayName(keys, c.installationId)} (directive ${c.conflictingDirectiveId})`
+        ).join('\n');
         setError(`Cannot issue: an upgrade is already pending or running on:\n${lines}`);
         return;
       }
@@ -243,7 +250,9 @@ export function AdminUpgrades() {
                   {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                   <span className="font-mono text-[12px] text-slate-700 dark:text-slate-200">v{d.targetVersion}</span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                    {d.scope.type === 'all' ? 'all installations' : `installation ${d.scope.installationId}`}
+                    {d.scope.type === 'all'
+                      ? 'all installations'
+                      : `installation ${installationDisplayName(apiKeysQ.data ?? [], d.scope.installationId ?? '')}`}
                     {' · '}{new Date(d.createdAt).toLocaleString()}
                     {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>
@@ -259,7 +268,12 @@ export function AdminUpgrades() {
                 <div className="border-t border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
                   {d.targets.map(t => (
                     <div key={t.installationId} className="flex items-center justify-between gap-3 px-3 py-1.5 text-[11px]">
-                      <span className="font-mono text-slate-600 dark:text-slate-300 truncate">{t.installationId}</span>
+                      <span
+                        className="text-slate-600 dark:text-slate-300 truncate"
+                        title={t.installationId}
+                      >
+                        {installationDisplayName(apiKeysQ.data ?? [], t.installationId)}
+                      </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {t.agenfkVersion && (
                           <span className="font-mono text-slate-500 dark:text-slate-400" title={`last seen ${t.agenfkVersionUpdatedAt ?? '?'}`}>
