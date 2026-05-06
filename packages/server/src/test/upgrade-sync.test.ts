@@ -21,7 +21,12 @@ afterEach(() => { fs.rmSync(dbDir, { recursive: true, force: true }); });
 
 interface RecordedEvent { type: string; payload: any }
 
-function makeFakes(opts: { directive?: any; spawnExitCode?: number; spawnStdout?: string } = {}) {
+function makeFakes(opts: {
+  directive?: any;
+  spawnExitCode?: number;
+  spawnStdout?: string;
+  installedVersion?: string | null;
+} = {}) {
   const events: RecordedEvent[] = [];
   const flushNowCalls: number[] = [];
   const fetchImpl = vi.fn(async () => ({
@@ -34,7 +39,15 @@ function makeFakes(opts: { directive?: any; spawnExitCode?: number; spawnStdout?
     exitCode: opts.spawnExitCode ?? 0,
     stdout: opts.spawnStdout ?? '{"status":"upgraded","fromVersion":"0.3.0","toVersion":"0.3.1"}',
   }));
-  return { events, flushNowCalls, fetchImpl, recordEvent, flushNow, spawnImpl };
+  // Default: pretend the install actually landed the target version, so the
+  // existing tests stay happy. Cases that exercise the on-disk verification
+  // override this explicitly.
+  const readInstalledVersionImpl = vi.fn((): string | null => {
+    if (opts.installedVersion !== undefined) return opts.installedVersion;
+    if (opts.directive?.targetVersion) return opts.directive.targetVersion;
+    return null;
+  });
+  return { events, flushNowCalls, fetchImpl, recordEvent, flushNow, spawnImpl, readInstalledVersionImpl };
 }
 
 describe('Story 3b — reconcileUpgradeDirective', () => {
@@ -47,6 +60,7 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       recordEvent: f.recordEvent,
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',
@@ -65,6 +79,7 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       recordEvent: f.recordEvent,
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',
@@ -85,6 +100,7 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       recordEvent: f.recordEvent,
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',
@@ -114,6 +130,7 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       recordEvent: f.recordEvent,
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',
@@ -123,6 +140,61 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(failed!.payload.error).toMatch(/install\.mjs/);
     // Persisted as failed so we don't re-spawn on the next poll.
     expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
+  });
+
+  it('emits failed when CLI exits 0 + emits no JSON envelope BUT the on-disk version is unchanged (regression for directive→0.3.0-beta.24, 97f4db4c)', async () => {
+    const f = makeFakes({
+      directive: { directiveId: 'd-real', targetVersion: '0.3.0-beta.24' },
+      spawnExitCode: 0,
+      // CLI was killed mid-install before emitting JSON.
+      spawnStdout: 'Some non-JSON noise that snuck in\n',
+      installedVersion: '0.2.28', // unchanged — install never landed
+    });
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.2.28',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    const failed = f.events.find(e => e.type === 'fleet:upgrade:failed');
+    expect(failed).toBeDefined();
+    // Error must mention both the intent and the actual on-disk version.
+    expect(failed!.payload.error).toMatch(/0\.3\.0-beta\.24/);
+    expect(failed!.payload.error).toMatch(/0\.2\.28/);
+    expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
+  });
+
+  it('emits succeeded when on-disk version matches intent even if CLI was killed mid-emit (no JSON, exit 0)', async () => {
+    // The install replaced files on disk but the parent CLI process died before
+    // writing its `{"status":"upgraded"}` line. We trust the on-disk truth.
+    const f = makeFakes({
+      directive: { directiveId: 'd-killed', targetVersion: '0.3.0-beta.25' },
+      spawnExitCode: 0,
+      spawnStdout: '', // nothing emitted
+      installedVersion: '0.3.0-beta.25',
+    });
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.3.0-beta.24',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    expect(f.events.map(e => e.type)).toContain('fleet:upgrade:succeeded');
+    const succeeded = f.events.find(e => e.type === 'fleet:upgrade:succeeded')!;
+    expect(succeeded.payload.resultVersion).toBe('0.3.0-beta.25');
+    expect(readUpgradeState(dbDir)).toBeNull();
   });
 
   it('writes upgrade state to "started" before flushNow returns', async () => {
@@ -141,6 +213,7 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       recordEvent: f.recordEvent,
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',

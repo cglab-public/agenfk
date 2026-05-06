@@ -12,10 +12,38 @@
 //
 // `startUpgradeSync` wires both of the above into the polling timer used by
 // the live server.
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   readUpgradeState, writeUpgradeState, clearUpgradeState,
   UpgradeState,
 } from './upgradeState.js';
+
+function stripV(v: string): string {
+  return v.startsWith('v') ? v.slice(1) : v;
+}
+
+/**
+ * Walk a few candidate package.json paths and return the first version we
+ * find on disk. Mirrors the resolution used in flusher's CURRENT_VERSION,
+ * but re-reads each call so we see writes that landed after process start.
+ */
+function defaultReadInstalledVersion(): string | null {
+  const candidates = [
+    path.resolve(__dirname, '../../package.json'),
+    path.resolve(__dirname, '../../../package.json'),
+    path.resolve(__dirname, '../../../cli/package.json'),
+    path.resolve(__dirname, '../../../../packages/cli/package.json'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (typeof pkg?.version === 'string' && pkg.version) return pkg.version;
+    } catch { /* keep trying */ }
+  }
+  return null;
+}
 
 export interface FetchedDirective {
   directiveId: string;
@@ -34,6 +62,14 @@ export interface SpawnUpgradeResult {
 }
 
 export type SpawnUpgradeImpl = (cmd: string, args: string[]) => SpawnUpgradeResult;
+
+/**
+ * Reads the agenfk version actually installed on disk *now*. We cannot trust
+ * the running process's CURRENT_VERSION constant after a spawn, because the
+ * spawn may have replaced files on disk while the parent kept its already-
+ * loaded modules. Used to verify whether the upgrade actually landed.
+ */
+export type ReadInstalledVersionImpl = () => string | null;
 
 export interface RecordEventFn {
   (input: {
@@ -57,6 +93,9 @@ export interface ReconcileArgs {
   // Default points at the local cli bin. Tests inject something simpler.
   cliCommand?: string;
   cliArgs?: (targetVersion: string) => string[];
+  // Default reads `<repoRoot>/package.json` walking a few candidate paths;
+  // tests inject a fake.
+  readInstalledVersionImpl?: ReadInstalledVersionImpl;
 }
 
 export interface ReplayArgs {
@@ -137,20 +176,45 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
     const exitOk = (result.exitCode ?? 0) === 0;
     const cliReportedSucceeded = parsed.status === 'noop' || parsed.status === 'upgraded';
 
-    if (exitOk && cliReportedSucceeded) {
+    // Trust the on-disk version over the CLI's word. The CLI process may have
+    // been killed before it could emit JSON (the install can replace files
+    // the parent process needs to keep running), so spawnSync may report
+    // exit 0 with no parseable stdout even though the upgrade landed. The
+    // converse also happens: install silently no-op'd, exit 0, no JSON, but
+    // the on-disk version didn't change. Comparing against the on-disk
+    // version is the only ground truth.
+    const readInstalledVersion = args.readInstalledVersionImpl ?? defaultReadInstalledVersion;
+    const onDisk = readInstalledVersion();
+    const onDiskMatchesIntent = !!onDisk && stripV(onDisk) === stripV(body.targetVersion);
+    const cliReportedFailed = parsed.status === 'failed';
+
+    const succeeded = onDiskMatchesIntent && !cliReportedFailed;
+
+    if (succeeded) {
       args.recordEvent({
         installationId: args.installationId,
         type: 'fleet:upgrade:succeeded',
         payload: {
           directiveId: body.directiveId,
-          resultVersion: parsed.toVersion ?? body.targetVersion,
+          resultVersion: parsed.toVersion ?? onDisk ?? body.targetVersion,
         },
       });
       // Settled — clear local state so the hub's eventual ack-cycle is the
       // single source of truth.
       clearUpgradeState(args.dbDir);
     } else {
-      const error = parsed.error || `agenfk upgrade exited ${result.exitCode}`;
+      let error: string;
+      if (parsed.error) {
+        error = parsed.error;
+      } else if (exitOk && !cliReportedSucceeded && onDisk && !onDiskMatchesIntent) {
+        // The user-visible regression: CLI said nothing useful and the
+        // install didn't change the on-disk version.
+        error = `agenfk upgrade exited 0 but on-disk version is ${onDisk}, expected ${body.targetVersion}`;
+      } else if (!exitOk) {
+        error = `agenfk upgrade exited ${result.exitCode}`;
+      } else {
+        error = `agenfk upgrade did not land target ${body.targetVersion}`;
+      }
       args.recordEvent({
         installationId: args.installationId,
         type: 'fleet:upgrade:failed',
