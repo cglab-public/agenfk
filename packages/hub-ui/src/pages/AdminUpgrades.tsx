@@ -189,7 +189,26 @@ export function AdminUpgrades() {
       {showForm && (
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 space-y-3">
           <div>
-            <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-300 mb-1">Target version</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-300">Target version</label>
+              <button
+                type="button"
+                onClick={async () => {
+                  // Force-fetch the GitHub release list, bypassing the hub's
+                  // 10-minute in-memory cache. Useful right after cutting a
+                  // new release so the dropdown picks it up immediately.
+                  await qc.fetchQuery({
+                    queryKey: ['admin-available-versions'],
+                    queryFn: async () => (await api.get('/v1/admin/upgrade/available-versions?refresh=1')).data,
+                  });
+                }}
+                disabled={versionsLoading}
+                title="Bypass the hub's 10-minute cache and re-fetch the GitHub release list now"
+                className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50"
+              >
+                ↻ Refresh
+              </button>
+            </div>
             <select
               value={targetVersion}
               onChange={(e) => setTargetVersion(e.target.value)}

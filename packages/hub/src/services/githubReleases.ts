@@ -28,9 +28,16 @@ export type ReleaseFetcher = (url: string) => Promise<{
 let cache: CacheEntry | null = null;
 let injectedFetcher: ReleaseFetcher | null = null;
 
-/** Test-only reset hook. */
-export function __resetAgenfkReleaseCache(): void {
+/** Public cache invalidation hook for the admin "refresh" button on the
+ *  Upgrades page. After calling this, the next getAgenfkReleases() will
+ *  hit GitHub instead of serving the in-memory cache. */
+export function resetAgenfkReleaseCache(): void {
   cache = null;
+}
+
+/** Back-compat alias used by the existing test suite. */
+export function __resetAgenfkReleaseCache(): void {
+  resetAgenfkReleaseCache();
 }
 
 /** Test-only fetcher injection. Pass null to restore the real fetch. */

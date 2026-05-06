@@ -122,4 +122,22 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
     const r = await supertest(app).get('/v1/admin/upgrade/available-versions');
     expect(r.status).toBe(401);
   });
+
+  it('?refresh=1 invalidates the cache and fetches a fresh release list', async () => {
+    // Cache is primed by beforeEach with the default FAKE_RELEASES.
+    await seedInstallation(ctx.db, 'org-a', 'inst-1', null);
+    const before = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    expect(before.body.versions).toContain('0.4.1');
+    expect(before.body.versions).not.toContain('0.5.0');
+
+    // Now a new release was cut on GitHub. Without refresh, the cache still
+    // serves the old list. With refresh=1, the route re-fetches.
+    stubReleases([{ tag_name: 'v0.5.0' }, ...FAKE_RELEASES]);
+
+    const stale = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    expect(stale.body.versions).not.toContain('0.5.0'); // cache hit
+
+    const fresh = await supertest(app).get('/v1/admin/upgrade/available-versions?refresh=1').set('Cookie', cookieAdmin);
+    expect(fresh.body.versions[0]).toBe('0.5.0');
+  });
 });

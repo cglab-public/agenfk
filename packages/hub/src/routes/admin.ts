@@ -6,7 +6,7 @@ import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
-import { getAgenfkReleases } from '../services/githubReleases.js';
+import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 
 interface AuthConfigRow {
@@ -557,6 +557,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   // installation in this org has reported). Sorted newest → oldest.
   router.get('/upgrade/available-versions', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
+    // Admin-triggered cache invalidation: ?refresh=1 lets an admin force a
+    // fresh fetch right after a new release is cut, instead of waiting for
+    // the in-memory TTL to expire.
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    if (refresh) resetAgenfkReleaseCache();
     let releases: string[];
     try {
       releases = await getAgenfkReleases();
