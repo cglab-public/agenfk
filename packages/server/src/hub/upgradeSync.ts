@@ -13,7 +13,9 @@
 // `startUpgradeSync` wires both of the above into the polling timer used by
 // the live server.
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { execSync } from 'child_process';
 import {
   readUpgradeState, writeUpgradeState, clearUpgradeState,
   UpgradeState,
@@ -45,6 +47,40 @@ function defaultReadInstalledVersion(): string | null {
   return null;
 }
 
+/**
+ * Best-effort guess at the install root — the directory whose `packages/`
+ * subtree the release tarball should be extracted into. From the built
+ * `packages/server/dist/hub/upgradeSync.js`, that's four levels up.
+ * Validated by checking that `packages/cli/package.json` exists, so we don't
+ * accidentally clobber an unrelated directory.
+ */
+function defaultInstallRoot(): string | null {
+  const candidate = path.resolve(__dirname, '../../../..');
+  try {
+    if (fs.existsSync(path.join(candidate, 'packages/cli/package.json'))) return candidate;
+  } catch { /* fall through */ }
+  return null;
+}
+
+const DIST_REPO = 'cglab-public/agenfk';
+const DIST_ASSET = 'agenfk-dist.tar.gz';
+
+async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const tag = `v${stripV(input.targetVersion)}`;
+  const url = `https://github.com/${DIST_REPO}/releases/download/${tag}/${DIST_ASSET}`;
+  const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
+  try {
+    execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe' });
+    execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe' });
+    return { ok: true };
+  } catch (e: any) {
+    const msg = e?.stderr?.toString?.()?.trim() || e?.message || String(e);
+    return { ok: false, error: msg };
+  } finally {
+    try { if (fs.existsSync(tmpFile)) fs.rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
+  }
+}
+
 export interface FetchedDirective {
   directiveId: string;
   targetVersion: string;
@@ -71,6 +107,18 @@ export type SpawnUpgradeImpl = (cmd: string, args: string[]) => SpawnUpgradeResu
  */
 export type ReadInstalledVersionImpl = () => string | null;
 
+/**
+ * Self-heal fallback: when the locally-installed CLI is too old to recognise
+ * `--version <ver>` (commander treats it as the global -V flag, prints its
+ * own version, and exits 0), the reconciler downloads the release tarball
+ * itself and untars it into the install root. Default uses curl + tar via
+ * execSync; tests inject a fake.
+ */
+export type SelfExtractImpl = (input: {
+  installRoot: string;
+  targetVersion: string;
+}) => Promise<{ ok: true } | { ok: false; error: string }>;
+
 export interface RecordEventFn {
   (input: {
     installationId: string;
@@ -96,6 +144,11 @@ export interface ReconcileArgs {
   // Default reads `<repoRoot>/package.json` walking a few candidate paths;
   // tests inject a fake.
   readInstalledVersionImpl?: ReadInstalledVersionImpl;
+  // Install root for the self-extract fallback. Default walks up from
+  // __dirname; tests inject a fake path.
+  installRoot?: string;
+  // Default downloads the GitHub release tarball and tar -xzf into installRoot.
+  selfExtractImpl?: SelfExtractImpl;
 }
 
 export interface ReplayArgs {
@@ -199,35 +252,96 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
           resultVersion: parsed.toVersion ?? onDisk ?? body.targetVersion,
         },
       });
-      // Settled — clear local state so the hub's eventual ack-cycle is the
-      // single source of truth.
       clearUpgradeState(args.dbDir);
-    } else {
-      let error: string;
-      if (parsed.error) {
-        error = parsed.error;
-      } else if (exitOk && !cliReportedSucceeded && onDisk && !onDiskMatchesIntent) {
-        // The user-visible regression: CLI said nothing useful and the
-        // install didn't change the on-disk version.
-        error = `agenfk upgrade exited 0 but on-disk version is ${onDisk}, expected ${body.targetVersion}`;
-      } else if (!exitOk) {
-        error = `agenfk upgrade exited ${result.exitCode}`;
-      } else {
-        error = `agenfk upgrade did not land target ${body.targetVersion}`;
-      }
-      args.recordEvent({
-        installationId: args.installationId,
-        type: 'fleet:upgrade:failed',
-        payload: { directiveId: body.directiveId, error },
-      });
-      // Persist as failed so we don't re-spawn on every poll.
-      writeUpgradeState(args.dbDir, {
-        lastDirectiveId: body.directiveId,
-        outcome: 'failed',
-        error,
-        finishedAt: new Date().toISOString(),
-      });
+      return;
     }
+
+    // ── Stale-CLI bootstrap recovery ──
+    // Old fleet clients (pre-`--version` option) treat `--version <ver>` as
+    // commander's global -V flag: they print their own version and exit 0
+    // with no install side-effects. Detect that signature (exit 0 + no
+    // parsed status + on-disk unchanged + on-disk === currentVersion) and
+    // try a self-extract recovery instead of giving up. Without this, every
+    // future directive on those installations will permanently re-fail.
+    // A stale CLI prints its own version on stdout (commander's -V handler)
+    // and exits 0. We look for that exact footprint: last non-empty line is a
+    // bare semver and equals the on-disk version. This avoids false positives
+    // when the CLI emits arbitrary diagnostics on the same exit path.
+    const lastStdoutLine = (result.stdout || '').trim().split('\n').filter(Boolean).pop() ?? '';
+    const stdoutIsBareSemver = SEMVER_TAG_RE.test(lastStdoutLine);
+    const looksLikeStaleCli =
+      exitOk
+      && !cliReportedSucceeded
+      && !cliReportedFailed
+      && !!onDisk
+      && !onDiskMatchesIntent
+      && stripV(onDisk) === stripV(args.currentVersion)
+      && stdoutIsBareSemver
+      && stripV(lastStdoutLine) === stripV(onDisk);
+
+    if (looksLikeStaleCli) {
+      const installRoot = args.installRoot ?? defaultInstallRoot();
+      if (installRoot) {
+        const sx = await (args.selfExtractImpl ?? defaultSelfExtract)({
+          installRoot,
+          targetVersion: body.targetVersion,
+        });
+        const newOnDisk = readInstalledVersion();
+        const newOnDiskMatches = !!newOnDisk && stripV(newOnDisk) === stripV(body.targetVersion);
+        if (sx.ok && newOnDiskMatches) {
+          args.recordEvent({
+            installationId: args.installationId,
+            type: 'fleet:upgrade:succeeded',
+            payload: {
+              directiveId: body.directiveId,
+              resultVersion: newOnDisk!,
+              recoveredVia: 'self-extract',
+            },
+          });
+          clearUpgradeState(args.dbDir);
+          return;
+        }
+        const reason = sx.ok
+          ? `self-heal extraction completed but on-disk version is ${newOnDisk ?? '<unknown>'}`
+          : `self-heal extraction failed: ${sx.error}`;
+        const error = `fleet CLI predates pinned-version upgrades (does not recognise --version), and ${reason}. Run 'agenfk upgrade --beta' or 'npx github:cglab-public/agenfk' on the host to recover.`;
+        args.recordEvent({
+          installationId: args.installationId,
+          type: 'fleet:upgrade:failed',
+          payload: { directiveId: body.directiveId, error },
+        });
+        writeUpgradeState(args.dbDir, {
+          lastDirectiveId: body.directiveId,
+          outcome: 'failed',
+          error,
+          finishedAt: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
+    // ── Generic failure paths ──
+    let error: string;
+    if (parsed.error) {
+      error = parsed.error;
+    } else if (exitOk && !cliReportedSucceeded && onDisk && !onDiskMatchesIntent) {
+      error = `agenfk upgrade exited 0 but on-disk version is ${onDisk}, expected ${body.targetVersion}`;
+    } else if (!exitOk) {
+      error = `agenfk upgrade exited ${result.exitCode}`;
+    } else {
+      error = `agenfk upgrade did not land target ${body.targetVersion}`;
+    }
+    args.recordEvent({
+      installationId: args.installationId,
+      type: 'fleet:upgrade:failed',
+      payload: { directiveId: body.directiveId, error },
+    });
+    writeUpgradeState(args.dbDir, {
+      lastDirectiveId: body.directiveId,
+      outcome: 'failed',
+      error,
+      finishedAt: new Date().toISOString(),
+    });
   } finally {
     inflight = false;
   }

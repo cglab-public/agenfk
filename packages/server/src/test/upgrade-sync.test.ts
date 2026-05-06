@@ -197,6 +197,122 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(readUpgradeState(dbDir)).toBeNull();
   });
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Stale-CLI bootstrap recovery
+  //
+  // Pre-upgrade fleet clients installed before the `--version <ver>` option
+  // existed treat that flag as commander's built-in --version: they print
+  // their own version and exit 0 with no install side-effects. The reconciler
+  // detects this (exit 0 + no parsed status + on-disk unchanged + on-disk ===
+  // currentVersion) and tries a self-extract fallback that downloads the
+  // tarball and untars it directly into the install root, bypassing the
+  // bootstrap-stuck CLI entirely.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  it('stale CLI: self-extract recovery succeeds → emits succeeded with recoveredVia=self-extract', async () => {
+    let onDiskNow = '0.2.28'; // pre-upgrade
+    const f = makeFakes({
+      directive: { directiveId: 'd-stale-1', targetVersion: '0.3.0-beta.27' },
+      spawnExitCode: 0,
+      // Stale CLI prints its own version then exits.
+      spawnStdout: '0.2.28\n',
+    });
+    // Make readInstalledVersion observe the on-disk swap performed by self-extract.
+    f.readInstalledVersionImpl.mockImplementation(() => onDiskNow);
+    const selfExtractImpl = vi.fn(async (_input: { installRoot: string; targetVersion: string }) => {
+      onDiskNow = '0.3.0-beta.27';
+      return { ok: true as const };
+    });
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.2.28',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    expect(selfExtractImpl).toHaveBeenCalledTimes(1);
+    expect(selfExtractImpl.mock.calls[0][0]).toMatchObject({
+      installRoot: '/fake/install/root',
+      targetVersion: '0.3.0-beta.27',
+    });
+    const succeeded = f.events.find(e => e.type === 'fleet:upgrade:succeeded');
+    expect(succeeded).toBeDefined();
+    expect(succeeded!.payload.resultVersion).toBe('0.3.0-beta.27');
+    expect(succeeded!.payload.recoveredVia).toBe('self-extract');
+    // No failed event should also be present.
+    expect(f.events.find(e => e.type === 'fleet:upgrade:failed')).toBeUndefined();
+    // State cleared after settled outcome.
+    expect(readUpgradeState(dbDir)).toBeNull();
+  });
+
+  it('stale CLI: self-extract failure → emits failed with predates-pinned-version remediation hint', async () => {
+    const f = makeFakes({
+      directive: { directiveId: 'd-stale-2', targetVersion: '0.3.0-beta.27' },
+      spawnExitCode: 0,
+      spawnStdout: '0.2.28\n',
+      installedVersion: '0.2.28',
+    });
+    const selfExtractImpl = vi.fn(async () => ({ ok: false as const, error: 'curl: 404' }));
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.2.28',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    expect(selfExtractImpl).toHaveBeenCalledTimes(1);
+    const failed = f.events.find(e => e.type === 'fleet:upgrade:failed');
+    expect(failed).toBeDefined();
+    // Error must explain WHY (CLI predates --version) and HOW (manual remediation),
+    // not just the cryptic "exited 0 but on-disk version is X" message.
+    expect(failed!.payload.error).toMatch(/predates|does not recognise|--version/i);
+    expect(failed!.payload.error).toMatch(/agenfk upgrade --beta|npx github:cglab-public\/agenfk/);
+    // Underlying self-extract error should be referenced for diagnosis.
+    expect(failed!.payload.error).toMatch(/curl: 404/);
+    expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
+  });
+
+  it('does NOT attempt self-extract when the CLI clearly errored non-zero (regression for the existing happy-path failure mode)', async () => {
+    const f = makeFakes({
+      directive: { directiveId: 'd-non-stale', targetVersion: '0.3.1' },
+      spawnExitCode: 1,
+      spawnStdout: '{"status":"failed","error":"install.mjs exit 2"}',
+      installedVersion: '0.3.0',
+    });
+    const selfExtractImpl = vi.fn(async () => ({ ok: true as const }));
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.3.0',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    // Stale-CLI heuristic must NOT match a CLI that returned a real failure.
+    expect(selfExtractImpl).not.toHaveBeenCalled();
+    expect(f.events.find(e => e.type === 'fleet:upgrade:failed')).toBeDefined();
+  });
+
   it('writes upgrade state to "started" before flushNow returns', async () => {
     let stateAtFlush: any = null;
     const f = makeFakes({
