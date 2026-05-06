@@ -3,6 +3,7 @@ import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
+import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { sanitizeRemoteUrl } from './events.js';
 
 function parseList(s: string | undefined): string[] | null {
@@ -112,7 +113,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
          ORDER BY day ASC, user_key ASC`,
         params,
       );
-      res.json({ bucket: 'day', series: rows });
+      res.json({ bucket: 'day', series: rows.map(coerceMetricsRow) });
       return;
     }
 
@@ -123,7 +124,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
        ORDER BY day ASC, user_key ASC`,
       params,
     );
-    res.json({ bucket: 'day', series: rows });
+    res.json({ bucket: 'day', series: rows.map(coerceMetricsRow) });
   });
 
   router.get('/event-types', guard, async (req: Request, res: Response) => {
