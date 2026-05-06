@@ -99,11 +99,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
     let ingested = 0;
     let skipped = 0;
     let rejected = 0;
+    const seenInstallations = new Set<string>();
 
     await ctx.db.transaction(async () => {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
         if (e.orgId !== orgId) { rejected++; continue; }
+        seenInstallations.add(e.installationId);
         const userKey = userKeyFor(e.actor);
         const itemType = (e as any).itemType
           ?? (e.payload && typeof (e.payload as any).itemType === 'string' ? (e.payload as any).itemType : null);
@@ -133,17 +135,6 @@ export function eventsRouter(ctx: HubServerContext): Router {
           e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
         ]);
 
-        // Story 7: persist the running agenfk version when the batch header
-        // carried one. We only update when present so an absent header doesn't
-        // clobber a previously-known version.
-        if (agenfkVersion) {
-          await ctx.db.run(
-            `UPDATE installations SET agenfk_version = ?, agenfk_version_updated_at = ?
-             WHERE id = ? AND org_id = ?`,
-            [agenfkVersion, now, e.installationId, e.orgId],
-          );
-        }
-
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.
         if (e.type === 'fleet:upgrade:started'
@@ -166,7 +157,40 @@ export function eventsRouter(ctx: HubServerContext): Router {
                WHERE directive_id = ? AND installation_id = ?`,
               [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
             );
+
+            // Defense in depth: a fleet:upgrade:succeeded carries the
+            // post-restart on-disk version in resultVersion. Stamp the
+            // installations row directly so the admin view refreshes even
+            // if the next /v1/events batch is duplicate-only or arrives
+            // without the X-Agenfk-Version header.
+            if (e.type === 'fleet:upgrade:succeeded'
+              && typeof resultVersion === 'string'
+              && SEMVER_TAG_RE.test(resultVersion)) {
+              await ctx.db.run(
+                `UPDATE installations SET agenfk_version = ?, agenfk_version_updated_at = ?
+                 WHERE id = ? AND org_id = ?`,
+                [resultVersion, now, e.installationId, e.orgId],
+              );
+            }
           }
+        }
+      }
+
+      // Story 7: persist the running agenfk version once per batch when the
+      // header carried one. Lifted out of the per-event loop because
+      // INSERT OR IGNORE returns 0-changes for duplicates and the previous
+      // per-iteration `continue` skipped this update — leaving
+      // installations.agenfk_version stale across flusher restarts that
+      // replay an already-ingested outbox. We only update when the header
+      // is present so an absent header doesn't clobber a previously-known
+      // version.
+      if (agenfkVersion) {
+        for (const installationId of seenInstallations) {
+          await ctx.db.run(
+            `UPDATE installations SET agenfk_version = ?, agenfk_version_updated_at = ?
+             WHERE id = ? AND org_id = ?`,
+            [agenfkVersion, now, installationId, orgId],
+          );
         }
       }
     });

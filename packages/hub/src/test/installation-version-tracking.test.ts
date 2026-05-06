@@ -133,6 +133,106 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
   });
 
+  describe('regression: duplicate-only batch still refreshes version', () => {
+    // Repro: after a flusher restart the local outbox replays events the hub
+    // already ingested. INSERT OR IGNORE returns 0 rows changed, so the
+    // per-event loop hits `continue` and the original code skipped the
+    // version-update at the bottom of the iteration. Net effect: idle/duplicate
+    // batches never refreshed installations.agenfk_version, leaving the admin
+    // view stuck on the previous version after a fleet upgrade.
+    it('updates agenfk_version even when every event in the batch is a duplicate', async () => {
+      // First batch: ingests one event and stamps the old version.
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', '0.3.0-beta.30')
+        .send({ events: [sample({ eventId: 'dup-1' })] });
+
+      // Second batch: same eventId (duplicate), but a NEW version header. The
+      // duplicate is ignored at the events table, but the installation row
+      // must still be refreshed.
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', '0.3.0-beta.31')
+        .send({ events: [sample({ eventId: 'dup-1' })] });
+
+      const row = await ctx.db.get<{ agenfk_version: string }>(
+        'SELECT agenfk_version FROM installations WHERE id = ?',
+        ['inst-1'],
+      );
+      expect(row.agenfk_version).toBe('0.3.0-beta.31');
+    });
+  });
+
+  describe('fleet:upgrade:succeeded stamps installations.agenfk_version', () => {
+    // Defense in depth: even if the X-Agenfk-Version header is missing on the
+    // batch carrying the success event (e.g. an old client), the resultVersion
+    // payload is the post-restart on-disk version and is just as authoritative.
+    it('writes resultVersion to installations.agenfk_version when header is absent', async () => {
+      // Seed the directive_target row so the existing succeeded-handler has
+      // something to update too (mirrors the real flow).
+      await ctx.db.run(
+        `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
+         VALUES ('dir-2', 'org-a', '0.3.0-beta.31', 'installation', 'inst-1')`,
+      );
+      await ctx.db.run(
+        `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
+         VALUES ('dir-2', 'inst-1', 'in_progress')`,
+      );
+
+      // Post the succeeded event with NO X-Agenfk-Version header.
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .send({
+          events: [sample({
+            eventId: 'fu-1',
+            type: 'fleet:upgrade:succeeded',
+            payload: { directiveId: 'dir-2', resultVersion: '0.3.0-beta.31' },
+          })],
+        });
+
+      const row = await ctx.db.get<{ agenfk_version: string; agenfk_version_updated_at: string }>(
+        'SELECT agenfk_version, agenfk_version_updated_at FROM installations WHERE id = ?',
+        ['inst-1'],
+      );
+      expect(row.agenfk_version).toBe('0.3.0-beta.31');
+      expect(row.agenfk_version_updated_at).toMatch(/^\d{4}-\d{2}-\d{2}/);
+    });
+
+    it('rejects malformed resultVersion (does not clobber a known version)', async () => {
+      // Pre-stamp a known good version via a normal batch.
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .set('x-agenfk-version', '0.3.0-beta.30')
+        .send({ events: [sample({ eventId: 'pre-1' })] });
+
+      await ctx.db.run(
+        `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
+         VALUES ('dir-3', 'org-a', '0.3.0-beta.31', 'installation', 'inst-1')`,
+      );
+      await ctx.db.run(
+        `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
+         VALUES ('dir-3', 'inst-1', 'in_progress')`,
+      );
+
+      // Malformed resultVersion in the payload — must NOT be written.
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
+        .send({
+          events: [sample({
+            eventId: 'fu-bad',
+            type: 'fleet:upgrade:succeeded',
+            payload: { directiveId: 'dir-3', resultVersion: '0.0.0; rm -rf /' },
+          })],
+        });
+
+      const row = await ctx.db.get<{ agenfk_version: string }>(
+        'SELECT agenfk_version FROM installations WHERE id = ?',
+        ['inst-1'],
+      );
+      expect(row.agenfk_version).toBe('0.3.0-beta.30');
+    });
+  });
+
   describe('admin endpoints surface the version', () => {
     it('GET /v1/admin/upgrade includes agenfkVersion on per-installation target rows', async () => {
       // Seed an event so the installations row exists with a known version.
