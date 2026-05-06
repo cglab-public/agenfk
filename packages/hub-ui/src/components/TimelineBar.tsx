@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import {
+  buildAxis,
+  effectiveBucket,
+  fromIsoForRange,
+  shortLabel,
+  type Bucket,
+  type RangeKey,
+} from './timelineAxis';
 
 interface HistogramBucket { time: string; total: number; by_type: Record<string, number> }
 interface HistogramResponse { bucket: 'day' | 'hour'; buckets: HistogramBucket[] }
@@ -14,43 +22,17 @@ interface Props {
   title?: string;
 }
 
-const RANGES: Array<{ label: string; days: number }> = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
+const RANGES: Array<{ key: RangeKey; label: string }> = [
+  { key: 'today', label: 'today' },
+  { key: '7d', label: '7d' },
+  { key: '30d', label: '30d' },
+  { key: '90d', label: '90d' },
 ];
 
 // Indigo→violet ramp matching the AgenFK logo when no specific type selected.
 const ACCENT = '#6366f1';
 const TYPE_COLORS = ['#6366f1', '#a855f7', '#22d3ee', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#eab308', '#3b82f6', '#8b5cf6', '#06b6d4'];
 const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
-
-function pad2(n: number) { return String(n).padStart(2, '0'); }
-// Bucket keys are computed in the user's local timezone (mirroring the
-// backend's tzOffsetMin shift) so axis labels and histogram counts agree.
-function fmtBucketKey(d: Date, bucket: 'day' | 'hour'): string {
-  const yyyy = d.getFullYear();
-  const mm = pad2(d.getMonth() + 1);
-  const dd = pad2(d.getDate());
-  if (bucket === 'day') return `${yyyy}-${mm}-${dd}`;
-  return `${yyyy}-${mm}-${dd}T${pad2(d.getHours())}:00`;
-}
-
-function buildAxis(days: number, bucket: 'day' | 'hour'): string[] {
-  const out: string[] = [];
-  const now = new Date();
-  const start = new Date(now.getTime() - days * 86400_000);
-  if (bucket === 'day') {
-    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    while (d <= end) { out.push(fmtBucketKey(d, 'day')); d.setDate(d.getDate() + 1); }
-  } else {
-    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate(), start.getHours());
-    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
-    while (d <= end) { out.push(fmtBucketKey(d, 'hour')); d.setHours(d.getHours() + 1); }
-  }
-  return out;
-}
 
 // "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
 function niceTicks(max: number): number[] {
@@ -66,27 +48,22 @@ function niceTicks(max: number): number[] {
   return out;
 }
 
-function shortLabel(time: string, bucket: 'day' | 'hour'): string {
-  if (bucket === 'day') {
-    const [y, m, d] = time.split('-');
-    return `${m}/${d}`;
-    void y;
-  }
-  // hour: 2026-05-04T08:00 → "08:00"
-  const [, hh] = time.split('T');
-  return hh ?? time;
-}
-
 export function TimelineBar({ users, types, projects, itemTypes, className, title }: Props) {
-  const [days, setDays] = useState(30);
-  const [bucket, setBucket] = useState<'day' | 'hour'>('day');
+  const [range, setRange] = useState<RangeKey>('30d');
+  const [bucketSel, setBucketSel] = useState<Bucket>('day');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const fromIso = useMemo(() => new Date(Date.now() - days * 86400_000).toISOString(), [days]);
+  const bucket = effectiveBucket(range, bucketSel);
+  const isToday = range === 'today';
+
+  // Recompute "now" on each render — TimelineBar is light enough that this is fine,
+  // and we want the axis/from to track the wall clock as the user lingers.
+  const now = new Date();
+  const fromIso = useMemo(() => fromIsoForRange(now, range), [range, now.getHours()]);
 
   // JS getTimezoneOffset returns minutes WEST of UTC; the hub expects minutes
   // EAST of UTC (positive for tz ahead of UTC). Negate to align.
-  const tzOffsetMin = -new Date().getTimezoneOffset();
+  const tzOffsetMin = -now.getTimezoneOffset();
 
   const params = new URLSearchParams();
   if (users?.length) params.set('users', users.join(','));
@@ -98,11 +75,11 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   params.set('tzOffsetMin', String(tzOffsetMin));
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', days, bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', range, bucket, tzOffsetMin],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 
-  const axis = useMemo(() => buildAxis(days, bucket), [days, bucket]);
+  const axis = useMemo(() => buildAxis(now, range, bucket), [range, bucket, now.getHours()]);
   const byTime = useMemo(() => {
     const m = new Map<string, HistogramBucket>();
     for (const b of q.data?.buckets ?? []) m.set(b.time, b);
@@ -140,13 +117,17 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   const hoveredBucket = hovered ? byTime.get(hovered) : null;
   const hoveredX = hoverIdx != null ? m.left + hoverIdx * (barW + barGap) + barW / 2 : 0;
 
+  const rangeBlurb = isToday
+    ? 'today'
+    : `last ${range === '7d' ? 7 : range === '30d' ? 30 : 90} days`;
+
   return (
     <section className={`relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm ${className ?? ''}`}>
       <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-slate-100 dark:border-slate-800">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{title ?? 'Activity'}</h3>
           <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · last {days} days{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}
+            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}
             {stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
@@ -154,9 +135,9 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
           <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
             {RANGES.map(r => (
               <button
-                key={r.label}
-                onClick={() => setDays(r.days)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${days === r.days
+                key={r.key}
+                onClick={() => setRange(r.key)}
+                className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
                   ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
                   : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
               >
@@ -165,17 +146,25 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
             ))}
           </div>
           <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
-            {(['day', 'hour'] as const).map(b => (
-              <button
-                key={b}
-                onClick={() => setBucket(b)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${bucket === b
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-              >
-                {b}
-              </button>
-            ))}
+            {(['day', 'hour'] as const).map(b => {
+              const active = bucket === b;
+              const disabled = isToday && b === 'day';
+              return (
+                <button
+                  key={b}
+                  onClick={() => !disabled && setBucketSel(b)}
+                  disabled={disabled}
+                  title={disabled ? 'Today view is hourly' : undefined}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${active
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : disabled
+                      ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  {b}
+                </button>
+              );
+            })}
           </div>
         </div>
       </header>
@@ -263,7 +252,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
                     textAnchor="middle"
                     className="fill-slate-500 dark:fill-slate-400 font-mono"
                     style={{ fontSize: 10 }}>
-                {shortLabel(t, bucket)}
+                {shortLabel(t, bucket, range)}
               </text>
             );
           })}
