@@ -6,6 +6,7 @@ import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
+import { getAgenfkReleases } from '../services/githubReleases.js';
 
 interface AuthConfigRow {
   org_id: string;
@@ -526,6 +527,38 @@ export function adminRouter(ctx: HubServerContext): Router {
   // targetVersion is interpolated into shell calls on the fleet side
   // (gh release view / git tag), so we never accept anything else.
   const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+  // GET /v1/admin/upgrade/available-versions — versions an admin can target,
+  // sourced from the public agenfk GitHub release list and filtered to
+  // releases >= the org's fleet floor (the oldest agenfk_version any
+  // installation in this org has reported). Sorted newest → oldest.
+  router.get('/upgrade/available-versions', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    let releases: string[];
+    try {
+      releases = await getAgenfkReleases();
+    } catch (e: any) {
+      return res.status(503).json({ error: `Could not fetch release list: ${e?.message ?? e}` });
+    }
+
+    const versionRows = await ctx.db.all<{ agenfk_version: string }>(
+      `SELECT agenfk_version FROM installations
+        WHERE org_id = ? AND agenfk_version IS NOT NULL AND agenfk_version <> ''`,
+      [orgId],
+    );
+    const fleetFloor = versionRows.length === 0
+      ? null
+      : versionRows
+          .map(r => r.agenfk_version)
+          .reduce((oldest, v) => (compareSemver(v, oldest) < 0 ? v : oldest));
+
+    const filtered = fleetFloor
+      ? releases.filter(v => compareSemver(v, fleetFloor) >= 0)
+      : releases.slice();
+    filtered.sort((a, b) => compareSemver(b, a)); // newest → oldest
+
+    res.json({ versions: filtered, fleetFloor });
+  });
 
   router.post('/upgrade', guard, async (req: Request, res: Response) => {
     const { targetVersion, scope, confirmDowngrade } = req.body ?? {};
