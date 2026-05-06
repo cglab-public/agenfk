@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/hub",
-  "version": "0.3.0-beta.29",
+  "version": "0.3.0-beta.30",
   "description": "Corporate Hub for AgEnFK — fleet-wide metrics + timeline server",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
@@ -20,7 +20,7 @@
     "start": "node dist/bin.js"
   },
   "dependencies": {
-    "@agenfk/core": "0.3.0-beta.29",
+    "@agenfk/core": "0.3.0-beta.30",
     "axios": "^1.13.5",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
