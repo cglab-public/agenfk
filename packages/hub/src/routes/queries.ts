@@ -94,7 +94,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
     if (f.projects || f.itemTypes) {
       const { where, params } = applyEventFilters(orgId, f);
-      const rows = await ctx.db.all(
+      const rows = await ctx.db.all<Record<string, unknown>>(
         `SELECT user_key, date(occurred_at) AS day,
                 COUNT(*) AS events_count,
                 COUNT(DISTINCT CASE
@@ -118,7 +118,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     }
 
     const { where, params } = applyEventFilters(orgId, f, 'day');
-    const rows = await ctx.db.all(
+    const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails
        FROM rollups_daily WHERE ${where.join(' AND ')}
        ORDER BY day ASC, user_key ASC`,
