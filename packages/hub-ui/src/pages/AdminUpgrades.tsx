@@ -37,7 +37,9 @@ interface Directive {
 
 interface ApiKeyRow { tokenHashPreview: string; label: string | null; installationId: string | null; gitName: string | null; gitEmail: string | null; revokedAt: string | null }
 
-const SEMVER_HINT_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | null }
+
+import { canIssueDirective } from './adminUpgradesGate';
 
 export function AdminUpgrades() {
   const qc = useQueryClient();
@@ -61,6 +63,12 @@ export function AdminUpgrades() {
   const apiKeysQ = useQuery<ApiKeyRow[]>({
     queryKey: ['admin-api-keys'],
     queryFn: async () => (await api.get('/v1/admin/api-keys')).data,
+  });
+
+  const availableVersionsQ = useQuery<AvailableVersionsResponse>({
+    queryKey: ['admin-available-versions'],
+    queryFn: async () => (await api.get('/v1/admin/upgrade/available-versions')).data,
+    staleTime: 5 * 60 * 1000,
   });
 
   const installationOptions = useMemo(() =>
@@ -111,12 +119,13 @@ export function AdminUpgrades() {
     },
   });
 
+  const availableVersions = availableVersionsQ.data?.versions ?? [];
+  const fleetFloor = availableVersionsQ.data?.fleetFloor ?? null;
+  const versionsLoading = availableVersionsQ.isPending;
+  const canIssue = canIssueDirective({ targetVersion, versions: availableVersions, loading: versionsLoading });
+
   const onSubmit = () => {
     setError(null);
-    if (!SEMVER_HINT_RE.test(targetVersion)) {
-      setError('targetVersion must look like 0.3.1 or 0.3.0-beta.22');
-      return;
-    }
     const scope = scopeMode === 'all'
       ? { type: 'all' as const }
       : { type: 'installation' as const, installationId: scopeInstallationId };
@@ -155,11 +164,28 @@ export function AdminUpgrades() {
         <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 space-y-3">
           <div>
             <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-300 mb-1">Target version</label>
-            <input
-              type="text" value={targetVersion} onChange={(e) => setTargetVersion(e.target.value)}
-              placeholder="e.g. 0.3.1 or 0.3.0-beta.22"
-              className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800"
-            />
+            <select
+              value={targetVersion}
+              onChange={(e) => setTargetVersion(e.target.value)}
+              disabled={versionsLoading || availableVersions.length === 0}
+              className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800 disabled:opacity-60"
+            >
+              <option value="">
+                {versionsLoading
+                  ? 'Loading versions…'
+                  : availableVersions.length === 0
+                    ? 'No versions available'
+                    : 'Pick a version…'}
+              </option>
+              {availableVersions.map(v => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+            {fleetFloor && (
+              <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                Fleet floor: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-[11px] font-medium text-slate-600 dark:text-slate-300 mb-1">Scope</label>
@@ -194,7 +220,7 @@ export function AdminUpgrades() {
           <div className="flex justify-end gap-2 pt-2">
             <button onClick={() => { setShowForm(false); setError(null); }} className="text-[12px] px-2 py-1 text-slate-600 dark:text-slate-300">Cancel</button>
             <button
-              onClick={onSubmit} disabled={issueMut.isPending}
+              onClick={onSubmit} disabled={issueMut.isPending || !canIssue}
               className="text-[12px] px-2.5 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50"
             >Issue</button>
           </div>
