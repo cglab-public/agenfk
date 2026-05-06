@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/cli",
-  "version": "0.2.28",
+  "version": "0.3.0-beta.31",
   "description": "CLI for AgenFK Engineering Framework",
   "main": "dist/index.js",
   "bin": {
@@ -12,8 +12,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@agenfk/core": "*",
-    "@agenfk/telemetry": "*",
+    "@agenfk/core": "0.3.0-beta.31",
+    "@agenfk/telemetry": "0.3.0-beta.31",
     "axios": "^1.13.5",
     "chalk": "^4.1.2",
     "commander": "^12.0.0",

@@ -107,6 +107,32 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
 // ---------------------------------------------------------------------------
 // bin/agenfk.js — --beta flag (task ece8514b)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// bin/agenfk.js — Downgrade guard
+// `npx github:cglab-public/agenfk` (no --beta) on an existing prerelease
+// install used to fetch /releases/latest (which excludes prereleases),
+// resolve to v0.2.28, and tar -xzf over the install — silently downgrading
+// any beta installation. The bootstrap must refuse to extract any tag whose
+// version is older than the existing install's package.json.
+// ---------------------------------------------------------------------------
+describe('bin/agenfk.js — refuses to downgrade an existing install', () => {
+    it('reads the existing install\'s package.json before deciding to extract', () => {
+        // Must read INSTALL_DIR/package.json to know the local version.
+        expect(bootstrapScript).toMatch(/readLocalVersion\(\s*INSTALL_DIR\s*\)|readFileSync\([^)]*['"]package\.json['"]/);
+        expect(bootstrapScript).toMatch(/INSTALL_DIR/);
+    });
+
+    it('compares resolved tag against local version and skips extraction when local is newer', () => {
+        // A semver-aware comparison gating the tar -xzf call.
+        expect(bootstrapScript).toMatch(/compareSemver|compareVersion|isOlder|localIsNewer|isDowngrade/i);
+    });
+
+    it('logs a clear skip message when refusing to downgrade', () => {
+        // User-visible feedback so this isn't silent.
+        expect(bootstrapScript).toMatch(/skip.*downgrade|local.*newer|refus.*downgrade|already on a newer/i);
+    });
+});
+
 describe('bin/agenfk.js — --beta flag for npx beta installs', () => {
     it('detects --beta flag from process.argv', () => {
         // The bootstrap must check process.argv for --beta
@@ -269,5 +295,39 @@ describe('install.mjs — npm spawnSync uses shell:true on Windows', () => {
         const assignIdx = installScript.indexOf('npmCiResult = spawnSync');
         const spawnBlock = installScript.slice(assignIdx, assignIdx + 300);
         expect(spawnBlock).toMatch(/win32/);
+    });
+});
+
+describe('install.mjs — restarts running API server after a successful install (BUG 174270e6)', () => {
+    it('captures the pre-install reachability of the API server', () => {
+        // The pre-check at the top of run() must store its result somewhere
+        // we can read at the end of run(), so the post-install restart can
+        // be conditional on "a server was running before we replaced files".
+        // Match a variable assignment on serverReachable used as a flag.
+        expect(installScript).toMatch(/serverReachable\s*=/);
+    });
+
+    it('runs a post-install restart block gated on the captured pre-install reachability', () => {
+        // After all install steps complete, the script must restart the
+        // previously-running server so it executes the freshly-installed code.
+        // The restart block must reference the pre-install flag and invoke
+        // either `agenfk up` or kill+respawn of packages/server/dist/server.js.
+        expect(installScript).toMatch(/wasReachableBeforeInstall|previouslyRunning|preInstallReachable/);
+        // Must explicitly invoke `agenfk restart` (or `up`) — re-exec rather
+        // than in-place restart. Cross-platform handling is delegated to that
+        // CLI command, which already branches on win32 in killPattern.
+        expect(installScript).toMatch(/agenfk\.js['"][^'"]*['"](?:restart|up)['"]/);
+    });
+
+    it('places the restart block AFTER the install steps complete (not before)', () => {
+        // The restart block must run after npm ci and dist verification —
+        // restarting before the new files are in place would just bring up
+        // the old server again. Anchor by a phrase that only appears in the
+        // post-install restart code path, never in the pre-install probe.
+        const npmCiIdx = installScript.indexOf('npmCiResult = spawnSync');
+        const restartMarkerIdx = installScript.search(/Restarting API server|Server restart triggered/);
+        expect(npmCiIdx).toBeGreaterThan(-1);
+        expect(restartMarkerIdx).toBeGreaterThan(-1);
+        expect(restartMarkerIdx).toBeGreaterThan(npmCiIdx);
     });
 });

@@ -31,13 +31,18 @@ vi.mock('posthog-node', () => ({
 
 import * as path from 'path';
 import * as os from 'os';
-import { TelemetryClient, getInstallationId, isTelemetryEnabled } from '../index';
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource } from '../index';
 
 const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
 const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
 const INSTALLATION_ID_PATH = path.join(AGENFK_DIR, 'installation-id');
+const HUB_CONFIG_PATH = path.join(AGENFK_DIR, 'hub.json');
 
-function setupFs(config: object | null, installationId: string | null) {
+function setupFs(
+  config: object | null,
+  installationId: string | null,
+  hubConfig: object | null = null,
+) {
   mockReadFileSync.mockImplementation((p: unknown) => {
     if (p === CONFIG_PATH) {
       if (config === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -46,6 +51,10 @@ function setupFs(config: object | null, installationId: string | null) {
     if (p === INSTALLATION_ID_PATH) {
       if (installationId === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
       return installationId;
+    }
+    if (p === HUB_CONFIG_PATH) {
+      if (hubConfig === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return JSON.stringify(hubConfig);
     }
     return '';
   });
@@ -78,7 +87,12 @@ describe('TelemetryClient', () => {
       expect(mockPostHogCapture).toHaveBeenCalledWith({
         distinctId: 'install-abc-123',
         event: 'item_created',
-        properties: { itemType: 'TASK', $lib: 'agenfk', agenfk_version: expect.any(String) },
+        properties: {
+          itemType: 'TASK',
+          $lib: 'agenfk',
+          agenfk_version: expect.any(String),
+          install_source: 'manual',
+        },
       });
     });
 
@@ -94,8 +108,33 @@ describe('TelemetryClient', () => {
       expect(mockPostHogCapture).toHaveBeenCalledWith({
         distinctId: 'install-abc-123',
         event: 'server_started',
-        properties: { $lib: 'agenfk', agenfk_version: expect.any(String) },
+        properties: {
+          $lib: 'agenfk',
+          agenfk_version: expect.any(String),
+          install_source: 'manual',
+        },
       });
+    });
+
+    it('capture() includes install_source: "hub" when ~/.agenfk/hub.json exists', () => {
+      setupFs({}, 'install-abc-123', { url: 'https://hub.example.com', token: 't', orgId: 'o' });
+      const client = new TelemetryClient();
+      client.capture('item_created', { itemType: 'TASK' });
+      expect(mockPostHogCapture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          properties: expect.objectContaining({ install_source: 'hub' }),
+        }),
+      );
+    });
+
+    it('capture() does not let caller-supplied properties overwrite install_source', () => {
+      const client = new TelemetryClient();
+      client.capture('item_created', { install_source: 'spoofed' as unknown as string });
+      expect(mockPostHogCapture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          properties: expect.objectContaining({ install_source: 'manual' }),
+        }),
+      );
     });
 
     it('shutdown() calls posthog.shutdown()', async () => {
@@ -158,6 +197,33 @@ describe('getInstallationId', () => {
     expect(() => getInstallationId()).not.toThrow();
     const id = getInstallationId();
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+describe('getInstallSource', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns "hub" when ~/.agenfk/hub.json exists', () => {
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      if (p === HUB_CONFIG_PATH) return JSON.stringify({ url: 'https://hub.example.com', token: 't', orgId: 'o' });
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    expect(getInstallSource()).toBe('hub');
+  });
+
+  it('returns "manual" when ~/.agenfk/hub.json is missing', () => {
+    mockReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    expect(getInstallSource()).toBe('manual');
+  });
+
+  it('returns "manual" when ~/.agenfk/hub.json is corrupt', () => {
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      if (p === HUB_CONFIG_PATH) return '{not-json';
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    expect(getInstallSource()).toBe('manual');
   });
 });
 

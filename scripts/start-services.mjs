@@ -22,22 +22,43 @@ function resolveDbPath() {
 }
 const dbPath = resolveDbPath();
 
-const API_PORT = process.env.AGENFK_PORT || '3000';
+const REQUESTED_API_PORT = process.env.AGENFK_PORT || '3000';
 const UI_PORT = process.env.VITE_PORT || '5173';
+const SERVER_PORT_FILE = path.join(os.homedir(), '.agenfk', 'server-port');
 
 if (!fs.existsSync(agenfkDir)) {
     fs.mkdirSync(agenfkDir, { recursive: true });
 }
 
-console.log(`Starting API Server on port ${API_PORT}...`);
+// Server picks the closest free port starting at REQUESTED_API_PORT and writes
+// the bound port to ~/.agenfk/server-port. We wait for that file before
+// launching the UI so VITE_API_URL points at the actual port.
+try { fs.unlinkSync(SERVER_PORT_FILE); } catch { /* ignore */ }
+
+console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
 const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
-    env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: API_PORT, VITE_PORT: UI_PORT },
+    env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: REQUESTED_API_PORT, VITE_PORT: UI_PORT },
     detached: true,
     stdio: ['ignore', apiLog, apiLog]
 });
 apiProcess.unref();
+
+// Wait up to 15s for the server to publish its bound port.
+let API_PORT = REQUESTED_API_PORT;
+for (let i = 0; i < 30; i++) {
+    if (fs.existsSync(SERVER_PORT_FILE)) {
+        try {
+            const persisted = fs.readFileSync(SERVER_PORT_FILE, 'utf8').trim();
+            if (persisted) { API_PORT = persisted; break; }
+        } catch { /* ignore */ }
+    }
+    await new Promise(r => setTimeout(r, 500));
+}
+if (API_PORT !== REQUESTED_API_PORT) {
+    console.log(`API Server bound to port ${API_PORT} (requested ${REQUESTED_API_PORT} was unavailable).`);
+}
 
 console.log(`Starting UI on port ${UI_PORT}...`);
 const uiLogPath = path.join(agenfkDir, 'ui.log');

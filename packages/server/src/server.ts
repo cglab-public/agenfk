@@ -3,7 +3,12 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
-import { TelemetryClient, getInstallationId, isTelemetryEnabled } from "@agenfk/telemetry";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
+import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
+import type { RecordEventInput } from "./hub/index.js";
+import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
+import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
@@ -35,7 +40,13 @@ export const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   }
 });
-const PORT = process.env.AGENFK_PORT || process.env.PORT || 3000;
+// Requested base port. The server probes upward from here for the first free
+// port (mirrors Vite's default behaviour) and persists the bound port to
+// ~/.agenfk/server-port so other components (CLI, MCP, scripts) can discover it.
+const REQUESTED_PORT = Number.parseInt(
+  String(process.env.AGENFK_PORT || process.env.PORT || DEFAULT_API_PORT),
+  10,
+);
 
 app.use(cors({
   origin: "*",
@@ -51,6 +62,125 @@ let dbPath: string = "";
 
 // Anonymous usage telemetry — no-op when AGENFK_POSTHOG_KEY is unset or opted out.
 const telemetry = new TelemetryClient();
+
+// Corporate Hub sender — dormant when ~/.agenfk/hub.json is absent. Storage is
+// attached after initStorage(); flusher is started at boot if configured.
+const hubClient = new HubClient(getInstallationId(), loadHubConfig());
+let hubFlusher: Flusher | null = null;
+let flowSyncHandle: FlowSyncHandle | null = null;
+let upgradeSyncHandle: UpgradeSyncHandle | null = null;
+
+// recordHubEvent is a thin wrapper kept at module scope so the many existing
+// io.emit('items_updated', ...) sites can be augmented with one line.
+//
+// The wrapper enriches each event with cross-cutting fields:
+// - itemType: lifted from the payload when present so the hub can index it.
+// - remoteUrl: resolved from the project's git origin via projectRemoteCache.
+//   On cache miss the function AWAITS warmProjectRemote so the FIRST event for
+//   any project still ships with its remoteUrl populated. (Bug 0bc7669b: the
+//   prior implementation did fire-and-forget warming, leaving the first event
+//   for every project with remoteUrl=null.)
+// - itemTitle / externalId: same lazy-cache pattern via itemMetaCache.
+//
+// Returns a Promise so internal awaits work; existing call sites that ignore
+// the return value remain correct because hubClient.recordEvent itself only
+// enqueues into the local outbox (the flusher delivers asynchronously).
+const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
+  if (!hubClient.isEnabled) return;
+  let payload: any = { ...(input.payload ?? {}) };
+  if (input.projectId) {
+    payload = {
+      ...payload,
+      flow: { name: await resolveFlowName(input.projectId), install_source: getInstallSource() },
+    };
+  }
+  const itemType = (input as any).itemType ?? (typeof payload.itemType === 'string' ? payload.itemType : null);
+  const payloadTitle = typeof payload.title === 'string' ? payload.title : undefined;
+  const payloadExternalId = typeof payload.externalId === 'string' ? payload.externalId : undefined;
+
+  let remoteUrl: string | null = (input as any).remoteUrl ?? null;
+  if (!remoteUrl && input.projectId) {
+    if (!projectRemoteCache.has(input.projectId)) {
+      // First event for this project — wait for the git lookup so we don't
+      // ship a null remoteUrl. Subsequent events hit the cache and skip this.
+      await warmProjectRemote(input.projectId);
+    }
+    const cached = projectRemoteCache.get(input.projectId);
+    remoteUrl = cached && cached.length > 0 ? cached : null;
+  }
+
+  let itemTitle: string | null = (input as any).itemTitle ?? payloadTitle ?? null;
+  let externalId: string | null = (input as any).externalId ?? payloadExternalId ?? null;
+  if (input.itemId) {
+    const cached = itemMetaCache.get(input.itemId);
+    if (cached) {
+      itemTitle = itemTitle ?? cached.title ?? null;
+      externalId = externalId ?? cached.externalId ?? null;
+    } else {
+      warmItemMeta(input.itemId).catch(() => { /* best-effort */ });
+    }
+    // Prime the cache when this very event already carries the metadata, so
+    // subsequent events for the same item don't need a storage round-trip.
+    if (itemTitle || externalId) {
+      itemMetaCache.set(input.itemId, {
+        title: itemTitle ?? cached?.title ?? null,
+        externalId: externalId ?? cached?.externalId ?? null,
+      });
+    }
+  }
+
+  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId } as RecordEventInput);
+};
+
+// projectId → git remote URL ("" when no remote, null when not yet resolved).
+const projectRemoteCache = new Map<string, string | null>();
+
+// itemId → { title, externalId }. Best-effort cache, populated lazily by
+// warmItemMeta() and primed inline by recordHubEvent when an event arrives
+// already carrying the metadata.
+const itemMetaCache = new Map<string, { title: string | null; externalId: string | null }>();
+async function resolveFlowName(projectId: string | undefined): Promise<string> {
+  if (!projectId) return DEFAULT_FLOW.name;
+  try {
+    const project = await storage.getProject(projectId);
+    const flowId = project ? (project as any).flowId : null;
+    if (!flowId) return DEFAULT_FLOW.name;
+    const flow = await storage.getFlow(flowId);
+    return flow?.name ?? DEFAULT_FLOW.name;
+  } catch {
+    return DEFAULT_FLOW.name;
+  }
+}
+
+async function warmItemMeta(itemId: string): Promise<void> {
+  try {
+    const it = await storage.getItem(itemId);
+    if (!it) { itemMetaCache.set(itemId, { title: null, externalId: null }); return; }
+    itemMetaCache.set(itemId, {
+      title: typeof (it as any).title === 'string' ? (it as any).title : null,
+      externalId: typeof (it as any).externalId === 'string' ? (it as any).externalId : null,
+    });
+  } catch {
+    itemMetaCache.set(itemId, { title: null, externalId: null });
+  }
+}
+
+async function warmProjectRemote(projectId: string): Promise<void> {
+  try {
+    const proj = await storage.getProject(projectId);
+    const root = (proj as any)?.projectRoot;
+    if (!root) { projectRemoteCache.set(projectId, ''); return; }
+    const { execSync } = await import('child_process');
+    try {
+      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      projectRemoteCache.set(projectId, out || '');
+    } catch {
+      projectRemoteCache.set(projectId, '');
+    }
+  } catch {
+    projectRemoteCache.set(projectId, '');
+  }
+}
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
@@ -297,6 +427,88 @@ const initStorage = async () => {
       console.error(`[MIGRATION] Failed to import migration.json: ${e.message}`);
     }
   }
+
+  // Attach the corporate-hub outbox to the storage layer and start the flusher
+  // when configured. No-op when ~/.agenfk/hub.json is absent.
+  //
+  // Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
+  // in tests (each setup calls it), and without these stops every re-entry
+  // would leak a setInterval timer holding a stale storage reference, which
+  // races against the live test's writes and causes hard-to-diagnose flakes
+  // (item.id undefined, GET /flows 500, etc).
+  hubFlusher?.stop();
+  flowSyncHandle?.stop();
+  upgradeSyncHandle?.stop();
+  hubClient.attachStorage(storage as SQLiteStorageProvider);
+  if (hubClient.isEnabled && hubClient.hubConfig) {
+    hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
+    hubFlusher.start();
+    console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
+
+    // Start pulling the org-assigned flow from the Hub. Poll interval can be
+    // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
+    const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
+    flowSyncHandle = startFlowSync({
+      storage: storage as SQLiteStorageProvider,
+      hubConfig: hubClient.hubConfig,
+      intervalMs,
+      emit: (event, payload) => io.emit(event, payload),
+    });
+    console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
+
+    // Story 3 — fleet upgrade reconciler.
+    const dbDir = path.dirname(dbPath);
+    const installationId = getInstallationId();
+    const currentVersion: string = (() => {
+      try {
+        const pkg = JSON.parse(require('fs').readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'));
+        return typeof pkg?.version === 'string' ? pkg.version : '0.0.0';
+      } catch { return '0.0.0'; }
+    })();
+    const recordEvent = (e: { installationId: string; type: any; payload: any; occurredAt?: string }) => {
+      hubClient.recordEvent({
+        installationId: e.installationId,
+        orgId: hubClient.hubConfig!.orgId,
+        type: e.type,
+        payload: e.payload,
+        occurredAt: e.occurredAt,
+      } as any);
+    };
+    // Boot-time replay: a previous run may have spawned an upgrade that killed
+    // this very process before its outcome event drained. Reconcile by
+    // comparing currentVersion to the directive's intent and emit accordingly.
+    replayPendingUpgradeOutcome({
+      dbDir,
+      currentVersion,
+      installationId,
+      recordEvent,
+    }).catch((e) => console.error('[HUB_UPGRADE_SYNC] replay failed:', (e as Error).message));
+
+    const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
+    upgradeSyncHandle = startUpgradeSync({
+      dbDir,
+      currentVersion,
+      installationId,
+      hubUrl: hubClient.hubConfig.url,
+      hubToken: hubClient.hubConfig.token,
+      intervalMs: upgradeIntervalMs,
+      fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
+        const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
+          headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
+          timeout: 10_000,
+          validateStatus: (s) => s < 500,
+        });
+        return { status: r.status, json: async () => r.data };
+      },
+      recordEvent,
+      flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
+      spawnImpl: (cmd, args) => {
+        const r = spawnSync(cmd, args, { encoding: 'utf8' });
+        return { exitCode: r.status, stdout: r.stdout ?? '' };
+      },
+    });
+    console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
+  }
 };
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
@@ -477,7 +689,10 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   const created = await storage.createProject(project);
   io.emit('items_updated');
   if (!existing) {
-    telemetry.capture('project_created', { storageBackend: 'sqlite' });
+    telemetry.capture('project_created', {
+      storageBackend: 'sqlite',
+      flow_name: await resolveFlowName(created.id),
+    });
   }
   res.status(201).json(created);
 }));
@@ -567,10 +782,15 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
   res.json(flows);
 }));
 
+const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
+
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
+  // Always force `source = 'local'` on REST-driven creation. The reconciler
+  // writes hub-managed rows directly via storage.createFlow(); this route is
+  // for user/admin-driven local flow authoring only.
   const flow: Flow = {
     id: uuidv4(),
     name,
@@ -579,6 +799,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     steps: steps || [],
     createdAt: new Date(),
     updatedAt: new Date(),
+    source: 'local',
   };
 
   const created = await storage.createFlow(flow);
@@ -593,6 +814,11 @@ app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
+  const existing = await storage.getFlow(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Flow not found" });
+  if (existing.source === 'hub') {
+    return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
+  }
   try {
     const { name, description, version, steps } = req.body;
     const updates: Partial<Flow> = {};
@@ -612,6 +838,9 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
 app.delete("/flows/:id", asyncHandler(async (req: any, res: any) => {
   const flow = await storage.getFlow(req.params.id);
   if (!flow) return res.status(404).json({ error: "Flow not found" });
+  if (flow.source === 'hub') {
+    return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
+  }
 
   await storage.deleteFlow(req.params.id);
   io.emit('flow:updated', { flowId: req.params.id, deleted: true });
@@ -1011,7 +1240,16 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
   io.emit('items_updated');
   io.emit('project_switched', { projectId: created.projectId });
-  telemetry.capture('item_created', { itemType: created.type });
+  telemetry.capture('item_created', {
+    itemType: created.type,
+    flow_name: await resolveFlowName(created.projectId),
+  });
+  recordHubEvent({
+    type: 'item.created',
+    projectId: created.projectId,
+    itemId: created.id,
+    payload: { itemType: created.type, title: created.title, status: created.status, parentId: created.parentId ?? null },
+  });
 
   if (created.parentId) {
     await syncParentStatus(created.parentId);
@@ -1073,6 +1311,14 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         parentIdsToSync.add(updated.parentId);
       }
 
+      if (tokenUsage !== undefined) {
+        recordHubEvent({
+          type: 'tokens.logged',
+          projectId: updated.projectId,
+          itemId: updated.id,
+          payload: { tokenUsage },
+        });
+      }
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
@@ -1191,10 +1437,47 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         fromStatus: currentItem.status,
         toStatus: status,
         itemType: updated.type,
+        flow_name: await resolveFlowName(updated.projectId),
+      });
+      recordHubEvent({
+        type: 'step.transitioned',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { fromStatus: currentItem.status, toStatus: status, itemType: updated.type },
+      });
+    } else {
+      recordHubEvent({
+        type: 'item.updated',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { changedFields: Object.keys(updates) },
+      });
+    }
+    if (tokenUsage !== undefined) {
+      recordHubEvent({
+        type: 'tokens.logged',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { tokenUsage },
+      });
+    }
+    if (Array.isArray(comments) && comments.length > (currentItem.comments?.length ?? 0)) {
+      const newest = comments[comments.length - 1];
+      recordHubEvent({
+        type: 'comment.added',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { author: newest?.author, content: newest?.content, step: newest?.step },
       });
     }
 
     if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
+      recordHubEvent({
+        type: 'item.closed',
+        projectId: updated.projectId,
+        itemId: updated.id,
+        payload: { fromStatus: currentItem.status, toStatus: Status.DONE, itemType: updated.type },
+      });
       if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         const proj = await storage.getProject(updated.projectId);
         const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
@@ -1266,6 +1549,13 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [API_MOVE] Moved ${movedCount} item(s) from project ${sourceProjectId} to ${targetProjectId}`);
 
+  recordHubEvent({
+    type: 'item.moved',
+    projectId: targetProjectId,
+    itemId: req.params.id,
+    payload: { fromProjectId: sourceProjectId, toProjectId: targetProjectId, movedCount },
+  });
+
   // Notify both source and target project boards
   io.emit('items_updated');
 
@@ -1281,6 +1571,13 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
 async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
+
+  recordHubEvent({
+    type: 'validate.invoked',
+    projectId: item.projectId,
+    itemId,
+    payload: { command: command ?? null, fromStatus: item.status, hasEvidence: !!evidence },
+  });
 
   if (evidence) {
     const evidenceComment = { id: uuidv4(), author: 'agent', content: `**Evidence [${item.status}]:** ${evidence}`, timestamp: new Date(), step: item.status };
@@ -1421,6 +1718,34 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
+    recordHubEvent({
+      type: 'validate.passed',
+      projectId: item.projectId,
+      itemId,
+      payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand },
+    });
+    if (nextStatus !== item.status) {
+      recordHubEvent({
+        type: 'step.transitioned',
+        projectId: item.projectId,
+        itemId,
+        payload: { fromStatus: item.status, toStatus: nextStatus, itemType: item.type },
+      });
+      if (nextStatus === Status.DONE && item.status !== Status.DONE) {
+        recordHubEvent({
+          type: 'item.closed',
+          projectId: item.projectId,
+          itemId,
+          payload: { fromStatus: item.status, toStatus: Status.DONE, itemType: item.type },
+        });
+      }
+    }
+    recordHubEvent({
+      type: 'test.logged',
+      projectId: item.projectId,
+      itemId,
+      payload: { command: resolvedCommand, status: 'PASSED', testId },
+    });
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
@@ -1429,6 +1754,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }
     await storage.updateItem(itemId, updates);
     io.emit('items_updated');
+    recordHubEvent({
+      type: 'validate.failed',
+      projectId: item.projectId,
+      itemId,
+      payload: { fromStatus: item.status, fellBackTo: failureStatus, command: resolvedCommand },
+    });
+    recordHubEvent({
+      type: 'test.logged',
+      projectId: item.projectId,
+      itemId,
+      payload: { command: resolvedCommand, status: 'FAILED', testId },
+    });
     return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
   }
 }
@@ -1462,6 +1799,29 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
     return res.status(403).json({ error: "Forbidden: test endpoint requires internal token." });
   }
   return handleValidateProgress(req.params.id, undefined, res);
+}));
+
+// ── Hub flush (manual trigger; used by `agenfk hub flush`) ───────────────────
+
+app.post('/internal/hub/flush', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub flush requires internal token.' });
+  }
+  if (!hubFlusher) {
+    return res.status(400).json({ error: 'Hub not configured. Run `agenfk hub login` first.' });
+  }
+  await hubFlusher.flush();
+  res.json(hubFlusher.getStatus());
+}));
+
+app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub status requires internal token.' });
+  }
+  if (!hubFlusher) {
+    return res.json({ enabled: false });
+  }
+  res.json(hubFlusher.getStatus());
 }));
 
 // ── Pause / Resume ───────────────────────────────────────────────────────────
@@ -2191,6 +2551,23 @@ interface UpdateJob {
 }
 const updateJobs = new Map<string, UpdateJob>();
 
+// Injectable exec for /releases/update so tests can swap out the real shellout.
+// Without this, any test that hits POST /releases/update without mocking the
+// `child_process` module would actually run `npx -y github:cglab-public/agenfk`
+// on the developer's machine, downgrading ~/.agenfk-system/. (Bug 28635f38.)
+//
+// We resolve the default impl lazily (not at module load) so that other test
+// files which partial-mock `child_process` without providing `exec` don't
+// trigger vitest's strict missing-export error during server.ts import.
+type ReleasesUpdateExecImpl = typeof exec;
+let releasesUpdateExecImpl: ReleasesUpdateExecImpl | null = null;
+export const setReleasesUpdateExecImpl = (impl: ReleasesUpdateExecImpl): void => {
+  releasesUpdateExecImpl = impl;
+};
+export const resetReleasesUpdateExecImpl = (): void => {
+  releasesUpdateExecImpl = null;
+};
+
 app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   const jobId = uuidv4();
   const job: UpdateJob = { status: 'running', output: [] };
@@ -2200,7 +2577,7 @@ app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
   const command = 'npx -y github:cglab-public/agenfk';
   const cwd = os.homedir();
 
-  const child = exec(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
+  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
   child.stdout?.on('data', (d) => job.output.push(d.toString()));
   child.stderr?.on('data', (d) => job.output.push(d.toString()));
   child.on('close', (code) => {
@@ -2468,6 +2845,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     // Backup on clean shutdown
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
+      removeServerPortFile();
+      if (hubFlusher) {
+        hubFlusher.stop();
+        await hubFlusher.flush().catch(e => console.error('[HUB] Shutdown drain failed:', (e as Error).message));
+      }
       await performBackup().catch(e => console.error('[BACKUP] Shutdown backup failed:', e.message));
       await telemetry.shutdown();
       process.exit(0);
@@ -2475,13 +2857,24 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     process.on('SIGTERM', shutdown);
     process.on('SIGINT', shutdown);
 
-    httpServer.listen(PORT, () => {
-      console.log(`AgEnFK API Server running on port ${PORT} (with WebSockets)`);
-      telemetry.capture('server_started', {
-        version: getCurrentVersion(),
-        storageBackend: 'sqlite',
-        nodeVersion: process.version,
+    findAvailablePort(REQUESTED_PORT).then((port) => {
+      httpServer.listen(port, () => {
+        writeServerPortFile(port);
+        if (port !== REQUESTED_PORT) {
+          console.log(`AgEnFK API Server: requested port ${REQUESTED_PORT} was in use, bound to ${port} instead`);
+        }
+        console.log(`AgEnFK API Server running on port ${port} (with WebSockets)`);
+        telemetry.capture('server_started', {
+          version: getCurrentVersion(),
+          storageBackend: 'sqlite',
+          nodeVersion: process.version,
+          requestedPort: REQUESTED_PORT,
+          boundPort: port,
+        });
       });
+    }).catch((err) => {
+      console.error(`[SERVER_START] Could not find a free port starting at ${REQUESTED_PORT}:`, err.message);
+      process.exit(1);
     });
   });
 }
