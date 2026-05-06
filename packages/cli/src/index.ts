@@ -582,6 +582,7 @@ program
   .description('Bootstrap and start AgEnFK Engineering Framework')
   .option('--debuglog', 'Enable verbose diagnostic logging in the install script')
   .option('--easter-eggs', 'Enable easter egg animations')
+  .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🚀 Bringing up AgEnFK Engineering Framework (agenfk)...'));
@@ -620,6 +621,9 @@ program
     try {
         const startEnv = { ...process.env };
         if (options.easterEggs) startEnv.VITE_EASTER_EGGS = 'true';
+        // --quiet suppresses the post-start browser auto-open; the
+        // start-services.mjs script reads this env var as the gate.
+        if (options.quiet) startEnv.AGENFK_NO_OPEN_BROWSER = '1';
         const start = spawn('node', ['scripts/start-services.mjs'], { cwd: rootDir, stdio: 'inherit', env: startEnv });
         start.on('close', (code) => {
             process.exit(code || 0);
@@ -694,26 +698,23 @@ program
 program
   .command('restart')
   .description('Restart all AgEnFK services')
-  .action(async () => {
+  .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window (used by fleet-upgrade auto-restart)')
+  .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🔄 Restarting AgEnFK services...'));
-    
+
     // Call 'down'
     try {
       execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
     } catch (e) {}
 
-    // Call 'up'
-    // Note: 'up' might keep the terminal open if it doesn't detach.
-    // However, the 'up' command in index.ts spawns start-services.mjs which waits.
-    // For auto-restart, maybe we want it to run in background?
-    // But 'up' is designed to be interactive usually.
-    // If called from upgrade, it might be better to start them in background.
-    // However, start-services.mjs handles backgrounding itself inside.
-    
+    // Call 'up' — pass --quiet through so a fleet-driven restart doesn't
+    // pop a new browser tab on the user's machine.
     try {
-      const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], { 
-        cwd: rootDir, 
+      const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
+      if (options.quiet) upArgs.push('--quiet');
+      const start = spawn('node', upArgs, {
+        cwd: rootDir,
         stdio: 'inherit',
         detached: true
       });

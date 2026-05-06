@@ -532,6 +532,12 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
+// AGENFK_NO_OPEN_BROWSER gates the auto-open so fleet-driven restarts
+// (agenfk restart --quiet) don't surface a new browser tab.
+if (process.env.AGENFK_NO_OPEN_BROWSER) {
+    process.exit(0);
+}
+
 if (process.platform === 'win32') {
     spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
 } else {
@@ -1195,9 +1201,12 @@ process.exit(0);
         // already handles Windows via wmic and POSIX via ps/pgrep) and then
         // spawns a fresh server. This keeps the kill logic in one place.
         try {
+            // --quiet: a fleet-upgrade auto-restart must not pop a new
+            // browser tab on the user's machine. The dashboard is already
+            // open in their existing window from before the upgrade.
             const child = spawn(
                 'node',
-                [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart'],
+                [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart', '--quiet'],
                 { cwd: rootDir, detached: true, stdio: 'ignore' },
             );
             child.unref();

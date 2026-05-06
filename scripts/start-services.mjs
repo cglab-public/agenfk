@@ -96,6 +96,13 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
+// Skip the auto-open when started in quiet mode — the fleet-upgrade restart
+// path sets this so an upgrade doesn't pop a new browser tab on the user's
+// machine. The user already has the dashboard open from a prior session.
+if (process.env.AGENFK_NO_OPEN_BROWSER) {
+    process.exit(0);
+}
+
 if (process.platform === 'win32') {
     spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
 } else {
