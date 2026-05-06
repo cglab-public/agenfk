@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
-import { TelemetryClient, getInstallationId, isTelemetryEnabled, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
@@ -87,7 +87,13 @@ let upgradeSyncHandle: UpgradeSyncHandle | null = null;
 // enqueues into the local outbox (the flusher delivers asynchronously).
 const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
   if (!hubClient.isEnabled) return;
-  const payload: any = input.payload ?? {};
+  let payload: any = { ...(input.payload ?? {}) };
+  if (input.projectId) {
+    payload = {
+      ...payload,
+      flow: { name: await resolveFlowName(input.projectId), install_source: getInstallSource() },
+    };
+  }
   const itemType = (input as any).itemType ?? (typeof payload.itemType === 'string' ? payload.itemType : null);
   const payloadTitle = typeof payload.title === 'string' ? payload.title : undefined;
   const payloadExternalId = typeof payload.externalId === 'string' ? payload.externalId : undefined;
@@ -123,7 +129,7 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
     }
   }
 
-  hubClient.recordEvent({ ...input, itemType, remoteUrl, itemTitle, externalId } as RecordEventInput);
+  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when no remote, null when not yet resolved).

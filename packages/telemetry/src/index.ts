@@ -18,7 +18,7 @@ const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
 const INSTALLATION_ID_PATH = path.join(AGENFK_DIR, 'installation-id');
 const HUB_CONFIG_PATH = path.join(AGENFK_DIR, 'hub.json');
 
-export type InstallSource = 'hub' | 'local';
+export type InstallSource = 'hub' | 'manual';
 
 export function getInstallSource(): InstallSource {
   try {
@@ -27,9 +27,9 @@ export function getInstallSource(): InstallSource {
     if (parsed && typeof parsed === 'object' && typeof parsed.url === 'string' && parsed.url.length > 0) {
       return 'hub';
     }
-    return 'local';
+    return 'manual';
   } catch {
-    return 'local';
+    return 'manual';
   }
 }
 

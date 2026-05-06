@@ -91,7 +91,7 @@ describe('TelemetryClient', () => {
           itemType: 'TASK',
           $lib: 'agenfk',
           agenfk_version: expect.any(String),
-          install_source: 'local',
+          install_source: 'manual',
         },
       });
     });
@@ -111,7 +111,7 @@ describe('TelemetryClient', () => {
         properties: {
           $lib: 'agenfk',
           agenfk_version: expect.any(String),
-          install_source: 'local',
+          install_source: 'manual',
         },
       });
     });
@@ -132,7 +132,7 @@ describe('TelemetryClient', () => {
       client.capture('item_created', { install_source: 'spoofed' as unknown as string });
       expect(mockPostHogCapture).toHaveBeenCalledWith(
         expect.objectContaining({
-          properties: expect.objectContaining({ install_source: 'local' }),
+          properties: expect.objectContaining({ install_source: 'manual' }),
         }),
       );
     });
@@ -211,19 +211,19 @@ describe('getInstallSource', () => {
     expect(getInstallSource()).toBe('hub');
   });
 
-  it('returns "local" when ~/.agenfk/hub.json is missing', () => {
+  it('returns "manual" when ~/.agenfk/hub.json is missing', () => {
     mockReadFileSync.mockImplementation(() => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
-    expect(getInstallSource()).toBe('local');
+    expect(getInstallSource()).toBe('manual');
   });
 
-  it('returns "local" when ~/.agenfk/hub.json is corrupt', () => {
+  it('returns "manual" when ~/.agenfk/hub.json is corrupt', () => {
     mockReadFileSync.mockImplementation((p: unknown) => {
       if (p === HUB_CONFIG_PATH) return '{not-json';
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
-    expect(getInstallSource()).toBe('local');
+    expect(getInstallSource()).toBe('manual');
   });
 });
 
