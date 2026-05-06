@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import { existsSync, chmodSync, writeFileSync, readdirSync, copyFileSync, readFileSync, renameSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawnSync, execSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
@@ -82,6 +82,12 @@ async function run() {
 
     const debugLog = debuglog ? (...args) => console.log(`${YELLOW}[DEBUG]${NC}`, ...args) : () => {};
 
+    // BUG 174270e6: capture whether an API server was already running before
+    // we replace files on disk. If it was, we must restart it at the end so
+    // it picks up the new code instead of executing the now-stale process image.
+    let wasReachableBeforeInstall = false;
+    let preInstallServerPort = process.env.AGENFK_PORT || '3000';
+
     if (debuglog) {
         debugLog('=== AgenFK Install Debug Log ===');
         debugLog('argv:', process.argv.join(' '));
@@ -113,6 +119,25 @@ async function run() {
         const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8' });
         const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
         debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
+        wasReachableBeforeInstall = serverReachable;
+        preInstallServerPort = serverPort;
+    }
+
+    // BUG 174270e6: even when --debuglog is OFF we still need to know if a
+    // server was running, so do an unconditional reachability probe here too.
+    // Cheap (one localhost curl with 1s timeout). The debug branch above will
+    // overwrite this with the same value if --debuglog is on; idempotent.
+    if (!wasReachableBeforeInstall) {
+        let probePort = process.env.AGENFK_PORT || '3000';
+        try {
+            const persistedPort = readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
+            if (persistedPort) probePort = persistedPort;
+        } catch { /* ignore */ }
+        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8' });
+        if (probe.status === 0 && probe.stdout.trim() !== '000') {
+            wasReachableBeforeInstall = true;
+            preInstallServerPort = probePort;
+        }
     }
 
     function shouldRun(platform) {
@@ -1149,6 +1174,38 @@ process.exit(0);
 
         await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
         console.log(`  Registered PreToolUse hooks in ${settingsPath}`);
+    }
+
+    // BUG 174270e6: if a server was running before we replaced the files on
+    // disk, restart it now so the running process actually executes the new
+    // code. Without this, the upgrade silently lands on disk while the
+    // pre-existing server keeps running its stale process image — visible to
+    // users as "I upgraded but the Hub still shows the old version".
+    //
+    // We only do this when:
+    //   - we detected a reachable server during the pre-install probe
+    //   - the install isn't a single-platform integration-only run (--only-platform)
+    //
+    // Strategy: kill processes matching the server bin path, then spawn a
+    // detached `agenfk up` so the user's foreground stays free. `agenfk up`
+    // also handles the UI process and port persistence.
+    if (wasReachableBeforeInstall && !onlyPlatform) {
+        console.log(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
+        // Delegate to `agenfk up`. It internally calls killPattern (which
+        // already handles Windows via wmic and POSIX via ps/pgrep) and then
+        // spawns a fresh server. This keeps the kill logic in one place.
+        try {
+            const child = spawn(
+                'node',
+                [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart'],
+                { cwd: rootDir, detached: true, stdio: 'ignore' },
+            );
+            child.unref();
+            console.log(`${GREEN}Server restart triggered (running in background).${NC}`);
+        } catch (e) {
+            console.log(`${YELLOW}Could not auto-restart server: ${e?.message ?? e}${NC}`);
+            console.log(`${YELLOW}Run \`agenfk restart\` manually to bring the new version online.${NC}`);
+        }
     }
 
     if (!onlyPlatform) {
