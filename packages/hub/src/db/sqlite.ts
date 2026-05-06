@@ -159,7 +159,7 @@ const SCHEMA_SQLITE = `
   CREATE TABLE IF NOT EXISTS upgrade_directive_targets (
     directive_id TEXT NOT NULL,
     installation_id TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'pending',   -- pending | in_progress | succeeded | failed
+    state TEXT NOT NULL DEFAULT 'pending',   -- pending | in_progress | succeeded | failed | cancelled
     attempted_at TEXT,
     finished_at TEXT,
     result_version TEXT,

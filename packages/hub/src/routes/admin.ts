@@ -704,7 +704,7 @@ export function adminRouter(ctx: HubServerContext): Router {
          WHERE t.directive_id = ?`,
         [d.id],
       );
-      const progress = { pending: 0, in_progress: 0, succeeded: 0, failed: 0 };
+      const progress = { pending: 0, in_progress: 0, succeeded: 0, failed: 0, cancelled: 0 };
       for (const t of targets) {
         if (t.state in progress) (progress as any)[t.state] = Number((progress as any)[t.state]) + 1;
       }
@@ -731,6 +731,40 @@ export function adminRouter(ctx: HubServerContext): Router {
       });
     }
     res.json({ directives: out });
+  });
+
+  // POST /v1/admin/upgrade/:directiveId/cancel — admin-driven cancel for a
+  // pending directive. Flips every target still in 'pending' to 'cancelled';
+  // leaves in_progress/succeeded/failed alone (those flights have already
+  // started or finished — we cannot recall them). Idempotent.
+  router.post('/upgrade/:directiveId/cancel', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const directiveId = req.params.directiveId;
+    const directive = await ctx.db.get<{ id: string }>(
+      'SELECT id FROM upgrade_directives WHERE id = ? AND org_id = ?',
+      [directiveId, orgId],
+    );
+    if (!directive) return res.status(404).json({ error: 'Directive not found' });
+
+    let cancelledCount = 0;
+    const leftAlone = { in_progress: 0, succeeded: 0, failed: 0 };
+    await ctx.db.transaction(async () => {
+      const result = await ctx.db.run(
+        `UPDATE upgrade_directive_targets SET state = 'cancelled'
+         WHERE directive_id = ? AND state = 'pending'`,
+        [directiveId],
+      );
+      cancelledCount = Number(result.changes ?? 0);
+      const remaining = await ctx.db.all<{ state: string }>(
+        `SELECT state FROM upgrade_directive_targets WHERE directive_id = ?`,
+        [directiveId],
+      );
+      for (const r of remaining) {
+        if (r.state in leftAlone) (leftAlone as any)[r.state] = (leftAlone as any)[r.state] + 1;
+      }
+    });
+
+    res.json({ directiveId, cancelledCount, leftAlone });
   });
 
   return router;

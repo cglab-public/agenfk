@@ -155,7 +155,7 @@ const SCHEMA_PG = `
   CREATE TABLE IF NOT EXISTS upgrade_directive_targets (
     directive_id TEXT NOT NULL,
     installation_id TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'pending',
+    state TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | succeeded | failed | cancelled
     attempted_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
     result_version TEXT,

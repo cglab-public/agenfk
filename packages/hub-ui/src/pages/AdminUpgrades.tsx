@@ -13,7 +13,7 @@ import { api } from '../api';
 
 interface UpgradeTarget {
   installationId: string;
-  state: 'pending' | 'in_progress' | 'succeeded' | 'failed';
+  state: 'pending' | 'in_progress' | 'succeeded' | 'failed' | 'cancelled';
   attemptedAt: string | null;
   finishedAt: string | null;
   resultVersion: string | null;
@@ -31,7 +31,7 @@ interface Directive {
   createdByEmail: string | null;
   requestIp: string | null;
   expiresAt: string | null;
-  progress: { pending: number; in_progress: number; succeeded: number; failed: number };
+  progress: { pending: number; in_progress: number; succeeded: number; failed: number; cancelled: number };
   targets: UpgradeTarget[];
 }
 
@@ -81,6 +81,25 @@ export function AdminUpgrades() {
       })),
     [apiKeysQ.data],
   );
+
+  const cancelMut = useMutation({
+    mutationFn: async (directiveId: string) => {
+      const r = await api.post(`/v1/admin/upgrade/${directiveId}/cancel`, {});
+      return r.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
+    },
+    onError: (e: any) => {
+      const data = e?.response?.data;
+      setError(data?.error ?? e?.message ?? 'Failed to cancel directive');
+    },
+  });
+
+  const onCancel = (d: Directive) => {
+    if (!confirm(`Cancel ${d.progress.pending} pending upgrade${d.progress.pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
+    cancelMut.mutate(d.directiveId);
+  };
 
   const issueMut = useMutation({
     mutationFn: async (body: { targetVersion: string; scope: { type: 'all' | 'installation'; installationId?: string }; confirmDowngrade?: boolean }) => {
@@ -242,11 +261,11 @@ export function AdminUpgrades() {
           const isOpen = expanded.has(d.directiveId);
           return (
             <div key={d.directiveId} className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
-              <button
-                onClick={() => toggleExpanded(d.directiveId)}
-                className="w-full flex items-center justify-between px-3 py-2 text-left"
-              >
-                <span className="flex items-center gap-2 min-w-0">
+              <div className="w-full flex items-center justify-between px-3 py-2">
+                <button
+                  onClick={() => toggleExpanded(d.directiveId)}
+                  className="flex items-center gap-2 min-w-0 text-left flex-1"
+                >
                   {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                   <span className="font-mono text-[12px] text-slate-700 dark:text-slate-200">v{d.targetVersion}</span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -256,14 +275,23 @@ export function AdminUpgrades() {
                     {' · '}{new Date(d.createdAt).toLocaleString()}
                     {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>
-                </span>
-                <span className="flex items-center gap-1.5 text-[11px]">
+                </button>
+                <span className="flex items-center gap-1.5 text-[11px] shrink-0">
                   {d.progress.pending > 0 && <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{d.progress.pending} pending</span>}
                   {d.progress.in_progress > 0 && <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">{d.progress.in_progress} running</span>}
                   {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">{d.progress.succeeded} ok</span>}
                   {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300">{d.progress.failed} failed</span>}
+                  {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{d.progress.cancelled} cancelled</span>}
+                  {d.progress.pending > 0 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onCancel(d); }}
+                      disabled={cancelMut.isPending}
+                      className="ml-1 px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-700 text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/30 disabled:opacity-50"
+                      title="Cancel pending targets on this directive"
+                    >Cancel pending</button>
+                  )}
                 </span>
-              </button>
+              </div>
               {isOpen && d.targets.length > 0 && (
                 <div className="border-t border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
                   {d.targets.map(t => (
@@ -299,6 +327,7 @@ function StatePill({ state }: { state: UpgradeTarget['state'] }) {
   const cls = state === 'succeeded' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
     : state === 'failed' ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
     : state === 'in_progress' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+    : state === 'cancelled' ? 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 line-through'
     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300';
   return <span className={`px-1.5 py-0.5 rounded ${cls}`}>{state}</span>;
 }

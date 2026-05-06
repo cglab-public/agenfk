@@ -145,7 +145,7 @@ describe('Hub upgrade-directive API', () => {
       const d = r.body.directives[0];
       expect(d.directiveId).toBe(directiveId);
       expect(d.targetVersion).toBe('0.3.1');
-      expect(d.progress).toEqual({ pending: 2, in_progress: 0, succeeded: 0, failed: 0 });
+      expect(d.progress).toEqual({ pending: 2, in_progress: 0, succeeded: 0, failed: 0, cancelled: 0 });
       expect(d.targets.map((t: any) => t.installationId).sort()).toEqual(['inst-1', 'inst-2']);
     });
   });
