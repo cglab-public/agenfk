@@ -1,7 +1,7 @@
 {
   "name": "ui",
   "private": true,
-  "version": "0.3.0-beta.27",
+  "version": "0.3.0-beta.28",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@agenfk/flow-editor": "*",
+    "@agenfk/flow-editor": "0.3.0-beta.28",
     "@tailwindcss/postcss": "^4.2.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.90.21",
