@@ -7,6 +7,7 @@ import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases } from '../services/githubReleases.js';
+import { compareSemver } from '../util/semver.js';
 
 interface AuthConfigRow {
   org_id: string;
@@ -733,30 +734,6 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   return router;
-}
-
-/**
- * Lightweight semver comparator (returns negative/zero/positive) for the
- * downgrade-detection guard. Handles the 0.x.y[-prerelease] shape the agenfk
- * release pipeline emits; falls back to lexical comparison for anything we
- * can't parse, which is conservative — unknown shapes won't trigger a false
- * downgrade-warning.
- */
-function compareSemver(a: string, b: string): number {
-  const parse = (s: string) => {
-    const m = s.replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-    if (!m) return null;
-    return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), pre: m[4] ?? '' };
-  };
-  const pa = parse(a); const pb = parse(b);
-  if (!pa || !pb) return a.localeCompare(b);
-  if (pa.major !== pb.major) return pa.major - pb.major;
-  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
-  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
-  // Per semver: a release is greater than its prerelease ("1.0.0" > "1.0.0-rc.1").
-  if (pa.pre === '' && pb.pre !== '') return 1;
-  if (pa.pre !== '' && pb.pre === '') return -1;
-  return pa.pre.localeCompare(pb.pre);
 }
 
 /**
