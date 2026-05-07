@@ -62,7 +62,10 @@ export async function createHubApp(
   app.use(cookieParser());
 
   app.get('/healthz', (_req: Request, res: Response) => {
-    res.json({ ok: true, version: HUB_VERSION });
+    // `service` lets spokes verify they're pointing at an agenfk hub (and not
+    // some unrelated server that happens to return JSON 200 at /healthz).
+    // Used by `agenfk hub repoint` before swapping the local hub config.
+    res.json({ ok: true, service: 'agenfk-hub', version: HUB_VERSION });
   });
 
   app.use('/v1', eventsRouter(ctx));

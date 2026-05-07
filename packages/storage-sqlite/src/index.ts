@@ -129,6 +129,25 @@ export class SQLiteStorageProvider implements StorageProvider {
     return row.c;
   }
 
+  /**
+   * Rewrite the embedded `orgId` in queued outbox payloads from `from` to
+   * `to`. Used by `agenfk hub repoint` after the hub admin renames the org —
+   * without this, queued events keep the stale orgId and get rejected by the
+   * renamed hub. Uses sqlite's json1 functions so we don't have to round-trip
+   * each payload through JS.
+   * Returns the number of rows updated.
+   */
+  hubOutboxRewriteOrgId(from: string, to: string): number {
+    if (typeof to !== 'string' || to.length === 0) {
+      throw new Error('hubOutboxRewriteOrgId: target orgId must be a non-empty string');
+    }
+    if (from === to) return 0;
+    const result = this.database.prepare(
+      "UPDATE hub_outbox SET payload = json_set(payload, '$.orgId', ?) WHERE json_extract(payload, '$.orgId') = ?"
+    ).run(to, from);
+    return Number(result.changes ?? 0);
+  }
+
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
   private migrateFlowsTable(): void {
     const columns = (

@@ -82,4 +82,49 @@ describe('SQLiteStorageProvider hub_outbox', () => {
     storage.hubOutboxDelete(['a']);
     expect(storage.hubOutboxCount()).toBe(1);
   });
+
+  // ── hubOutboxRewriteOrgId — used by `agenfk hub repoint` when an admin
+  //    renames the hub org. Queued events have the old orgId baked into their
+  //    JSON; without this rewrite they would all be rejected by the renamed
+  //    hub (which compares event.orgId to api_key.orgId server-side).
+  describe('hubOutboxRewriteOrgId', () => {
+    it('rewrites orgId in matching payloads, leaves non-matching ones alone, preserves other fields', () => {
+      storage.hubOutboxAppend('e1', '2026-05-03T10:00:00Z', JSON.stringify({ eventId: 'e1', orgId: 'staging', type: 'foo', payload: { k: 1 } }));
+      storage.hubOutboxAppend('e2', '2026-05-03T10:00:01Z', JSON.stringify({ eventId: 'e2', orgId: 'staging', type: 'bar' }));
+      storage.hubOutboxAppend('e3', '2026-05-03T10:00:02Z', JSON.stringify({ eventId: 'e3', orgId: 'other',   type: 'baz' }));
+
+      const updated = storage.hubOutboxRewriteOrgId('staging', 'cglab');
+      expect(updated).toBe(2);
+
+      const rows = storage.hubOutboxPeek();
+      const byId = Object.fromEntries(rows.map(r => [r.event_id, JSON.parse(r.payload)]));
+      expect(byId.e1.orgId).toBe('cglab');
+      expect(byId.e2.orgId).toBe('cglab');
+      expect(byId.e3.orgId).toBe('other');
+      // Non-org fields preserved.
+      expect(byId.e1.type).toBe('foo');
+      expect(byId.e1.payload).toEqual({ k: 1 });
+      expect(byId.e1.eventId).toBe('e1');
+    });
+
+    it('returns 0 and does not mutate when from === to', () => {
+      storage.hubOutboxAppend('e1', '2026-05-03T10:00:00Z', JSON.stringify({ orgId: 'a' }));
+      const before = storage.hubOutboxPeek()[0].payload;
+      expect(storage.hubOutboxRewriteOrgId('a', 'a')).toBe(0);
+      expect(storage.hubOutboxPeek()[0].payload).toBe(before);
+    });
+
+    it('returns 0 when no rows match the from id', () => {
+      storage.hubOutboxAppend('e1', '2026-05-03T10:00:00Z', JSON.stringify({ orgId: 'x' }));
+      expect(storage.hubOutboxRewriteOrgId('nope', 'cglab')).toBe(0);
+      expect(JSON.parse(storage.hubOutboxPeek()[0].payload).orgId).toBe('x');
+    });
+
+    it('refuses an empty/invalid target orgId', () => {
+      storage.hubOutboxAppend('e1', '2026-05-03T10:00:00Z', JSON.stringify({ orgId: 'staging' }));
+      expect(() => storage.hubOutboxRewriteOrgId('staging', '')).toThrow();
+      // Original untouched.
+      expect(JSON.parse(storage.hubOutboxPeek()[0].payload).orgId).toBe('staging');
+    });
+  });
 });

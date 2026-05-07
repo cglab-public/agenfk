@@ -256,6 +256,110 @@ export function registerHubCommands(program: Command): void {
     });
 
   hub
+    .command('repoint')
+    .description('Re-point this installation at a new Hub URL and/or org id (e.g. after a hub admin renames the org during a staging→prod move). Verifies the new endpoint is an Agenfk Hub before swapping the local config; rewrites the local outbox so queued events use the new orgId.')
+    .option('--url <url>', 'New hub base URL')
+    .option('--org-id <orgId>', 'New org id (required when the hub admin renamed it)')
+    .option('--token <token>', 'Replacement API token (rare; carry the existing token over by default)')
+    .option('--no-restart', 'Do not restart the local API server after a successful repoint')
+    .action(async (opts: { url?: string; orgId?: string; token?: string; restart?: boolean }) => {
+      const existing = readHubConfig();
+      if (!existing) {
+        console.error(chalk.red('No existing hub config at ~/.agenfk/hub.json. Run `agenfk hub login` or `agenfk hub join <invite>` first.'));
+        process.exit(1);
+        return;
+      }
+      const candidate: HubConfig = {
+        url: opts.url ? String(opts.url).replace(/\/$/, '') : existing.url,
+        token: opts.token ? String(opts.token) : existing.token,
+        orgId: opts.orgId ? String(opts.orgId) : existing.orgId,
+      };
+      if (candidate.url === existing.url && candidate.orgId === existing.orgId && candidate.token === existing.token) {
+        console.log(chalk.gray('Nothing to change — supply at least one of --url, --org-id, --token.'));
+        return;
+      }
+
+      try {
+        const { data, status } = await axios.get(`${candidate.url}/healthz`, { timeout: 10_000 });
+        if (status !== 200 || !data || data.service !== 'agenfk-hub') {
+          console.error(chalk.red(`Refusing repoint: ${candidate.url}/healthz did not identify as agenfk-hub (got service=${data?.service ?? 'absent'}).`));
+          process.exit(1);
+          return;
+        }
+      } catch (e: any) {
+        console.error(chalk.red(`Refusing repoint: cannot reach ${candidate.url}/healthz — ${e?.message ?? e}`));
+        process.exit(1);
+        return;
+      }
+
+      try {
+        const { data } = await axios.get(`${candidate.url}/v1/ping`, {
+          headers: { Authorization: `Bearer ${candidate.token}`, 'X-Installation-Id': 'cli-repoint' },
+          timeout: 10_000,
+        });
+        if (data?.orgId !== candidate.orgId) {
+          console.error(chalk.red(`Refusing repoint: hub reports orgId=${data?.orgId} but you asked for orgId=${candidate.orgId}. Pass --org-id with the value the hub now uses.`));
+          process.exit(1);
+          return;
+        }
+      } catch (e: any) {
+        const msg = e?.response?.data?.error ?? e?.message;
+        console.error(chalk.red(`Refusing repoint: ${candidate.url}/v1/ping failed (${msg}). Is your token still valid for the new hub?`));
+        process.exit(1);
+        return;
+      }
+
+      if (candidate.orgId !== existing.orgId) {
+        const verifyToken = readVerifyToken();
+        if (!verifyToken) {
+          console.warn(chalk.yellow('No verify-token — skipping local outbox rewrite. After `agenfk up`, run `agenfk hub repoint --org-id ' + candidate.orgId + '` again to drain stragglers.'));
+        } else {
+          try {
+            const { data } = await axios.post(
+              `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
+              { from: existing.orgId, to: candidate.orgId },
+              { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10_000 },
+            );
+            console.log(chalk.green(`✓ Rewrote ${data?.rewritten ?? 0} queued outbox event(s) from org "${existing.orgId}" to "${candidate.orgId}".`));
+          } catch (e: any) {
+            console.warn(chalk.yellow(`Could not rewrite local outbox (${e?.message ?? e}). After \`agenfk up\`, run \`agenfk hub repoint --org-id ${candidate.orgId}\` again to drain stragglers.`));
+          }
+        }
+      }
+
+      writeHubConfig(candidate);
+      console.log(chalk.green(`✓ Repointed to ${candidate.url} (org=${candidate.orgId}).`));
+
+      if (opts.restart === false) {
+        console.log(chalk.gray('Skipping restart per --no-restart. Run `agenfk down && agenfk up` when convenient.'));
+        return;
+      }
+      let servicesRunning = false;
+      try {
+        await axios.get(`${getApiUrl()}/`, { timeout: 2_000 });
+        servicesRunning = true;
+      } catch { /* not running — leave alone */ }
+      if (!servicesRunning) {
+        console.log(chalk.gray('Local API server is not running; the next `agenfk up` will pick up the new hub config.'));
+        return;
+      }
+      const rootDir = path.resolve(__dirname, '../../../..');
+      console.log(chalk.blue('Restarting local API server so it picks up the new hub config...'));
+      try {
+        execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
+      } catch { /* may already be down */ }
+      try {
+        const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
+          cwd: rootDir, detached: true, stdio: 'inherit',
+        });
+        start.unref();
+        console.log(chalk.green('✓ Restarted local API server.'));
+      } catch (e: any) {
+        console.error(chalk.red(`Auto-restart failed: ${e?.message ?? e}. Run \`agenfk up\` manually.`));
+      }
+    });
+
+  hub
     .command('logout')
     .description('Disconnect from the Hub (preserves the local outbox)')
     .action(() => {
