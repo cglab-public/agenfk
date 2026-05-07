@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle } from 'lucide-react';
 
 function Logo({ version }: { version?: string | null }) {
   return (
@@ -90,7 +90,46 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       </aside>
-      <main className="flex-1 min-w-0 p-6 lg:p-8">{children}</main>
+      <main className="flex-1 min-w-0 p-6 lg:p-8">
+        {me.data?.role === 'admin' && <PendingEnvOrgIdBanner />}
+        {children}
+      </main>
+    </div>
+  );
+}
+
+function PendingEnvOrgIdBanner() {
+  const qc = useQueryClient();
+  const pending = useQuery<{ pendingEnvOrgId: string | null }>({
+    queryKey: ['system-pending'],
+    queryFn: async () => (await api.get('/v1/admin/system/pending')).data,
+    // Refresh on focus so the banner clears across sessions once acked.
+    refetchOnWindowFocus: true,
+    // 401s on non-admin shouldn't keep retrying.
+    retry: false,
+  });
+  const ack = useMutation({
+    mutationFn: () => api.post('/v1/admin/system/pending/ack', {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['system-pending'] }),
+  });
+  const value = pending.data?.pendingEnvOrgId;
+  if (!value) return null;
+  return (
+    <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 p-3">
+      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-300 mt-0.5 shrink-0" />
+      <div className="flex-1 text-sm text-amber-900 dark:text-amber-100">
+        <div className="font-semibold">Action required: update <code className="font-mono">AGENFK_HUB_ORG_ID</code></div>
+        <p className="mt-0.5 text-amber-800 dark:text-amber-200">
+          Set <code className="font-mono">AGENFK_HUB_ORG_ID={value}</code> in your hub deployment manifest before the next restart. Otherwise the hub will boot in maintenance mode on the wrong env.
+        </p>
+      </div>
+      <button
+        className="px-3 py-1.5 rounded-lg bg-white dark:bg-amber-950 border border-amber-300 dark:border-amber-700 text-xs font-semibold text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900 disabled:opacity-50"
+        disabled={ack.isPending}
+        onClick={() => ack.mutate()}
+      >
+        I've updated my deployment
+      </button>
     </div>
   );
 }

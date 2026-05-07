@@ -1834,6 +1834,24 @@ app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
   res.json(hubFlusher.getStatus());
 }));
 
+// ── Hub outbox org rewrite (used by `agenfk hub repoint`) ───────────────────
+// When the hub admin renames the org (e.g. staging→cglab), every queued event
+// in the local outbox still has the old orgId baked into its JSON. The
+// renamed hub rejects them on orgId mismatch. This endpoint rewrites them in
+// place, atomically, via the storage layer's json1-backed UPDATE.
+app.post('/internal/hub/rewrite-outbox-org', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub outbox rewrite requires internal token.' });
+  }
+  const from = req.body?.from;
+  const to = req.body?.to;
+  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
+    return res.status(400).json({ error: 'Body must be { from: string, to: string } with non-empty values.' });
+  }
+  const rewritten = (storage as any).hubOutboxRewriteOrgId(from, to);
+  res.json({ ok: true, rewritten });
+}));
+
 // ── Pause / Resume ───────────────────────────────────────────────────────────
 
 app.post("/items/:id/pause", asyncHandler(async (req: any, res: any) => {

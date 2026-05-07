@@ -10,6 +10,7 @@ import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } from './pages/Admin';
 import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
+import { AdminOrg } from './pages/AdminOrg';
 import { Layout } from './components/Layout';
 
 function useMe() {
@@ -58,6 +59,7 @@ export function App() {
         <Route path="flows" element={<AdminFlows />} />
         <Route path="upgrades" element={<AdminUpgrades />} />
         <Route path="installations" element={<AdminInstallations />} />
+        <Route path="org" element={<AdminOrg />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

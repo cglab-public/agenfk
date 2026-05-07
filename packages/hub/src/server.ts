@@ -8,6 +8,7 @@ import { eventsRouter } from './routes/events.js';
 import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
+import { orgRenameRouter } from './routes/orgRename.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { queriesRouter } from './routes/queries.js';
@@ -38,6 +39,86 @@ export interface HubServerContext {
   config: HubServerConfig;
 }
 
+/**
+ * Minimal Express surface served when the boot-time consistency check
+ * detects an env↔DB org-id mismatch. Every route returns the same
+ * mismatch payload — HTML for browser hits, JSON for API/healthz — so an
+ * admin sees the problem in the browser without having to dig logs and
+ * downstream tooling sees an unhealthy /healthz.
+ */
+function buildMaintenanceApp(
+  args: { envOrgId: string; dbOrgIds: string[]; db: DB; config: HubServerConfig },
+): { app: Express; ctx: HubServerContext } {
+  const { envOrgId, dbOrgIds, db, config } = args;
+  console.error(
+    `[HUB] BOOT REFUSED — AGENFK_HUB_ORG_ID="${envOrgId}" does not match any org in the database (${dbOrgIds.join(', ')}). ` +
+    `Serving maintenance page only.`,
+  );
+  const app = express();
+  app.use(express.json({ limit: '10mb' }));
+
+  const safeEnv = String(envOrgId).replace(/[<>&"']/g, '');
+  const safeDb = dbOrgIds.map(s => String(s).replace(/[<>&"']/g, ''));
+  const html = `<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agenfk Hub — configuration mismatch</title>
+  <style>
+    body { font: 16px/1.5 -apple-system, system-ui, sans-serif; max-width: 720px; margin: 4rem auto; padding: 0 1rem; color: #222; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.5rem; }
+    code, pre { background: #f4f4f5; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.95em; }
+    pre { padding: 0.75rem 1rem; overflow-x: auto; }
+    .banner { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1.25rem; }
+    ul { padding-left: 1.25rem; }
+    .muted { color: #555; font-size: 0.9rem; }
+  </style>
+</head><body>
+  <div class="banner"><strong>Agenfk Hub is in maintenance mode.</strong> Configuration mismatch — see below.</div>
+  <h1>AGENFK_HUB_ORG_ID does not match the database</h1>
+  <p>The hub process started with <code>AGENFK_HUB_ORG_ID=${safeEnv}</code>, but the database contains the following org id(s):</p>
+  <ul>${safeDb.map(id => `<li><code>${id}</code></li>`).join('')}</ul>
+  <p>This usually happens after an admin renames the org via the admin UI without updating the deployment manifest.</p>
+  <h2>Fix</h2>
+  <p>Pick one of these and restart the hub:</p>
+  <ol>
+    <li>Update your deployment to <code>AGENFK_HUB_ORG_ID=${safeDb[0] ?? ''}</code> (the value carried by the database) — this is almost always what you want.</li>
+    <li>Or restore the database from before the rename and continue using <code>${safeEnv}</code>.</li>
+  </ol>
+  <p class="muted">No real hub functionality is exposed while this page is shown. <code>/healthz</code> reports HTTP 503 so deployment health checks see the unhealthy state.</p>
+</body></html>`;
+
+  app.get('/healthz', (_req: Request, res: Response) => {
+    res.status(503).json({
+      ok: false,
+      service: 'agenfk-hub',
+      mismatch: true,
+      envOrgId,
+      dbOrgIds,
+      version: HUB_VERSION,
+    });
+  });
+
+  // Catch-all: same payload for every other route. Detect HTML preference
+  // for browser hits, otherwise return a structured JSON error so spokes /
+  // automation see something machine-readable.
+  app.use((req: Request, res: Response) => {
+    const accept = String(req.headers.accept ?? '');
+    if (req.method === 'GET' && accept.includes('text/html')) {
+      res.status(503).type('html').send(html);
+    } else {
+      res.status(503).json({
+        error: 'Agenfk Hub is in maintenance mode: AGENFK_HUB_ORG_ID does not match any org in the database.',
+        mismatch: true,
+        envOrgId,
+        dbOrgIds,
+      });
+    }
+  });
+
+  return { app, ctx: { db, config } };
+}
+
 export async function createHubApp(
   config: HubServerConfig & { backend?: HubBackend; pgUrl?: string; db?: HubDb },
 ): Promise<{ app: Express; ctx: HubServerContext }> {
@@ -49,6 +130,22 @@ export async function createHubApp(
     backend: config.backend,
     pgUrl: config.pgUrl,
   });
+
+  // Boot-time env-var guard. If the DB already contains org rows but none
+  // matches the env-supplied defaultOrgId, the operator probably renamed
+  // the org via the admin UI but forgot to update AGENFK_HUB_ORG_ID in the
+  // deployment manifest. Rather than crash (logs in cloud envs are a hassle
+  // to read) or silently resurrect a phantom org row, we boot a minimal
+  // "maintenance mode" Express app whose every route serves a self-explanatory
+  // mismatch page so the admin can see the problem in the browser and fix it.
+  let dbOrgIds: string[] = [];
+  try {
+    const existing = await db.all<{ id: string }>('SELECT id FROM orgs');
+    dbOrgIds = existing.map(r => r.id);
+  } catch { /* table may not exist on a brand-new DB; treat as empty */ }
+  if (dbOrgIds.length > 0 && !dbOrgIds.includes(config.defaultOrgId)) {
+    return buildMaintenanceApp({ envOrgId: config.defaultOrgId, dbOrgIds, db, config });
+  }
 
   // Default org row (single-tenant v1).
   await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
@@ -62,7 +159,10 @@ export async function createHubApp(
   app.use(cookieParser());
 
   app.get('/healthz', (_req: Request, res: Response) => {
-    res.json({ ok: true, version: HUB_VERSION });
+    // `service` lets spokes verify they're pointing at an agenfk hub (and not
+    // some unrelated server that happens to return JSON 200 at /healthz).
+    // Used by `agenfk hub repoint` before swapping the local hub config.
+    res.json({ ok: true, service: 'agenfk-hub', version: HUB_VERSION });
   });
 
   app.use('/v1', eventsRouter(ctx));
@@ -72,6 +172,7 @@ export async function createHubApp(
   app.use('/auth/entra', entraRouter(ctx));
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
+  app.use('/v1/admin', orgRenameRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
   startRollupTimer(db);

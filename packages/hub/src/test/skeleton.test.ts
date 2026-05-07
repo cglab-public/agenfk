@@ -118,6 +118,24 @@ describe('createHubApp', () => {
     expect(apiRes.text).not.toContain('data-test-spa');
   });
 
+  it('healthz announces service: "agenfk-hub" so spokes can verify the endpoint type', async () => {
+    const { app, ctx } = await createHubApp({
+      dbPath: TEST_DB,
+      secretKey: '0'.repeat(64),
+      sessionSecret: 'sess',
+      defaultOrgId: 'org',
+    });
+    teardown = async () => { await ctx.db.close(); };
+
+    const supertest = (await import('supertest')).default;
+    const res = await supertest(app).get('/healthz');
+    expect(res.status).toBe(200);
+    expect(res.body.service).toBe('agenfk-hub');
+    // Existing fields still present (back-compat).
+    expect(res.body.ok).toBe(true);
+    expect(typeof res.body.version).toBe('string');
+  });
+
   it('healthz reports the live hub package version (not a hardcoded literal)', async () => {
     const { app, ctx } = await createHubApp({
       dbPath: TEST_DB,
