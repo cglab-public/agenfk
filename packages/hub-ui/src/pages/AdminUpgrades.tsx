@@ -25,7 +25,7 @@ interface UpgradeTarget {
 interface Directive {
   directiveId: string;
   targetVersion: string;
-  scope: { type: 'all' | 'installation'; installationId?: string | null };
+  scope: { type: 'all' | 'installation' | 'installations'; installationId?: string | null };
   createdAt: string;
   createdByUserId: string | null;
   createdByEmail: string | null;
@@ -41,13 +41,15 @@ interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | n
 
 import { canIssueDirective } from './adminUpgradesGate';
 import { installationDisplayName } from './installationDisplayName';
+import { filterInstallationOptions } from './filterInstallationOptions';
 
 export function AdminUpgrades() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [targetVersion, setTargetVersion] = useState('');
-  const [scopeMode, setScopeMode] = useState<'all' | 'installation'>('all');
-  const [scopeInstallationId, setScopeInstallationId] = useState<string>('');
+  const [scopeMode, setScopeMode] = useState<'all' | 'installations'>('all');
+  const [selectedInstallationIds, setSelectedInstallationIds] = useState<Set<string>>(new Set());
+  const [installationFilter, setInstallationFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -102,7 +104,7 @@ export function AdminUpgrades() {
   };
 
   const issueMut = useMutation({
-    mutationFn: async (body: { targetVersion: string; scope: { type: 'all' | 'installation'; installationId?: string }; confirmDowngrade?: boolean }) => {
+    mutationFn: async (body: { targetVersion: string; scope: { type: 'all' | 'installation' | 'installations'; installationId?: string; installationIds?: string[] }; confirmDowngrade?: boolean }) => {
       const r = await api.post('/v1/admin/upgrade', body);
       return r.data;
     },
@@ -110,7 +112,8 @@ export function AdminUpgrades() {
       setShowForm(false);
       setTargetVersion('');
       setScopeMode('all');
-      setScopeInstallationId('');
+      setSelectedInstallationIds(new Set());
+      setInstallationFilter('');
       setError(null);
       qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
     },
@@ -152,16 +155,35 @@ export function AdminUpgrades() {
 
   const onSubmit = () => {
     setError(null);
-    const scope = scopeMode === 'all'
-      ? { type: 'all' as const }
-      : { type: 'installation' as const, installationId: scopeInstallationId };
-    if (scope.type === 'installation' && !scope.installationId) {
-      setError('Pick an installation when scoping to one');
-      return;
+    const ids = Array.from(selectedInstallationIds);
+    let scope: { type: 'all' | 'installation' | 'installations'; installationId?: string; installationIds?: string[] };
+    if (scopeMode === 'all') {
+      scope = { type: 'all' };
+    } else {
+      if (ids.length === 0) {
+        setError('Pick at least one installation');
+        return;
+      }
+      // Single-pick optimisation: send the legacy single-installation shape so
+      // the directive's audit label reads "installation" instead of "installations".
+      scope = ids.length === 1
+        ? { type: 'installation', installationId: ids[0] }
+        : { type: 'installations', installationIds: ids };
     }
-    const targetCount = scope.type === 'all' ? installationOptions.length : 1;
+    const targetCount = scope.type === 'all' ? installationOptions.length : ids.length || 1;
     if (!confirm(`This will upgrade ${targetCount} installation${targetCount === 1 ? '' : 's'} to v${targetVersion}. Continue?`)) return;
     issueMut.mutate({ targetVersion, scope });
+  };
+
+  const filteredInstallations = useMemo(
+    () => filterInstallationOptions(installationOptions, installationFilter),
+    [installationOptions, installationFilter],
+  );
+
+  const toggleInstallation = (id: string) => {
+    const next = new Set(selectedInstallationIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelectedInstallationIds(next);
   };
 
   const toggleExpanded = (id: string) => {
@@ -240,21 +262,60 @@ export function AdminUpgrades() {
                 className={`text-[12px] px-2 py-1 rounded ${scopeMode === 'all' ? 'bg-indigo-600 text-white' : 'border border-slate-300 dark:border-slate-600'}`}
               >All ({installationOptions.length})</button>
               <button
-                onClick={() => setScopeMode('installation')}
-                className={`text-[12px] px-2 py-1 rounded ${scopeMode === 'installation' ? 'bg-indigo-600 text-white' : 'border border-slate-300 dark:border-slate-600'}`}
-              >Single installation</button>
+                onClick={() => setScopeMode('installations')}
+                className={`text-[12px] px-2 py-1 rounded ${scopeMode === 'installations' ? 'bg-indigo-600 text-white' : 'border border-slate-300 dark:border-slate-600'}`}
+              >Selected ({selectedInstallationIds.size})</button>
             </div>
-            {scopeMode === 'installation' && (
-              <select
-                value={scopeInstallationId}
-                onChange={(e) => setScopeInstallationId(e.target.value)}
-                className="mt-2 w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800"
-              >
-                <option value="">Pick an installation…</option>
-                {installationOptions.map(o => (
-                  <option key={o.id} value={o.id}>{o.label}</option>
-                ))}
-              </select>
+            {scopeMode === 'installations' && (
+              <div className="mt-2 space-y-2">
+                <input
+                  type="text"
+                  value={installationFilter}
+                  onChange={(e) => setInstallationFilter(e.target.value)}
+                  placeholder="Filter by user, email, or git name…"
+                  className="w-full px-2 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-800"
+                />
+                {selectedInstallationIds.size > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {Array.from(selectedInstallationIds).map(id => {
+                      const opt = installationOptions.find(o => o.id === id);
+                      const label = opt?.label ?? id;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => toggleInstallation(id)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900/60"
+                          title="Remove"
+                        >
+                          {label} <span aria-hidden>×</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="max-h-48 overflow-y-auto rounded border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredInstallations.length === 0 ? (
+                    <div className="px-2 py-1.5 text-[11px] text-slate-400">No installations match the filter.</div>
+                  ) : filteredInstallations.map(o => {
+                    const checked = selectedInstallationIds.has(o.id);
+                    return (
+                      <label
+                        key={o.id}
+                        className="flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleInstallation(o.id)}
+                          className="rounded"
+                        />
+                        <span className="truncate">{o.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
           {error && (
@@ -290,7 +351,9 @@ export function AdminUpgrades() {
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                     {d.scope.type === 'all'
                       ? 'all installations'
-                      : `installation ${installationDisplayName(apiKeysQ.data ?? [], d.scope.installationId ?? '')}`}
+                      : d.scope.type === 'installation'
+                        ? `installation ${installationDisplayName(apiKeysQ.data ?? [], d.scope.installationId ?? '')}`
+                        : `${d.targets.length} installations`}
                     {' · '}{new Date(d.createdAt).toLocaleString()}
                     {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>

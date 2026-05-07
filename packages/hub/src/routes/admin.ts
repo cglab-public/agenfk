@@ -593,11 +593,17 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (typeof targetVersion !== 'string' || !SEMVER_TAG_RE.test(targetVersion)) {
       return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
     }
-    if (!scope || (scope.type !== 'all' && scope.type !== 'installation')) {
-      return res.status(400).json({ error: "scope.type must be 'all' or 'installation'" });
+    if (!scope || (scope.type !== 'all' && scope.type !== 'installation' && scope.type !== 'installations')) {
+      return res.status(400).json({ error: "scope.type must be 'all', 'installation', or 'installations'" });
     }
     if (scope.type === 'installation' && (typeof scope.installationId !== 'string' || !scope.installationId)) {
       return res.status(400).json({ error: 'scope.installationId required when scope.type=installation' });
+    }
+    if (scope.type === 'installations') {
+      if (!Array.isArray(scope.installationIds) || scope.installationIds.length === 0
+          || !scope.installationIds.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
+        return res.status(400).json({ error: 'scope.installationIds must be a non-empty array of strings when scope.type=installations' });
+      }
     }
 
     const releaseExists = ctx.config.releaseExists ?? defaultReleaseExists;
@@ -614,13 +620,27 @@ export function adminRouter(ctx: HubServerContext): Router {
         'SELECT id, agenfk_version FROM installations WHERE org_id = ?',
         [orgId],
       );
-    } else {
+    } else if (scope.type === 'installation') {
       const inst = await ctx.db.get<Inst>(
         'SELECT id, agenfk_version FROM installations WHERE id = ? AND org_id = ?',
         [scope.installationId, orgId],
       );
       if (!inst) return res.status(404).json({ error: 'Installation not found in this org' });
       installations = [inst];
+    } else {
+      // 'installations' — subset of the fleet. Refuse the whole batch if any
+      // requested id is missing in this org so we never silently drop one.
+      const ids: string[] = scope.installationIds;
+      const placeholders = ids.map(() => '?').join(',');
+      installations = await ctx.db.all<Inst>(
+        `SELECT id, agenfk_version FROM installations WHERE org_id = ? AND id IN (${placeholders})`,
+        [orgId, ...ids],
+      );
+      if (installations.length !== ids.length) {
+        const found = new Set(installations.map(i => i.id));
+        const missing = ids.filter(id => !found.has(id));
+        return res.status(404).json({ error: 'One or more installations not found in this org', missing });
+      }
     }
 
     // Story 5: single-pending guard. Refuse if any in-scope installation
@@ -687,6 +707,10 @@ export function adminRouter(ctx: HubServerContext): Router {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           directiveId, orgId, targetVersion,
+          // scope_id captures the single id for the legacy 'installation' shape.
+          // For 'all' and 'installations' (subset) the actual targets live in
+          // upgrade_directive_targets — scope_id stays null and the
+          // directive's scope_type is the audit label.
           scope.type, scope.type === 'installation' ? scope.installationId : null,
           req.session!.userId ?? null,
           createdByEmail,

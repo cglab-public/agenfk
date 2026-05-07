@@ -129,6 +129,77 @@ describe('Hub upgrade-directive API', () => {
       );
       expect(targets.map((t: any) => t.installation_id)).toEqual(['inst-1']);
     });
+
+    it("creates a directive scoped to a subset of installations (scope.type='installations')", async () => {
+      // Seed a third installation so the subset is meaningfully smaller than 'all'.
+      await seedInstallation(ctx.db, 'org-a', 'inst-3');
+      const r = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({
+          targetVersion: '0.3.1',
+          scope: { type: 'installations', installationIds: ['inst-1', 'inst-3'] },
+        });
+      expect(r.status).toBe(201);
+      expect(r.body.targetCount).toBe(2);
+      const targets = await ctx.db.all(
+        'SELECT installation_id FROM upgrade_directive_targets WHERE directive_id = ?',
+        [r.body.directiveId],
+      );
+      const ids = targets.map((t: any) => t.installation_id).sort();
+      expect(ids).toEqual(['inst-1', 'inst-3']);
+    });
+
+    it("rejects scope.type='installations' with missing/empty installationIds (400)", async () => {
+      const missing = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '0.3.1', scope: { type: 'installations' } });
+      expect(missing.status).toBe(400);
+
+      const empty = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '0.3.1', scope: { type: 'installations', installationIds: [] } });
+      expect(empty.status).toBe(400);
+
+      const wrongType = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '0.3.1', scope: { type: 'installations', installationIds: 'inst-1' } });
+      expect(wrongType.status).toBe(400);
+    });
+
+    it("rejects scope.type='installations' when any id does not exist in the org (404)", async () => {
+      const r = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({
+          targetVersion: '0.3.1',
+          scope: { type: 'installations', installationIds: ['inst-1', 'does-not-exist'] },
+        });
+      expect(r.status).toBe(404);
+    });
+
+    it("scope.type='installations' applies the single-pending guard across the subset", async () => {
+      // First directive locks inst-1.
+      const first = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' } });
+      expect(first.status).toBe(201);
+
+      // Second directive targeting [inst-1, inst-2] must conflict on inst-1.
+      const second = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({
+          targetVersion: '0.3.0-beta.22',
+          scope: { type: 'installations', installationIds: ['inst-1', 'inst-2'] },
+        });
+      expect(second.status).toBe(409);
+      expect(second.body.conflicts.map((c: any) => c.installationId)).toContain('inst-1');
+    });
   });
 
   describe('GET /v1/admin/upgrade', () => {
