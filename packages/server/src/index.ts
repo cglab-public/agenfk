@@ -91,7 +91,7 @@ const CreateItemSchema = z.object({
   title: z.string(),
   description: z.string().optional(),
   parentId: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]).optional(),
+  status: z.string().optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -99,7 +99,7 @@ const UpdateItemSchema = z.object({
   id: z.string(),
   title: z.string().optional(),
   description: z.string().optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]).optional(),
+  status: z.string().optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   implementationPlan: z.string().optional(),
 });
@@ -107,7 +107,7 @@ const UpdateItemSchema = z.object({
 const ListItemsSchema = z.object({
   projectId: z.string(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
-  status: z.enum(["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]),
+  status: z.string().optional(),
   parentId: z.string().optional(),
   full: z.boolean().optional(), // Return full item objects if true
 });
@@ -185,7 +185,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             title: { type: "string" },
             description: { type: "string" },
             parentId: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
+            status: { type: "string", description: "Step name from the project's active flow. Call get_flow(projectId) for valid step names." },
             implementationPlan: { type: "string" },
           },
           required: ["projectId", "type", "title"],
@@ -193,14 +193,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes.",
+        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names.",
         inputSchema: {
           type: "object",
           properties: {
             id: { type: "string" },
             title: { type: "string" },
             description: { type: "string" },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
+            status: { type: "string", description: "Step name from the project's active flow. Call get_flow(projectId) for valid step names." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             implementationPlan: { type: "string" },
           },
@@ -209,16 +209,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "list_items",
-        description: "List items, filtering by project and status (required), plus optional type or parent.",
+        description: "List items in a project, optionally filtered by status, type, or parent. Omit status to sweep all in-flight items regardless of step. Status values are flow step names — call get_flow(projectId) for the valid set.",
         inputSchema: {
           type: "object",
           properties: {
             projectId: { type: "string", description: "The ID of the project." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
-            status: { type: "string", enum: ["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"] },
+            status: { type: "string", description: "Step name from the project's active flow. Omit to return all items. Call get_flow(projectId) for valid step names." },
             parentId: { type: "string" },
           },
-          required: ["projectId", "status"],
+          required: ["projectId"],
         },
       },
       {
