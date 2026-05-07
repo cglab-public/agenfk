@@ -168,6 +168,17 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (directive_id, installation_id)
   );
   CREATE INDEX IF NOT EXISTS idx_udt_install_state ON upgrade_directive_targets(installation_id, state);
+
+  -- Hub-wide key/value scratch space. Used today by the org-rename flow to
+  -- persist the "you still need to update AGENFK_HUB_ORG_ID" banner across
+  -- page loads/sessions until an admin acks it. Intentionally generic so
+  -- future operator-mode features (e.g. "pending DB migration", "cert
+  -- rotation due") can reuse the same row store.
+  CREATE TABLE IF NOT EXISTS system_state (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 class SqliteAdapter implements HubDb {
