@@ -170,6 +170,12 @@ const SCHEMA_PG = `
     value TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  -- First-run admin bootstrap. See packages/hub/src/auth/bootstrapToken.ts.
+  CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+    token TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
 `;
 
 /**

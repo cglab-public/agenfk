@@ -179,6 +179,14 @@ const SCHEMA_SQLITE = `
     value TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- First-run admin bootstrap. Single-use UUIDv4 generated on the first
+  -- boot of an empty install, deleted in the same transaction that
+  -- creates the initial admin (see /setup/initial-admin route).
+  CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+    token TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `;
 
 class SqliteAdapter implements HubDb {

@@ -11,6 +11,7 @@ import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
+import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { startRollupTimer } from './rollup.js';
@@ -151,6 +152,25 @@ export async function createHubApp(
   await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
   // Default auth_config row for the default org.
   await db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', [config.defaultOrgId]);
+
+  // First-run admin bootstrap token. Logged once per boot (re-logged on
+  // restart while setup is still pending) so the operator can paste it into
+  // the Setup UI. Returns null once a user already exists, in which case
+  // we say nothing.
+  const bootstrapToken = await ensureBootstrapToken(db);
+  if (bootstrapToken) {
+    const banner = [
+      '╔══════════════════════════════════════════════════════════════════════╗',
+      '║  AgEnFK Hub — first-run setup                                        ║',
+      '║  Open the hub in your browser, click Setup, and paste this token:    ║',
+      '║                                                                      ║',
+      `║      ${bootstrapToken.padEnd(62)}  ║`,
+      '║                                                                      ║',
+      '║  This token works exactly once. Do not share it.                     ║',
+      '╚══════════════════════════════════════════════════════════════════════╝',
+    ].join('\n');
+    console.log(banner);
+  }
 
   const ctx: HubServerContext = { db, config };
 
