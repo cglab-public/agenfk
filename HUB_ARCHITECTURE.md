@@ -223,6 +223,14 @@ Two distinct realms share `auth_config`:
   unbound. The **magic-link** flow at `POST /hub/invite/redeem` binds the
   token to the calling machine's `installation_id`, `os_user`, `git_name`,
   `git_email` so the hub can recognise it on subsequent calls.
+- Magic-link invites: admins generate one or more invites from
+  **Admin → API keys → Generate invite** (the button keeps producing fresh
+  cards, each with its own copy/dismiss controls). The response includes
+  the public hub URL, so the rendered command is fully self-contained:
+  `agenfk hub join <hubUrl> <inviteToken>`. Recipients paste it as-is — no
+  `AGENFK_HUB_URL` or pre-existing `~/.agenfk/hub.json` required. The
+  legacy single-arg form `agenfk hub join <inviteToken>` still works when
+  the receiver already has a hub config or sets `AGENFK_HUB_URL`.
 - The client sends `Authorization: Bearer <token>` plus
   `X-Installation-Id: <uuid>` and `X-Agenfk-Version: <semver>` on every
   request. `requireApiKey` middleware looks the token up by hash, attaches
@@ -537,7 +545,7 @@ is the guard.
 | GET | `/auth/google/start` & `/callback` | none | OIDC. |
 | GET | `/auth/entra/start` & `/callback` | none | OIDC. |
 | POST | `/auth/device/start` / `poll` / `approve` | none / none / session | CLI device-code login. |
-| POST | `/hub/invite/create` | admin session | Mint a magic-link invitation. |
+| POST | `/hub/invite/create` | admin session | Mint a magic-link invitation. Response: `{ inviteToken, hubUrl, joinCommand: "agenfk hub join <hubUrl> <inviteToken>", expiresAt }`. |
 | POST | `/hub/invite/redeem` | none | Bind installation to api_key. |
 
 ### 8.3 Ingest (client → hub)
