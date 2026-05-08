@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { timingSafeEqual } from 'crypto';
 import { HubServerContext } from '../server.js';
 import {
   countUsers,
@@ -89,11 +90,35 @@ export function setupRouter(ctx: HubServerContext): Router {
     if ((await countUsers(ctx.db)) > 0) {
       return res.status(409).json({ error: 'Setup is closed: an admin already exists.' });
     }
-    const { email, password } = req.body ?? {};
+    const { token, email, password } = req.body ?? {};
+
+    // Token check first — single generic 401 for missing/empty/wrong, so a
+    // probe can't tell the difference between "no token row" and "wrong
+    // token". Constant-time compare on equal-length buffers.
+    const stored = await ctx.db.get<{ token: string }>('SELECT token FROM bootstrap_tokens LIMIT 1');
+    const ok = (() => {
+      if (!stored?.token) return false;
+      if (typeof token !== 'string' || token.length === 0) return false;
+      const a = Buffer.from(stored.token, 'utf8');
+      const b = Buffer.from(token, 'utf8');
+      if (a.length !== b.length) return false;
+      return timingSafeEqual(a, b);
+    })();
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid token or setup is closed' });
+    }
+
     if (typeof email !== 'string' || typeof password !== 'string' || password.length < 8) {
       return res.status(400).json({ error: 'email + password (≥8 chars) required' });
     }
-    await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
+
+    // Create the admin and consume the token in a single transaction. If
+    // user creation throws (e.g. a UNIQUE collision on email), the token
+    // row is rolled back so the operator can retry.
+    await ctx.db.transaction(async () => {
+      await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
+      await ctx.db.run('DELETE FROM bootstrap_tokens', []);
+    });
     res.status(201).json({ ok: true });
   });
 

@@ -41,14 +41,16 @@ describe('hub auth + setup', () => {
   });
 
   it('POST /setup/initial-admin creates the first admin', async () => {
-    const r = await supertest(app).post('/setup/initial-admin').send({ email: 'first@x', password: 'longenough1' });
+    const tok = (await ctx.db.get('SELECT token FROM bootstrap_tokens LIMIT 1') as { token: string } | undefined)?.token;
+    const r = await supertest(app).post('/setup/initial-admin').send({ token: tok, email: 'first@x', password: 'longenough1' });
     expect(r.status).toBe(201);
-    const r2 = await supertest(app).post('/setup/initial-admin').send({ email: 'second@x', password: 'longenough2' });
+    const r2 = await supertest(app).post('/setup/initial-admin').send({ token: tok, email: 'second@x', password: 'longenough2' });
     expect(r2.status).toBe(409);
   });
 
   it('rejects short passwords on /setup/initial-admin', async () => {
-    const r = await supertest(app).post('/setup/initial-admin').send({ email: 'a@b', password: 'short' });
+    const tok = (await ctx.db.get('SELECT token FROM bootstrap_tokens LIMIT 1') as { token: string } | undefined)?.token;
+    const r = await supertest(app).post('/setup/initial-admin').send({ token: tok, email: 'a@b', password: 'short' });
     expect(r.status).toBe(400);
   });
 
