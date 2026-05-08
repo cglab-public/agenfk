@@ -54,6 +54,9 @@ vi.mock('@agenfk/telemetry', () => ({
   }),
   getInstallationId: vi.fn().mockReturnValue('test-id'),
   isTelemetryEnabled: vi.fn().mockReturnValue(true),
+  getApiUrl: vi.fn().mockReturnValue('http://localhost:3000'),
+  readServerPort: vi.fn().mockReturnValue(null),
+  DEFAULT_API_PORT: 3000,
 }));
 
 import { program } from '../index';

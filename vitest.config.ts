@@ -17,6 +17,12 @@ export default defineConfig({
     resetMocks: true, // reset queued mockResolvedValueOnce/mockRejectedValueOnce between tests
     fileParallelism: false, // run test files serially to prevent filesystem state conflicts
     sequence: { concurrent: false }, // run tests within a file serially
+    // Bumped above defaults (5s/10s) to absorb CPU contention when ~1100 tests
+    // run serially: under load, bcrypt/AES-GCM in hub setup hooks and mocked
+    // axios calls in upgrade-tier specs would otherwise trip the lower ceiling
+    // on different files run-to-run, producing pseudo-random failures.
+    testTimeout: 30000,
+    hookTimeout: 30000,
     include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
     exclude: [
       '**/dist/**',
@@ -25,7 +31,7 @@ export default defineConfig({
       'packages/cli/src/test/cli.test.ts'
     ],
     coverage: {
-      include: ['packages/core/src/**', 'packages/storage-sqlite/src/**', 'packages/server/src/**'],
+      include: ['packages/core/src/**', 'packages/storage-sqlite/src/**', 'packages/server/src/**', 'packages/hub/src/**'],
       exclude: [
         '**/dist/**',
         '**/node_modules/**',
@@ -33,6 +39,7 @@ export default defineConfig({
         'packages/server/src/test-import.ts',
         'packages/server/src/test-import.js',
         'packages/server/src/bulk-updates.ts',
+        'packages/hub/src/bin.ts',
       ],
       thresholds: {
         statements: 80,

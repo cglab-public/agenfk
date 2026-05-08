@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* Tailwind v4 only auto-scans the importing package's source by default.
+ * The shared @agenfk/flow-editor workspace package contains JIT utilities
+ * (w-[calc(100vw-2rem)], h-[90vh], w-64, flex-1, etc.) that need to land in
+ * hub-ui's compiled CSS — otherwise the modal renders unsized. */
+@source "../../flow-editor/src/**/*.{ts,tsx}";
+
+:root { color-scheme: light dark; }
+
+html, body, #root { height: 100%; }
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f1f5f9; /* slate-100 */
+  color: #0f172a;       /* slate-900 */
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #020617; /* slate-950 */
+    color: #f1f5f9;
+  }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.3); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.5); }

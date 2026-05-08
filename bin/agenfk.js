@@ -10,10 +10,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_DIR = path.join(os.homedir(), '.agenfk-system');
 
-const CYAN  = '\x1b[36m';
-const GREEN = '\x1b[32m';
-const BLUE  = '\x1b[34m';
-const RESET = '\x1b[0m';
+const CYAN   = '\x1b[36m';
+const GREEN  = '\x1b[32m';
+const BLUE   = '\x1b[34m';
+const YELLOW = '\x1b[33m';
+const RESET  = '\x1b[0m';
 
 console.log(`${CYAN}
                      ______           ______   _  __
@@ -53,6 +54,33 @@ function toPosixPath(p) {
 // On Windows, BSD tar treats "C:" as a remote hostname; --force-local disables that.
 // On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
 const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
+
+// Semver comparator gating the redownload-on-update path. Returns negative,
+// zero, or positive following semver ordering, with the prerelease rule that
+// a release is greater than its prerelease (1.0.0 > 1.0.0-rc.1).
+function compareSemver(a, b) {
+  const parse = (s) => {
+    const m = String(s || '').replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+    if (!m) return null;
+    return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] || '' };
+  };
+  const pa = parse(a); const pb = parse(b);
+  if (!pa || !pb) return String(a).localeCompare(String(b));
+  if (pa.major !== pb.major) return pa.major - pb.major;
+  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
+  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
+  if (pa.pre === '' && pb.pre !== '') return 1;
+  if (pa.pre !== '' && pb.pre === '') return -1;
+  return pa.pre.localeCompare(pb.pre);
+}
+
+// Read the local install's version. Returns null if the file is missing or unreadable.
+function readLocalVersion(installDir) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(installDir, 'package.json'), 'utf8'));
+    return typeof pkg?.version === 'string' && pkg.version ? pkg.version : null;
+  } catch { return null; }
+}
 
 // Fetch latest release tag — curl (no auth) first, gh CLI as fallback.
 // When beta=true, fetches all recent releases and picks the most recently published
@@ -117,9 +145,20 @@ if (isNpxCache) {
     console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
-      downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
-      fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+      // Downgrade guard: refuse to extract a tag whose version is older than
+      // the existing install. Without this, `npx github:cglab-public/agenfk`
+      // (no --beta) on a beta install resolves to the latest *stable* tag,
+      // which is older than the local prerelease, and tar -xzf silently
+      // reverts the install. (Bug 28635f38.)
+      const localVersion = readLocalVersion(INSTALL_DIR);
+      const remoteVersion = String(latestTag || '').replace(/^v/, '');
+      if (localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
+        console.log(`${YELLOW}Skip: refusing to downgrade — local install is on a newer version (${localVersion}) than the resolved tag (${remoteVersion}). Pass --beta to track prereleases.${RESET}`);
+      } else {
+        downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+        execSync(`tar ${tarFlags} "${toPosixPath(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
+        fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+      }
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to source-based installation...${RESET}`);

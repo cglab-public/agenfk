@@ -41,7 +41,16 @@ async function run() {
         'packages/telemetry/package.json',
         'packages/telemetry/dist/',
         'packages/ui/package.json',
-        'packages/ui/dist/'
+        'packages/ui/dist/',
+        // flow-editor is a source-only TS package consumed by ui + hub-ui at
+        // build time; its src/ must travel in the tarball so workspace resolution
+        // doesn't fail (workspaces field references it).
+        'packages/flow-editor/package.json',
+        'packages/flow-editor/src/',
+        'packages/hub/package.json',
+        'packages/hub/dist/',
+        'packages/hub-ui/package.json',
+        'packages/hub-ui/dist/'
     ];
 
     // 4. Create the archive

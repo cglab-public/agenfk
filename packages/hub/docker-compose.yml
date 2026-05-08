@@ -1,0 +1,34 @@
+# Copy-pasteable starting point for deploying @agenfk/hub.
+#
+#   1. cp .env.example .env  (or write your own)
+#   2. docker compose up -d
+#   3. Visit http://localhost:4000/, sign in with the seeded admin creds,
+#      issue installation API keys, and configure SSO providers.
+#
+# For production behind TLS termination (nginx, Caddy, ALB, etc.), set
+# NODE_ENV=production so session cookies are flagged Secure.
+
+services:
+  hub:
+    build:
+      context: ../..              # monorepo root
+      dockerfile: packages/hub/Dockerfile
+    image: agenfk-hub:latest
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+    volumes:
+      - hub-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hub-data:

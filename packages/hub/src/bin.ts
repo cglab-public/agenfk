@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+import { createHubApp, configFromEnv } from './server.js';
+
+async function main() {
+  const PORT = Number.parseInt(process.env.AGENFK_HUB_PORT || '4000', 10);
+  const cfg = configFromEnv();
+  const { app } = await createHubApp(cfg);
+  app.listen(PORT, () => {
+    console.log(`[AGENFK_HUB] listening on :${PORT} (db=${cfg.dbPath}, org=${cfg.defaultOrgId})`);
+  });
+}
+
+main().catch((err) => {
+  console.error('[AGENFK_HUB] fatal:', err);
+  process.exit(1);
+});

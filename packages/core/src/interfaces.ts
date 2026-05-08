@@ -58,3 +58,59 @@ export interface TokenTracker extends AgEnFKPlugin {
 export interface LLMProvider extends AgEnFKPlugin {
   generate(prompt: string, context?: any): Promise<string>;
 }
+
+// ── Corporate Hub event envelope ─────────────────────────────────────────────
+// Optional component: when an installation is configured to push to a corp hub
+// (~/.agenfk/hub.json present), local mutations emit HubEvents that are buffered
+// in a local outbox and flushed to the hub via HTTPS. Pure type definitions —
+// no runtime imports — so this remains safe for browser consumers.
+
+export type HubEventType =
+  | 'item.created'
+  | 'item.updated'
+  | 'item.moved'
+  | 'item.deleted'
+  | 'item.closed'
+  | 'step.transitioned'
+  | 'validate.invoked'
+  | 'validate.passed'
+  | 'validate.failed'
+  | 'comment.added'
+  | 'test.logged'
+  | 'tokens.logged'
+  | 'session.started'
+  | 'session.ended'
+  // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).
+  | 'fleet:upgrade:started'
+  | 'fleet:upgrade:succeeded'
+  | 'fleet:upgrade:failed';
+
+export interface HubActor {
+  osUser: string;
+  gitName: string | null;
+  gitEmail: string | null;
+}
+
+export interface HubEvent {
+  eventId: string;
+  installationId: string;
+  orgId: string;
+  occurredAt: string; // ISO-8601 UTC
+  receivedAt?: string; // set by hub on ingest
+  actor: HubActor;
+  projectId?: string;
+  // Stable cross-installation project identity. Populated from the project's
+  // `git remote get-url origin` (or repo equivalent) by the agenfk client.
+  // Hub queries use this to group activity by repo across users.
+  remoteUrl?: string | null;
+  itemId?: string;
+  // EPIC | STORY | TASK | BUG (when the event refers to an item).
+  itemType?: string;
+  // Human-readable title of the item at the time of the event. Persisted as a
+  // first-class column on the hub so timelines can render names, not UUIDs.
+  itemTitle?: string;
+  // Reference into an external tracker (e.g. Jira issue key like "WEB-123").
+  externalId?: string;
+  type: HubEventType;
+  payload: Record<string, unknown>;
+}

@@ -165,6 +165,12 @@ export interface Flow {
   steps: FlowStep[];
   createdAt: Date;
   updatedAt: Date;
+  /** Origin of the flow row. 'local' (default) is editable on the client; 'hub' is read-only and reconciled from a corp Hub. */
+  source?: 'local' | 'hub';
+  /** Hub's flow id when source='hub'. Used by the reconciler to map remote → local. */
+  hubFlowId?: string;
+  /** Monotonic version number on the Hub side; bumps on every Hub-side update. */
+  hubVersion?: number;
 }
 
 export interface PauseSnapshot {

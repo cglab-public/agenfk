@@ -19,6 +19,7 @@ vi.mock('axios', () => {
   const m = vi.fn() as any;
   m.get = vi.fn();
   m.post = vi.fn();
+  m.create = vi.fn(() => m);
   return { default: m };
 });
 
