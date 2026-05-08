@@ -48,8 +48,13 @@ export async function createPasswordUser(
 }
 
 export async function countUsers(db: DB): Promise<number> {
-  const row = await db.get<{ c: number }>('SELECT COUNT(*) AS c FROM users');
-  return row?.c ?? 0;
+  // Postgres returns COUNT(*) as bigint, which the pg driver serializes as a
+  // string ("0", "1", …) — strict-equal comparisons with a JS number then
+  // misfire (e.g. /auth/providers' `requiresSetup: countUsers === 0` would
+  // wrongly return false on an empty table). Coerce here so every caller sees
+  // a real number regardless of backend.
+  const row = await db.get<{ c: number | string }>('SELECT COUNT(*) AS c FROM users');
+  return Number(row?.c ?? 0);
 }
 
 export async function recordLogin(db: DB, userId: string): Promise<void> {
