@@ -44,16 +44,7 @@ export function authRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'email and password required' });
     }
 
-    let user = await findUserByEmail(ctx.db, email);
-
-    // Initial-admin bootstrap.
-    if (!user && (await countUsers(ctx.db)) === 0
-      && ctx.config.initialAdminEmail
-      && ctx.config.initialAdminPassword
-      && email.toLowerCase() === ctx.config.initialAdminEmail.toLowerCase()
-      && password === ctx.config.initialAdminPassword) {
-      user = await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
-    }
+    const user = await findUserByEmail(ctx.db, email);
 
     if (!user || !user.password_hash || !user.active) {
       return res.status(401).json({ error: 'Invalid credentials' });

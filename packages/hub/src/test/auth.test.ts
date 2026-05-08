@@ -25,8 +25,6 @@ describe('hub auth + setup', () => {
       secretKey: '0'.repeat(64),
       sessionSecret: 'test-session-secret-min-32-bytes-please',
       defaultOrgId: 'org',
-      initialAdminEmail: 'boot@example.com',
-      initialAdminPassword: 'bootpass1',
     });
     app = out.app;
     ctx = out.ctx;
@@ -54,16 +52,41 @@ describe('hub auth + setup', () => {
     expect(r.status).toBe(400);
   });
 
-  it('login succeeds with seeded env credentials and creates the admin row', async () => {
-    const r = await supertest(app).post('/auth/login').send({ email: 'boot@example.com', password: 'bootpass1' });
-    expect(r.status).toBe(200);
-    expect(r.body.role).toBe('admin');
-    const cookie = r.headers['set-cookie']?.[0];
-    expect(cookie).toMatch(/agenfk_hub_session=/);
+  it('does NOT auto-create an admin from initialAdminEmail/Password env on /auth/login (env-var bootstrap removed)', async () => {
+    // Even if a deployment still passes the legacy fields, the login route
+    // ignores them — the only interactive bootstrap is /setup/initial-admin
+    // gated by the stdout token.
+    const r = await supertest(app)
+      .post('/auth/login')
+      .send({ email: 'boot@example.com', password: 'bootpass1' });
+    expect(r.status).toBe(401);
+    const users = await ctx.db.all('SELECT id FROM users');
+    expect(users).toHaveLength(0);
+  });
 
-    const me = await supertest(app).get('/auth/me').set('Cookie', cookie);
-    expect(me.status).toBe(200);
-    expect(me.body.role).toBe('admin');
+  it('ignores legacy initialAdminEmail/Password fields even when passed via deployment config', async () => {
+    // Tear down the default app and rebuild with the legacy fields supplied
+    // by a stale deployment manifest. Type-cast bypasses the now-removed
+    // optional fields to simulate a deployment that hasn't been updated yet.
+    await ctx.db.close();
+    cleanup();
+    const out = await createHubApp({
+      dbPath: TEST_DB,
+      secretKey: '0'.repeat(64),
+      sessionSecret: 'test-session-secret-min-32-bytes-please',
+      defaultOrgId: 'org',
+      initialAdminEmail: 'legacy@example.com',
+      initialAdminPassword: 'legacypass1',
+    } as any);
+    app = out.app;
+    ctx = out.ctx;
+
+    const r = await supertest(app)
+      .post('/auth/login')
+      .send({ email: 'legacy@example.com', password: 'legacypass1' });
+    expect(r.status).toBe(401);
+    const users = await ctx.db.all('SELECT id FROM users');
+    expect(users).toHaveLength(0);
   });
 
   it('login fails with wrong password', async () => {
