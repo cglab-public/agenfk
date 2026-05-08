@@ -18,9 +18,28 @@ Run `git push` and show the output to the user.
 - Ask for a tag name (e.g. `v1.2.0-beta.1`).
 - **Sync Version**: Extract the numeric version from the tag (e.g. `1.2.0-beta.1` from `v1.2.0-beta.1`).
 - Run `mkdir -p ~/.agenfk && touch ~/.agenfk/skip-gatekeeper` to allow file edits without a workflow task.
-- For Node projects, update the `"version"` field in the root `package.json`, any `project.json` (if tracked), and ALL `packages/*/package.json` files to match this numeric version.
+- Update the version string in the project's manifest file(s). Adapt to the stack you're in:
+  - **Node**: root `package.json`, any `project.json` (if tracked), and ALL `packages/*/package.json` files (don't forget `dependencies` + `devDependencies` + `peerDependencies` references to internal `@scope/*` workspace packages).
+  - **Python**: `pyproject.toml` (`[project].version` or `[tool.poetry].version`), and any `__init__.py` `__version__` constant.
+  - **Rust**: root `Cargo.toml` `[package].version` and every workspace member's `Cargo.toml`.
+  - **.NET**: every `*.csproj` `<Version>` (or `Directory.Build.props` if centralised).
+  - **Java/Kotlin**: `pom.xml` `<version>` or `gradle.properties` `version=`.
+  - **Go**: module versions are tag-driven; usually no manifest edit needed.
+- **Regenerate the lockfile** so it agrees with the manifest. Detect the lockfile in the repo root (or worktree root) and run the matching command. Stage the lockfile in the same `chore: bump version` commit so the manifest and lockfile never drift apart. If no lockfile is present in the tree, treat this step as a **no-op** — do not error.
+  | Lockfile present | Command to run |
+  |---|---|
+  | `package-lock.json` | `npm install --package-lock-only` |
+  | `pnpm-lock.yaml` | `pnpm install --lockfile-only` |
+  | `yarn.lock` (Berry) | `yarn install --mode=update-lockfile` |
+  | `yarn.lock` (Classic v1) | skip — Yarn 1 cannot regenerate without installing |
+  | `poetry.lock` | `poetry lock --no-update` |
+  | `uv.lock` | `uv lock` |
+  | `Pipfile.lock` | `pipenv lock` |
+  | `Cargo.lock` | `cargo update --workspace --offline` (or `cargo build` if offline mode is unavailable) |
+  | `packages.lock.json` (.NET, with `RestorePackagesWithLockFile=true`) | `dotnet restore --force-evaluate` |
+  | none of the above | no-op; skip and continue |
 - Run `rm -f ~/.agenfk/skip-gatekeeper` to restore normal gatekeeper enforcement.
-- Run `git add . && git commit -m "chore: bump version to <version>"` and show the output.
+- Run `git add . && git commit -m "chore: bump version to <version>"` and show the output. The commit MUST include both the manifest change(s) AND the regenerated lockfile (when one exists).
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
 - Confirm the notes with the user, allow edits.
