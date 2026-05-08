@@ -218,7 +218,10 @@ export async function createHubApp(
     // We read index.html once at boot and serve it from memory — earlier
     // versions used res.sendFile which surfaced "Not Found" 500s when the
     // installed path resolution flickered between startup and request time.
-    const API_PREFIXES = ['/v1', '/auth', '/setup', '/healthz', '/hub'];
+    // Note: `/setup` itself is a SPA route (the first-run Setup page), so we
+    // only exclude the specific API path under it. Adding new API endpoints
+    // under /setup means listing them here.
+    const API_PREFIXES = ['/v1', '/auth', '/setup/initial-admin', '/healthz', '/hub'];
     let indexHtml = '';
     try {
       indexHtml = fs.readFileSync(pathMod.join(uiDir, 'index.html'), 'utf8');
