@@ -121,6 +121,34 @@ describe('admin routes', () => {
     expect(dup.status).toBe(409);
   });
 
+  it('invites SSO-only users when password is omitted', async () => {
+    const cookie = await loginAs(app, 'admin@x', 'longenough1');
+    const r = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+      .send({ email: 'sso-only@x', role: 'viewer' });
+    expect(r.status).toBe(201);
+    const row = await ctx.db.get<any>('SELECT * FROM users WHERE email = ?', ['sso-only@x']);
+    expect(row).toBeTruthy();
+    expect(row.password_hash).toBeNull();
+    expect(row.provider).toBe('password'); // placeholder until first SSO sign-in flips it
+  });
+
+  it('rejects invites with too-short password', async () => {
+    const cookie = await loginAs(app, 'admin@x', 'longenough1');
+    const r = await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+      .send({ email: 'shortpw@x', password: 'short', role: 'viewer' });
+    expect(r.status).toBe(400);
+  });
+
+  it('password login fails for an SSO-only invited user', async () => {
+    const cookie = await loginAs(app, 'admin@x', 'longenough1');
+    await supertest(app).post('/v1/admin/users/invite').set('Cookie', cookie)
+      .send({ email: 'sso-only2@x', role: 'viewer' });
+    // Try password login against the SSO-only invite — must be rejected.
+    const r = await supertest(app).post('/auth/login')
+      .send({ email: 'sso-only2@x', password: 'anythinglong' });
+    expect(r.status).toBe(401);
+  });
+
   it('cannot delete self', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');
     const me = await supertest(app).get('/auth/me').set('Cookie', cookie);

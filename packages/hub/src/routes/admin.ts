@@ -143,13 +143,31 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.post('/users/invite', guard, async (req: Request, res: Response) => {
     const { email, password, role } = req.body ?? {};
-    if (typeof email !== 'string' || typeof password !== 'string' || password.length < 8) {
-      return res.status(400).json({ error: 'email + password (≥8 chars) required' });
+    if (typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'email required' });
+    }
+    // Password is optional: an SSO-only invite omits it. When provided, it
+    // must meet the same length policy as before.
+    const hasPassword = password !== undefined && password !== null && password !== '';
+    if (hasPassword && (typeof password !== 'string' || password.length < 8)) {
+      return res.status(400).json({ error: 'password must be ≥8 chars when provided' });
     }
     if (role !== 'admin' && role !== 'viewer') return res.status(400).json({ error: 'role must be admin or viewer' });
     try {
-      const u = await createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
-      res.status(201).json({ id: u.id, email: u.email, role: u.role });
+      if (hasPassword) {
+        const u = await createPasswordUser(ctx.db, req.session!.orgId, email, password, role);
+        res.status(201).json({ id: u.id, email: u.email, role: u.role });
+      } else {
+        // SSO-only invite: row is created with NULL password_hash. Password
+        // login is gated by `!user.password_hash → 401` in /auth/login. The
+        // first successful Google/Entra sign-in upgrades provider in place.
+        const id = randomUUID();
+        await ctx.db.run(
+          'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+          [id, req.session!.orgId, email, null, 'password', role],
+        );
+        res.status(201).json({ id, email, role });
+      }
     } catch (e: any) {
       res.status(409).json({ error: 'A user with that email already exists' });
     }

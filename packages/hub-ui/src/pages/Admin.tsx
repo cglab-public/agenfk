@@ -374,22 +374,47 @@ export function AdminUsers() {
     mutationFn: ({ id, ...rest }: any) => api.put(`/v1/admin/users/${id}`, rest),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   });
-  const [draft, setDraft] = useState({ email: '', password: '', role: 'viewer' });
+  const [draft, setDraft] = useState<{ email: string; password: string; role: string; authMethod: 'password' | 'sso' }>({ email: '', password: '', role: 'viewer', authMethod: 'password' });
 
   return (
     <div className="space-y-6">
       <section className={`${cardCls} max-w-2xl`}>
         <header>
           <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Invite user</h3>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Create an account with email + password. They can switch to SSO later if enabled.</p>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
         </header>
-        <form className="mt-4 grid sm:grid-cols-12 gap-3" onSubmit={(e) => { e.preventDefault(); invite.mutate(draft); setDraft({ email: '', password: '', role: 'viewer' }); }}>
-          <Field label="Email" className="sm:col-span-5">
+        <form
+          className="mt-4 grid sm:grid-cols-12 gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const body: any = { email: draft.email, role: draft.role };
+            if (draft.authMethod === 'password') body.password = draft.password;
+            invite.mutate(body);
+            setDraft({ email: '', password: '', role: 'viewer', authMethod: draft.authMethod });
+          }}
+        >
+          <Field label="Auth method" className="sm:col-span-12">
+            <div className="inline-flex p-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+              {(['password', 'sso'] as const).map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  {m === 'password' ? 'Password' : 'SSO only'}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Email" className={draft.authMethod === 'password' ? 'sm:col-span-5' : 'sm:col-span-9'}>
             <input className={inputCls} placeholder="alice@acme.com" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
           </Field>
-          <Field label="Password" className="sm:col-span-4">
-            <input className={inputCls} type="password" placeholder="≥ 8 characters" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
-          </Field>
+          {draft.authMethod === 'password' && (
+            <Field label="Password" className="sm:col-span-4">
+              <input className={inputCls} type="password" placeholder="≥ 8 characters" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+            </Field>
+          )}
           <Field label="Role" className="sm:col-span-3">
             <select className={inputCls} value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })}>
               <option value="viewer">viewer</option>

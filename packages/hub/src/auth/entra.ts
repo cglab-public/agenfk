@@ -4,7 +4,7 @@ import jwt, { JwtHeader, SigningKeyCallback } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
-import { checkEmailAllowlist, completeSsoLogin, issueOAuthState, upsertSsoUser, verifyOAuthState } from './oauth.js';
+import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 
 interface EntraCfg {
   entra_enabled: number;
@@ -122,7 +122,8 @@ export function entraRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
+    if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');

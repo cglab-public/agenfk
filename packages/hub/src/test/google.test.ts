@@ -86,8 +86,15 @@ describe('Google OAuth flow', () => {
     expect(r.status).toBe(400);
   });
 
-  it('callback exchanges code, upserts user, sets session', async () => {
+  it('callback signs in a pre-invited user and upgrades their row to google in place', async () => {
     await enableGoogle(ctx.db);
+    // Admin pre-invites the user (no password — SSO-only invite). The row
+    // exists with provider='password' and password_hash=NULL until the user
+    // signs in via Google for the first time.
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+      ['u-pre', 'org', 'alice@acme.com', null, 'password', 'viewer'],
+    );
     vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { access_token: 'tok' } } as any);
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: { sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true },
@@ -104,10 +111,37 @@ describe('Google OAuth flow', () => {
     expect(cb.status).toBe(302);
     expect(cb.headers['set-cookie']?.some((c: string) => c.startsWith('agenfk_hub_session='))).toBe(true);
 
-    const row = await ctx.db.get<any>('SELECT * FROM users');
+    const rows = await ctx.db.all<any>('SELECT * FROM users');
+    expect(rows.length).toBe(1); // upgrade in place — no new row
+    const row = rows[0];
+    expect(row.id).toBe('u-pre');
     expect(row.email).toBe('alice@acme.com');
     expect(row.provider).toBe('google');
     expect(row.provider_subject).toBe('g-sub-1');
+  });
+
+  it('callback rejects an un-invited email even when allowlist passes', async () => {
+    await enableGoogle(ctx.db, ['acme.com']);
+    // No row exists for stranger@acme.com — admin never invited them.
+    vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { access_token: 'tok' } } as any);
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      data: { sub: 'g-stranger', email: 'stranger@acme.com', email_verified: true },
+    } as any);
+
+    const start = await supertest(app).get('/auth/google/start').redirects(0);
+    const stateCookie = start.headers['set-cookie']?.[0];
+    const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+
+    const cb = await supertest(app)
+      .get(`/auth/google/callback?code=abc&state=${state}`)
+      .set('Cookie', stateCookie!);
+    expect(cb.status).toBe(403);
+    expect(cb.body.error).toMatch(/not invited/i);
+    // No session was set.
+    expect(cb.headers['set-cookie']?.some((c: string) => c?.startsWith('agenfk_hub_session=')) ?? false).toBe(false);
+    // No row was auto-created.
+    const count = await ctx.db.get<{ c: number | string }>('SELECT COUNT(*) AS c FROM users');
+    expect(Number(count?.c ?? 0)).toBe(0);
   });
 
   it('callback enforces allowlist', async () => {

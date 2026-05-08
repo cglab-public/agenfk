@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
-import { checkEmailAllowlist, completeSsoLogin, issueOAuthState, upsertSsoUser, verifyOAuthState } from './oauth.js';
+import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
@@ -76,7 +76,8 @@ export function googleRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(userinfo.email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await upsertSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
+    if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');

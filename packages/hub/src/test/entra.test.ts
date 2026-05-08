@@ -95,8 +95,12 @@ describe('Entra OIDC flow', () => {
     expect(r.status).toBe(400);
   });
 
-  it('callback exchanges code, verifies id_token, upserts user', async () => {
+  it('callback signs in a pre-invited user and upgrades their row to entra in place', async () => {
     await enableEntra(ctx.db);
+    await ctx.db.run(
+      'INSERT INTO users (id, org_id, email, password_hash, provider, role) VALUES (?, ?, ?, ?, ?, ?)',
+      ['u-pre', 'org', 'bob@acme.com', null, 'password', 'viewer'],
+    );
     const discovery = {
       authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
       token_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/token',
@@ -117,10 +121,38 @@ describe('Entra OIDC flow', () => {
       .redirects(0);
     expect(cb.status).toBe(302);
     expect(cb.headers['set-cookie']?.some((c: string) => c.startsWith('agenfk_hub_session='))).toBe(true);
-    const row = await ctx.db.get<any>('SELECT * FROM users');
+    const rows = await ctx.db.all<any>('SELECT * FROM users');
+    expect(rows.length).toBe(1);
+    const row = rows[0];
+    expect(row.id).toBe('u-pre');
     expect(row.email).toBe('bob@acme.com');
     expect(row.provider).toBe('entra');
     expect(row.provider_subject).toBe('entra-oid-1');
     void getSpy; void postSpy;
+  });
+
+  it('callback rejects an un-invited email with 403', async () => {
+    await enableEntra(ctx.db);
+    const discovery = {
+      authorization_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/authorize',
+      token_endpoint: 'https://login.microsoftonline.com/tenant-uuid/oauth2/v2.0/token',
+      jwks_uri: 'https://login.microsoftonline.com/tenant-uuid/discovery/v2.0/keys',
+      issuer: 'https://login.microsoftonline.com/tenant-uuid/v2.0',
+    };
+    vi.spyOn(axios, 'get').mockResolvedValue({ data: discovery } as any);
+    vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { id_token: 'fake.jwt.token' } } as any);
+    mockClaims = { oid: 'entra-stranger', email: 'stranger@acme.com' };
+
+    const start = await supertest(app).get('/auth/entra/start').redirects(0);
+    const stateCookie = start.headers['set-cookie']?.[0];
+    const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
+
+    const cb = await supertest(app)
+      .get(`/auth/entra/callback?code=abc&state=${state}`)
+      .set('Cookie', stateCookie!);
+    expect(cb.status).toBe(403);
+    expect(cb.body.error).toMatch(/not invited/i);
+    const count = await ctx.db.get<{ c: number | string }>('SELECT COUNT(*) AS c FROM users');
+    expect(Number(count?.c ?? 0)).toBe(0);
   });
 });

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
 import { Request, Response } from 'express';
 import { DB } from '../db.js';
 import { setSessionCookie, signSession } from './session.js';
@@ -49,13 +49,21 @@ export interface SsoIdentity {
   email: string;
 }
 
-/** Find existing SSO user or create one. Throws if email allowlist rejects. */
-export async function upsertSsoUser(
+/**
+ * Look up an SSO user that an admin has previously invited (a row exists in
+ * `users` matching either the provider+subject pair or the email). Returns
+ * null when no such row exists — callers must treat null as "not invited"
+ * and reject with 403 instead of auto-provisioning.
+ *
+ * On first SSO sign-in for an email-invited user, the row is upgraded in
+ * place (provider flips from 'password' to the SSO provider, subject is
+ * filled in). The user keeps their id and role.
+ */
+export async function findInvitedSsoUser(
   db: DB,
-  orgId: string,
+  _orgId: string,
   identity: SsoIdentity,
-  defaultRole: 'admin' | 'viewer' = 'viewer',
-): Promise<UserRow> {
+): Promise<UserRow | null> {
   const existing = await db.get<UserRow>(
     'SELECT * FROM users WHERE provider = ? AND provider_subject = ?',
     [identity.provider, identity.subject],
@@ -74,14 +82,7 @@ export async function upsertSsoUser(
     return { ...byEmail, provider: identity.provider, provider_subject: identity.subject };
   }
 
-  const id = randomUUID();
-  await db.run(
-    'INSERT INTO users (id, org_id, email, provider, provider_subject, role) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, orgId, identity.email, identity.provider, identity.subject, defaultRole],
-  );
-  const created = await db.get<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
-  if (!created) throw new Error('Failed to read back newly inserted SSO user');
-  return created;
+  return null;
 }
 
 export async function completeSsoLogin(
