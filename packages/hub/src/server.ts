@@ -270,8 +270,6 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     secretKey,
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
-    initialAdminEmail: process.env.AGENFK_HUB_INITIAL_ADMIN_EMAIL,
-    initialAdminPassword: process.env.AGENFK_HUB_INITIAL_ADMIN_PASSWORD,
     backend,
     pgUrl: process.env.AGENFK_HUB_PG_URL,
   };
