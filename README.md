@@ -27,6 +27,7 @@ Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework desi
   - [Uninstalling AgEnFK](#uninstalling-agenfk)
 - [Multi-Project Support](#multi-project-support)
 - [GitHub Issues Sync](#github-issues-sync)
+- [Corporate Hub](#corporate-hub)
 - [Architecture Deep Dive](#architecture-deep-dive)
 - [Custom Workflow Flows](#custom-workflow-flows)
 - [Quick Start](#quick-start)
@@ -295,6 +296,32 @@ When GitHub sync is configured, the Kanban toolbar automatically shows:
 *   **Outbound (Push)**: AgEnFK items are created/updated as GitHub Issues. Status maps to labels (`status:in-progress`, `status:done`, etc.) and open/closed state. Item type maps to labels (`type:bug`, `type:story`, etc.). Parent-child relationships render as markdown task lists.
 *   **Inbound (Pull)**: GitHub Issues are matched by `externalId` or created as new AgEnFK items. Labels are reverse-mapped to AgEnFK statuses and types. Conflict detection uses timestamps — local wins when `updatedAt` is newer.
 *   **Comments**: Synced bidirectionally with a `<!-- agenfk-sync -->` marker to prevent duplicates.
+
+## Corporate Hub
+
+AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packages/hub-ui`) that aggregates activity across an entire fleet of installations and centralises governance. Engineers keep working locally; the local AgEnFK forwards events to the hub through a durable outbox, and admins get a fleet-wide view, central workflow definitions, and a one-button rollout for new versions.
+
+### What it gives you
+
+*   **Fleet metrics + timeline**. Every workflow event from every installation lands in the hub: items created, step transitions, validation passes/fails, test outcomes, token usage. The Hub UI renders an org-wide rollup, per-user timelines, and a project-faceted histogram. Filter selections (event type, project, item type) persist per page in `localStorage` so a refresh restores your view.
+*   **Per-event reporting version**. Each event carries the agenfk version that delivered it (`reporting_version` column + green `v<x.y.z>` badge in the UI), so "the upgrade said success but this process is still stuck" is visible in real time.
+*   **Plug-and-play onboarding** for fleet machines. Two flows depending on what suits the operator:
+    *   **Device-code login** — `agenfk hub login --url https://hub.acme.com` prints a short code; an admin approves it from the browser; the CLI gets an installation token and writes `~/.agenfk/hub.json`.
+    *   **Magic-link invite** — admin generates one (or several) invites in **Admin → API keys**; each rendered command is fully self-contained: `agenfk hub join https://hub.acme.com <token>`. No env-var dance, no pre-existing config required.
+*   **Invite-required SSO**. Google Workspace and Microsoft Entra (Azure AD) OIDC sign-in are supported, but a successful IdP handshake on its own does **not** create a hub user. An admin must have already invited that email. Un-invited emails get a 403 even when the email allowlist passes; the allowlist remains as a defense-in-depth gate. The first SSO sign-in for a password-invited user upgrades their row in place (provider flips from `password` → `google`/`entra`, same id and role). Admins can pre-create SSO-only invitees from a single **Auth method** toggle on the invite form.
+*   **Org isolation**. Every event, item, user, and api-key is scoped by `org_id`. A staging org and a production org can run on the same hub instance without bleeding into each other. The hub also supports an atomic **org rename** (`POST /v1/admin/orgs/rename` plus the `agenfk hub repoint` CLI on each spoke) for zero-touch staging→prod migration.
+*   **Hub-managed workflow flows**. Define a flow once in **Admin → Flows**, assign it at org / project / installation scope, and every spoke reconciles to that definition on its next poll (per-project ETag-cached). Local writes to a hub-sourced flow are refused so the central definition stays canonical. Project-scoped overrides win over org-default; installation-scoped overrides win over both — useful for piloting a new flow with one team before rolling it out fleet-wide.
+*   **Fleet upgrade orchestration**. Admins issue an upgrade directive against a target version (sourced from a fleet-floor-filtered list of public GitHub releases) and a chosen scope (org-wide or specific installations). Each spoke polls, runs `agenfk upgrade --version <x>`, reports the on-disk outcome, and the **Admin → Upgrades** page renders rollout state with auto-refresh and per-installation reporting versions. Single-pending guard, downgrade confirmation, and an audit log keep the rollout safe.
+*   **Storage** is SQLite by default (single binary, no external deps) and **Postgres** for enterprise rollouts (`AGENFK_HUB_DB_URL=postgres://…`). Both backends share the same async `HubDb` interface and run identical test suites under pg-mem.
+*   **User management**. Admins can issue/revoke installation api-keys, invite/promote/deactivate users, and **permanently delete** other users (self-row delete is blocked at the backend so the last admin can't lock themselves out).
+
+### What it does not do
+
+The hub does not own your code, your local database, or your editor. Everything you do day-to-day still happens on your machine through your usual AI client + CLI; the hub is a read-mostly observer plus a central place to govern flows and roll out upgrades.
+
+### Where to read more
+
+[`HUB_ARCHITECTURE.md`](./HUB_ARCHITECTURE.md) is the operator-grade reference: data model, auth realms (admin sessions vs installation bearer keys), ingest contract, identity-provider setup walkthroughs for Google Cloud Console and Microsoft Entra, the full HTTP surface, and a quick-reference table for who-owns-what.
 
 ## Architecture Deep Dive
 
