@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Activity, CheckCircle2, XCircle, Inbox, ChevronRight, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -8,6 +8,7 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
+import { useToggleSet } from '../hooks/useToggleSet';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
@@ -72,21 +73,13 @@ function Tile({ label, value, icon, tone }: TileProps) {
 
 const formatLastSeen = fmtRelative;
 
-function useToggleSet(initial: Iterable<string> = []) {
-  const [s, setS] = useState<Set<string>>(() => new Set(initial));
-  return {
-    set: s,
-    toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
-    clear: () => setS(new Set()),
-  };
-}
-
 export function OrgPage() {
   // Default to "shipped today/this week" framing — answers the most common
-  // org-level question without requiring a click.
-  const eventTypeSel = useToggleSet(['item.closed']);
-  const projectSel = useToggleSet();
-  const itemTypeSel = useToggleSet();
+  // org-level question without requiring a click. Persisted in localStorage
+  // so a refresh doesn't drop the user's hand-tuned filter back to default.
+  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:org:eventTypes' });
+  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:org:projects' });
+  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:org:itemTypes' });
 
   // Build the query string once for everything that needs the same filters.
   const qs = useMemo(() => {

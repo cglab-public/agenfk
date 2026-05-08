@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -8,6 +8,7 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
+import { useToggleSet } from '../hooks/useToggleSet';
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
@@ -83,23 +84,15 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
   );
 }
 
-function useToggleSet(initial: Iterable<string> = []) {
-  const [s, setS] = useState<Set<string>>(() => new Set(initial));
-  return {
-    set: s,
-    toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
-    clear: () => setS(new Set()),
-  };
-}
-
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
   const decoded = decodeURIComponent(userKey);
   // Default to "what did this user ship?" — closures only — until the dev
-  // widens the chip selection.
-  const eventTypeSel = useToggleSet(['item.closed']);
-  const projectSel = useToggleSet();
-  const itemTypeSel = useToggleSet();
+  // widens the chip selection. Persisted in localStorage so a refresh
+  // restores the developer's last selection rather than snapping back.
+  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
+  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
+  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
 
   const eventTypes = useQuery<EventTypesResponse>({
     queryKey: ['event-types'],
