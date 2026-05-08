@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
+import { canDeleteUserRow } from './canDeleteUserRow';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
@@ -366,12 +367,17 @@ const PROVIDER_BADGE: Record<string, string> = {
 export function AdminUsers() {
   const qc = useQueryClient();
   const users = useQuery<UserRow[]>({ queryKey: ['admin-users'], queryFn: async () => (await api.get('/v1/admin/users')).data });
+  const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
   const invite = useMutation({
     mutationFn: (body: any) => api.post('/v1/admin/users/invite', body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   });
   const update = useMutation({
     mutationFn: ({ id, ...rest }: any) => api.put(`/v1/admin/users/${id}`, rest),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.delete(`/v1/admin/users/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   });
   const [draft, setDraft] = useState<{ email: string; password: string; role: string; authMethod: 'password' | 'sso' }>({ email: '', password: '', role: 'viewer', authMethod: 'password' });
@@ -442,7 +448,8 @@ export function AdminUsers() {
                 <th className="text-left px-2 py-2">Provider</th>
                 <th className="text-left px-2 py-2">Role</th>
                 <th className="text-left px-2 py-2">Last login</th>
-                <th className="text-right px-5 py-2">Active</th>
+                <th className="text-right px-2 py-2">Active</th>
+                <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -470,13 +477,29 @@ export function AdminUsers() {
                     </select>
                   </td>
                   <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-slate-400">never</span>}</td>
-                  <td className="px-5 py-2.5 text-right">
+                  <td className="px-2 py-2.5 text-right">
                     <Toggle checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
+                  </td>
+                  <td className="px-5 py-2.5 text-right">
+                    {canDeleteUserRow(u.id, me.data?.userId) && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Permanently delete ${u.email}? This cannot be undone.`)) {
+                            remove.mutate(u.id);
+                          }
+                        }}
+                        disabled={remove.isPending}
+                        title="Delete user"
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3 h-3" /> Delete
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
               {users.data?.length === 0 && (
-                <tr><td colSpan={5} className="px-5 py-6 text-center text-sm text-slate-500">No users yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No users yet.</td></tr>
               )}
             </tbody>
           </table>

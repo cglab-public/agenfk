@@ -155,4 +155,20 @@ describe('admin routes', () => {
     const r = await supertest(app).delete(`/v1/admin/users/${me.body.userId}`).set('Cookie', cookie);
     expect(r.status).toBe(400);
   });
+
+  it('admin can delete another user — row is gone afterwards', async () => {
+    const cookie = await loginAs(app, 'admin@x', 'longenough1');
+    const target = await ctx.db.get<any>('SELECT id FROM users WHERE email = ?', ['view@x']);
+    expect(target?.id).toBeTruthy();
+    const r = await supertest(app).delete(`/v1/admin/users/${target.id}`).set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const after = await ctx.db.get<any>('SELECT id FROM users WHERE email = ?', ['view@x']);
+    expect(after).toBeFalsy();
+  });
+
+  it('delete returns 404 for an unknown id', async () => {
+    const cookie = await loginAs(app, 'admin@x', 'longenough1');
+    const r = await supertest(app).delete(`/v1/admin/users/00000000-0000-0000-0000-000000000000`).set('Cookie', cookie);
+    expect(r.status).toBe(404);
+  });
 });
