@@ -18,6 +18,7 @@ vi.mock('axios', () => ({
 
 vi.mock('@agenfk/telemetry', () => ({
   getApiUrl: () => 'http://localhost:3000',
+  getInstallationId: () => 'inst-test',
 }));
 
 const { registerHubCommands } = await import('../commands/hub.js');
@@ -106,6 +107,43 @@ describe('agenfk hub commands', () => {
       expect(mockGet).toHaveBeenCalledWith(
         'http://localhost:3000/internal/hub/status',
         expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-internal': 'verifytok' }) }),
+      );
+    });
+  });
+
+  describe('join', () => {
+    it('accepts `hub join <url> <token>` and redeems against the URL even without prior config', async () => {
+      mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'https://hub.example.com' } });
+      // No AGENFK_HUB_URL, no existing hub.json; must still work because URL is on the CLI.
+      const prevEnv = process.env.AGENFK_HUB_URL;
+      delete process.env.AGENFK_HUB_URL;
+      try {
+        await program.parseAsync([
+          'node', 'agenfk', 'hub', 'join',
+          'https://hub.example.com', 'INVITE_TOK',
+          '--no-restart',
+        ]);
+      } finally {
+        if (prevEnv !== undefined) process.env.AGENFK_HUB_URL = prevEnv;
+      }
+      expect(mockPost).toHaveBeenCalledWith(
+        'https://hub.example.com/hub/invite/redeem',
+        expect.objectContaining({ inviteToken: 'INVITE_TOK' }),
+        expect.any(Object),
+      );
+      const cfg = JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8'));
+      expect(cfg.url).toBe('https://hub.example.com');
+      expect(cfg.token).toBe('newtok');
+    });
+
+    it('single-arg form still works with an existing hub.json', async () => {
+      fs.writeFileSync(HUB_CONFIG, JSON.stringify({ url: 'http://hub.test', token: 'old', orgId: 'acme' }));
+      mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'http://hub.test' } });
+      await program.parseAsync(['node', 'agenfk', 'hub', 'join', 'INVITE_TOK', '--no-restart']);
+      expect(mockPost).toHaveBeenCalledWith(
+        'http://hub.test/hub/invite/redeem',
+        expect.objectContaining({ inviteToken: 'INVITE_TOK' }),
+        expect.any(Object),
       );
     });
   });

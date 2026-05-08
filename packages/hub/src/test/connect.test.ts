@@ -110,6 +110,20 @@ describe('hub plug-and-play onboarding', () => {
       expect(typeof r.body.expiresAt).toBe('string');
     });
 
+    it('joinCommand embeds the public hub URL so receivers do not need AGENFK_HUB_URL', async () => {
+      const r = await supertest(app)
+        .post('/hub/invite/create')
+        .set('Cookie', cookie)
+        .set('x-forwarded-proto', 'https')
+        .set('x-forwarded-host', 'hub.example.com')
+        .send({});
+      expect(r.status).toBe(200);
+      expect(typeof r.body.hubUrl).toBe('string');
+      expect(r.body.hubUrl).toBe('https://hub.example.com');
+      // Form: `agenfk hub join <hubUrl> <token>`
+      expect(r.body.joinCommand).toBe(`agenfk hub join https://hub.example.com ${r.body.inviteToken}`);
+    });
+
     it('redeem trades a valid invite for an installation token', async () => {
       const created = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
       const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: created.body.inviteToken });

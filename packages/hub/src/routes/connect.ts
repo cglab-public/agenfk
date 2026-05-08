@@ -157,9 +157,12 @@ export function connectRouter(ctx: HubServerContext): Router {
     const nonce = randomBytes(18).toString('base64url');
     const exp = Date.now() + INVITE_TTL_MS;
     const inviteToken = signInviteToken({ orgId, nonce, exp }, ctx.config.secretKey);
+    const hubUrl = publicHubUrl(req);
     res.json({
       inviteToken,
-      joinCommand: `agenfk hub join ${inviteToken}`,
+      hubUrl,
+      // Embed the hub URL so receivers don't need AGENFK_HUB_URL or prior config.
+      joinCommand: `agenfk hub join ${hubUrl} ${inviteToken}`,
       expiresAt: new Date(exp).toISOString(),
     });
   });

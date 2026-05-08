@@ -138,19 +138,25 @@ export function registerHubCommands(program: Command): void {
     });
 
   hub
-    .command('join <inviteToken>')
-    .description('Redeem a magic-link invite issued by your Hub admin')
+    .command('join <urlOrToken> [token]')
+    .description('Redeem a magic-link invite issued by your Hub admin. Forms: `hub join <url> <token>` or `hub join <token>` (uses AGENFK_HUB_URL or existing hub.json).')
     .option('--no-restart', 'Do not restart the local API server after a successful join (useful for scripted/CI flows that manage services themselves).')
-    .action(async (inviteToken: string, opts: { restart?: boolean }) => {
-      // Try every known hub URL: prefer existing config, else encoded URL prefix.
+    .action(async (urlOrToken: string, token: string | undefined, opts: { restart?: boolean }) => {
+      // Two-arg form: `hub join <url> <token>` puts the hub URL inline so receivers don't need env vars.
+      // One-arg form: `hub join <token>` falls back to AGENFK_HUB_URL or existing hub.json.
+      const hasUrlArg = typeof token === 'string' && token.length > 0;
+      const inviteToken = hasUrlArg ? (token as string) : urlOrToken;
+
       const existing = readHubConfig();
       const candidates: string[] = [];
-      if (existing?.url) candidates.push(existing.url);
-      // Allow `agenfk hub join <hubUrl>:<token>` as a future extension.
-      // For v1, require AGENFK_HUB_URL or an existing config to know where to redeem.
-      if (process.env.AGENFK_HUB_URL) candidates.unshift(process.env.AGENFK_HUB_URL.replace(/\/$/, ''));
+      if (hasUrlArg) {
+        candidates.push(urlOrToken.replace(/\/$/, ''));
+      } else {
+        if (existing?.url) candidates.push(existing.url);
+        if (process.env.AGENFK_HUB_URL) candidates.unshift(process.env.AGENFK_HUB_URL.replace(/\/$/, ''));
+      }
       if (candidates.length === 0) {
-        console.error(chalk.red('No Hub URL known. Set AGENFK_HUB_URL or run `agenfk hub login --url <hub>` first.'));
+        console.error(chalk.red('No Hub URL known. Use `agenfk hub join <url> <token>`, set AGENFK_HUB_URL, or run `agenfk hub login --url <hub>` first.'));
         process.exit(1);
       }
       for (const url of candidates) {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2 } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 
@@ -189,8 +189,8 @@ export function AdminKeys() {
   const [label, setLabel] = useState('');
   const [issued, setIssued] = useState<string | null>(null);
   const [issuedCopied, setIssuedCopied] = useState(false);
-  const [invite, setInvite] = useState<{ joinCommand: string; expiresAt: string } | null>(null);
-  const [inviteCopied, setInviteCopied] = useState(false);
+  interface InviteEntry { id: string; joinCommand: string; expiresAt: string; copied: boolean }
+  const [invites, setInvites] = useState<InviteEntry[]>([]);
 
   return (
     <div className="space-y-6">
@@ -207,30 +207,51 @@ export function AdminKeys() {
         <button
           onClick={async () => {
             const r = await createInvite.mutateAsync();
-            setInvite(r.data as any);
-            setInviteCopied(false);
+            const data = r.data as { joinCommand: string; expiresAt: string };
+            setInvites(prev => [
+              ...prev,
+              { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, joinCommand: data.joinCommand, expiresAt: data.expiresAt, copied: false },
+            ]);
           }}
           disabled={createInvite.isPending}
           className={`mt-4 ${primaryBtnCls}`}
         >
-          {createInvite.isPending ? 'Generating…' : 'Generate invite'}
+          {createInvite.isPending ? 'Generating…' : invites.length === 0 ? 'Generate invite' : 'Generate another invite'}
         </button>
-        {invite && (
-          <div className="mt-4 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-900/20 p-4">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-indigo-700 dark:text-indigo-300 font-semibold">Share this command</span>
-              <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {fmtDate(invite.expiresAt)}</span>
-            </div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto select-all">{invite.joinCommand}</pre>
-            <button
-              onClick={async () => {
-                try { await navigator.clipboard.writeText(invite.joinCommand); setInviteCopied(true); } catch { /* ignore */ }
-              }}
-              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
-            >
-              {inviteCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              {inviteCopied ? 'Copied' : 'Copy to clipboard'}
-            </button>
+        {invites.length > 0 && (
+          <div className="mt-4 space-y-3">
+            {invites.map((inv, idx) => (
+              <div key={inv.id} className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-900/20 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] uppercase tracking-[0.14em] text-indigo-700 dark:text-indigo-300 font-semibold">
+                    Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
+                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {fmtDate(inv.expiresAt)}</span>
+                    <button
+                      onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
+                      title="Dismiss"
+                      className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <button
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(inv.joinCommand);
+                      setInvites(prev => prev.map(p => p.id === inv.id ? { ...p, copied: true } : p));
+                    } catch { /* ignore */ }
+                  }}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                >
+                  {inv.copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  {inv.copied ? 'Copied' : 'Copy to clipboard'}
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </section>
