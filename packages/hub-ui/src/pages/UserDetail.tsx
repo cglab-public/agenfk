@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -10,6 +10,7 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { scrollPageToTop } from '../scroll';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
@@ -90,6 +91,8 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
   const decoded = decodeURIComponent(userKey);
+
+  useEffect(() => { scrollPageToTop(); }, [userKey]);
   // Default to "what did this user ship?" — closures only — until the dev
   // widens the chip selection. Persisted in localStorage so a refresh
   // restores the developer's last selection rather than snapping back.
