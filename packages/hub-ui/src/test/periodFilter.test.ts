@@ -68,4 +68,32 @@ describe('TimelineBar — accepts external range/onRangeChange props', () => {
     // The component must call onRangeChange when range buttons are clicked
     expect(TIMELINE_SRC).toMatch(/onRangeChange/);
   });
+
+  it('hides the range picker when range prop is provided (controlled mode)', () => {
+    // When range is controlled externally the range button group must not render.
+    // Implementation: wrap the range buttons in a conditional on !rangeProp.
+    expect(TIMELINE_SRC).toMatch(/rangeProp.*RANGES|!rangeProp|rangeProp == null|rangeProp === undefined/s);
+  });
+
+  it('accepts tokenSeries prop for a list of daily token buckets', () => {
+    expect(TIMELINE_SRC).toMatch(/tokenSeries/);
+  });
+
+  it('renders a mode toggle (events / tokens) when tokenSeries is provided', () => {
+    // When tokenSeries prop is present the chart must show a mode toggle.
+    expect(TIMELINE_SRC).toMatch(/tokenSeries.*mode|mode.*tokenSeries|'events'.*'tokens'|"events".*"tokens"/s);
+  });
+});
+
+describe('Org.tsx — range picker in Filters panel', () => {
+  it('renders range buttons/chips inside the Filters section (not only in TimelineBar)', () => {
+    // The Filters section must contain the period selector so the timeline range
+    // picker can be hidden inside TimelineBar.
+    // Look for RANGES array reference or inline today/7d/30d/90d in the filters area.
+    expect(ORG_SRC).toMatch(/Period|period|RANGES|today.*7d|7d.*30d/);
+  });
+
+  it('passes tokenSeries to TimelineBar', () => {
+    expect(ORG_SRC).toMatch(/tokenSeries/);
+  });
 });

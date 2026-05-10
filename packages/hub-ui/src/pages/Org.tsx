@@ -12,6 +12,13 @@ import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
+const RANGES: Array<{ key: RangeKey; label: string }> = [
+  { key: 'today', label: 'today' },
+  { key: '7d', label: '7d' },
+  { key: '30d', label: '30d' },
+  { key: '90d', label: '90d' },
+];
+
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
 interface EventTypesResponse { types: string[] }
@@ -165,6 +172,22 @@ export function OrgPage() {
           }}
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
+        <div>
+          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">Period</h3>
+          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+            {RANGES.map(r => (
+              <button
+                key={r.key}
+                onClick={() => setRange(r.key)}
+                className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
+                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <TimelineBar
@@ -174,6 +197,7 @@ export function OrgPage() {
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}
+        tokenSeries={metrics.data?.series?.map(r => ({ day: r.day, tokens_in: r.tokens_in, tokens_out: r.tokens_out }))}
       />
 
       <section className="space-y-3">

@@ -13,6 +13,8 @@ import {
 interface HistogramBucket { time: string; total: number; by_type: Record<string, number> }
 interface HistogramResponse { bucket: 'day' | 'hour'; buckets: HistogramBucket[] }
 
+export interface TokenBucket { day: string; tokens_in: number; tokens_out: number }
+
 interface Props {
   users?: string[];
   types?: string[];
@@ -22,6 +24,7 @@ interface Props {
   title?: string;
   range?: RangeKey;
   onRangeChange?: (r: RangeKey) => void;
+  tokenSeries?: TokenBucket[];
 }
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
@@ -50,11 +53,12 @@ function niceTicks(max: number): number[] {
   return out;
 }
 
-export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange }: Props) {
+export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange, tokenSeries }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
   const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
   const [bucketSel, setBucketSel] = useState<Bucket>('day');
+  const [mode, setMode] = useState<'events' | 'tokens'>('events');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   const bucket = effectiveBucket(range, bucketSel);
@@ -125,55 +129,181 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
     ? 'today'
     : `last ${range === '7d' ? 7 : range === '30d' ? 30 : 90} days`;
 
+  // Token mode: use daily tokenSeries data mapped to day-axis keys.
+  const tokenByDay = useMemo(() => {
+    const m = new Map<string, TokenBucket>();
+    for (const b of tokenSeries ?? []) m.set(b.day, b);
+    return m;
+  }, [tokenSeries]);
+
+  const tokenDayAxis = useMemo(() => buildAxis(now, range, 'day'), [range, now.getHours()]);
+
+  const maxTokens = useMemo(() => {
+    let max = 0;
+    for (const d of tokenDayAxis) {
+      const b = tokenByDay.get(d);
+      if (b) max = Math.max(max, b.tokens_in + b.tokens_out);
+    }
+    return max;
+  }, [tokenDayAxis, tokenByDay]);
+
+  const tokenTicks = useMemo(() => niceTicks(maxTokens), [maxTokens]);
+  const tokenYTop = tokenTicks[tokenTicks.length - 1] || 1;
+
+  const tokenBarW = Math.max(1, (innerW - barGap * (tokenDayAxis.length - 1)) / Math.max(tokenDayAxis.length, 1));
+  const tokenXLabelStep = Math.max(1, Math.ceil(tokenDayAxis.length / 6));
+
+  const fmtTokens = (n: number) =>
+    n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
+    : n >= 1_000 ? `${(n / 1_000).toFixed(0)}k`
+    : String(n);
+
   return (
     <section className={`relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm ${className ?? ''}`}>
       <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-slate-100 dark:border-slate-800">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{title ?? 'Activity'}</h3>
           <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}
-            {stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
+            {mode === 'events'
+              ? <>{totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}</>
+              : <>{rangeBlurb}</>
+            }
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
-            {RANGES.map(r => (
-              <button
-                key={r.key}
-                onClick={() => setRange(r.key)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
-            {(['day', 'hour'] as const).map(b => {
-              const active = bucket === b;
-              const disabled = isToday && b === 'day';
-              return (
+          {tokenSeries && (
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+              {(['events', 'tokens'] as const).map(m => (
                 <button
-                  key={b}
-                  onClick={() => !disabled && setBucketSel(b)}
-                  disabled={disabled}
-                  title={disabled ? 'Today view is hourly' : undefined}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${active
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${mode === m
                     ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                    : disabled
-                      ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
                 >
-                  {b}
+                  {m}
                 </button>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          )}
+          {/* Range picker only shown when not controlled externally (standalone usage) */}
+          {rangeProp == null && (
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+              {RANGES.map(r => (
+                <button
+                  key={r.key}
+                  onClick={() => setRange(r.key)}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {mode === 'events' && (
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+              {(['day', 'hour'] as const).map(b => {
+                const active = bucket === b;
+                const disabled = isToday && b === 'day';
+                return (
+                  <button
+                    key={b}
+                    onClick={() => !disabled && setBucketSel(b)}
+                    disabled={disabled}
+                    title={disabled ? 'Today view is hourly' : undefined}
+                    className={`px-2.5 py-1 rounded-md transition-colors ${active
+                      ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                      : disabled
+                        ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                        : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  >
+                    {b}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </header>
 
       <div className="px-3 pt-3 pb-3 relative">
+        {mode === 'tokens' && tokenSeries && (
+          <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Token usage timeline">
+            {/* Y gridlines + labels */}
+            {tokenTicks.map((t) => {
+              const y = m.top + innerH - (t / tokenYTop) * innerH;
+              return (
+                <g key={t}>
+                  <line x1={m.left} x2={m.left + innerW} y1={y} y2={y}
+                        className="stroke-slate-200 dark:stroke-slate-800" strokeDasharray={t === 0 ? '0' : '2 3'} />
+                  <text x={m.left - 6} y={y} textAnchor="end" dominantBaseline="middle"
+                        className="fill-slate-400 dark:fill-slate-500" style={{ fontSize: 10 }}>
+                    {fmtTokens(t)}
+                  </text>
+                </g>
+              );
+            })}
+            {/* Stacked bars: tokens_in (bottom, cyan) + tokens_out (top, sky) */}
+            {tokenDayAxis.map((d, i) => {
+              const b = tokenByDay.get(d);
+              const tokIn = b?.tokens_in ?? 0;
+              const tokOut = b?.tokens_out ?? 0;
+              const total = tokIn + tokOut;
+              const x = m.left + i * (tokenBarW + barGap);
+              const inH = (tokIn / tokenYTop) * innerH;
+              const outH = (tokOut / tokenYTop) * innerH;
+              return (
+                <g key={d}>
+                  {tokIn > 0 && (
+                    <rect x={x} y={m.top + innerH - inH} width={tokenBarW} height={inH}
+                          rx={tokenBarW > 6 ? 1.5 : 0} fill="#22d3ee" opacity={0.85} />
+                  )}
+                  {tokOut > 0 && (
+                    <rect x={x} y={m.top + innerH - inH - outH} width={tokenBarW} height={outH}
+                          rx={tokenBarW > 6 ? 1.5 : 0} fill="#38bdf8" opacity={0.85} />
+                  )}
+                  {total === 0 && (
+                    <rect x={x} y={m.top + innerH - 1} width={tokenBarW} height={1}
+                          className="fill-slate-200 dark:fill-slate-800" />
+                  )}
+                </g>
+              );
+            })}
+            {/* X axis baseline */}
+            <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH}
+                  className="stroke-slate-300 dark:stroke-slate-700" />
+            {/* X tick labels */}
+            {tokenDayAxis.map((d, i) => {
+              if (i % tokenXLabelStep !== 0 && i !== tokenDayAxis.length - 1) return null;
+              const x = m.left + i * (tokenBarW + barGap) + tokenBarW / 2;
+              return (
+                <text key={d} x={x} y={m.top + innerH + 14} textAnchor="middle"
+                      className="fill-slate-500 dark:fill-slate-400 font-mono" style={{ fontSize: 10 }}>
+                  {shortLabel(d, 'day', range)}
+                </text>
+              );
+            })}
+            <text x={m.left} y={m.top - 2} className="fill-slate-400 dark:fill-slate-500"
+                  style={{ fontSize: 9, letterSpacing: '0.06em' }}>
+              TOKENS
+            </text>
+          </svg>
+        )}
+        {mode === 'tokens' && tokenSeries && (
+          <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-2 pb-1 pt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#22d3ee' }} />
+              tokens in (incl. cache)
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#38bdf8' }} />
+              tokens out
+            </span>
+          </footer>
+        )}
+        {mode === 'events' && (<>
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
           {/* Y gridlines + labels */}
           {ticks.map((t) => {
@@ -304,6 +434,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
             )}
           </div>
         )}
+        </>)}
       </div>
 
       {/* Legend (only when filtered by type) */}

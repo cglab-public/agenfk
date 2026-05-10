@@ -26,7 +26,9 @@ export async function recomputeRollups(db: DB): Promise<{ days: number }> {
              AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
       END) AS items_closed,
       SUM(CASE WHEN type = 'tokens.logged'
-               THEN COALESCE(CAST(json_extract(payload, '$.payload.input') AS INTEGER), 0) ELSE 0 END) AS tokens_in,
+               THEN COALESCE(CAST(json_extract(payload, '$.payload.input') AS INTEGER), 0)
+                  + COALESCE(CAST(json_extract(payload, '$.payload.cachedInput') AS INTEGER), 0)
+               ELSE 0 END) AS tokens_in,
       SUM(CASE WHEN type = 'tokens.logged'
                THEN COALESCE(CAST(json_extract(payload, '$.payload.output') AS INTEGER), 0) ELSE 0 END) AS tokens_out,
       SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,

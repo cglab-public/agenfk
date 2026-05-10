@@ -366,6 +366,47 @@ describe('hub query endpoints', () => {
     expect(row.tokens_out).toBe(50);
   });
 
+  it('rollup includes cachedInput in tokens_in', async () => {
+    // Seed a tokens.logged event that has cachedInput (the dominant component
+    // when the model cache is warm). tokens_in must be input + cachedInput.
+    const token = await issueApiKey(ctx.db, 'org', 'cached-test');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'c1', occurredAt: '2026-05-05T10:00:00Z', type: 'tokens.logged',
+          actor: { osUser: 'carol', gitName: 'C', gitEmail: 'carol@acme.com' },
+          payload: { input: 200, cachedInput: 5000, output: 80, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
+      ]});
+    await recomputeRollups(ctx.db);
+    const row = await ctx.db.get<any>(
+      'SELECT tokens_in, tokens_out FROM rollups_daily WHERE day = ? AND user_key = ?',
+      ['2026-05-05', 'carol@acme.com'],
+    );
+    expect(row?.tokens_in).toBe(5200);  // input(200) + cachedInput(5000)
+    expect(row?.tokens_out).toBe(80);
+  });
+
+  it('GET /v1/metrics with projects= includes cachedInput in tokens_in (direct query path)', async () => {
+    const token = await issueApiKey(ctx.db, 'org', 'cached-test2');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'd1', occurredAt: '2026-05-06T10:00:00Z', type: 'tokens.logged',
+          actor: { osUser: 'dave', gitName: 'D', gitEmail: 'dave@acme.com' },
+          remoteUrl: 'git@github.com:acme/api.git',
+          payload: { input: 300, cachedInput: 7000, output: 120, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
+      ]});
+    // The projects= filter uses the raw-event aggregation path (not rollups_daily).
+    const r = await supertest(app)
+      .get('/v1/metrics?projects=git@github.com:acme/api.git&users=dave@acme.com')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const row = r.body.series.find((s: any) => s.day === '2026-05-06' && s.user_key === 'dave@acme.com');
+    expect(row).toBeDefined();
+    expect(row.tokens_in).toBe(7300);  // input(300) + cachedInput(7000)
+    expect(row.tokens_out).toBe(120);
+  });
+
   it('recomputeRollups re-processes all days so stale rows are overwritten', async () => {
     // First compute with current data (tokens_in should be 100 from the $.payload.input path).
     await recomputeRollups(ctx.db);
