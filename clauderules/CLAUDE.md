@@ -43,6 +43,10 @@ After completing changes — using MCP tools:
 
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
+### PR sizing — MANDATORY
+
+After running `gh pr create`, you MUST call `register_pr(itemId, prNumber, repo, sizing)` via MCP, where `sizing = { epic, story, task, bug }` counts the items included in this PR. After `git push` to a branch that already has a registered PR and you've added more items, call `update_pr_sizing(prNumber, repo, sizing)` with the new counts. The server records a shadow sizing computed from the item tree as a sanity check — only your declared count is authoritative. A PostToolUse hook prompts you to do this on each `gh pr create` / `git push`.
+
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
 to create items, update status, or close tasks — the CLI bypasses enforcement.**
 

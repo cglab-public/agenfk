@@ -52,21 +52,24 @@ This automation ensures consistent engineering rigor while minimizing human micr
 
 ## Supported AI Clients
 
-AgenFK supports three AI coding assistants. Each integrates with the same MCP server but uses a different mechanism for workflow enforcement:
+AgenFK supports five AI coding assistants. Each integrates with the same MCP server but uses a different hook mechanism for workflow enforcement. **As of 2025–2026, all five clients now have hooks** — the prior "instructional-only" gap for Codex / Cursor / Gemini has closed.
 
-| Client | MCP Registration | Workflow Rules | Enforcement Model |
-|--------|-----------------|----------------|-------------------|
-| **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | **Mechanical** — two PreToolUse hooks: `agenfk-gatekeeper` (blocks edits without IN_PROGRESS task) and `agenfk-mcp-enforcer` (blocks db/REST/CLI bypass routes) |
-| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | **Mechanical** — `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) intercepting tool calls before execution |
-| **Cursor** | `~/.cursor/mcp.json` (Linux/macOS) or `%APPDATA%\Cursor\mcp.json` (Windows) | `~/.cursor/rules/agenfk.mdc` (Linux/macOS) or `%APPDATA%\Cursor\rules\agenfk.mdc` (Windows) | **Instructional** — Cursor has no PreToolUse hook or plugin system. Enforcement relies on the `workflow_gatekeeper` MCP tool called per instruction in `agenfk.mdc`. The model is expected to follow rules; no mechanical trip-wire exists. |
+| Client | MCP Registration | Workflow Rules | Pre-edit hook | Post-tool hook (PR sizing) |
+|--------|-----------------|----------------|---------------|----------------------------|
+| **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | `PreToolUse` — `agenfk-gatekeeper` + `agenfk-mcp-enforcer` | `PostToolUse` matcher `Bash` — `agenfk-pr-hook --client claude-code` |
+| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) | `tool.execute.after` plugin (`agenfk-pr-hook-opencode.mjs`) |
+| **Codex CLI** | `codex mcp add` | `~/.codex/AGENTS.md` | (no equivalent — CLAUDE.md-style instructional) | `PostToolUse` matcher `shell` (hooks reliably fire only for shell) — `agenfk-pr-hook --client codex` |
+| **Gemini CLI** (v0.26+) | `gemini mcp add` | `~/.gemini/GEMINI.md` | (no equivalent — instructional) | `AfterTool` matcher `run_shell_command` — `agenfk-pr-hook --client gemini` |
+| **Cursor** (1.7+) | `~/.cursor/mcp.json` | `~/.cursor/rules/agenfk.mdc` | (no equivalent — instructional + `alwaysApply: true` rule) | `afterShellExecution` — `agenfk-pr-hook --client cursor` |
 
-### Enforcement Gap (Cursor)
+### Enforcement model
 
-Claude Code and OpenCode provide *mechanical* enforcement: a hook fires before every tool call and can hard-block it regardless of model intent. Cursor provides no equivalent interception point. AgenFK's Cursor integration compensates with:
+- **Pre-edit gatekeeping** (does the agent have an active IN_PROGRESS task?) is mechanical only on Claude Code + OpenCode, where their hook systems support pre-tool blocking. On Codex / Gemini / Cursor, this remains **instructional** via the per-client rule docs — backed by the server-side `workflow_gatekeeper` audit trail.
+- **PR sizing prompt** (after `gh pr create` / `git push`) is mechanical on **all five** clients via their respective post-tool hook events. Even when the post-tool directive isn't followed, the per-client instruction docs include a belt-and-suspenders rule asking the agent to call `register_pr` / `update_pr_sizing`.
 
-1. **`alwaysApply: true` in `agenfk.mdc`** — the rule is auto-attached to every conversation, maximising the chance the model sees it.
-2. **Explicit breach-handling instructions** — `agenfk.mdc` instructs the model to stop and resolve a gatekeeper rejection before proceeding, not to silently skip it.
-3. **`workflow_gatekeeper` MCP tool** — the server-side check still verifies that a valid IN_PROGRESS task exists and logs the authorization intent, providing an audit trail even without a mechanical block.
+### Note on Codex hook coverage
+
+Codex's hook system reliably fires for the shell tool but not for `apply_patch` or most MCP tool calls (open issues `openai/codex#14882`, `#16732`, May 2026). The PR sizing hook is unaffected because `gh pr create` and `git push` always run via the shell tool. If pre-edit gatekeeping is added to Codex later, this caveat will need to be revisited.
 
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
