@@ -93,6 +93,8 @@ export interface IngestionPollerOptions {
   sources: IngestionSource[];
   /** ms between polls. Default 30s. */
   intervalMs?: number;
+  /** Called for each TokenEvent successfully written to storage. */
+  onEvent?: (ev: TokenEvent) => void;
 }
 
 /**
@@ -136,6 +138,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
         try {
           await opts.storage.insertTokenEvent(ev);
           written++;
+          opts.onEvent?.(ev);
         } catch {
           // Most likely a duplicate via the unique (client, source_path, source_offset)
           // index — safe to ignore on poll-overlap.

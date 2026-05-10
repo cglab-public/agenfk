@@ -8,6 +8,9 @@ import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
+import { startIngestionPoller, type IngestionSource } from "./token-ingestion/index.js";
+import { parseClaudeCodeJsonl } from "./token-ingestion/parsers/claude-code.js";
+import { parseCodexJsonl } from "./token-ingestion/parsers/codex.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -69,6 +72,7 @@ const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
 let flowSyncHandle: FlowSyncHandle | null = null;
 let upgradeSyncHandle: UpgradeSyncHandle | null = null;
+let stopIngestionPoller: (() => void) | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -439,6 +443,7 @@ const initStorage = async () => {
   hubFlusher?.stop();
   flowSyncHandle?.stop();
   upgradeSyncHandle?.stop();
+  stopIngestionPoller?.();
   hubClient.attachStorage(storage as SQLiteStorageProvider);
   if (hubClient.isEnabled && hubClient.hubConfig) {
     hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
@@ -518,6 +523,42 @@ const initStorage = async () => {
       }),
     });
     console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
+
+    // Token ingestion: parse per-client session logs and forward each event
+    // to the hub as a 'tokens.logged' outbox event.
+    const home = os.homedir();
+    const ingestionSources: IngestionSource[] = [
+      {
+        client: 'claude-code',
+        rootDir: path.join(home, '.claude', 'projects'),
+        matches: (rel) => rel.endsWith('.jsonl'),
+        parser: parseClaudeCodeJsonl,
+      },
+      {
+        client: 'codex',
+        rootDir: path.join(home, '.codex', 'sessions'),
+        matches: (rel) => rel.endsWith('.jsonl'),
+        parser: parseCodexJsonl,
+      },
+    ];
+    stopIngestionPoller = startIngestionPoller({
+      storage,
+      sources: ingestionSources,
+      onEvent: (ev) => {
+        hubClient.recordEvent({
+          type: 'tokens.logged',
+          occurredAt: ev.ts,
+          payload: {
+            input: ev.input,
+            cachedInput: ev.cachedInput,
+            output: ev.output,
+            model: ev.model,
+            client: ev.client,
+          },
+        });
+      },
+    });
+    console.log('[HUB] Token ingestion poller started');
   }
 };
 
@@ -2816,6 +2857,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     const shutdown = async () => {
       console.log('[SHUTDOWN] Writing backup before exit...');
       removeServerPortFile();
+      stopIngestionPoller?.();
       if (hubFlusher) {
         hubFlusher.stop();
         await hubFlusher.flush().catch(e => console.error('[HUB] Shutdown drain failed:', (e as Error).message));
