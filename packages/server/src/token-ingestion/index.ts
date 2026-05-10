@@ -1,0 +1,13 @@
+export { findActiveItemAt } from './attribution';
+export {
+  processFile,
+  ingestOnce,
+  startIngestionPoller,
+  listSourceFiles,
+} from './watcher';
+export type {
+  SessionLogParser,
+  IngestionSource,
+  IngestionPollerOptions,
+  ProcessFileResult,
+} from './watcher';
