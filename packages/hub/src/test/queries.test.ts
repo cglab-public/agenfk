@@ -65,11 +65,14 @@ describe('hub query endpoints', () => {
       sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed',
         itemType: 'BUG', remoteUrl: 'git@github.com:acme/web.git',
         itemTitle: 'Crash on signup' }),
+      // Payload matches the format the spoke server actually emits:
+      // JSON.stringify(fullHubEvent) stored in hub's events.payload column,
+      // so token fields live at $.payload.input / $.payload.output.
       sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
         itemType: 'STORY', remoteUrl: 'git@github.com:acme/api.git',
         itemTitle: 'Pagination',
-        payload: { tokenUsage: [{ input: 100, output: 50 }] } }),
+        payload: { input: 100, output: 50, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
     ]);
   });
 
@@ -347,5 +350,43 @@ describe('hub query endpoints', () => {
     const keys = r.body.series.map((s: any) => s.user_key);
     expect(keys.every((k: string) => k === 'bob@acme.com')).toBe(true);
     expect(keys.length).toBeGreaterThan(0);
+  });
+
+  it('GET /v1/metrics with projects= filter extracts tokens from $.payload.input path', async () => {
+    // With a projects filter, queries.ts falls back to raw-event aggregation
+    // instead of rollups_daily. This path must use the same $.payload.input
+    // extraction as the rollup.
+    const r = await supertest(app)
+      .get('/v1/metrics?projects=git@github.com:acme/api.git')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const row = r.body.series.find((s: any) => s.day === '2026-05-04' && s.user_key === 'bob@acme.com');
+    expect(row).toBeDefined();
+    expect(row.tokens_in).toBe(100);
+    expect(row.tokens_out).toBe(50);
+  });
+
+  it('recomputeRollups re-processes all days so stale rows are overwritten', async () => {
+    // First compute with current data (tokens_in should be 100 from the $.payload.input path).
+    await recomputeRollups(ctx.db);
+    const before = await ctx.db.all<any>('SELECT * FROM rollups_daily WHERE day = ? AND user_key = ?',
+      ['2026-05-04', 'bob@acme.com']);
+    expect(before[0]?.tokens_in).toBe(100);
+
+    // Manually corrupt the rollup row to simulate stale data from an old format.
+    await ctx.db.run(
+      'UPDATE rollups_daily SET tokens_in = 9999 WHERE day = ? AND user_key = ?',
+      ['2026-05-04', 'bob@acme.com'],
+    );
+    const corrupted = await ctx.db.all<any>('SELECT tokens_in FROM rollups_daily WHERE day = ? AND user_key = ?',
+      ['2026-05-04', 'bob@acme.com']);
+    expect(corrupted[0]?.tokens_in).toBe(9999);
+
+    // recomputeRollups must overwrite the corrupted row with the correct value
+    // because it re-processes ALL days (not just days >= MAX(day)).
+    await recomputeRollups(ctx.db);
+    const after = await ctx.db.all<any>('SELECT tokens_in FROM rollups_daily WHERE day = ? AND user_key = ?',
+      ['2026-05-04', 'bob@acme.com']);
+    expect(after[0]?.tokens_in).toBe(100);
   });
 });

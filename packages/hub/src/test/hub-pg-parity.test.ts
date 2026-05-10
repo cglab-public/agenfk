@@ -165,7 +165,7 @@ describe('PG parity: queries + rollup', () => {
       sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
         itemType: 'STORY', remoteUrl: 'git@x:api.git',
-        payload: { tokenUsage: [{ input: 100, output: 50 }] } }),
+        payload: { input: 100, output: 50, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
     ];
     await supertest(fx.app).post('/v1/events')
       .set('Authorization', `Bearer ${fx.token}`)

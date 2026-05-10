@@ -125,19 +125,19 @@ describe('hub rollup — token payload extraction', () => {
     expect(src).toMatch(/tokens\.logged/);
   });
 
-  it('rollup.ts uses COALESCE to handle new flat payload format ($.input)', () => {
+  it('rollup.ts extracts tokens from $.payload.input (the hub stores JSON.stringify(fullEvent))', () => {
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../../../packages/hub/src/rollup.ts'),
       'utf8',
     );
-    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.input['"]\)/);
+    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
   });
 
-  it('queries.ts /metrics uses COALESCE to handle new flat payload format', () => {
+  it('queries.ts /metrics extracts tokens from $.payload.input', () => {
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../../../packages/hub/src/routes/queries.ts'),
       'utf8',
     );
-    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.input['"]\)/);
+    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
   });
 });
