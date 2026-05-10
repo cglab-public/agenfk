@@ -9,7 +9,12 @@ import {
   Status,
   Project,
   PauseSnapshot,
-  Flow
+  Flow,
+  TokenEvent,
+  TokenEventQuery,
+  IngestionState,
+  Pr,
+  PrSizing,
 } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
@@ -88,6 +93,46 @@ export class SQLiteStorageProvider implements StorageProvider {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_hub_outbox_occurred ON hub_outbox(occurred_at);
+      CREATE TABLE IF NOT EXISTS token_events (
+        id TEXT PRIMARY KEY,
+        ts TEXT NOT NULL,
+        client TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        turn_id TEXT,
+        model TEXT NOT NULL,
+        input INTEGER NOT NULL DEFAULT 0,
+        cached_input INTEGER NOT NULL DEFAULT 0,
+        output INTEGER NOT NULL DEFAULT 0,
+        reasoning INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL DEFAULT 0,
+        item_id TEXT,
+        project_id TEXT,
+        source_path TEXT NOT NULL,
+        source_offset INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_token_events_ts ON token_events(ts);
+      CREATE INDEX IF NOT EXISTS idx_token_events_item ON token_events(item_id);
+      CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
+        ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS ingestion_state (
+        source_path TEXT PRIMARY KEY,
+        last_offset INTEGER NOT NULL,
+        last_run_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS prs (
+        id TEXT PRIMARY KEY,
+        pr_number INTEGER NOT NULL,
+        repo TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        sizing_json TEXT NOT NULL,
+        sizing_declared_at TEXT NOT NULL,
+        sizing_shadow_json TEXT,
+        last_sizing_check_at TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_prs_repo_number ON prs(repo, pr_number);
+      CREATE INDEX IF NOT EXISTS idx_prs_item ON prs(item_id);
     `);
     this.migrateFlowsTable();
   }
@@ -365,5 +410,46 @@ export class SQLiteStorageProvider implements StorageProvider {
   async listFlows(): Promise<Flow[]> {
     const rows = this.database.prepare('SELECT data FROM flows').all() as { data: string }[];
     return rows.map(r => this.parseFlow(r.data));
+  }
+
+  // ── Observability stubs ────────────────────────────────────────────────────
+  // Real implementations land in the next task in the observability initiative.
+  // The schema (token_events, ingestion_state, prs) is created above.
+
+  async insertTokenEvent(_event: TokenEvent): Promise<void> {
+    throw new Error('insertTokenEvent: not yet implemented');
+  }
+
+  async queryTokenEvents(_query: TokenEventQuery): Promise<TokenEvent[]> {
+    throw new Error('queryTokenEvents: not yet implemented');
+  }
+
+  async getIngestionState(_sourcePath: string): Promise<IngestionState | null> {
+    throw new Error('getIngestionState: not yet implemented');
+  }
+
+  async setIngestionState(_state: IngestionState): Promise<void> {
+    throw new Error('setIngestionState: not yet implemented');
+  }
+
+  async insertPr(_pr: Pr): Promise<Pr> {
+    throw new Error('insertPr: not yet implemented');
+  }
+
+  async updatePrSizing(
+    _repo: string,
+    _prNumber: number,
+    _sizing: PrSizing,
+    _shadow?: PrSizing,
+  ): Promise<Pr> {
+    throw new Error('updatePrSizing: not yet implemented');
+  }
+
+  async getPrByRepoNumber(_repo: string, _prNumber: number): Promise<Pr | null> {
+    throw new Error('getPrByRepoNumber: not yet implemented');
+  }
+
+  async getPrsByItemId(_itemId: string): Promise<Pr[]> {
+    throw new Error('getPrsByItemId: not yet implemented');
   }
 }

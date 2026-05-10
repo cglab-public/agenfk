@@ -28,6 +28,71 @@ export interface TokenUsage {
   timestamp?: string;   // ISO date when logged
 }
 
+// ── Observability: per-turn token telemetry from session-log ingestion ───────
+// Populated by packages/server/src/token-ingestion. Authoritative replacement
+// for agent-self-reported TokenUsage (deprecated; see types removal task).
+
+export type TokenClient =
+  | 'claude-code'
+  | 'codex'
+  | 'gemini'
+  | 'cursor'
+  | 'opencode';
+
+export interface TokenEvent {
+  id: string;
+  ts: string;                 // ISO timestamp of the model turn
+  client: TokenClient;
+  sessionId: string;
+  turnId?: string;
+  model: string;
+  input: number;
+  cachedInput: number;
+  output: number;
+  reasoning: number;
+  total: number;
+  itemId?: string;            // attribution (most-recent active item at ts)
+  projectId?: string;
+  sourcePath: string;         // absolute path of the session log file
+  sourceOffset: number;       // byte/line offset within the file (dedup key)
+}
+
+export interface TokenEventQuery {
+  itemId?: string;
+  projectId?: string;
+  since?: string;
+  until?: string;
+  client?: TokenClient;
+  limit?: number;
+}
+
+export interface IngestionState {
+  sourcePath: string;
+  lastOffset: number;
+  lastRunAt: string;
+}
+
+// ── Observability: PR sizing (agent-declared, server-shadowed) ──────────────
+
+export interface PrSizing {
+  epic: number;
+  story: number;
+  task: number;
+  bug: number;
+}
+
+export interface Pr {
+  id: string;
+  prNumber: number;
+  repo: string;              // e.g. "owner/repo"
+  itemId: string;
+  openedAt: string;
+  sizing: PrSizing;          // agent-declared
+  sizingDeclaredAt: string;
+  sizingShadow?: PrSizing;   // server-computed from item tree, sanity check only
+  lastSizingCheckAt?: string;
+}
+
 export interface ContextItem {
   id: string;
   path: string;

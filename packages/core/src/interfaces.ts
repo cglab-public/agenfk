@@ -1,4 +1,16 @@
-import { AgEnFKItem, ItemType, Status, Project, PauseSnapshot, Flow } from './types';
+import {
+  AgEnFKItem,
+  ItemType,
+  Status,
+  Project,
+  PauseSnapshot,
+  Flow,
+  TokenEvent,
+  TokenEventQuery,
+  IngestionState,
+  Pr,
+  PrSizing,
+} from './types';
 
 export interface PluginConfig {
   [key: string]: any;
@@ -48,6 +60,18 @@ export interface StorageProvider extends AgEnFKPlugin {
   deleteFlow(id: string): Promise<boolean>;
   getFlow(id: string): Promise<Flow | null>;
   listFlows(): Promise<Flow[]>;
+
+  // Observability — token events (server-side ingestion of per-client session logs)
+  insertTokenEvent(event: TokenEvent): Promise<void>;
+  queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]>;
+  getIngestionState(sourcePath: string): Promise<IngestionState | null>;
+  setIngestionState(state: IngestionState): Promise<void>;
+
+  // Observability — PR sizing (agent-declared)
+  insertPr(pr: Pr): Promise<Pr>;
+  updatePrSizing(repo: string, prNumber: number, sizing: PrSizing, shadow?: PrSizing): Promise<Pr>;
+  getPrByRepoNumber(repo: string, prNumber: number): Promise<Pr | null>;
+  getPrsByItemId(itemId: string): Promise<Pr[]>;
 }
 
 export interface TokenTracker extends AgEnFKPlugin {
