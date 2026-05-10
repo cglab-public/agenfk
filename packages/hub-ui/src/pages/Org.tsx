@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, CheckCircle2, XCircle, Inbox, ChevronRight, GitBranch } from 'lucide-react';
+import { Activity, CheckCircle2, XCircle, Inbox, ChevronRight, GitBranch, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
@@ -121,8 +121,10 @@ export function OrgPage() {
       closed: a.closed + r.items_closed,
       passes: a.passes + r.validate_passes,
       fails: a.fails + r.validate_fails,
+      tokensIn: a.tokensIn + r.tokens_in,
+      tokensOut: a.tokensOut + r.tokens_out,
     }),
-    { events: 0, closed: 0, passes: 0, fails: 0 },
+    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0 },
   );
 
   const types = mergeEventTypes(eventTypes.data?.types);
@@ -141,11 +143,13 @@ export function OrgPage() {
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Tile label="Events"      value={totals.events}    icon={<Activity className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />} tone="bg-indigo-50 dark:bg-indigo-900/30" />
         <Tile label="Closed"      value={totals.closed}    icon={<Inbox className="w-4 h-4 text-violet-600 dark:text-violet-400" />} tone="bg-violet-50 dark:bg-violet-900/30" />
         <Tile label="Validate ✓"  value={totals.passes}    icon={<CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />} tone="bg-emerald-50 dark:bg-emerald-900/30" />
         <Tile label="Validate ✗"  value={totals.fails}     icon={<XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />} tone="bg-rose-50 dark:bg-rose-900/30" />
+        <Tile label="Tokens in"   value={totals.tokensIn}  icon={<ArrowDownToLine className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />} tone="bg-cyan-50 dark:bg-cyan-900/30" />
+        <Tile label="Tokens out"  value={totals.tokensOut} icon={<ArrowUpFromLine className="w-4 h-4 text-sky-600 dark:text-sky-400" />} tone="bg-sky-50 dark:bg-sky-900/30" />
       </div>
 
       <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
