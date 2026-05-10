@@ -125,6 +125,26 @@ const QueryTokenEventsSchema = z.object({
   limit: z.number().int().positive().optional(),
 });
 
+const PrSizingSchema = z.object({
+  epic: z.number().int().nonnegative(),
+  story: z.number().int().nonnegative(),
+  task: z.number().int().nonnegative(),
+  bug: z.number().int().nonnegative(),
+});
+
+const RegisterPrSchema = z.object({
+  itemId: z.string(),
+  prNumber: z.number().int().positive(),
+  repo: z.string(),
+  sizing: PrSizingSchema,
+});
+
+const UpdatePrSizingSchema = z.object({
+  prNumber: z.number().int().positive(),
+  repo: z.string(),
+  sizing: PrSizingSchema,
+});
+
 const AddContextSchema = z.object({
   itemId: z.string(),
   path: z.string(),
@@ -235,6 +255,52 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: { id: { type: "string" } },
           required: ["id"],
+        },
+      },
+      {
+        name: "register_pr",
+        description:
+          "Register a freshly opened PR with agent-declared sizing (cards by type included in the PR). Idempotent on (repo, prNumber) — re-call updates the sizing rather than erroring. Server computes a shadow sizing by walking the item tree from itemId; discrepancies are logged but the agent's number persists.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string", description: "Anchor item id for the PR." },
+            prNumber: { type: "number" },
+            repo: { type: "string", description: "owner/repo" },
+            sizing: {
+              type: "object",
+              properties: {
+                epic: { type: "number" },
+                story: { type: "number" },
+                task: { type: "number" },
+                bug: { type: "number" },
+              },
+              required: ["epic", "story", "task", "bug"],
+            },
+          },
+          required: ["itemId", "prNumber", "repo", "sizing"],
+        },
+      },
+      {
+        name: "update_pr_sizing",
+        description: "Update an already-registered PR's sizing when more items have been piled onto its branch.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            prNumber: { type: "number" },
+            repo: { type: "string" },
+            sizing: {
+              type: "object",
+              properties: {
+                epic: { type: "number" },
+                story: { type: "number" },
+                task: { type: "number" },
+                bug: { type: "number" },
+              },
+              required: ["epic", "story", "task", "bug"],
+            },
+          },
+          required: ["prNumber", "repo", "sizing"],
         },
       },
       {
@@ -805,6 +871,16 @@ async function callToolHandler(request: any): Promise<any> {
         const { id } = z.object({ id: z.string() }).parse(request.params.arguments);
         await api.delete(`/items/${id}`);
         return { content: [{ type: "text", text: `Item ${id} and its children moved to trash.` }] };
+      }
+      case "register_pr": {
+        const args = RegisterPrSchema.parse(request.params.arguments);
+        const { data } = await api.post('/prs', args);
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+      case "update_pr_sizing": {
+        const args = UpdatePrSizingSchema.parse(request.params.arguments);
+        const { data } = await api.put(`/prs/${encodeURIComponent(args.repo)}/${args.prNumber}`, { sizing: args.sizing });
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
       case "query_token_events": {
         const args = QueryTokenEventsSchema.parse(request.params.arguments ?? {});

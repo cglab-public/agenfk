@@ -792,6 +792,99 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
   res.json(flows);
 }));
 
+// ── Observability: PR registration ──────────────────────────────────────────
+// Agent-declared sizing on PR open + re-declares on push. Server computes a
+// shadow sizing by walking the item tree from the anchor item — logged for
+// discrepancy detection but never overrides the agent's number.
+
+async function computeShadowSizing(rootItemId: string): Promise<{ epic: number; story: number; task: number; bug: number }> {
+  const counts = { epic: 0, story: 0, task: 0, bug: 0 };
+  const root = await storage.getItem(rootItemId);
+  if (!root) return counts;
+  const stack: any[] = [root];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    switch (node.type) {
+      case 'EPIC':  counts.epic++;  break;
+      case 'STORY': counts.story++; break;
+      case 'TASK':  counts.task++;  break;
+      case 'BUG':   counts.bug++;   break;
+    }
+    const children = await storage.listChildren(node.id);
+    for (const c of children) stack.push(c);
+  }
+  return counts;
+}
+
+app.post("/prs", asyncHandler(async (req: any, res: any) => {
+  const { itemId, prNumber, repo, sizing } = req.body || {};
+  if (!itemId || typeof prNumber !== 'number' || !repo || !sizing
+    || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
+    || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
+    return res.status(400).json({ error: 'itemId, prNumber, repo, sizing{epic,story,task,bug} required' });
+  }
+
+  const shadow = await computeShadowSizing(itemId);
+  const now = new Date().toISOString();
+  const pr = await storage.insertPr({
+    id: crypto.randomUUID(),
+    prNumber,
+    repo,
+    itemId,
+    openedAt: now,
+    sizing,
+    sizingDeclaredAt: now,
+    sizingShadow: shadow,
+    lastSizingCheckAt: now,
+  });
+
+  const matches =
+    sizing.epic === shadow.epic && sizing.story === shadow.story
+    && sizing.task === shadow.task && sizing.bug === shadow.bug;
+  if (!matches) {
+    console.log(
+      `[PR_SIZING] discrepancy on ${repo}#${prNumber} (item ${itemId}): ` +
+      `agent=${JSON.stringify(sizing)} shadow=${JSON.stringify(shadow)}`,
+    );
+  }
+
+  res.status(201).json(pr);
+}));
+
+app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
+  const repo = decodeURIComponent(req.params.repo);
+  const prNumber = Number(req.params.number);
+  if (!Number.isFinite(prNumber)) {
+    return res.status(400).json({ error: 'PR number must be an integer' });
+  }
+  const { sizing } = req.body || {};
+  if (!sizing
+    || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
+    || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
+    return res.status(400).json({ error: 'sizing{epic,story,task,bug} required' });
+  }
+
+  const existing = await storage.getPrByRepoNumber(repo, prNumber);
+  if (!existing) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
+
+  const shadow = await computeShadowSizing(existing.itemId);
+  const updated = await storage.updatePrSizing(repo, prNumber, sizing, shadow);
+
+  const matches =
+    sizing.epic === shadow.epic && sizing.story === shadow.story
+    && sizing.task === shadow.task && sizing.bug === shadow.bug;
+  if (!matches) {
+    console.log(
+      `[PR_SIZING] discrepancy on ${repo}#${prNumber}: agent=${JSON.stringify(sizing)} shadow=${JSON.stringify(shadow)}`,
+    );
+  }
+
+  res.json(updated);
+}));
+
 // ── Observability: token events read API ────────────────────────────────────
 // Writes happen via the server-side ingestion worker (packages/server/src/token-ingestion).
 // This GET route exposes filtered reads to MCP / CLI / UI consumers.

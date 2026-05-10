@@ -2455,6 +2455,53 @@ program
   });
 
 program
+  .command('pr-register')
+  .description('Register a freshly opened PR with agent-declared sizing (MCP fallback: register_pr)')
+  .requiredOption('--item <id>', 'Anchor item id for the PR')
+  .requiredOption('--number <n>', 'PR number', (v) => parseInt(v, 10))
+  .requiredOption('--repo <owner/repo>', 'GitHub repo')
+  .requiredOption('--epic <n>', 'Epic count', (v) => parseInt(v, 10))
+  .requiredOption('--story <n>', 'Story count', (v) => parseInt(v, 10))
+  .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
+  .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
+  .action(async (options) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/prs`, {
+        itemId: options.item,
+        prNumber: options.number,
+        repo: options.repo,
+        sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
+      });
+      console.log(JSON.stringify(data, null, 2));
+    } catch (error: any) {
+      console.error(chalk.red('Error registering PR:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('pr-resize')
+  .description('Update an already-registered PR’s sizing (MCP fallback: update_pr_sizing)')
+  .requiredOption('--number <n>', 'PR number', (v) => parseInt(v, 10))
+  .requiredOption('--repo <owner/repo>', 'GitHub repo')
+  .requiredOption('--epic <n>', 'Epic count', (v) => parseInt(v, 10))
+  .requiredOption('--story <n>', 'Story count', (v) => parseInt(v, 10))
+  .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
+  .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
+  .action(async (options) => {
+    try {
+      const { data } = await axios.put(
+        `${API_URL}/prs/${encodeURIComponent(options.repo)}/${options.number}`,
+        { sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug } },
+      );
+      console.log(JSON.stringify(data, null, 2));
+    } catch (error: any) {
+      console.error(chalk.red('Error updating PR sizing:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
   .command('tokens')
   .description('Query the server-side token-events store (MCP fallback: query_token_events)')
   .option('--item <id>', 'Filter to events attributed to this item')
@@ -3276,7 +3323,7 @@ program.helpInformation = function () {
     ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
     ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test', 'tokens']],
     ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
-    ['Git & Release',         ['branch', 'pr']],
+    ['Git & Release',         ['branch', 'pr', 'pr-register', 'pr-resize']],
     ['Flows',                 ['flow']],
     ['External Sync',         ['github', 'jira']],
     ['Configuration',         ['config', 'backup', 'db']],
