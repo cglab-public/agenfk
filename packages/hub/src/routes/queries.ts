@@ -107,7 +107,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
                 SUM(CASE WHEN type = 'tokens.logged'
                          THEN COALESCE(CAST(json_extract(payload, '$.payload.tokenUsage[0].output') AS INTEGER), 0) ELSE 0 END) AS tokens_out,
                 SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
-                SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails
+                SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
+                SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
          FROM events WHERE ${where.join(' AND ')}
          GROUP BY user_key, day
          ORDER BY day ASC, user_key ASC`,
@@ -119,7 +120,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
     const { where, params } = applyEventFilters(orgId, f, 'day');
     const rows = await ctx.db.all<Record<string, unknown>>(
-      `SELECT user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails
+      `SELECT user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened
        FROM rollups_daily WHERE ${where.join(' AND ')}
        ORDER BY day ASC, user_key ASC`,
       params,

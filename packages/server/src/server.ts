@@ -851,6 +851,13 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     );
   }
 
+  const item = await storage.getItem(itemId);
+  recordHubEvent({
+    type: 'pr.opened',
+    projectId: item?.projectId,
+    payload: { prNumber, repo, sizing, sizingShadow: shadow },
+  });
+
   res.status(201).json(pr);
 }));
 
@@ -881,6 +888,13 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
       `[PR_SIZING] discrepancy on ${repo}#${prNumber}: agent=${JSON.stringify(sizing)} shadow=${JSON.stringify(shadow)}`,
     );
   }
+
+  const anchorItem = await storage.getItem(existing.itemId);
+  recordHubEvent({
+    type: 'pr.updated',
+    projectId: anchorItem?.projectId,
+    payload: { prNumber, repo, sizing, sizingShadow: shadow },
+  });
 
   res.json(updated);
 }));

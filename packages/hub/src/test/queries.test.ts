@@ -308,4 +308,44 @@ describe('hub query endpoints', () => {
     expect(r.body.length).toBe(1);
     expect(r.body[0].user_key).toBe('bob@acme.com');
   });
+
+  it('rollup counts pr.opened events in prs_opened', async () => {
+    const token = await issueApiKey(ctx.db, 'org', 'test2');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'pr1', occurredAt: '2026-05-03T11:00:00Z', type: 'pr.opened',
+          payload: { prNumber: 10, repo: 'acme/web' } }),
+        sample({ eventId: 'pr2', occurredAt: '2026-05-03T12:00:00Z', type: 'pr.opened',
+          payload: { prNumber: 11, repo: 'acme/web' } }),
+      ]});
+    await recomputeRollups(ctx.db);
+    const rows = await ctx.db.all<any>('SELECT * FROM rollups_daily WHERE day = ? AND user_key = ?',
+      ['2026-05-03', 'alice@acme.com']);
+    expect(rows[0]?.prs_opened).toBe(2);
+  });
+
+  it('GET /v1/metrics includes prs_opened in each series row', async () => {
+    const token = await issueApiKey(ctx.db, 'org', 'test3');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'pr3', occurredAt: '2026-05-03T11:30:00Z', type: 'pr.opened',
+          payload: { prNumber: 20, repo: 'acme/web' } }),
+      ]});
+    const r = await supertest(app).get('/v1/metrics').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const row = r.body.series.find((s: any) => s.day === '2026-05-03' && s.user_key === 'alice@acme.com');
+    expect(row).toBeDefined();
+    expect(typeof row.prs_opened).toBe('number');
+    expect(row.prs_opened).toBeGreaterThanOrEqual(1);
+  });
+
+  it('GET /v1/metrics filters by user (used by UserDetail page)', async () => {
+    const r = await supertest(app).get('/v1/metrics?users=bob@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const keys = r.body.series.map((s: any) => s.user_key);
+    expect(keys.every((k: string) => k === 'bob@acme.com')).toBe(true);
+    expect(keys.length).toBeGreaterThan(0);
+  });
 });

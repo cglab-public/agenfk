@@ -135,3 +135,56 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
     expect(res.body.sizingShadow).toEqual({ epic: 1, story: 1, task: 2, bug: 1 }); // server's truth
   });
 });
+
+describe('POST /prs emits a hub event into the outbox', () => {
+  beforeAll(async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    await initStorage();
+  });
+  afterAll(() => {
+    if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  });
+
+  it('inserts a pr.opened event into hub_outbox on POST /prs', async () => {
+    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    const res = await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 501, repo: 'org/repo',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+    });
+    expect(res.status).toBe(201);
+
+    // @ts-ignore — access the raw SQLite db for assertion
+    const { SqliteStorage } = await import('@agenfk/storage-sqlite');
+    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
+    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
+    const payloads = rows.map(r => JSON.parse(r.payload));
+    const prEvent = payloads.find((p: any) => p.type === 'pr.opened');
+    expect(prEvent).toBeDefined();
+    expect(prEvent.payload?.prNumber).toBe(501);
+    expect(prEvent.payload?.repo).toBe('org/repo');
+  });
+
+  it('inserts a pr.updated event into hub_outbox on PUT /prs/:repo/:number', async () => {
+    const project = (await request(app).post('/projects').send({ name: 'P2' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 502, repo: 'org/repo2',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+    });
+
+    const res = await request(app).put('/prs/org%2Frepo2/502').send({
+      sizing: { epic: 0, story: 0, task: 3, bug: 0 },
+    });
+    expect(res.status).toBe(200);
+
+    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
+    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
+    const payloads = rows.map(r => JSON.parse(r.payload));
+    const updEvent = payloads.find((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 502);
+    expect(updEvent).toBeDefined();
+    expect(updEvent.payload?.sizing?.task).toBe(3);
+  });
+});

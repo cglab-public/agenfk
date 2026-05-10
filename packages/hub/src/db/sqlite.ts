@@ -69,6 +69,7 @@ const SCHEMA_SQLITE = `
     tokens_out INTEGER NOT NULL DEFAULT 0,
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
+    prs_opened INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (org_id, user_key, day)
   );
 
@@ -318,6 +319,11 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
       COMMIT;
     `);
   }
+
+  // rollups_daily.prs_opened — added with the PR metrics initiative.
+  const rdCols = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
+  const rdHave = new Set(rdCols.map(c => c.name));
+  if (!rdHave.has('prs_opened')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN prs_opened INTEGER NOT NULL DEFAULT 0");
 
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");

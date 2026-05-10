@@ -7,6 +7,7 @@ const NUMERIC_COLS = [
   'events_count', 'items_closed',
   'tokens_in', 'tokens_out',
   'validate_passes', 'validate_fails',
+  'prs_opened',
 ] as const;
 
 type NumericCol = typeof NUMERIC_COLS[number];
@@ -20,6 +21,7 @@ export interface MetricsRowOut {
   tokens_out: number;
   validate_passes: number;
   validate_fails: number;
+  prs_opened: number;
 }
 
 function toInt(v: unknown): number {

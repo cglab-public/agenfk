@@ -5,10 +5,13 @@ import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
+import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+
+interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
@@ -122,6 +125,32 @@ export function UserDetailPage() {
   if (itemTypeSel.set.size) params.set('itemTypes', [...itemTypeSel.set].join(','));
   params.set('limit', '200');
 
+  const metricsQs = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set('users', decoded);
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    return p.toString();
+  }, [decoded, projectSel.set, itemTypeSel.set]);
+
+  const metrics = useQuery<MetricsResponse>({
+    queryKey: ['metrics', metricsQs],
+    queryFn: async () => (await api.get(`/v1/metrics?${metricsQs}`)).data,
+  });
+
+  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
+    (a, r) => ({
+      events: a.events + r.events_count,
+      closed: a.closed + r.items_closed,
+      passes: a.passes + r.validate_passes,
+      fails: a.fails + r.validate_fails,
+      tokensIn: a.tokensIn + r.tokens_in,
+      tokensOut: a.tokensOut + r.tokens_out,
+      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
+    }),
+    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0, prsOpened: 0 },
+  );
+
   const tl = useQuery<{ events: TimelineRow[] }>({
     queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(',')],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
@@ -150,6 +179,8 @@ export function UserDetailPage() {
           <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-slate-900 dark:text-slate-100 truncate">{decoded}</h1>
         </div>
       </header>
+
+      <MetricsTilesRow totals={totals} />
 
       <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
         <div className="flex items-center gap-2">

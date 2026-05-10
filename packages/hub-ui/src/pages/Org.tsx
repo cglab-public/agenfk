@@ -1,16 +1,17 @@
 import { Link } from 'react-router-dom';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Activity, CheckCircle2, XCircle, Inbox, ChevronRight, GitBranch, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
+import { ChevronRight, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
+import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number }> }
+interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -54,19 +55,6 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
           );
         })}
       </div>
-    </div>
-  );
-}
-
-interface TileProps { label: string; value: number; icon: React.ReactNode; tone: string }
-function Tile({ label, value, icon, tone }: TileProps) {
-  return (
-    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-5 py-4 hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-sm transition-all">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">{label}</span>
-        <span className={`w-7 h-7 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
-      </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">{value.toLocaleString()}</div>
     </div>
   );
 }
@@ -115,7 +103,7 @@ export function OrgPage() {
     queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
   });
 
-  const totals = (metrics.data?.series ?? []).reduce(
+  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
     (a, r) => ({
       events: a.events + r.events_count,
       closed: a.closed + r.items_closed,
@@ -123,8 +111,9 @@ export function OrgPage() {
       fails: a.fails + r.validate_fails,
       tokensIn: a.tokensIn + r.tokens_in,
       tokensOut: a.tokensOut + r.tokens_out,
+      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
     }),
-    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0 },
+    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0, prsOpened: 0 },
   );
 
   const types = mergeEventTypes(eventTypes.data?.types);
@@ -143,14 +132,7 @@ export function OrgPage() {
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <Tile label="Events"      value={totals.events}    icon={<Activity className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />} tone="bg-indigo-50 dark:bg-indigo-900/30" />
-        <Tile label="Closed"      value={totals.closed}    icon={<Inbox className="w-4 h-4 text-violet-600 dark:text-violet-400" />} tone="bg-violet-50 dark:bg-violet-900/30" />
-        <Tile label="Validate ✓"  value={totals.passes}    icon={<CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />} tone="bg-emerald-50 dark:bg-emerald-900/30" />
-        <Tile label="Validate ✗"  value={totals.fails}     icon={<XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />} tone="bg-rose-50 dark:bg-rose-900/30" />
-        <Tile label="Tokens in"   value={totals.tokensIn}  icon={<ArrowDownToLine className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />} tone="bg-cyan-50 dark:bg-cyan-900/30" />
-        <Tile label="Tokens out"  value={totals.tokensOut} icon={<ArrowUpFromLine className="w-4 h-4 text-sky-600 dark:text-sky-400" />} tone="bg-sky-50 dark:bg-sky-900/30" />
-      </div>
+      <MetricsTilesRow totals={totals} />
 
       <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
         <div className="flex items-center gap-2">

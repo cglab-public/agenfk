@@ -107,7 +107,10 @@ export type HubEventType =
   // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).
   | 'fleet:upgrade:started'
   | 'fleet:upgrade:succeeded'
-  | 'fleet:upgrade:failed';
+  | 'fleet:upgrade:failed'
+  // PR registration events emitted by the spoke on register/update.
+  | 'pr.opened'
+  | 'pr.updated';
 
 export interface HubActor {
   osUser: string;

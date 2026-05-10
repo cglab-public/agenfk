@@ -14,7 +14,7 @@ export async function recomputeRollups(db: DB): Promise<{ days: number }> {
   );
 
   const upsertSql = `
-    INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails)
+    INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
     SELECT
       org_id,
       user_key,
@@ -30,7 +30,8 @@ export async function recomputeRollups(db: DB): Promise<{ days: number }> {
       SUM(CASE WHEN type = 'tokens.logged'
                THEN COALESCE(CAST(json_extract(payload, '$.payload.tokenUsage[0].output') AS INTEGER), 0) ELSE 0 END) AS tokens_out,
       SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
-      SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails
+      SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
+      SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
     FROM events
     WHERE date(occurred_at) = ?
     GROUP BY org_id, user_key, date(occurred_at)
@@ -40,7 +41,8 @@ export async function recomputeRollups(db: DB): Promise<{ days: number }> {
       tokens_in = excluded.tokens_in,
       tokens_out = excluded.tokens_out,
       validate_passes = excluded.validate_passes,
-      validate_fails = excluded.validate_fails
+      validate_fails = excluded.validate_fails,
+      prs_opened = excluded.prs_opened
   `;
 
   await db.transaction(async () => {
