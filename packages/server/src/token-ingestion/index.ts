@@ -11,3 +11,5 @@ export type {
   IngestionPollerOptions,
   ProcessFileResult,
 } from './watcher';
+export { parseClaudeCodeJsonl } from './parsers/claude-code';
+export { parseCodexJsonl } from './parsers/codex';
