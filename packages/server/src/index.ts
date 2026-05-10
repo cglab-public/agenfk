@@ -116,6 +116,15 @@ const GetItemSchema = z.object({
   id: z.string(),
 });
 
+const QueryTokenEventsSchema = z.object({
+  itemId: z.string().optional(),
+  projectId: z.string().optional(),
+  client: z.enum(['claude-code', 'codex', 'gemini', 'cursor', 'opencode']).optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+});
+
 const AddContextSchema = z.object({
   itemId: z.string(),
   path: z.string(),
@@ -226,6 +235,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: { id: { type: "string" } },
           required: ["id"],
+        },
+      },
+      {
+        name: "query_token_events",
+        description:
+          "Query the server-side token-event store. Events are written by the token-ingestion worker that parses per-client session log files (Codex, Claude Code, etc.) — agents do not self-report.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string", description: "Filter to events attributed to this item." },
+            projectId: { type: "string" },
+            client: { type: "string", enum: ['claude-code', 'codex', 'gemini', 'cursor', 'opencode'] },
+            since: { type: "string", description: "ISO timestamp inclusive lower bound." },
+            until: { type: "string", description: "ISO timestamp exclusive upper bound." },
+            limit: { type: "number" },
+          },
         },
       },
       {
@@ -780,6 +805,18 @@ async function callToolHandler(request: any): Promise<any> {
         const { id } = z.object({ id: z.string() }).parse(request.params.arguments);
         await api.delete(`/items/${id}`);
         return { content: [{ type: "text", text: `Item ${id} and its children moved to trash.` }] };
+      }
+      case "query_token_events": {
+        const args = QueryTokenEventsSchema.parse(request.params.arguments ?? {});
+        const params: Record<string, string | number> = {};
+        if (args.itemId) params.itemId = args.itemId;
+        if (args.projectId) params.projectId = args.projectId;
+        if (args.client) params.client = args.client;
+        if (args.since) params.since = args.since;
+        if (args.until) params.until = args.until;
+        if (args.limit) params.limit = args.limit;
+        const { data } = await api.get('/token-events', { params });
+        return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);

@@ -792,6 +792,27 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
   res.json(flows);
 }));
 
+// ── Observability: token events read API ────────────────────────────────────
+// Writes happen via the server-side ingestion worker (packages/server/src/token-ingestion).
+// This GET route exposes filtered reads to MCP / CLI / UI consumers.
+
+app.get("/token-events", asyncHandler(async (req: any, res: any) => {
+  const { itemId, projectId, client, since, until, limit } = req.query as Record<string, string | undefined>;
+  const ALLOWED_CLIENTS = new Set(['claude-code', 'codex', 'gemini', 'cursor', 'opencode']);
+  if (client && !ALLOWED_CLIENTS.has(client)) {
+    return res.status(400).json({ error: `Invalid client '${client}'. Must be one of: ${[...ALLOWED_CLIENTS].join(', ')}` });
+  }
+  const limitNum = limit !== undefined ? Number(limit) : undefined;
+  if (limit !== undefined && (!Number.isFinite(limitNum) || (limitNum as number) <= 0)) {
+    return res.status(400).json({ error: 'limit must be a positive integer' });
+  }
+  const events = await storage.queryTokenEvents({
+    itemId, projectId, client: client as any, since, until,
+    limit: limitNum,
+  });
+  res.json(events);
+}));
+
 const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {

@@ -2455,6 +2455,32 @@ program
   });
 
 program
+  .command('tokens')
+  .description('Query the server-side token-events store (MCP fallback: query_token_events)')
+  .option('--item <id>', 'Filter to events attributed to this item')
+  .option('--project <id>', 'Filter to a project')
+  .option('--client <name>', 'Filter to a client (claude-code | codex | gemini | cursor | opencode)')
+  .option('--since <ts>', 'ISO timestamp inclusive lower bound')
+  .option('--until <ts>', 'ISO timestamp exclusive upper bound')
+  .option('--limit <n>', 'Cap number of rows', (v) => parseInt(v, 10))
+  .action(async (options) => {
+    try {
+      const params: Record<string, string | number> = {};
+      if (options.item) params.itemId = options.item;
+      if (options.project) params.projectId = options.project;
+      if (options.client) params.client = options.client;
+      if (options.since) params.since = options.since;
+      if (options.until) params.until = options.until;
+      if (options.limit) params.limit = options.limit;
+      const { data } = await axios.get(`${API_URL}/token-events`, { params });
+      console.log(JSON.stringify(data, null, 2));
+    } catch (error: any) {
+      console.error(chalk.red('Error querying token events:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
   .command('log-test <id>')
   .description('Log a test result for an item (MCP fallback: log_test_result)')
   .requiredOption('--command <cmd>', 'Test command that was run')
@@ -3248,7 +3274,7 @@ program.helpInformation = function () {
   const groups: [string, string[]][] = [
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
     ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
-    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test']],
+    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test', 'tokens']],
     ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr']],
     ['Flows',                 ['flow']],
