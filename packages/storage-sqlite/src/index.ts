@@ -412,44 +412,184 @@ export class SQLiteStorageProvider implements StorageProvider {
     return rows.map(r => this.parseFlow(r.data));
   }
 
-  // ── Observability stubs ────────────────────────────────────────────────────
-  // Real implementations land in the next task in the observability initiative.
-  // The schema (token_events, ingestion_state, prs) is created above.
+  // ── Observability: token events ─────────────────────────────────────────────
 
-  async insertTokenEvent(_event: TokenEvent): Promise<void> {
-    throw new Error('insertTokenEvent: not yet implemented');
+  async insertTokenEvent(event: TokenEvent): Promise<void> {
+    this.database.prepare(
+      `INSERT INTO token_events
+        (id, ts, client, session_id, turn_id, model,
+         input, cached_input, output, reasoning, total,
+         item_id, project_id, source_path, source_offset)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      event.id,
+      event.ts,
+      event.client,
+      event.sessionId,
+      event.turnId ?? null,
+      event.model,
+      event.input,
+      event.cachedInput,
+      event.output,
+      event.reasoning,
+      event.total,
+      event.itemId ?? null,
+      event.projectId ?? null,
+      event.sourcePath,
+      event.sourceOffset,
+    );
   }
 
-  async queryTokenEvents(_query: TokenEventQuery): Promise<TokenEvent[]> {
-    throw new Error('queryTokenEvents: not yet implemented');
+  async queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]> {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
+    if (query.client !== undefined) { where.push('client = ?'); params.push(query.client); }
+    if (query.since !== undefined) { where.push('ts >= ?'); params.push(query.since); }
+    if (query.until !== undefined) { where.push('ts < ?'); params.push(query.until); }
+    let sql =
+      `SELECT id, ts, client, session_id, turn_id, model,
+              input, cached_input, output, reasoning, total,
+              item_id, project_id, source_path, source_offset
+         FROM token_events`;
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
+    sql += ' ORDER BY ts ASC';
+    if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
+    const rows = this.database.prepare(sql).all(...params) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      ts: r.ts,
+      client: r.client,
+      sessionId: r.session_id,
+      turnId: r.turn_id ?? undefined,
+      model: r.model,
+      input: r.input,
+      cachedInput: r.cached_input,
+      output: r.output,
+      reasoning: r.reasoning,
+      total: r.total,
+      itemId: r.item_id ?? undefined,
+      projectId: r.project_id ?? undefined,
+      sourcePath: r.source_path,
+      sourceOffset: r.source_offset,
+    }));
   }
 
-  async getIngestionState(_sourcePath: string): Promise<IngestionState | null> {
-    throw new Error('getIngestionState: not yet implemented');
+  // ── Observability: ingestion state (resumable file-watcher offsets) ────────
+
+  async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
+    const row = this.database.prepare(
+      'SELECT source_path, last_offset, last_run_at FROM ingestion_state WHERE source_path = ?'
+    ).get(sourcePath) as { source_path: string; last_offset: number; last_run_at: string } | undefined;
+    if (!row) return null;
+    return {
+      sourcePath: row.source_path,
+      lastOffset: row.last_offset,
+      lastRunAt: row.last_run_at,
+    };
   }
 
-  async setIngestionState(_state: IngestionState): Promise<void> {
-    throw new Error('setIngestionState: not yet implemented');
+  async setIngestionState(state: IngestionState): Promise<void> {
+    this.database.prepare(
+      `INSERT INTO ingestion_state (source_path, last_offset, last_run_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(source_path) DO UPDATE SET
+         last_offset = excluded.last_offset,
+         last_run_at = excluded.last_run_at`
+    ).run(state.sourcePath, state.lastOffset, state.lastRunAt);
   }
 
-  async insertPr(_pr: Pr): Promise<Pr> {
-    throw new Error('insertPr: not yet implemented');
+  // ── Observability: PR registration ─────────────────────────────────────────
+
+  private rowToPr(row: any): Pr {
+    return {
+      id: row.id,
+      prNumber: row.pr_number,
+      repo: row.repo,
+      itemId: row.item_id,
+      openedAt: row.opened_at,
+      sizing: JSON.parse(row.sizing_json) as PrSizing,
+      sizingDeclaredAt: row.sizing_declared_at,
+      sizingShadow: row.sizing_shadow_json ? (JSON.parse(row.sizing_shadow_json) as PrSizing) : undefined,
+      lastSizingCheckAt: row.last_sizing_check_at ?? undefined,
+    };
+  }
+
+  async insertPr(pr: Pr): Promise<Pr> {
+    // Idempotent on (repo, pr_number): if row exists, refresh sizing fields
+    // (and itemId/openedAt) instead of throwing on the unique index.
+    this.database.prepare(
+      `INSERT INTO prs
+         (id, pr_number, repo, item_id, opened_at,
+          sizing_json, sizing_declared_at, sizing_shadow_json, last_sizing_check_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(repo, pr_number) DO UPDATE SET
+         item_id = excluded.item_id,
+         opened_at = excluded.opened_at,
+         sizing_json = excluded.sizing_json,
+         sizing_declared_at = excluded.sizing_declared_at,
+         sizing_shadow_json = excluded.sizing_shadow_json,
+         last_sizing_check_at = excluded.last_sizing_check_at`
+    ).run(
+      pr.id,
+      pr.prNumber,
+      pr.repo,
+      pr.itemId,
+      pr.openedAt,
+      JSON.stringify(pr.sizing),
+      pr.sizingDeclaredAt,
+      pr.sizingShadow ? JSON.stringify(pr.sizingShadow) : null,
+      pr.lastSizingCheckAt ?? null,
+    );
+    const row = this.database.prepare(
+      'SELECT * FROM prs WHERE repo = ? AND pr_number = ?'
+    ).get(pr.repo, pr.prNumber) as any;
+    return this.rowToPr(row);
   }
 
   async updatePrSizing(
-    _repo: string,
-    _prNumber: number,
-    _sizing: PrSizing,
-    _shadow?: PrSizing,
+    repo: string,
+    prNumber: number,
+    sizing: PrSizing,
+    shadow?: PrSizing,
   ): Promise<Pr> {
-    throw new Error('updatePrSizing: not yet implemented');
+    const now = new Date().toISOString();
+    const result = this.database.prepare(
+      `UPDATE prs SET
+         sizing_json = ?,
+         sizing_declared_at = ?,
+         sizing_shadow_json = ?,
+         last_sizing_check_at = ?
+       WHERE repo = ? AND pr_number = ?`
+    ).run(
+      JSON.stringify(sizing),
+      now,
+      shadow ? JSON.stringify(shadow) : null,
+      now,
+      repo,
+      prNumber,
+    );
+    if (Number(result.changes ?? 0) === 0) {
+      throw new Error(`updatePrSizing: PR ${repo}#${prNumber} not found`);
+    }
+    const row = this.database.prepare(
+      'SELECT * FROM prs WHERE repo = ? AND pr_number = ?'
+    ).get(repo, prNumber) as any;
+    return this.rowToPr(row);
   }
 
-  async getPrByRepoNumber(_repo: string, _prNumber: number): Promise<Pr | null> {
-    throw new Error('getPrByRepoNumber: not yet implemented');
+  async getPrByRepoNumber(repo: string, prNumber: number): Promise<Pr | null> {
+    const row = this.database.prepare(
+      'SELECT * FROM prs WHERE repo = ? AND pr_number = ?'
+    ).get(repo, prNumber) as any;
+    return row ? this.rowToPr(row) : null;
   }
 
-  async getPrsByItemId(_itemId: string): Promise<Pr[]> {
-    throw new Error('getPrsByItemId: not yet implemented');
+  async getPrsByItemId(itemId: string): Promise<Pr[]> {
+    const rows = this.database.prepare(
+      'SELECT * FROM prs WHERE item_id = ? ORDER BY opened_at ASC'
+    ).all(itemId) as any[];
+    return rows.map((r) => this.rowToPr(r));
   }
 }
