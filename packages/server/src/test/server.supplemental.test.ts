@@ -1210,14 +1210,13 @@ describe('syncParentStatus advanced scenarios', () => {
 describe('PUT /items/:id with optional fields', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('updates context, tokenUsage, implementationPlan, comments, sortOrder', async () => {
+  it('updates context, implementationPlan, comments, sortOrder', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app).put(`/items/${item.id}`).send({
       title: 'Updated',
       description: 'desc',
       context: [{ path: '/foo.ts', content: 'code', description: 'desc' }],
-      tokenUsage: [{ input: 100, output: 50, model: 'claude-sonnet-4-6' }],
       implementationPlan: 'step 1',
       comments: [{ id: 'c1', author: 'Agent', content: 'done', timestamp: new Date() }],
       sortOrder: 5,
@@ -1255,7 +1254,7 @@ describe('POST /items/trash-archived', () => {
 describe('POST /items/bulk - branch coverage', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('updates item with all optional fields (title, description, parentId, tokenUsage, context, implementationPlan, reviews, comments)', async () => {
+  it('updates item with all optional fields (title, description, parentId, context, implementationPlan, reviews, comments)', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const parent = (await request(app).post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
@@ -1267,7 +1266,6 @@ describe('POST /items/bulk - branch coverage', () => {
           title: 'New Title',
           description: 'New desc',
           parentId: parent.id,
-          tokenUsage: [{ input: 100, output: 50, model: 'test' }],
           context: [{ path: '/x.ts', content: 'code' }],
           implementationPlan: 'step 1',
           reviews: [{ id: 'r1', content: 'lgtm' }],

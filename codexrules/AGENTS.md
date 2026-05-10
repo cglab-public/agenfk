@@ -53,7 +53,8 @@ Or via CLI: `agenfk flow show --project <projectId>`
 After completing changes — using MCP tools:
 - `get_flow(projectId)` — call at session start to load the full flow with all steps and exit criteria.
 - `validate_progress(itemId, evidence, command?)` — step-completion gate. `evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions**. `command` is optional: if omitted, uses `project.verifyCommand` on the final step. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry.
-- `log_token_usage(itemId, input, output, model)`.
+
+Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 **ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
 to create items, update status, or close tasks — the CLI bypasses enforcement.**
@@ -92,7 +93,6 @@ CLI equivalents via Bash:
 | `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
 | `get_flow(projectId)` | `agenfk flow show --project <id> --json` |
 | `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<evidence>" "<command>"` or `agenfk verify <id> --evidence "<evidence>"` |
-| `log_token_usage(id, in, out, model)` | `agenfk log-tokens <id> --input N --output N --model M` |
 | `log_test_result(id, cmd, out, status)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED` |
 
 The workflow rules still apply: call `agenfk gatekeeper` before editing files.

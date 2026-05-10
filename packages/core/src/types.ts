@@ -18,19 +18,9 @@ export enum ItemType {
   BUG = "BUG"
 }
 
-export interface TokenUsage {
-  input: number;
-  output: number;
-  model: string;
-  cost?: number;
-  sessionId?: string;   // Deduplication key
-  source?: string;      // "claude-code" | "opencode" | "manual"
-  timestamp?: string;   // ISO date when logged
-}
-
 // ── Observability: per-turn token telemetry from session-log ingestion ───────
-// Populated by packages/server/src/token-ingestion. Authoritative replacement
-// for agent-self-reported TokenUsage (deprecated; see types removal task).
+// Populated by packages/server/src/token-ingestion. Replaces agent-self-reported
+// per-item token logging entirely.
 
 export type TokenClient =
   | 'claude-code'
@@ -151,7 +141,6 @@ export interface BaseItem {
   description: string;
   status: Status;
   assignee?: string;
-  tokenUsage?: TokenUsage[]; // Array to track usage over time/sessions
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   tests?: TestRecord[];

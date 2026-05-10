@@ -939,7 +939,7 @@ function configureClaudeCodeIde(rootDir: string): boolean {
         'mcp__agenfk__get_item', 'mcp__agenfk__create_item',
         'mcp__agenfk__update_item', 'mcp__agenfk__add_comment',
         'mcp__agenfk__workflow_gatekeeper', 'mcp__agenfk__review_changes',
-        'mcp__agenfk__test_changes', 'mcp__agenfk__log_token_usage',
+        'mcp__agenfk__test_changes',
         'mcp__agenfk__analyze_request', 'mcp__agenfk__get_server_info',
         'mcp__agenfk__add_context', 'mcp__agenfk__delete_item',
         'mcp__agenfk__log_test_result', 'mcp__agenfk__update_project',
@@ -2430,7 +2430,6 @@ program
         if (item.parentId) console.log(`  Parent:      ${item.parentId}`);
         if (item.description) console.log(`  Description: ${item.description}`);
         if (item.comments?.length) console.log(`  Comments:    ${item.comments.length}`);
-        if (item.tokenUsage?.length) console.log(`  Token logs:  ${item.tokenUsage.length}`);
       }
     } catch (error: any) {
       console.error(chalk.red('Error fetching item:'), error.response?.data?.error || error.message);
@@ -2451,35 +2450,6 @@ program
       console.log(chalk.green('Comment added.'));
     } catch (error: any) {
       console.error(chalk.red('Error adding comment:'), error.response?.data?.error || error.message);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('log-tokens <id>')
-  .description('Log token usage for an item (MCP fallback: log_token_usage)')
-  .requiredOption('--input <n>', 'Input tokens', parseInt)
-  .requiredOption('--output <n>', 'Output tokens', parseInt)
-  .requiredOption('--model <model>', 'Model name')
-  .option('--cost <c>', 'Cost in USD', parseFloat)
-  .option('--session <id>', 'Session ID for deduplication')
-  .action(async (id, options) => {
-    try {
-      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
-      const tokenUsage = item.tokenUsage || [];
-      const entry: any = {
-        input: options.input,
-        output: options.output,
-        model: options.model,
-        timestamp: new Date().toISOString(),
-      };
-      if (options.cost !== undefined) entry.cost = options.cost;
-      if (options.session) entry.sessionId = options.session;
-      tokenUsage.push(entry);
-      await axios.put(`${API_URL}/items/${id}`, { tokenUsage });
-      console.log(chalk.green('Token usage logged.'));
-    } catch (error: any) {
-      console.error(chalk.red('Error logging tokens:'), error.response?.data?.error || error.message);
       process.exit(1);
     }
   });
@@ -3278,7 +3248,7 @@ program.helpInformation = function () {
   const groups: [string, string[]][] = [
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
     ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
-    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-tokens', 'log-test']],
+    ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test']],
     ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr']],
     ['Flows',                 ['flow']],

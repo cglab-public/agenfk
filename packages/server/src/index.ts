@@ -116,17 +116,6 @@ const GetItemSchema = z.object({
   id: z.string(),
 });
 
-const LogTokenUsageSchema = z.object({
-  itemId: z.string(),
-  input: z.number(),
-  output: z.number(),
-  model: z.string(),
-  cost: z.number().optional(),
-  sessionId: z.string().optional(),
-  source: z.string().optional(),
-  timestamp: z.string().optional(),
-});
-
 const AddContextSchema = z.object({
   itemId: z.string(),
   path: z.string(),
@@ -237,24 +226,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: { id: { type: "string" } },
           required: ["id"],
-        },
-      },
-      {
-        name: "log_token_usage",
-        description: "Log token usage for an item. Use this for manual/proactive reporting. Note: Automated hooks will also capture session totals using 'sessionId' for deduplication.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            itemId: { type: "string" },
-            input: { type: "number" },
-            output: { type: "number" },
-            model: { type: "string" },
-            cost: { type: "number" },
-            sessionId: { type: "string", description: "Optional: session ID for deduplication with automated hooks." },
-            source: { type: "string", description: "Optional: source of report (e.g. 'agent', 'manual')." },
-            timestamp: { type: "string", description: "Optional: ISO timestamp." },
-          },
-          required: ["itemId", "input", "output", "model"],
         },
       },
       {
@@ -809,15 +780,6 @@ async function callToolHandler(request: any): Promise<any> {
         const { id } = z.object({ id: z.string() }).parse(request.params.arguments);
         await api.delete(`/items/${id}`);
         return { content: [{ type: "text", text: `Item ${id} and its children moved to trash.` }] };
-      }
-      case "log_token_usage": {
-        const args = LogTokenUsageSchema.parse(request.params.arguments);
-        const { itemId, ...usage } = args;
-        const { data: item } = await api.get(`/items/${itemId}`);
-        const tokenUsage = item.tokenUsage || [];
-        tokenUsage.push(usage);
-        await api.put(`/items/${itemId}`, { tokenUsage });
-        return { content: [{ type: "text", text: "Token usage logged." }] };
       }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);
