@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -10,6 +10,7 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
@@ -68,14 +69,16 @@ export function OrgPage() {
   const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:org:eventTypes' });
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:org:projects' });
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:org:itemTypes' });
+  const [range, setRange] = useState<RangeKey>('30d');
 
   // Build the query string once for everything that needs the same filters.
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    p.set('from', fromIsoForRange(new Date(), range));
     return p.toString();
-  }, [projectSel.set, itemTypeSel.set]);
+  }, [projectSel.set, itemTypeSel.set, range]);
 
   // For per-itemType counts we honour project + event-type selections but
   // intentionally drop the itemTypes filter — the chip count answers
@@ -169,6 +172,8 @@ export function OrgPage() {
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
         title="Activity timeline"
+        range={range}
+        onRangeChange={setRange}
       />
 
       <section className="space-y-3">

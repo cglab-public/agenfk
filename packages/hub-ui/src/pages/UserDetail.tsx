@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -11,6 +11,7 @@ import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { scrollPageToTop } from '../scroll';
+import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
@@ -99,6 +100,7 @@ export function UserDetailPage() {
   const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  const [range, setRange] = useState<RangeKey>('30d');
 
   const eventTypes = useQuery<EventTypesResponse>({
     queryKey: ['event-types'],
@@ -121,20 +123,25 @@ export function UserDetailPage() {
     queryFn: async () => (await api.get(`/v1/item-types?${itemTypesQs}`)).data,
   });
 
-  const params = new URLSearchParams();
-  params.set('users', decoded);
-  if (eventTypeSel.set.size) params.set('types', [...eventTypeSel.set].join(','));
-  if (projectSel.set.size) params.set('projects', [...projectSel.set].join(','));
-  if (itemTypeSel.set.size) params.set('itemTypes', [...itemTypeSel.set].join(','));
-  params.set('limit', '200');
+  const params = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set('users', decoded);
+    if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    p.set('from', fromIsoForRange(new Date(), range));
+    p.set('limit', '200');
+    return p;
+  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range]);
 
   const metricsQs = useMemo(() => {
     const p = new URLSearchParams();
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    p.set('from', fromIsoForRange(new Date(), range));
     return p.toString();
-  }, [decoded, projectSel.set, itemTypeSel.set]);
+  }, [decoded, projectSel.set, itemTypeSel.set, range]);
 
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', metricsQs],
@@ -155,7 +162,7 @@ export function UserDetailPage() {
   );
 
   const tl = useQuery<{ events: TimelineRow[] }>({
-    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(',')],
+    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
   });
 
@@ -220,6 +227,8 @@ export function UserDetailPage() {
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
         title="Activity timeline"
+        range={range}
+        onRangeChange={setRange}
       />
 
       <section className="space-y-3">

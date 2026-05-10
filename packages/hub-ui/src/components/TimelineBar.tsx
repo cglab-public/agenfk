@@ -20,6 +20,8 @@ interface Props {
   itemTypes?: string[];
   className?: string;
   title?: string;
+  range?: RangeKey;
+  onRangeChange?: (r: RangeKey) => void;
 }
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
@@ -48,8 +50,10 @@ function niceTicks(max: number): number[] {
   return out;
 }
 
-export function TimelineBar({ users, types, projects, itemTypes, className, title }: Props) {
-  const [range, setRange] = useState<RangeKey>('30d');
+export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange }: Props) {
+  const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
+  const range = rangeProp ?? rangeInternal;
+  const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
   const [bucketSel, setBucketSel] = useState<Bucket>('day');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
