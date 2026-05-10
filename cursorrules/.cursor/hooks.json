@@ -1,0 +1,7 @@
+{
+  "afterShellExecution": [
+    {
+      "command": "agenfk-pr-hook --client cursor"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "matcher": "run_shell_command",
+        "command": "agenfk-pr-hook --client gemini"
+      }
+    ]
+  }
+}

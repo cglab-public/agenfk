@@ -1,0 +1,13 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "shell",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "agenfk-pr-hook --client codex"
+        }
+      ]
+    }
+  ]
+}

@@ -364,6 +364,8 @@ async function run() {
     const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
     const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
     const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
+    const prHookDestBase = path.join(localBinDir, 'agenfk-pr-hook');
+    const prHookDest = os.platform() === 'win32' ? `${prHookDestBase}.cmd` : prHookDestBase;
 
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
@@ -964,6 +966,22 @@ process.exit(0);
             }
         }
         console.log(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+        // 12d. Install agenfk-pr-hook script (used by PostToolUse hooks across clients)
+        const prHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook.mjs');
+        if (os.platform() === 'win32') {
+            await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
+            if (isMinGW) {
+                await fs.writeFile(prHookDestBase, `#!/bin/sh\nnode "${prHookSource}" "$@"`, 'utf8');
+                chmodSync(prHookDestBase, 0o755);
+            }
+        } else {
+            if (existsSync(prHookSource)) {
+                await fs.copyFile(prHookSource, prHookDestBase);
+                chmodSync(prHookDestBase, 0o755);
+            }
+        }
+        console.log(`  Installed: ${prHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
     }
 
     // 12c. Install Opencode MCP enforcer plugin
@@ -976,6 +994,11 @@ process.exit(0);
             if (existsSync(opencodeEnforcerSource)) {
                 await fs.copyFile(opencodeEnforcerSource, path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs'));
                 console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs')}`);
+            }
+            const opencodePrHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook-opencode.mjs');
+            if (existsSync(opencodePrHookSource)) {
+                await fs.copyFile(opencodePrHookSource, path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs'));
+                console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs')}`);
             }
         } else if (!onlyPlatform) {
             console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
@@ -1175,11 +1198,79 @@ process.exit(0);
             hooks: [{ type: 'command', command: enforcerDest }]
         });
 
+        // PostToolUse hook for PR sizing (fires on Bash so it can react to
+        // `gh pr create` and `git push`).
+        if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+        settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(entry =>
+            !JSON.stringify(entry).includes('agenfk-pr-hook')
+        );
+        settings.hooks.PostToolUse.push({
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: `${prHookDest} --client claude-code` }]
+        });
+
         // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)
         delete settings.mcpServers;
 
         await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-        console.log(`  Registered PreToolUse hooks in ${settingsPath}`);
+        console.log(`  Registered Pre/PostToolUse hooks in ${settingsPath}`);
+    }
+
+    // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json)
+    if (shouldRun('codex')) {
+        const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
+        if (existsSync(path.dirname(codexHooksPath))) {
+            let config = {};
+            if (existsSync(codexHooksPath)) {
+                try { config = JSON.parse(await fs.readFile(codexHooksPath, 'utf8')); } catch {}
+            }
+            if (!Array.isArray(config.PostToolUse)) config.PostToolUse = [];
+            config.PostToolUse = config.PostToolUse.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
+            config.PostToolUse.push({
+                matcher: 'shell',
+                hooks: [{ type: 'command', command: `${prHookDest} --client codex` }]
+            });
+            await fs.writeFile(codexHooksPath, JSON.stringify(config, null, 2), 'utf8');
+            console.log(`  Registered PostToolUse hook in ${codexHooksPath}`);
+        }
+    }
+
+    // 14c. Configure AfterTool hook for Gemini CLI (~/.gemini/settings.json)
+    if (shouldRun('gemini')) {
+        const geminiSettingsPath = path.join(os.homedir(), '.gemini', 'settings.json');
+        if (existsSync(path.dirname(geminiSettingsPath))) {
+            let settings = {};
+            if (existsSync(geminiSettingsPath)) {
+                try { settings = JSON.parse(await fs.readFile(geminiSettingsPath, 'utf8')); } catch {}
+            }
+            if (!settings.hooks) settings.hooks = {};
+            if (!Array.isArray(settings.hooks.AfterTool)) settings.hooks.AfterTool = [];
+            settings.hooks.AfterTool = settings.hooks.AfterTool.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
+            settings.hooks.AfterTool.push({
+                matcher: 'run_shell_command',
+                command: `${prHookDest} --client gemini`,
+            });
+            await fs.writeFile(geminiSettingsPath, JSON.stringify(settings, null, 2), 'utf8');
+            console.log(`  Registered AfterTool hook in ${geminiSettingsPath}`);
+        }
+    }
+
+    // 14d. Configure afterShellExecution hook for Cursor (~/.cursor/hooks.json, 1.7+)
+    if (shouldRun('cursor')) {
+        const cursorHooksPath = path.join(os.homedir(), '.cursor', 'hooks.json');
+        if (existsSync(path.dirname(cursorHooksPath))) {
+            let config = {};
+            if (existsSync(cursorHooksPath)) {
+                try { config = JSON.parse(await fs.readFile(cursorHooksPath, 'utf8')); } catch {}
+            }
+            if (!Array.isArray(config.afterShellExecution)) config.afterShellExecution = [];
+            config.afterShellExecution = config.afterShellExecution.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
+            config.afterShellExecution.push({
+                command: `${prHookDest} --client cursor`,
+            });
+            await fs.writeFile(cursorHooksPath, JSON.stringify(config, null, 2), 'utf8');
+            console.log(`  Registered afterShellExecution hook in ${cursorHooksPath}`);
+        }
     }
 
     // BUG 174270e6: if a server was running before we replaced the files on
