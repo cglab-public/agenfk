@@ -43,6 +43,7 @@ export interface TokenEvent {
   total: number;
   itemId?: string;            // attribution (most-recent active item at ts)
   projectId?: string;
+  cwd?: string;                // ingestion-only metadata used before attribution
   sourcePath: string;         // absolute path of the session log file
   sourceOffset: number;       // byte/line offset within the file (dedup key)
 }

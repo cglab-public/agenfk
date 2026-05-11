@@ -21,6 +21,70 @@ function ev(ts: string, cum: Partial<{ input: number; cached_input: number; outp
 }
 
 describe('parseCodexJsonl', () => {
+  it('parses the current Codex token_count info shape and carries session metadata', () => {
+    const sessionMeta = JSON.stringify({
+      type: 'session_meta',
+      timestamp: '2026-05-10T00:00:00Z',
+      payload: {
+        id: 'sess-codex-live',
+        cwd: '/workspace/repo',
+      },
+    });
+    const turnContext = JSON.stringify({
+      type: 'turn_context',
+      timestamp: '2026-05-10T00:00:01Z',
+      payload: {
+        turn_id: 'turn-1',
+        model: 'gpt-5.5',
+        cwd: '/workspace/repo',
+      },
+    });
+    const emptyCount = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-05-10T00:00:02Z',
+      payload: { type: 'token_count', info: null },
+    });
+    const tokenCount = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-05-10T00:00:03Z',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            output_tokens: 12,
+            reasoning_output_tokens: 7,
+            total_tokens: 112,
+          },
+          last_token_usage: {
+            input_tokens: 80,
+            cached_input_tokens: 32,
+            output_tokens: 9,
+            reasoning_output_tokens: 5,
+            total_tokens: 89,
+          },
+          model_context_window: 258400,
+        },
+      },
+    });
+    const events = parseCodexJsonl([sessionMeta, turnContext, emptyCount, tokenCount, ''].join('\n'), '/p/codex.jsonl', 0);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      ts: '2026-05-10T00:00:03Z',
+      sessionId: 'sess-codex-live',
+      turnId: 'turn-1',
+      model: 'gpt-5.5',
+      input: 80,
+      cachedInput: 32,
+      output: 9,
+      reasoning: 5,
+      total: 89,
+      cwd: '/workspace/repo',
+    });
+  });
+
   it('emits per-turn deltas from cumulative totals', () => {
     const text = [
       ev('2026-05-10T00:00:00Z', { input: 10, output: 5, total: 15 }),

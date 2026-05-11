@@ -49,6 +49,7 @@ export const parseClaudeCodeJsonl: SessionLogParser = (text, sourcePath, baseOff
       output,
       reasoning,
       total,
+      cwd: typeof obj.cwd === 'string' ? obj.cwd : undefined,
       sourcePath,
       sourceOffset: lineOffset,
     });

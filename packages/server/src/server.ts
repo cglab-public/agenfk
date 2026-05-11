@@ -544,10 +544,14 @@ const initStorage = async () => {
     stopIngestionPoller = startIngestionPoller({
       storage,
       sources: ingestionSources,
+      attributeEvents: true,
       onEvent: (ev) => {
         hubClient.recordEvent({
           type: 'tokens.logged',
           occurredAt: ev.ts,
+          projectId: ev.projectId,
+          itemId: ev.itemId,
+          cwd: ev.cwd,
           payload: {
             input: ev.input,
             cachedInput: ev.cachedInput,

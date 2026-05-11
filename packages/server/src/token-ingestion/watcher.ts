@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { TokenEvent, IngestionState, StorageProvider } from '@agenfk/core';
+import type { Project, TokenEvent, IngestionState, StorageProvider } from '@agenfk/core';
+import { findActiveItemAt } from './attribution';
 
 /**
  * Parser signature: given the new (un-ingested) text content from a file,
@@ -26,7 +27,8 @@ export interface ProcessFileResult {
  * file's current contents and returns the new events plus the next state.
  *
  * - First run (no prior state): parse the entire file from offset 0.
- * - Normal append: parse only the bytes after lastOffset.
+ * - Normal append: parse the full file for parser context, return only events
+ *   at or after lastOffset.
  * - File truncation/rotation (currentSize < lastOffset): treat as a fresh
  *   file, parse from 0.
  *
@@ -42,8 +44,11 @@ export function processFile(
   const totalBytes = Buffer.byteLength(currentContents, 'utf8');
   const lastOffset = priorState?.lastOffset ?? 0;
   const startOffset = lastOffset > totalBytes ? 0 : lastOffset; // truncation
-  const slice = startOffset === 0 ? currentContents : currentContents.slice(byteOffsetToCharOffset(currentContents, startOffset));
-  const events = slice.length ? parser(slice, sourcePath, startOffset) : [];
+  // Parse the full file so parsers can use session-level metadata that may
+  // appear before the newly appended byte range; then keep only new events.
+  const events = currentContents.length
+    ? parser(currentContents, sourcePath, 0).filter((ev) => ev.sourceOffset >= startOffset)
+    : [];
   return {
     events,
     nextState: {
@@ -52,24 +57,6 @@ export function processFile(
       lastRunAt: new Date().toISOString(),
     },
   };
-}
-
-/**
- * Convert a byte offset (within the UTF-8 encoding of `s`) to the equivalent
- * character offset for `String.prototype.slice`. Optimized for the common ASCII
- * case where byte offset == char offset.
- */
-function byteOffsetToCharOffset(s: string, byteOffset: number): number {
-  if (byteOffset === 0) return 0;
-  // Fast path: if the prefix is all ASCII, byte offset == char offset.
-  let bytes = 0;
-  for (let i = 0; i < s.length; i++) {
-    const b = Buffer.byteLength(s[i], 'utf8');
-    bytes += b;
-    if (bytes === byteOffset) return i + 1;
-    if (bytes > byteOffset) return i; // mid-codepoint; align to char boundary
-  }
-  return s.length;
 }
 
 // ── Runtime poller (wraps processFile + storage) ─────────────────────────────
@@ -93,6 +80,8 @@ export interface IngestionPollerOptions {
   sources: IngestionSource[];
   /** ms between polls. Default 30s. */
   intervalMs?: number;
+  /** Attribute events to the matching project root and active item. */
+  attributeEvents?: boolean;
   /** Called for each TokenEvent successfully written to storage. */
   onEvent?: (ev: TokenEvent) => void;
 }
@@ -135,6 +124,7 @@ export async function ingestOnce(opts: IngestionPollerOptions): Promise<number> 
       // Tag every event with the source's client name (parsers may not know it).
       for (const ev of result.events) {
         ev.client = source.client as any;
+        if (opts.attributeEvents) await attributeTokenEvent(opts.storage, ev);
         try {
           await opts.storage.insertTokenEvent(ev);
           written++;
@@ -162,4 +152,33 @@ export function startIngestionPoller(opts: IngestionPollerOptions): () => void {
   };
   let timer: NodeJS.Timeout = setTimeout(tick, intervalMs);
   return () => { stopped = true; clearTimeout(timer); };
+}
+
+async function attributeTokenEvent(storage: StorageProvider, ev: TokenEvent): Promise<void> {
+  const project = await findProjectForCwd(storage, ev.cwd);
+  if (!project) return;
+
+  ev.projectId = project.id;
+  const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
+  const items = await storage.listItems({ projectId: project.id });
+  const itemId = findActiveItemAt(items, flow, ev.ts);
+  if (itemId) ev.itemId = itemId;
+}
+
+async function findProjectForCwd(storage: StorageProvider, cwd: string | undefined): Promise<Project | null> {
+  if (!cwd) return null;
+  const projects = await storage.listProjects();
+  let best: { project: Project; rootLength: number } | null = null;
+  for (const project of projects) {
+    if (!project.projectRoot) continue;
+    if (!isWithinOrEqual(project.projectRoot, cwd)) continue;
+    const rootLength = path.resolve(project.projectRoot).length;
+    if (!best || rootLength > best.rootLength) best = { project, rootLength };
+  }
+  return best?.project ?? null;
+}
+
+function isWithinOrEqual(root: string, child: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(child));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }

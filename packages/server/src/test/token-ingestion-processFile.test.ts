@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { processFile } from '../token-ingestion/watcher';
+import { parseCodexJsonl } from '../token-ingestion/parsers/codex';
 import type { TokenEvent, IngestionState } from '@agenfk/core';
 
 /**
@@ -74,5 +75,44 @@ describe('processFile', () => {
     const r = processFile('/p/a.jsonl', '5,5\n', initial, fakeParser);
     expect(r.events.map((e) => e.input)).toEqual([5]);
     expect(r.nextState.lastOffset).toBe(Buffer.byteLength('5,5\n', 'utf8'));
+  });
+
+  it('parses full-file context while returning only new appended Codex events', () => {
+    const sessionMeta = JSON.stringify({
+      type: 'session_meta',
+      timestamp: '2026-05-10T00:00:00Z',
+      payload: { id: 'sess-codex', cwd: '/workspace/repo' },
+    });
+    const turnContext = JSON.stringify({
+      type: 'turn_context',
+      timestamp: '2026-05-10T00:00:01Z',
+      payload: { turn_id: 'turn-1', model: 'gpt-5.5', cwd: '/workspace/repo' },
+    });
+    const first = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-05-10T00:00:02Z',
+      payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } },
+    });
+    const priorText = `${sessionMeta}\n${turnContext}\n${first}\n`;
+    const second = JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-05-10T00:00:03Z',
+      payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 } } },
+    });
+    const r = processFile('/p/codex.jsonl', `${priorText}${second}\n`, {
+      sourcePath: '/p/codex.jsonl',
+      lastOffset: Buffer.byteLength(priorText, 'utf8'),
+      lastRunAt: '2026-05-10T00:00:02Z',
+    }, parseCodexJsonl);
+
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0]).toMatchObject({
+      sessionId: 'sess-codex',
+      turnId: 'turn-1',
+      model: 'gpt-5.5',
+      cwd: '/workspace/repo',
+      input: 20,
+      output: 4,
+    });
   });
 });

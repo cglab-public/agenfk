@@ -7,6 +7,7 @@ describe('parseClaudeCodeJsonl', () => {
       type: 'assistant',
       timestamp: '2026-05-10T00:00:00.000Z',
       sessionId: 'sess-1',
+      cwd: '/workspace/repo',
       message: {
         model: 'claude-opus-4-7',
         usage: {
@@ -41,6 +42,7 @@ describe('parseClaudeCodeJsonl', () => {
       output: 40,
       reasoning: 0,
       total: 100 + 80 + 40,
+      cwd: '/workspace/repo',
       sourcePath: '/p/sess.jsonl',
     });
     expect(events[0].sourceOffset).toBe(0);
