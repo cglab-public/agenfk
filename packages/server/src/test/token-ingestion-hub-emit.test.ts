@@ -203,7 +203,7 @@ describe('ingestOnce — Codex attribution', () => {
       client: 'codex',
       projectId: 'proj-1',
       itemId: 'item-1',
-      input: 100,
+      input: 80, // 100 - 20
       cachedInput: 20,
       output: 12,
     });

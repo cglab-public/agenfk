@@ -76,7 +76,7 @@ describe('parseCodexJsonl', () => {
       sessionId: 'sess-codex-live',
       turnId: 'turn-1',
       model: 'gpt-5.5',
-      input: 80,
+      input: 48, // 80 - 32
       cachedInput: 32,
       output: 9,
       reasoning: 5,
@@ -149,5 +149,36 @@ describe('parseCodexJsonl', () => {
     expect(events.length).toBe(2);
     // Second event treated as a fresh baseline (its cumulative IS the delta).
     expect(events[1]).toMatchObject({ input: 30, output: 12, total: 42 });
+  });
+
+  it('de-duplicates tokens on duplicate cumulative total lines', () => {
+    const line = (cum: number) =>
+      JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-10T00:00:03Z',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              total_tokens: 15,
+            },
+            total_token_usage: {
+              input_tokens: cum,
+              output_tokens: 5,
+              total_tokens: cum + 5,
+            },
+          },
+        },
+      });
+
+    // Duplicate lines with same cumulative totals
+    const text = [line(10), line(10)].join('\n');
+    const events = parseCodexJsonl(text, '/p/codex.jsonl', 0);
+
+    // FIXED BEHAVIOR: only emits one event.
+    expect(events).toHaveLength(1);
+    expect(events[0].total).toBe(15);
   });
 });

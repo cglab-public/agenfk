@@ -91,13 +91,25 @@ describe('processFile', () => {
     const first = JSON.stringify({
       type: 'event_msg',
       timestamp: '2026-05-10T00:00:02Z',
-      payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } },
+      payload: { 
+        type: 'token_count', 
+        info: { 
+          last_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+        } 
+      },
     });
     const priorText = `${sessionMeta}\n${turnContext}\n${first}\n`;
     const second = JSON.stringify({
       type: 'event_msg',
       timestamp: '2026-05-10T00:00:03Z',
-      payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 } } },
+      payload: { 
+        type: 'token_count', 
+        info: { 
+          last_token_usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
+          total_token_usage: { input_tokens: 30, output_tokens: 6, total_tokens: 36 }
+        } 
+      },
     });
     const r = processFile('/p/codex.jsonl', `${priorText}${second}\n`, {
       sourcePath: '/p/codex.jsonl',

@@ -53,18 +53,23 @@ export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset) 
     const liveCumUsage = cumUsage && typeof cumUsage === 'object' ? cumUsage : null;
     if (obj.payload.info !== undefined && !liveUsage && !liveCumUsage) continue;
 
+    const cum = liveCumUsage
+      ? tokenUsageFromCodexInfo(liveCumUsage)
+      : {
+          input: numberOr(obj.payload.input, 0),
+          cachedInput: numberOr(obj.payload.cached_input, 0),
+          output: numberOr(obj.payload.output, 0),
+          reasoning: numberOr(obj.payload.reasoning, 0),
+          total: numberOr(obj.payload.total, 0),
+        };
+
+    // If cumulative hasn't advanced, this is a duplicate log line for the same turn.
+    if (havePrev && cum.total === prev.total) continue;
+
     let delta: typeof prev;
     if (liveUsage) {
       delta = tokenUsageFromCodexInfo(liveUsage);
     } else {
-      const cum = liveCumUsage ? tokenUsageFromCodexInfo(liveCumUsage) : {
-        input: numberOr(obj.payload.input, 0),
-        cachedInput: numberOr(obj.payload.cached_input, 0),
-        output: numberOr(obj.payload.output, 0),
-        reasoning: numberOr(obj.payload.reasoning, 0),
-        total: numberOr(obj.payload.total, 0),
-      };
-
       delta = havePrev
         ? {
             input: cum.input - prev.input,
@@ -77,12 +82,16 @@ export const parseCodexJsonl: SessionLogParser = (text, sourcePath, baseOffset) 
 
       // Detect session reset: any negative component -> treat current cumulative as fresh.
       const negative =
-        delta.input < 0 || delta.cachedInput < 0 || delta.output < 0 ||
-        delta.reasoning < 0 || delta.total < 0;
+        delta.input < 0 ||
+        delta.cachedInput < 0 ||
+        delta.output < 0 ||
+        delta.reasoning < 0 ||
+        delta.total < 0;
       if (negative) delta = { ...cum };
-      prev = cum;
-      havePrev = true;
     }
+
+    prev = cum;
+    havePrev = true;
 
     events.push({
       id: randomUUID(),
@@ -108,10 +117,20 @@ function numberOr(v: any, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
-function tokenUsageFromCodexInfo(usage: any): { input: number; cachedInput: number; output: number; reasoning: number; total: number } {
+function tokenUsageFromCodexInfo(usage: any): {
+  input: number;
+  cachedInput: number;
+  output: number;
+  reasoning: number;
+  total: number;
+} {
+  const input = numberOr(usage.input_tokens, 0);
+  const cachedInput = numberOr(usage.cached_input_tokens, 0);
   return {
-    input: numberOr(usage.input_tokens, 0),
-    cachedInput: numberOr(usage.cached_input_tokens, 0),
+    // Codex input_tokens includes cached_input_tokens.
+    // Subtract it so Hub rollups (which sum input + cachedInput) are correct.
+    input: Math.max(0, input - cachedInput),
+    cachedInput,
     output: numberOr(usage.output_tokens, 0),
     reasoning: numberOr(usage.reasoning_output_tokens, 0),
     total: numberOr(usage.total_tokens, 0),

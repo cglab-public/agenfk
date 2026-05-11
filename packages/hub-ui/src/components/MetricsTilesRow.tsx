@@ -17,7 +17,12 @@ function Tile({ label, value, icon, tone }: { label: string; value: number; icon
         <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">{label}</span>
         <span className={`w-7 h-7 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">{value.toLocaleString()}</div>
+      <div 
+        className="mt-2 text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100 truncate"
+        title={value.toLocaleString()}
+      >
+        {value.toLocaleString()}
+      </div>
     </div>
   );
 }
