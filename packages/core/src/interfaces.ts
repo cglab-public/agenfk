@@ -101,6 +101,9 @@ export type HubEventType =
   | 'validate.failed'
   | 'comment.added'
   | 'test.logged'
+  // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
+  // during ingest so token consumption is not stored.
+  | 'tokens.logged'
   | 'session.started'
   | 'session.ended'
   // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).
