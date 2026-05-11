@@ -18,6 +18,7 @@ import { toToon } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { execSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems } from "./gatekeeper-utils";
+import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
 const VERIFY_TOKEN = (() => {
@@ -572,18 +573,11 @@ async function getUpgradeNotice(): Promise<string> {
   }
   try {
     const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 2000 });
-    const tier: string = resp.data?.upgradeTier ?? 'optional';
-    const version: string = resp.data?.version ?? '';
-    const currentVersion: string = resp.data?.currentVersion ?? '';
-    let text = '';
-    // Suppress notice when already on the latest version.
-    if (!version || (currentVersion && version === currentVersion)) {
-      // nothing to show
-    } else if (tier === 'mandatory') {
-      text = `\n\n⛔ **MANDATORY UPGRADE REQUIRED**: AgEnFK v${version} must be installed before continuing. Run \`agenfk upgrade\`.`;
-    } else if (tier === 'recommended') {
-      text = `\n\n⚠️ Recommended upgrade available: AgEnFK v${version}. Run \`agenfk upgrade\` when convenient.`;
-    }
+    const text = buildUpgradeNotice({
+      tier: resp.data?.upgradeTier ?? 'optional',
+      version: resp.data?.version ?? '',
+      currentVersion: resp.data?.currentVersion ?? '',
+    });
     mcpUpgradeNoticeCache = { text, fetchedAt: Date.now() };
     return text;
   } catch {
