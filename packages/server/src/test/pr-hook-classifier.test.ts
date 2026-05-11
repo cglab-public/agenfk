@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 // Importing the .mjs hook script directly. Pure helpers are exported by name.
 // @ts-ignore — .mjs has no .d.ts; the helpers are JS functions.
 import { classifyTrigger, buildDirective } from '../../../../bin/agenfk-pr-hook.mjs';
@@ -64,5 +66,19 @@ describe('buildDirective', () => {
 
   it('unknown client: falls back to a generic shape', () => {
     expect(buildDirective('mystery', message)).toEqual({ message });
+  });
+});
+
+describe('runtime command extraction', () => {
+  const hookPath = path.resolve(__dirname, '../../../../bin/agenfk-pr-hook.mjs');
+
+  it('detects Codex shell payloads that use cmd instead of command', () => {
+    const res = spawnSync(process.execPath, [hookPath, '--client', 'codex'], {
+      input: JSON.stringify({ tool_input: { cmd: 'gh pr create --title fix' } }),
+      encoding: 'utf8',
+    });
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('register_pr');
   });
 });

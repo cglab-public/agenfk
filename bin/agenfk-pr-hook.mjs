@@ -77,10 +77,17 @@ function extractCommand(input) {
   if (!input || typeof input !== 'object') return '';
   return (
     input?.tool_input?.command ||
+    input?.tool_input?.cmd ||
     input?.toolInput?.command ||
+    input?.toolInput?.cmd ||
     input?.args?.command ||
+    input?.args?.cmd ||
     input?.input?.command ||
+    input?.input?.cmd ||
     input?.payload?.command ||
+    input?.payload?.cmd ||
+    input?.command ||
+    input?.cmd ||
     ''
   );
 }
