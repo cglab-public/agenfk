@@ -1062,6 +1062,74 @@ integrationCommand
     );
   });
 
+integrationCommand
+  .command('install <platform>')
+  .description('Install one or all integrations. Use "all" to install everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
+  .action((platform, options) => {
+    const installAll = platform.trim().toLowerCase() === 'all';
+    const allPlatforms = Object.keys(INTEGRATION_LABELS);
+    const targets: string[] = installAll
+      ? allPlatforms
+      : [resolveIntegrationPlatform(platform)];
+
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.cyan(`This will install: ${labels}`));
+      console.log(chalk.gray('Use -y/--yes to skip this prompt in scripts.'));
+    }
+
+    let rulesScope = '';
+    try {
+      if (fs.existsSync(AGENFK_CONFIG_PATH)) {
+        const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+        if (cfg.rulesScope) rulesScope = cfg.rulesScope;
+      }
+    } catch {}
+
+    for (const p of targets) {
+      console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[p]}...`));
+      const args = [`--only=${p}`];
+      if (rulesScope) args.push(`--rules-scope=${rulesScope}`);
+      runIntegrationScript('install.mjs', args);
+    }
+
+    const paused = getPausedIntegrations();
+    const remaining = paused.filter(p => !targets.includes(p));
+    setPausedIntegrations(remaining);
+
+    console.log(chalk.green(`✔ Installed: ${labels}`));
+  });
+
+integrationCommand
+  .command('uninstall <platform>')
+  .description('Uninstall one or all integrations. Use "all" to uninstall everything.')
+  .option('-y, --yes', 'Skip confirmation prompt')
+  .action((platform, options) => {
+    const uninstallAll = platform.trim().toLowerCase() === 'all';
+    const allPlatforms = Object.keys(INTEGRATION_LABELS);
+    const targets: string[] = uninstallAll
+      ? allPlatforms
+      : [resolveIntegrationPlatform(platform)];
+
+    const labels = targets.map(p => INTEGRATION_LABELS[p]).join(', ');
+    if (!options.yes) {
+      console.log(chalk.yellow(`This will uninstall: ${labels}`));
+      console.log(chalk.gray('Use -y/--yes to skip this prompt in scripts.'));
+    }
+
+    for (const p of targets) {
+      console.log(chalk.blue(`Uninstalling ${INTEGRATION_LABELS[p]}...`));
+      runIntegrationScript('uninstall.mjs', [`--only=${p}`, '--yes']);
+    }
+
+    const existing = getPausedIntegrations();
+    const updated = Array.from(new Set([...existing, ...targets]));
+    setPausedIntegrations(updated);
+
+    console.log(chalk.green(`✔ Uninstalled: ${labels}`));
+  });
+
 
 // ---------------------------------------------------------------------------
 // agenfk pause <platform|all> — temporarily disable integration(s)

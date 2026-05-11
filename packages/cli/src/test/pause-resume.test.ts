@@ -382,21 +382,23 @@ describe('agenfk resume all', () => {
 });
 
 // ---------------------------------------------------------------------------
-// agenfk integration — install/uninstall removed in favour of pause/resume
+// agenfk integration — install/uninstall/list
 // ---------------------------------------------------------------------------
-describe('agenfk integration — install/uninstall removed', () => {
-  it('integration install subcommand no longer exists', () => {
+describe('agenfk integration subcommands', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('integration install subcommand exists', () => {
     const integrationCmd = program.commands.find(c => c.name() === 'integration');
     expect(integrationCmd).toBeDefined();
     const subNames = integrationCmd!.commands.map(c => c.name());
-    expect(subNames).not.toContain('install');
+    expect(subNames).toContain('install');
   });
 
-  it('integration uninstall subcommand no longer exists', () => {
+  it('integration uninstall subcommand exists', () => {
     const integrationCmd = program.commands.find(c => c.name() === 'integration');
     expect(integrationCmd).toBeDefined();
     const subNames = integrationCmd!.commands.map(c => c.name());
-    expect(subNames).not.toContain('uninstall');
+    expect(subNames).toContain('uninstall');
   });
 
   it('integration list subcommand still exists', () => {
@@ -404,5 +406,33 @@ describe('agenfk integration — install/uninstall removed', () => {
     expect(integrationCmd).toBeDefined();
     const subNames = integrationCmd!.commands.map(c => c.name());
     expect(subNames).toContain('list');
+  });
+
+  it('integration install codex calls install.mjs --only=codex', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rulesScope: 'global' }));
+    mockSpawnSync.mockReturnValue({ status: 0 });
+
+    await program.parseAsync(['node', 'agenfk', 'integration', 'install', 'codex', '--yes']);
+
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      'node',
+      expect.arrayContaining([expect.stringContaining('install.mjs'), '--only=codex']),
+      expect.anything()
+    );
+  });
+
+  it('integration uninstall codex calls uninstall.mjs --only=codex', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{}');
+    mockSpawnSync.mockReturnValue({ status: 0 });
+
+    await program.parseAsync(['node', 'agenfk', 'integration', 'uninstall', 'codex', '--yes']);
+
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      'node',
+      expect.arrayContaining([expect.stringContaining('uninstall.mjs'), '--only=codex', '--yes']),
+      expect.anything()
+    );
   });
 });
