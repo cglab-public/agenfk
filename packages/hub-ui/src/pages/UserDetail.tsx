@@ -13,6 +13,13 @@ import { useToggleSet } from '../hooks/useToggleSet';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
+const RANGES: Array<{ key: RangeKey; label: string }> = [
+  { key: 'today', label: 'today' },
+  { key: '7d', label: '7d' },
+  { key: '30d', label: '30d' },
+  { key: '90d', label: '90d' },
+];
+
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
 interface TimelineRow {
@@ -25,6 +32,14 @@ interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, numbe
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
 const formatTime = fmtDateTime;
+
+function startOfDateInput(value: string): string {
+  return new Date(`${value}T00:00:00`).toISOString();
+}
+
+function endOfDateInput(value: string): string {
+  return new Date(`${value}T23:59:59.999`).toISOString();
+}
 
 const TYPE_BADGE: Record<string, string> = {
   'item.created':       'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
@@ -101,6 +116,11 @@ export function UserDetailPage() {
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
   const [range, setRange] = useState<RangeKey>('30d');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
+  const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
 
   const eventTypes = useQuery<EventTypesResponse>({
     queryKey: ['event-types'],
@@ -129,19 +149,23 @@ export function UserDetailPage() {
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
-    p.set('from', fromIsoForRange(new Date(), range));
+    if (customFromIso) p.set('from', customFromIso);
+    else p.set('from', fromIsoForRange(new Date(), range));
+    if (customToIso) p.set('to', customToIso);
     p.set('limit', '200');
     return p;
-  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range]);
+  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
 
   const metricsQs = useMemo(() => {
     const p = new URLSearchParams();
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
-    p.set('from', fromIsoForRange(new Date(), range));
+    if (customFromIso) p.set('from', customFromIso);
+    else p.set('from', fromIsoForRange(new Date(), range));
+    if (customToIso) p.set('to', customToIso);
     return p.toString();
-  }, [decoded, projectSel.set, itemTypeSel.set, range]);
+  }, [decoded, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
 
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', metricsQs],
@@ -162,7 +186,7 @@ export function UserDetailPage() {
   );
 
   const tl = useQuery<{ events: TimelineRow[] }>({
-    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range],
+    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
   });
 
@@ -219,6 +243,46 @@ export function UserDetailPage() {
           }}
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
+        <div>
+          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">Period</h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+              {RANGES.map(r => (
+                <button
+                  key={r.key}
+                  onClick={() => {
+                    setRange(r.key);
+                    setCustomStart('');
+                    setCustomEnd('');
+                  }}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              Start
+              <input
+                type="date"
+                value={customStart}
+                onChange={e => setCustomStart(e.target.value)}
+                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-[11px] text-slate-700 dark:text-slate-200"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+              End
+              <input
+                type="date"
+                value={customEnd}
+                onChange={e => setCustomEnd(e.target.value)}
+                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-[11px] text-slate-700 dark:text-slate-200"
+              />
+            </label>
+          </div>
+        </div>
       </section>
 
       <TimelineBar
@@ -229,6 +293,8 @@ export function UserDetailPage() {
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}
+        fromIsoOverride={customFromIso || undefined}
+        toIsoOverride={customToIso || undefined}
       />
 
       <section className="space-y-3">

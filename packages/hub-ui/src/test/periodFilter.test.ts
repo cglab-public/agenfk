@@ -56,6 +56,24 @@ describe('period filter — UserDetailPage', () => {
     expect(USER_SRC).toMatch(/onRangeChange/);
     expect(USER_SRC).toMatch(/<TimelineBar[^>]*range=/s);
   });
+
+  it('renders Period controls in the Filters panel', () => {
+    expect(USER_SRC).toMatch(/<h3[^>]*>\s*Period\s*<\/h3>/);
+    expect(USER_SRC).toMatch(/RANGES\.map/);
+  });
+
+  it('supports explicit custom start and end dates', () => {
+    expect(USER_SRC).toMatch(/customStart/);
+    expect(USER_SRC).toMatch(/customEnd/);
+    expect(USER_SRC).toMatch(/type="date"/);
+  });
+
+  it('passes custom from/to dates to user metrics and timeline queries', () => {
+    expect(USER_SRC).toMatch(/customFromIso/);
+    expect(USER_SRC).toMatch(/customToIso/);
+    expect(USER_SRC).toMatch(/p\.set\(['"]from['"],\s*customFromIso/s);
+    expect(USER_SRC).toMatch(/p\.set\(['"]to['"],\s*customToIso/s);
+  });
 });
 
 describe('TimelineBar — accepts external range/onRangeChange props', () => {
@@ -77,6 +95,13 @@ describe('TimelineBar — accepts external range/onRangeChange props', () => {
 
   it('accepts tokenSeries prop for a list of daily token buckets', () => {
     expect(TIMELINE_SRC).toMatch(/tokenSeries/);
+  });
+
+  it('accepts explicit from/to bounds for controlled custom date ranges', () => {
+    expect(TIMELINE_SRC).toMatch(/fromIsoOverride/);
+    expect(TIMELINE_SRC).toMatch(/toIsoOverride/);
+    expect(TIMELINE_SRC).toMatch(/params\.set\(['"]from['"],\s*fromIso/s);
+    expect(TIMELINE_SRC).toMatch(/params\.set\(['"]to['"],\s*toIsoOverride/s);
   });
 
   it('renders a mode toggle (events / tokens) when tokenSeries is provided', () => {

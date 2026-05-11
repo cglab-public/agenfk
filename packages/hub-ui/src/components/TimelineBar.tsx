@@ -4,6 +4,7 @@ import { api } from '../api';
 import {
   buildAxis,
   effectiveBucket,
+  fmtBucketKey,
   fromIsoForRange,
   shortLabel,
   type Bucket,
@@ -24,6 +25,8 @@ interface Props {
   title?: string;
   range?: RangeKey;
   onRangeChange?: (r: RangeKey) => void;
+  fromIsoOverride?: string;
+  toIsoOverride?: string;
   tokenSeries?: TokenBucket[];
 }
 
@@ -53,7 +56,25 @@ function niceTicks(max: number): number[] {
   return out;
 }
 
-export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange, tokenSeries }: Props) {
+function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: Bucket): string[] {
+  const from = new Date(fromIso);
+  const to = toIso ? new Date(toIso) : new Date();
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to) return [];
+
+  const out: string[] = [];
+  if (bucket === 'day') {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+    while (d <= end) { out.push(fmtBucketKey(d, 'day')); d.setDate(d.getDate() + 1); }
+  } else {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate(), from.getHours());
+    const end = new Date(to.getFullYear(), to.getMonth(), to.getDate(), to.getHours());
+    while (d <= end) { out.push(fmtBucketKey(d, 'hour')); d.setHours(d.getHours() + 1); }
+  }
+  return out;
+}
+
+export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride, tokenSeries }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
   const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
@@ -67,7 +88,8 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   // Recompute "now" on each render — TimelineBar is light enough that this is fine,
   // and we want the axis/from to track the wall clock as the user lingers.
   const now = new Date();
-  const fromIso = useMemo(() => fromIsoForRange(now, range), [range, now.getHours()]);
+  const rangeFromIso = useMemo(() => fromIsoForRange(now, range), [range, now.getHours()]);
+  const fromIso = fromIsoOverride ?? rangeFromIso;
 
   // JS getTimezoneOffset returns minutes WEST of UTC; the hub expects minutes
   // EAST of UTC (positive for tz ahead of UTC). Negate to align.
@@ -79,15 +101,21 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   if (projects?.length) params.set('projects', projects.join(','));
   if (itemTypes?.length) params.set('itemTypes', itemTypes.join(','));
   params.set('from', fromIso);
+  if (toIsoOverride) params.set('to', toIsoOverride);
   params.set('bucket', bucket);
   params.set('tzOffsetMin', String(tzOffsetMin));
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', range, bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 
-  const axis = useMemo(() => buildAxis(now, range, bucket), [range, bucket, now.getHours()]);
+  const axis = useMemo(
+    () => fromIsoOverride || toIsoOverride
+      ? buildAxisForBounds(fromIso, toIsoOverride, bucket)
+      : buildAxis(now, range, bucket),
+    [fromIso, fromIsoOverride, toIsoOverride, range, bucket, now.getHours()],
+  );
   const byTime = useMemo(() => {
     const m = new Map<string, HistogramBucket>();
     for (const b of q.data?.buckets ?? []) m.set(b.time, b);
@@ -125,7 +153,9 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   const hoveredBucket = hovered ? byTime.get(hovered) : null;
   const hoveredX = hoverIdx != null ? m.left + hoverIdx * (barW + barGap) + barW / 2 : 0;
 
-  const rangeBlurb = isToday
+  const rangeBlurb = fromIsoOverride || toIsoOverride
+    ? 'custom period'
+    : isToday
     ? 'today'
     : `last ${range === '7d' ? 7 : range === '30d' ? 30 : 90} days`;
 
@@ -136,7 +166,12 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
     return m;
   }, [tokenSeries]);
 
-  const tokenDayAxis = useMemo(() => buildAxis(now, range, 'day'), [range, now.getHours()]);
+  const tokenDayAxis = useMemo(
+    () => fromIsoOverride || toIsoOverride
+      ? buildAxisForBounds(fromIso, toIsoOverride, 'day')
+      : buildAxis(now, range, 'day'),
+    [fromIso, fromIsoOverride, toIsoOverride, range, now.getHours()],
+  );
 
   const maxTokens = useMemo(() => {
     let max = 0;
