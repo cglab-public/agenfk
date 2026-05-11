@@ -49,26 +49,26 @@ function TokenUsageTile({ tokensIn, tokensOut }: { tokensIn: number; tokensOut: 
           </span>
         </span>
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid grid-cols-2 gap-3">
         <div
           className="min-w-0"
           title={`Tokens in: ${tokensIn.toLocaleString()}`}
           aria-label={`Tokens in: ${tokensIn.toLocaleString()}`}
         >
-          <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens in</div>
-          <div className="mt-0.5 text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
+          <div className="text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
             {formatCompactTokenCount(tokensIn)}
           </div>
+          <div className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens in</div>
         </div>
         <div
           className="min-w-0"
           title={`Tokens out: ${tokensOut.toLocaleString()}`}
           aria-label={`Tokens out: ${tokensOut.toLocaleString()}`}
         >
-          <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens out</div>
-          <div className="mt-0.5 text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
+          <div className="text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
             {formatCompactTokenCount(tokensOut)}
           </div>
+          <div className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens out</div>
         </div>
       </div>
     </div>

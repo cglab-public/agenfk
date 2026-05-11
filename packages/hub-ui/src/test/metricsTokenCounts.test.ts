@@ -28,4 +28,10 @@ describe('MetricsTilesRow token count display', () => {
     expect(TILES_SRC).toMatch(/aria-label=\{.*tokensIn.*toLocaleString\(\)/s);
     expect(TILES_SRC).toMatch(/aria-label=\{.*tokensOut.*toLocaleString\(\)/s);
   });
+
+  it('renders token labels below the values for horizontal value alignment', () => {
+    expect(TILES_SRC).toMatch(/mt-2 grid grid-cols-2 gap-3/);
+    expect(TILES_SRC).toMatch(/\{formatCompactTokenCount\(tokensIn\)\}[\s\S]*Tokens in/);
+    expect(TILES_SRC).toMatch(/\{formatCompactTokenCount\(tokensOut\)\}[\s\S]*Tokens out/);
+  });
 });
