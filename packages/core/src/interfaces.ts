@@ -101,7 +101,6 @@ export type HubEventType =
   | 'validate.failed'
   | 'comment.added'
   | 'test.logged'
-  | 'tokens.logged'
   | 'session.started'
   | 'session.ended'
   // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).

@@ -253,6 +253,8 @@ class PgAdapter implements HubDb {
 
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
+  await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
+  await adapter.exec("DELETE FROM rollups_daily");
   // Backfill columns on pre-existing event tables. Use information_schema so
   // legacy DBs created before the item_type/etc columns existed migrate cleanly.
   const cols = await adapter.all<{ column_name: string }>(

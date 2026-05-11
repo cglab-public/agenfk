@@ -1,12 +1,10 @@
-import { Activity, CheckCircle2, XCircle, Inbox, ArrowDownToLine, ArrowUpFromLine, GitPullRequest } from 'lucide-react';
+import { Activity, CheckCircle2, XCircle, Inbox, GitPullRequest } from 'lucide-react';
 
 export interface MetricsTotals {
   events: number;
   closed: number;
   passes: number;
   fails: number;
-  tokensIn: number;
-  tokensOut: number;
   prsOpened: number;
 }
 
@@ -27,62 +25,13 @@ function Tile({ label, value, icon, tone }: { label: string; value: number; icon
   );
 }
 
-function formatCompactTokenCount(value: number): string {
-  if (Math.abs(value) < 1_000_000) return value.toLocaleString();
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
-}
-
-function TokenUsageTile({ tokensIn, tokensOut }: { tokensIn: number; tokensOut: number }) {
-  return (
-    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-5 py-4 hover:border-indigo-300 dark:hover:border-indigo-700 hover:shadow-sm transition-all md:col-span-2 lg:col-span-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Token usage</span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-7 h-7 rounded-lg flex items-center justify-center bg-cyan-50 dark:bg-cyan-900/30">
-            <ArrowDownToLine className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-          </span>
-          <span className="w-7 h-7 rounded-lg flex items-center justify-center bg-sky-50 dark:bg-sky-900/30">
-            <ArrowUpFromLine className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-          </span>
-        </span>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-3">
-        <div
-          className="min-w-0"
-          title={`Tokens in: ${tokensIn.toLocaleString()}`}
-          aria-label={`Tokens in: ${tokensIn.toLocaleString()}`}
-        >
-          <div className="text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
-            {formatCompactTokenCount(tokensIn)}
-          </div>
-          <div className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens in</div>
-        </div>
-        <div
-          className="min-w-0"
-          title={`Tokens out: ${tokensOut.toLocaleString()}`}
-          aria-label={`Tokens out: ${tokensOut.toLocaleString()}`}
-        >
-          <div className="text-xl xl:text-2xl font-bold tabular-nums text-slate-900 dark:text-slate-100">
-            {formatCompactTokenCount(tokensOut)}
-          </div>
-          <div className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">Tokens out</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function MetricsTilesRow({ totals }: { totals: MetricsTotals }) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
       <Tile label="Events"     value={totals.events}     icon={<Activity className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />}        tone="bg-indigo-50 dark:bg-indigo-900/30" />
       <Tile label="Closed"     value={totals.closed}     icon={<Inbox className="w-4 h-4 text-violet-600 dark:text-violet-400" />}           tone="bg-violet-50 dark:bg-violet-900/30" />
       <Tile label="Validate ✓" value={totals.passes}     icon={<CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}  tone="bg-emerald-50 dark:bg-emerald-900/30" />
       <Tile label="Validate ✗" value={totals.fails}      icon={<XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400" />}             tone="bg-rose-50 dark:bg-rose-900/30" />
-      <TokenUsageTile tokensIn={totals.tokensIn} tokensOut={totals.tokensOut} />
       <Tile label="PRs"        value={totals.prsOpened}  icon={<GitPullRequest className="w-4 h-4 text-fuchsia-600 dark:text-fuchsia-400" />} tone="bg-fuchsia-50 dark:bg-fuchsia-900/30" />
     </div>
   );

@@ -116,6 +116,34 @@ describe('HubDb SQLite adapter', () => {
     expect(names.has('external_id')).toBe(true);
   });
 
+  it('bootstrap purges stored token consumption events and stale rollups', async () => {
+    await db.run(
+      `INSERT INTO events
+       (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['tok-1', 'org', 'inst', 'alice', '2026-05-10T00:00:00Z', '2026-05-10T00:00:01Z', 'tokens.logged', '{}'],
+    );
+    await db.run(
+      `INSERT INTO events
+       (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['keep-1', 'org', 'inst', 'alice', '2026-05-10T00:00:00Z', '2026-05-10T00:00:01Z', 'item.created', '{}'],
+    );
+    await db.run(
+      `INSERT INTO rollups_daily
+       (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['org', 'alice', '2026-05-10', 2, 0, 100, 50, 0, 0, 0],
+    );
+    await db.close();
+
+    db = await openSqliteDb(TEST_DB);
+    const eventRows = await db.all<{ type: string }>('SELECT type FROM events ORDER BY event_id');
+    expect(eventRows.map(r => r.type)).toEqual(['item.created']);
+    const rollupRows = await db.all('SELECT * FROM rollups_daily');
+    expect(rollupRows).toEqual([]);
+  });
+
   it('preserves SQLite ON CONFLICT(...) DO UPDATE semantics', async () => {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS kv (

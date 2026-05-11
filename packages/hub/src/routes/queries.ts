@@ -102,12 +102,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
                   WHEN type = 'step.transitioned'
                        AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
                 END) AS items_closed,
-                SUM(CASE WHEN type = 'tokens.logged'
-                         THEN COALESCE(CAST(json_extract(payload, '$.payload.input') AS INTEGER), 0)
-                            + COALESCE(CAST(json_extract(payload, '$.payload.cachedInput') AS INTEGER), 0)
-                         ELSE 0 END) AS tokens_in,
-                SUM(CASE WHEN type = 'tokens.logged'
-                         THEN COALESCE(CAST(json_extract(payload, '$.payload.output') AS INTEGER), 0) ELSE 0 END) AS tokens_out,
+                0 AS tokens_in,
+                0 AS tokens_out,
                 SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
                 SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
                 SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened

@@ -246,6 +246,8 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   raw.prepare('PRAGMA journal_mode = WAL').run();
   raw.prepare('PRAGMA foreign_keys = ON').run();
   raw.exec(SCHEMA_SQLITE);
+  raw.exec("DELETE FROM events WHERE type = 'tokens.logged'");
+  raw.exec("DELETE FROM rollups_daily");
 
   // Backfill columns on pre-existing event tables created before
   // item_type/remote_url/item_title/external_id existed.

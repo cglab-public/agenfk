@@ -93,10 +93,6 @@ describe('TimelineBar — accepts external range/onRangeChange props', () => {
     expect(TIMELINE_SRC).toMatch(/rangeProp.*RANGES|!rangeProp|rangeProp == null|rangeProp === undefined/s);
   });
 
-  it('accepts tokenSeries prop for a list of daily token buckets', () => {
-    expect(TIMELINE_SRC).toMatch(/tokenSeries/);
-  });
-
   it('accepts explicit from/to bounds for controlled custom date ranges', () => {
     expect(TIMELINE_SRC).toMatch(/fromIsoOverride/);
     expect(TIMELINE_SRC).toMatch(/toIsoOverride/);
@@ -104,9 +100,9 @@ describe('TimelineBar — accepts external range/onRangeChange props', () => {
     expect(TIMELINE_SRC).toMatch(/params\.set\(['"]to['"],\s*toIsoOverride/s);
   });
 
-  it('renders a mode toggle (events / tokens) when tokenSeries is provided', () => {
-    // When tokenSeries prop is present the chart must show a mode toggle.
-    expect(TIMELINE_SRC).toMatch(/tokenSeries.*mode|mode.*tokenSeries|'events'.*'tokens'|"events".*"tokens"/s);
+  it('does not expose a token timeline mode', () => {
+    expect(TIMELINE_SRC).not.toMatch(/tokenSeries/);
+    expect(TIMELINE_SRC).not.toMatch(/'tokens'|"tokens"/);
   });
 });
 
@@ -118,7 +114,7 @@ describe('Org.tsx — range picker in Filters panel', () => {
     expect(ORG_SRC).toMatch(/Period|period|RANGES|today.*7d|7d.*30d/);
   });
 
-  it('passes tokenSeries to TimelineBar', () => {
-    expect(ORG_SRC).toMatch(/tokenSeries/);
+  it('does not pass token telemetry series to TimelineBar', () => {
+    expect(ORG_SRC).not.toMatch(/tokenSeries/);
   });
 });

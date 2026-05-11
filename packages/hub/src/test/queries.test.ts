@@ -65,14 +65,11 @@ describe('hub query endpoints', () => {
       sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed',
         itemType: 'BUG', remoteUrl: 'git@github.com:acme/web.git',
         itemTitle: 'Crash on signup' }),
-      // Payload matches the format the spoke server actually emits:
-      // JSON.stringify(fullHubEvent) stored in hub's events.payload column,
-      // so token fields live at $.payload.input / $.payload.output.
-      sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
+      sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'pr.opened',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
         itemType: 'STORY', remoteUrl: 'git@github.com:acme/api.git',
         itemTitle: 'Pagination',
-        payload: { input: 100, output: 50, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
+        payload: { prNumber: 7, repo: 'acme/api' } }),
     ]);
   });
 
@@ -112,8 +109,8 @@ describe('hub query endpoints', () => {
     expect(day3?.items_closed).toBe(1);
     expect(day3?.validate_passes).toBe(1);
     const day4 = rows.find((x) => x.day === '2026-05-04' && x.user_key === 'bob@acme.com');
-    expect(day4?.tokens_in).toBe(100);
-    expect(day4?.tokens_out).toBe(50);
+    expect(day4?.tokens_in).toBe(0);
+    expect(day4?.tokens_out).toBe(0);
   });
 
   it('GET /v1/metrics returns rollup series', async () => {
@@ -140,7 +137,7 @@ describe('hub query endpoints', () => {
     expect(may3.by_type['step.transitioned']).toBe(1);
     expect(may3.by_type['validate.passed']).toBe(1);
     expect(may4.total).toBe(1);
-    expect(may4.by_type['tokens.logged']).toBe(1);
+    expect(may4.by_type['pr.opened']).toBe(1);
   });
 
   it('GET /v1/histogram filters by user and type', async () => {
@@ -199,9 +196,9 @@ describe('hub query endpoints', () => {
     const r = await supertest(app).get('/v1/event-types').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.types)).toBe(true);
-    // Seeded events: item.created, step.transitioned, validate.passed, tokens.logged
+    // Seeded events: item.created, step.transitioned, validate.passed, pr.opened
     expect(r.body.types).toEqual(
-      ['item.created', 'step.transitioned', 'tokens.logged', 'validate.passed'].sort(),
+      ['item.created', 'pr.opened', 'step.transitioned', 'validate.passed'].sort(),
     );
   });
 
@@ -352,43 +349,38 @@ describe('hub query endpoints', () => {
     expect(keys.length).toBeGreaterThan(0);
   });
 
-  it('GET /v1/metrics with projects= filter extracts tokens from $.payload.input path', async () => {
-    // With a projects filter, queries.ts falls back to raw-event aggregation
-    // instead of rollups_daily. This path must use the same $.payload.input
-    // extraction as the rollup.
+  it('GET /v1/metrics with projects= filter reports zero token consumption', async () => {
     const r = await supertest(app)
       .get('/v1/metrics?projects=git@github.com:acme/api.git')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
     const row = r.body.series.find((s: any) => s.day === '2026-05-04' && s.user_key === 'bob@acme.com');
     expect(row).toBeDefined();
-    expect(row.tokens_in).toBe(100);
-    expect(row.tokens_out).toBe(50);
+    expect(row.tokens_in).toBe(0);
+    expect(row.tokens_out).toBe(0);
   });
 
-  it('rollup includes cachedInput in tokens_in', async () => {
-    // Seed a tokens.logged event that has cachedInput (the dominant component
-    // when the model cache is warm). tokens_in must be input + cachedInput.
+  it('rollup ignores tokens.logged events', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test');
-    await supertest(app).post('/v1/events')
+    const ingest = await supertest(app).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'c1', occurredAt: '2026-05-05T10:00:00Z', type: 'tokens.logged',
           actor: { osUser: 'carol', gitName: 'C', gitEmail: 'carol@acme.com' },
           payload: { input: 200, cachedInput: 5000, output: 80, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
       ]});
+    expect(ingest.body).toEqual(expect.objectContaining({ ingested: 0, skipped: 1, rejected: 0 }));
     await recomputeRollups(ctx.db);
     const row = await ctx.db.get<any>(
       'SELECT tokens_in, tokens_out FROM rollups_daily WHERE day = ? AND user_key = ?',
       ['2026-05-05', 'carol@acme.com'],
     );
-    expect(row?.tokens_in).toBe(5200);  // input(200) + cachedInput(5000)
-    expect(row?.tokens_out).toBe(80);
+    expect(row).toBeUndefined();
   });
 
-  it('GET /v1/metrics with projects= includes cachedInput in tokens_in (direct query path)', async () => {
+  it('GET /v1/metrics with projects= ignores tokens.logged events in the direct query path', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test2');
-    await supertest(app).post('/v1/events')
+    const ingest = await supertest(app).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'd1', occurredAt: '2026-05-06T10:00:00Z', type: 'tokens.logged',
@@ -396,23 +388,22 @@ describe('hub query endpoints', () => {
           remoteUrl: 'git@github.com:acme/api.git',
           payload: { input: 300, cachedInput: 7000, output: 120, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
       ]});
-    // The projects= filter uses the raw-event aggregation path (not rollups_daily).
+    expect(ingest.body).toEqual(expect.objectContaining({ ingested: 0, skipped: 1, rejected: 0 }));
     const r = await supertest(app)
       .get('/v1/metrics?projects=git@github.com:acme/api.git&users=dave@acme.com')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
     const row = r.body.series.find((s: any) => s.day === '2026-05-06' && s.user_key === 'dave@acme.com');
-    expect(row).toBeDefined();
-    expect(row.tokens_in).toBe(7300);  // input(300) + cachedInput(7000)
-    expect(row.tokens_out).toBe(120);
+    expect(row).toBeUndefined();
   });
 
   it('recomputeRollups re-processes all days so stale rows are overwritten', async () => {
-    // First compute with current data (tokens_in should be 100 from the $.payload.input path).
+    // First compute with current data: token consumption columns are retained
+    // for schema compatibility but always recomputed to zero.
     await recomputeRollups(ctx.db);
     const before = await ctx.db.all<any>('SELECT * FROM rollups_daily WHERE day = ? AND user_key = ?',
       ['2026-05-04', 'bob@acme.com']);
-    expect(before[0]?.tokens_in).toBe(100);
+    expect(before[0]?.tokens_in).toBe(0);
 
     // Manually corrupt the rollup row to simulate stale data from an old format.
     await ctx.db.run(
@@ -423,11 +414,11 @@ describe('hub query endpoints', () => {
       ['2026-05-04', 'bob@acme.com']);
     expect(corrupted[0]?.tokens_in).toBe(9999);
 
-    // recomputeRollups must overwrite the corrupted row with the correct value
+    // recomputeRollups must overwrite the corrupted row with zero
     // because it re-processes ALL days (not just days >= MAX(day)).
     await recomputeRollups(ctx.db);
     const after = await ctx.db.all<any>('SELECT tokens_in FROM rollups_daily WHERE day = ? AND user_key = ?',
       ['2026-05-04', 'bob@acme.com']);
-    expect(after[0]?.tokens_in).toBe(100);
+    expect(after[0]?.tokens_in).toBe(0);
   });
 });

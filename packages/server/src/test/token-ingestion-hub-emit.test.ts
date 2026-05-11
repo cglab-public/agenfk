@@ -211,31 +211,33 @@ describe('ingestOnce — Codex attribution', () => {
   });
 });
 
-// ── 2. Rollup payload format compatibility ────────────────────────────────────
+// ── 2. Runtime removal ───────────────────────────────────────────────────────
 
-describe('hub rollup — token payload extraction', () => {
-  it('server.ts hub startup block imports and starts the ingestion poller', () => {
+describe('hub runtime — token ingestion disabled', () => {
+  it('server.ts does not import/start the ingestion poller or emit tokens.logged', () => {
     const src = fs.readFileSync(
       path.resolve(__dirname, '../server.ts'),
       'utf8',
     );
-    expect(src).toMatch(/startIngestionPoller/);
-    expect(src).toMatch(/tokens\.logged/);
+    expect(src).not.toMatch(/startIngestionPoller/);
+    expect(src).not.toMatch(/tokens\.logged/);
   });
 
-  it('rollup.ts extracts tokens from $.payload.input (the hub stores JSON.stringify(fullEvent))', () => {
+  it('rollup.ts no longer extracts token usage from hub events', () => {
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../../../packages/hub/src/rollup.ts'),
       'utf8',
     );
-    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
+    expect(src).not.toMatch(/tokens\.logged/);
+    expect(src).not.toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
   });
 
-  it('queries.ts /metrics extracts tokens from $.payload.input', () => {
+  it('queries.ts /metrics no longer extracts token usage from hub events', () => {
     const src = fs.readFileSync(
       path.resolve(__dirname, '../../../../packages/hub/src/routes/queries.ts'),
       'utf8',
     );
-    expect(src).toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
+    expect(src).not.toMatch(/tokens\.logged/);
+    expect(src).not.toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
   });
 });

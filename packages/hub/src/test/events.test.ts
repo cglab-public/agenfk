@@ -80,6 +80,26 @@ describe('hub /v1 events', () => {
     expect(inst.git_email).toBe('alice@example.com');
   });
 
+  it('strips token consumption events instead of storing them', async () => {
+    const events = [
+      sampleEvent({
+        eventId: 'token-1',
+        type: 'tokens.logged',
+        payload: { input: 100, cachedInput: 25, output: 50 },
+      }),
+    ];
+    const r = await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-Installation-Id', 'inst-1')
+      .send({ events });
+
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(expect.objectContaining({ ingested: 0, skipped: 1, rejected: 0 }));
+
+    const countRow = await ctx.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM events');
+    expect(countRow!.c).toBe(0);
+  });
+
   it('is idempotent on event_id', async () => {
     const events = [sampleEvent({ eventId: 'dup' })];
     let r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });

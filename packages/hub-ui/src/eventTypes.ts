@@ -15,7 +15,6 @@ export const KNOWN_EVENT_TYPES = [
   'validate.failed',
   'comment.added',
   'test.logged',
-  'tokens.logged',
   'session.started',
   'session.ended',
 ] as const;

@@ -162,10 +162,10 @@ describe('PG parity: queries + rollup', () => {
         payload: { fromStatus: 'TEST', toStatus: 'DONE' } }),
       sample({ eventId: 'a3', occurredAt: '2026-05-03T10:00:00Z', type: 'validate.passed',
         itemType: 'BUG', remoteUrl: 'git@x:web.git' }),
-      sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'tokens.logged',
+      sample({ eventId: 'b1', occurredAt: '2026-05-04T10:00:00Z', type: 'pr.opened',
         actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
         itemType: 'STORY', remoteUrl: 'git@x:api.git',
-        payload: { input: 100, output: 50, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
+        payload: { prNumber: 7, repo: 'x/api' } }),
     ];
     await supertest(fx.app).post('/v1/events')
       .set('Authorization', `Bearer ${fx.token}`)
@@ -200,7 +200,7 @@ describe('PG parity: queries + rollup', () => {
   it('GET /v1/event-types / /v1/projects / /v1/item-types', async () => {
     const types = await supertest(fx.app).get('/v1/event-types').set('Cookie', fx.cookie);
     expect(types.body.types.sort()).toEqual(
-      ['item.created', 'step.transitioned', 'tokens.logged', 'validate.passed'].sort()
+      ['item.created', 'pr.opened', 'step.transitioned', 'validate.passed'].sort()
     );
     const projects = await supertest(fx.app).get('/v1/projects').set('Cookie', fx.cookie);
     expect(projects.body.projects.sort()).toEqual(['git@x:api.git', 'git@x:web.git']);
@@ -256,7 +256,7 @@ describe('PG parity: queries + rollup', () => {
     expect(m.body.series.length).toBeGreaterThan(0);
   });
 
-  it('rollups_daily computes items_closed and tokens correctly on PG', async () => {
+  it('rollups_daily computes items_closed and leaves token consumption at zero on PG', async () => {
     await recomputeRollups(fx.db);
     const rows = await fx.db.all<any>('SELECT * FROM rollups_daily ORDER BY day, user_key');
     const day3alice = rows.find((x) => x.day === '2026-05-03' && x.user_key === 'alice@acme.com');
@@ -264,7 +264,7 @@ describe('PG parity: queries + rollup', () => {
     expect(Number(day3alice?.items_closed)).toBe(1);
     expect(Number(day3alice?.validate_passes)).toBe(1);
     const day4bob = rows.find((x) => x.day === '2026-05-04' && x.user_key === 'bob@acme.com');
-    expect(Number(day4bob?.tokens_in)).toBe(100);
-    expect(Number(day4bob?.tokens_out)).toBe(50);
+    expect(Number(day4bob?.tokens_in)).toBe(0);
+    expect(Number(day4bob?.tokens_out)).toBe(0);
   });
 });

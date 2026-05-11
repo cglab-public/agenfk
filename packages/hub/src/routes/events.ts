@@ -105,6 +105,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
         if (e.orgId !== orgId) { rejected++; continue; }
+        if (e.type === 'tokens.logged') { skipped++; continue; }
         seenInstallations.add(e.installationId);
         const userKey = userKeyFor(e.actor);
         const itemType = (e as any).itemType

@@ -20,7 +20,7 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
@@ -50,7 +50,6 @@ const TYPE_BADGE: Record<string, string> = {
   'validate.passed':    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
   'validate.failed':    'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
   'comment.added':      'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
-  'tokens.logged':      'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800',
   'test.logged':        'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
   'item.closed':        'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
   'item.deleted':       'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
@@ -178,11 +177,9 @@ export function UserDetailPage() {
       closed: a.closed + r.items_closed,
       passes: a.passes + r.validate_passes,
       fails: a.fails + r.validate_fails,
-      tokensIn: a.tokensIn + r.tokens_in,
-      tokensOut: a.tokensOut + r.tokens_out,
       prsOpened: a.prsOpened + (r.prs_opened ?? 0),
     }),
-    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0, prsOpened: 0 },
+    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
   );
 
   const tl = useQuery<{ events: TimelineRow[] }>({

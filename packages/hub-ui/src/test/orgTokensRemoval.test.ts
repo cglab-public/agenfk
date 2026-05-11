@@ -11,17 +11,15 @@ const TILES_SRC = readFileSync(
   'utf8',
 );
 
-describe('Org rollup dashboard — tokens in/out tiles present', () => {
-  it('renders a "Tokens in" tile (via MetricsTilesRow)', () => {
-    expect(TILES_SRC).toMatch(/Tokens in/i);
+describe('Org rollup dashboard — token telemetry removed', () => {
+  it('does not render token tiles in MetricsTilesRow', () => {
+    expect(TILES_SRC).not.toMatch(/Tokens in/i);
+    expect(TILES_SRC).not.toMatch(/Tokens out/i);
+    expect(TILES_SRC).not.toMatch(/Token usage/i);
   });
 
-  it('renders a "Tokens out" tile (via MetricsTilesRow)', () => {
-    expect(TILES_SRC).toMatch(/Tokens out/i);
-  });
-
-  it('Org.tsx references tokensIn / tokensOut in the totals reducer', () => {
-    expect(ORG_PAGE_SRC).toMatch(/tokensIn/);
-    expect(ORG_PAGE_SRC).toMatch(/tokensOut/);
+  it('Org.tsx does not include token totals in the reducer', () => {
+    expect(ORG_PAGE_SRC).not.toMatch(/tokensIn/);
+    expect(ORG_PAGE_SRC).not.toMatch(/tokensOut/);
   });
 });

@@ -19,7 +19,7 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; tokens_in: number; tokens_out: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 interface UsersResponse { user_key: string; last_seen: string; events_count: number }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -119,11 +119,9 @@ export function OrgPage() {
       closed: a.closed + r.items_closed,
       passes: a.passes + r.validate_passes,
       fails: a.fails + r.validate_fails,
-      tokensIn: a.tokensIn + r.tokens_in,
-      tokensOut: a.tokensOut + r.tokens_out,
       prsOpened: a.prsOpened + (r.prs_opened ?? 0),
     }),
-    { events: 0, closed: 0, passes: 0, fails: 0, tokensIn: 0, tokensOut: 0, prsOpened: 0 },
+    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
   );
 
   const types = mergeEventTypes(eventTypes.data?.types);
@@ -197,7 +195,6 @@ export function OrgPage() {
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}
-        tokenSeries={metrics.data?.series?.map(r => ({ day: r.day, tokens_in: r.tokens_in, tokens_out: r.tokens_out }))}
       />
 
       <section className="space-y-3">
