@@ -931,6 +931,11 @@ process.exit(0);
 
     // 12. Install gatekeeper hook script
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
+    const internalBinDir = path.join(agenfkHome, 'bin');
+    await fs.mkdir(internalBinDir, { recursive: true });
+    if (existsSync(gatekeeperSource)) {
+        await fs.copyFile(gatekeeperSource, path.join(internalBinDir, 'agenfk-gatekeeper.mjs'));
+    }
 
     if (!onlyPlatform) {
         console.log(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
@@ -969,6 +974,10 @@ process.exit(0);
 
         // 12d. Install agenfk-pr-hook script (used by PostToolUse hooks across clients)
         const prHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook.mjs');
+        const internalBinDir = path.join(agenfkHome, 'bin');
+        await fs.mkdir(internalBinDir, { recursive: true });
+        await fs.copyFile(prHookSource, path.join(internalBinDir, 'agenfk-pr-hook.mjs'));
+
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
             if (isMinGW) {
@@ -994,6 +1003,11 @@ process.exit(0);
             if (existsSync(opencodeEnforcerSource)) {
                 await fs.copyFile(opencodeEnforcerSource, path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs'));
                 console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs')}`);
+            }
+            const opencodeGatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper-opencode.mjs');
+            if (existsSync(opencodeGatekeeperSource)) {
+                await fs.copyFile(opencodeGatekeeperSource, path.join(opencodePluginsDir, 'agenfk-gatekeeper.mjs'));
+                console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-gatekeeper.mjs')}`);
             }
             const opencodePrHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook-opencode.mjs');
             if (existsSync(opencodePrHookSource)) {

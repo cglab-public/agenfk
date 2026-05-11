@@ -81,4 +81,14 @@ describe('runtime command extraction', () => {
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('register_pr');
   });
+
+  it('detects OpenCode payloads that use args.command', () => {
+    const res = spawnSync(process.execPath, [hookPath, '--client', 'opencode'], {
+      input: JSON.stringify({ args: { command: 'git push' } }),
+      encoding: 'utf8',
+    });
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('update_pr_sizing');
+  });
 });
