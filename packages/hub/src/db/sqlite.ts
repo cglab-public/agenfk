@@ -72,6 +72,7 @@ const SCHEMA_SQLITE = `
     prs_opened INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (org_id, user_key, day)
   );
+  CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -328,6 +329,7 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
 
   return new SqliteAdapter(raw);
 }

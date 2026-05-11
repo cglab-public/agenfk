@@ -72,6 +72,7 @@ const SCHEMA_PG = `
     prs_opened INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (org_id, user_key, day)
   );
+  CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -276,6 +277,7 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
 
   // Canonicalise events.remote_url so the projects filter in the hub UI
   // doesn't show duplicates for repos expressed as ssh / https / with-or-

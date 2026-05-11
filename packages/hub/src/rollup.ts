@@ -6,12 +6,26 @@ import { DB } from './db.js';
  * transaction; safe to call frequently.
  */
 export async function recomputeRollups(db: DB): Promise<{ days: number }> {
-  // Always recompute all days so stale rows from prior format changes are
-  // overwritten. The upsert is idempotent; for typical installation sizes
-  // this is fast enough to run on every /v1/metrics call.
-  const days = await db.all<{ day: string }>(
-    `SELECT DISTINCT date(occurred_at) AS day FROM events`,
+  // Recompute only days that can have drift: all event-days at or after the
+  // latest rolled-up day. This preserves correctness for the active window and
+  // keeps /v1/metrics latency stable as historical data grows.
+  const latest = await db.get<{ day: string }>(
+    `SELECT MAX(day) AS day FROM rollups_daily`,
   );
+  const days = latest?.day
+    ? await db.all<{ day: string }>(
+      `SELECT DISTINCT date(occurred_at) AS day
+       FROM events
+       WHERE date(occurred_at) >= ?
+       ORDER BY day ASC`,
+      [latest.day],
+    )
+    : await db.all<{ day: string }>(
+      `SELECT DISTINCT date(occurred_at) AS day
+       FROM events
+       ORDER BY day ASC`,
+    );
+  if (days.length === 0) return { days: 0 };
 
   const upsertSql = `
     INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
