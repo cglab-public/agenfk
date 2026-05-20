@@ -843,10 +843,32 @@ process.exit(0);
         }
     }
 
-    // Antigravity: ~/.gemini/antigravity/skills/ (all 16 skills subdirectory and flat formats)
+    // Antigravity: ~/.gemini/config/plugins/agenfk-plugin/skills/ (global customization plugin)
     if (shouldRun('antigravity')) {
         console.log(`${GREEN}Installing all Antigravity skills...${NC}`);
-        const antigravitySkillsDir = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
+        const pluginDir = path.join(os.homedir(), '.gemini', 'config', 'plugins', 'agenfk-plugin');
+        const antigravitySkillsDir = path.join(pluginDir, 'skills');
+        await fs.mkdir(pluginDir, { recursive: true });
+        
+        await fs.writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify({
+            name: "agenfk-plugin",
+            version: "1.0.0",
+            description: "AgEnFK workflow integration skills for Antigravity",
+            author: {
+                name: "AgEnFK"
+            },
+            license: "Apache-2.0"
+        }, null, 2), 'utf8');
+
+        await fs.writeFile(path.join(pluginDir, 'gemini-extension.json'), JSON.stringify({
+            name: "agenfk",
+            description: "AgEnFK integration commands & skills",
+            version: "1.0.0",
+            author: {
+                name: "AgEnFK"
+            }
+        }, null, 2), 'utf8');
+
         const commandsDir = path.join(rootDir, 'commands');
         if (existsSync(commandsDir)) {
             const files = await fs.readdir(commandsDir);
@@ -871,18 +893,23 @@ process.exit(0);
                     content = content.replace('---\n', `---\nname: ${skillName}\n`);
                 }
 
-                // 1. Subdirectory structure: skills/<name>/SKILL.md
+                // Subdirectory structure: skills/<name>/SKILL.md
                 const subDir = path.join(antigravitySkillsDir, skillName);
                 await fs.mkdir(subDir, { recursive: true });
                 const subDest = path.join(subDir, 'SKILL.md');
                 await fs.writeFile(subDest, content, 'utf8');
 
-                // 2. Flat structure: skills/<name>.md
-                const flatDest = path.join(antigravitySkillsDir, `${skillName}.md`);
-                await fs.writeFile(flatDest, content, 'utf8');
-
-                console.log(`  Installed Antigravity Skill: ${skillName} (Subdirectory & Flat)`);
+                console.log(`  Installed Antigravity Skill: ${skillName}`);
             }
+        }
+
+        // Clean up legacy flat & folder-based skills in old directory
+        const legacySkillsDir = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
+        if (existsSync(legacySkillsDir)) {
+            try {
+                rmSync(legacySkillsDir, { recursive: true, force: true });
+                console.log(`  Cleaned up legacy skills dir: ${legacySkillsDir}`);
+            } catch (e) { /* ignore */ }
         }
     }
 

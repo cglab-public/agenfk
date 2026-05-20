@@ -163,7 +163,7 @@ async function run() {
             cursor: path.join(os.homedir(), '.cursor', 'skills'),
             codex: path.join(os.homedir(), '.codex', 'skills'),
             gemini: path.join(os.homedir(), '.gemini', 'skills'),
-            antigravity: path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
+            antigravity: path.join(os.homedir(), '.gemini', 'config', 'plugins', 'agenfk-plugin', 'skills'),
         };
         const skillsDirs = onlyPlatform
             ? (platformSkillsDirs[onlyPlatform.toLowerCase()] ? [platformSkillsDirs[onlyPlatform.toLowerCase()]] : [])
@@ -180,6 +180,17 @@ async function run() {
                     await fs.rm(fullPath, { recursive: true, force: true });
                     console.log(`  Removed: ${fullPath}`);
                 }
+            }
+        }
+
+        // Clean up empty plugin wrapper directory for Antigravity
+        if (!onlyPlatform || onlyPlatform.toLowerCase() === 'antigravity') {
+            const pluginDir = path.join(os.homedir(), '.gemini', 'config', 'plugins', 'agenfk-plugin');
+            if (existsSync(pluginDir)) {
+                try {
+                    await fs.rm(pluginDir, { recursive: true, force: true });
+                    console.log(`  Removed: ${pluginDir}`);
+                } catch (e) { /* ignore */ }
             }
         }
     }

@@ -18,7 +18,7 @@ function resolveDbPath() {
             if (cfg.dbPath) return cfg.dbPath;
         } catch (e) {}
     }
-    return path.join(agenfkDir, 'db.sqlite');
+    return path.join(agenfkDir, 'db.json');
 }
 const dbPath = resolveDbPath();
 
@@ -30,9 +30,6 @@ if (!fs.existsSync(agenfkDir)) {
     fs.mkdirSync(agenfkDir, { recursive: true });
 }
 
-// Server picks the closest free port starting at REQUESTED_API_PORT and writes
-// the bound port to ~/.agenfk/server-port. We wait for that file before
-// launching the UI so VITE_API_URL points at the actual port.
 try { fs.unlinkSync(SERVER_PORT_FILE); } catch { /* ignore */ }
 
 console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})...`);
@@ -45,7 +42,6 @@ const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/serve
 });
 apiProcess.unref();
 
-// Wait up to 15s for the server to publish its bound port.
 let API_PORT = REQUESTED_API_PORT;
 for (let i = 0; i < 30; i++) {
     if (fs.existsSync(SERVER_PORT_FILE)) {
@@ -96,9 +92,8 @@ for (let i = 0; i < 15; i++) {
 
 console.log("UI available at: " + uiUrl);
 
-// Skip the auto-open when started in quiet mode — the fleet-upgrade restart
-// path sets this so an upgrade doesn't pop a new browser tab on the user's
-// machine. The user already has the dashboard open from a prior session.
+// AGENFK_NO_OPEN_BROWSER gates the auto-open so fleet-driven restarts
+// (agenfk restart --quiet) don't surface a new browser tab.
 if (process.env.AGENFK_NO_OPEN_BROWSER) {
     process.exit(0);
 }
