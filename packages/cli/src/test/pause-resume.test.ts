@@ -230,7 +230,7 @@ describe('agenfk pause all', () => {
 
     await program.parseAsync(['node', 'agenfk', 'pause', 'all', '--yes']);
 
-    const platforms = ['claude', 'opencode', 'cursor', 'codex', 'gemini'];
+    const platforms = ['claude', 'opencode', 'cursor', 'codex', 'gemini', 'antigravity'];
     for (const p of platforms) {
       expect(mockSpawnSync).toHaveBeenCalledWith(
         'node',
@@ -249,7 +249,7 @@ describe('agenfk pause all', () => {
 
     const written = lastWrittenConfig();
     expect(written.pausedIntegrations).toEqual(
-      expect.arrayContaining(['claude', 'opencode', 'cursor', 'codex', 'gemini'])
+      expect.arrayContaining(['claude', 'opencode', 'cursor', 'codex', 'gemini', 'antigravity'])
     );
   });
 });

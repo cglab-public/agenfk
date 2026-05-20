@@ -22,6 +22,8 @@ const INTEGRATION_ALIASES: Record<string, string> = {
   codex: 'codex',
   gemini: 'gemini',
   'gemini-cli': 'gemini',
+  antigravity: 'antigravity',
+  'antigravity-cli': 'antigravity',
 };
 const INTEGRATION_LABELS: Record<string, string> = {
   claude: 'Claude Code',
@@ -29,6 +31,7 @@ const INTEGRATION_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   gemini: 'Gemini CLI',
+  antigravity: 'Antigravity',
 };
 
 const telemetry = new TelemetryClient();
@@ -2014,6 +2017,12 @@ const RULES_CONFIG: Array<{
     globalPath: () => path.join(os.homedir(), '.gemini', 'GEMINI.md'),
     projectPath: (root) => path.join(root, 'GEMINI.md'),
   },
+  {
+    label: 'ANTIGRAVITY.md',
+    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'antigravityrules', 'ANTIGRAVITY.md'),
+    globalPath: () => path.join(os.homedir(), '.gemini', 'antigravity', 'ANTIGRAVITY.md'),
+    projectPath: (root) => path.join(root, 'ANTIGRAVITY.md'),
+  },
 ];
 
 // All platforms install commands/*.md as skills/<name>/SKILL.md in their skills directory
@@ -2035,6 +2044,7 @@ const SUPERSEDED_SKILL_DIRS: Array<() => string> = [
   () => path.join(os.homedir(), '.cursor', 'skills'),
   () => path.join(os.homedir(), '.codex', 'skills'),
   () => path.join(os.homedir(), '.gemini', 'skills'),
+  () => path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
 ];
 
 function removeSupersededSkillDirs(): void {
@@ -2065,6 +2075,7 @@ function removeLegacyCommands(): void {
 
 const COMMAND_SKILL_PLATFORMS: Array<{
   name: string;
+  platformKey?: string;
   globalDir: () => string;
   projectDir: (root: string) => string;
 }> = [
@@ -2074,6 +2085,18 @@ const COMMAND_SKILL_PLATFORMS: Array<{
     name: 'Universal (.agents)',
     globalDir: () => path.join(os.homedir(), '.agents', 'skills'),
     projectDir: (root) => path.join(root, '.agents', 'skills'),
+  },
+  {
+    name: 'Claude Code skills',
+    platformKey: 'claude',
+    globalDir: () => path.join(os.homedir(), '.claude', 'skills'),
+    projectDir: (root) => path.join(root, '.claude', 'skills'),
+  },
+  {
+    name: 'Antigravity skills',
+    platformKey: 'antigravity',
+    globalDir: () => path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
+    projectDir: (root) => path.join(root, '.gemini', 'antigravity', 'skills'),
   },
 ];
 
@@ -2088,6 +2111,20 @@ const OPENCODE_COMMAND_PLATFORMS: Array<{
     name: 'OpenCode commands',
     globalDir: () => path.join(os.homedir(), '.config', 'opencode', 'commands'),
     projectDir: (root) => path.join(root, '.opencode', 'commands'),
+  },
+];
+
+const ANTIGRAVITY_FLAT_PLATFORMS: Array<{
+  name: string;
+  platformKey?: string;
+  globalDir: () => string;
+  projectDir: (root: string) => string;
+}> = [
+  {
+    name: 'Antigravity flat skills',
+    platformKey: 'antigravity',
+    globalDir: () => path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
+    projectDir: (root) => path.join(root, '.gemini', 'antigravity', 'skills'),
   },
 ];
 
@@ -2106,14 +2143,24 @@ const GEMINI_TOML_PLATFORMS: Array<{
 ];
 
 /** Install commands as flat .md files (for OpenCode slash commands) */
-function syncCommandsFlat(srcDir: string, destDir: string): string[] {
+function syncCommandsFlat(srcDir: string, destDir: string, platformKey?: string): string[] {
   if (!fs.existsSync(srcDir)) return [];
   const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
   const installed: string[] = [];
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
+    let src = path.join(srcDir, file);
+    if (file === 'agenfk-flow.md') {
+      if (platformKey === 'antigravity') {
+        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'antigravity', 'agenfk-flow.md');
+        if (fs.existsSync(custom)) src = custom;
+      } else if (platformKey === 'claude') {
+        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
+        if (fs.existsSync(custom)) src = custom;
+      }
+    }
     const dest = path.join(destDir, file);
-    fs.copyFileSync(path.join(srcDir, file), dest);
+    fs.copyFileSync(src, dest);
     installed.push(dest);
   }
   return installed;
@@ -2167,13 +2214,23 @@ function removeAgenfkTomlFromDir(dir: string): void {
 function syncCommandsToDir(
   srcDir: string,
   destDir: string,
-  transform?: (filename: string) => string
+  transform?: (filename: string) => string,
+  platformKey?: string
 ): string[] {
   if (!fs.existsSync(srcDir)) return [];
   const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
   const installed: string[] = [];
   for (const file of files) {
-    const src = path.join(srcDir, file);
+    let src = path.join(srcDir, file);
+    if (file === 'agenfk-flow.md') {
+      if (platformKey === 'claude') {
+        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
+        if (fs.existsSync(custom)) src = custom;
+      } else if (platformKey === 'antigravity') {
+        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'antigravity', 'agenfk-flow.md');
+        if (fs.existsSync(custom)) src = custom;
+      }
+    }
     const relDest = transform ? transform(file) : file;
     const dest = path.join(destDir, relDest);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -2307,7 +2364,7 @@ rulesCommand
         const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
         const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
 
-        const paths = syncCommandsToDir(cmdSrcDir, activeDir, SKILL_TRANSFORM);
+        const paths = syncCommandsToDir(cmdSrcDir, activeDir, SKILL_TRANSFORM, platform.platformKey);
         if (paths.length > 0) {
           installed.push(`  ${chalk.green('✓')} ${platform.name} skills (${paths.length}) → ${activeDir}`);
         }
@@ -2322,6 +2379,17 @@ rulesCommand
         const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
         const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
         const paths = syncCommandsFlat(cmdSrcDir, activeDir);
+        if (paths.length > 0) {
+          installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
+        }
+        removeAgenfkFlatFromDir(oppositeDir);
+      }
+
+      // ── Antigravity flat slash commands ───────────────────────────────────
+      for (const platform of ANTIGRAVITY_FLAT_PLATFORMS) {
+        const activeDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        const oppositeDir = scope === 'global' ? platform.projectDir(oppositeRoot) : platform.globalDir();
+        const paths = syncCommandsFlat(cmdSrcDir, activeDir, platform.platformKey);
         if (paths.length > 0) {
           installed.push(`  ${chalk.green('✓')} ${platform.name} (${paths.length}) → ${activeDir}`);
         }
@@ -2409,6 +2477,12 @@ rulesCommand
 
       // ── OpenCode flat slash commands ──────────────────────────────────────
       for (const platform of OPENCODE_COMMAND_PLATFORMS) {
+        const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
+        removeAgenfkFlatFromDir(targetDir);
+      }
+
+      // ── Antigravity flat slash commands ───────────────────────────────────
+      for (const platform of ANTIGRAVITY_FLAT_PLATFORMS) {
         const targetDir = scope === 'global' ? platform.globalDir() : platform.projectDir(projectRoot);
         removeAgenfkFlatFromDir(targetDir);
       }

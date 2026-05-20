@@ -163,6 +163,7 @@ async function run() {
             cursor: path.join(os.homedir(), '.cursor', 'skills'),
             codex: path.join(os.homedir(), '.codex', 'skills'),
             gemini: path.join(os.homedir(), '.gemini', 'skills'),
+            antigravity: path.join(os.homedir(), '.gemini', 'antigravity', 'skills'),
         };
         const skillsDirs = onlyPlatform
             ? (platformSkillsDirs[onlyPlatform.toLowerCase()] ? [platformSkillsDirs[onlyPlatform.toLowerCase()]] : [])
@@ -285,6 +286,24 @@ async function run() {
         }
     }
 
+    // 6d2. MCP config — Antigravity
+    if (shouldRun('antigravity')) {
+        console.log(`${GREEN}[6d2/10] Removing Antigravity MCP config...${NC}`);
+        const antigravityMcpPath = path.join(os.homedir(), '.gemini', 'antigravity', 'mcp_config.json');
+        if (existsSync(antigravityMcpPath)) {
+            try {
+                const antigravityMcp = JSON.parse(await fs.readFile(antigravityMcpPath, 'utf8'));
+                if (antigravityMcp.mcpServers && antigravityMcp.mcpServers.agenfk) {
+                    delete antigravityMcp.mcpServers.agenfk;
+                    await fs.writeFile(antigravityMcpPath, JSON.stringify(antigravityMcp, null, 2));
+                    console.log(`  Removed: agenfk MCP from Antigravity (${antigravityMcpPath})`);
+                }
+            } catch (e) {
+                console.error('  Error updating Antigravity mcp_config.json during uninstall:', e.message);
+            }
+        }
+    }
+
     } // end if (!rulesOnly)
 
     // 6e. Codex workflow rules (AGENTS.md) — clean up from both scopes
@@ -338,6 +357,28 @@ async function run() {
                     } else {
                         await fs.unlink(geminiMdPath);
                         console.log(`  Removed: ${geminiMdPath} (was AgenFK-only)`);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6h. Antigravity workflow rules (ANTIGRAVITY.md) — clean up from both scopes
+    if (shouldRun('antigravity')) {
+        console.log(`${GREEN}[6h/10] Removing Antigravity workflow rules (${rulesScope} scope)...${NC}`);
+        const globalAntigravityMd = path.join(os.homedir(), '.gemini', 'antigravity', 'ANTIGRAVITY.md');
+        const projectAntigravityMd = path.join(projectDir, 'ANTIGRAVITY.md');
+        for (const antigravityMdPath of [globalAntigravityMd, projectAntigravityMd]) {
+            if (existsSync(antigravityMdPath)) {
+                let content = await fs.readFile(antigravityMdPath, 'utf8');
+                const cleaned = content.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
+                if (cleaned !== content) {
+                    if (cleaned.trim()) {
+                        await fs.writeFile(antigravityMdPath, cleaned, 'utf8');
+                        console.log(`  Removed AgenFK block from ${antigravityMdPath}`);
+                    } else {
+                        await fs.unlink(antigravityMdPath);
+                        console.log(`  Removed: ${antigravityMdPath} (was AgenFK-only)`);
                     }
                 }
             }
@@ -402,6 +443,37 @@ async function run() {
                     console.log(`  Removed agenfk-gatekeeper hook from ${settingsPath}`);
                 }
             } catch (e) {}
+        }
+    }
+
+    // 10b. AfterTool hook in ~/.gemini/antigravity/settings.json
+    if (shouldRun('antigravity')) {
+        console.log(`${GREEN}[10b/10] Removing AfterTool hook from ~/.gemini/antigravity/settings.json...${NC}`);
+        const antigravitySettingsPath = path.join(os.homedir(), '.gemini', 'antigravity', 'settings.json');
+        if (existsSync(antigravitySettingsPath)) {
+            try {
+                let settings = JSON.parse(await fs.readFile(antigravitySettingsPath, 'utf8'));
+                if (settings.hooks && settings.hooks.AfterTool) {
+                    settings.hooks.AfterTool = settings.hooks.AfterTool.filter(entry =>
+                        !JSON.stringify(entry).includes('agenfk-pr-hook')
+                    );
+                    if (settings.hooks.AfterTool.length === 0) {
+                        delete settings.hooks.AfterTool;
+                    }
+                    if (Object.keys(settings.hooks).length === 0) {
+                        delete settings.hooks;
+                    }
+                    if (Object.keys(settings).length === 0) {
+                        await fs.unlink(antigravitySettingsPath);
+                        console.log(`  Removed empty settings file: ${antigravitySettingsPath}`);
+                    } else {
+                        await fs.writeFile(antigravitySettingsPath, JSON.stringify(settings, null, 2), 'utf8');
+                        console.log(`  Removed agenfk-pr-hook from ${antigravitySettingsPath}`);
+                    }
+                }
+            } catch (e) {
+                console.error('  Error updating Antigravity settings.json during uninstall:', e.message);
+            }
         }
     }
 

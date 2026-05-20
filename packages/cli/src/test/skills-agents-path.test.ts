@@ -139,5 +139,5 @@ describe('CLI — Gemini CLI slash commands installed as TOML', () => {
 function extractSection(source: string, keyword: string): string {
   const idx = source.indexOf(keyword);
   if (idx === -1) return '';
-  return source.slice(Math.max(0, idx - 200), idx + 800);
+  return source.slice(Math.max(0, idx - 200), idx + 2000);
 }

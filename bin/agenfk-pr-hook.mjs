@@ -46,6 +46,7 @@ export function buildDirective(client, message) {
     case 'codex':
       return { decision: 'continue', reason: message };
     case 'gemini':
+    case 'antigravity':
       return { decision: 'continue', context: message };
     case 'cursor':
       return { permission: 'allow', userMessage: message };
