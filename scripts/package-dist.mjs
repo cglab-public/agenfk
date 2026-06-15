@@ -28,6 +28,14 @@ async function run() {
         'bin/',
         'scripts/start-services.mjs',
         'scripts/install.mjs',
+        // The installer/uninstaller and their helper modules must travel in the
+        // tarball — `agenfk upgrade` only extracts the dist and never copies
+        // source, so anything omitted here can never be updated post-install
+        // (e.g. the #88 uninstaller fix). Keep this in sync with every local
+        // ./*.mjs import of the shipped scripts (enforced by dist-ships-uninstaller.test).
+        'scripts/install-helpers.mjs',
+        'scripts/uninstall.mjs',
+        'scripts/uninstall-helpers.mjs',
         'commands/',
         'clauderules/',
         'codexrules/',
