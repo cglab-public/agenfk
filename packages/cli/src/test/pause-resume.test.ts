@@ -230,7 +230,7 @@ describe('agenfk pause all', () => {
 
     await program.parseAsync(['node', 'agenfk', 'pause', 'all', '--yes']);
 
-    const platforms = ['claude', 'opencode', 'cursor', 'codex', 'gemini', 'antigravity'];
+    const platforms = ['claude', 'opencode', 'cursor', 'codex', 'gemini'];
     for (const p of platforms) {
       expect(mockSpawnSync).toHaveBeenCalledWith(
         'node',
@@ -238,6 +238,12 @@ describe('agenfk pause all', () => {
         expect.anything()
       );
     }
+    // Antigravity is discontinued — it must no longer be a supported platform.
+    expect(mockSpawnSync).not.toHaveBeenCalledWith(
+      'node',
+      expect.arrayContaining(['--only=antigravity']),
+      expect.anything()
+    );
   });
 
   it('records all platforms in pausedIntegrations', async () => {
@@ -249,8 +255,9 @@ describe('agenfk pause all', () => {
 
     const written = lastWrittenConfig();
     expect(written.pausedIntegrations).toEqual(
-      expect.arrayContaining(['claude', 'opencode', 'cursor', 'codex', 'gemini', 'antigravity'])
+      expect.arrayContaining(['claude', 'opencode', 'cursor', 'codex', 'gemini'])
     );
+    expect(written.pausedIntegrations).not.toContain('antigravity');
   });
 });
 

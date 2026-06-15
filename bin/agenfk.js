@@ -107,6 +107,20 @@ function fetchLatestTag(repo, beta = false) {
   return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
 }
 
+// Run the setup script, surfacing a clean failure instead of letting the success
+// banner print on a partial/failed install (issue #86 #3). execSync throws on a
+// non-zero exit; we translate that into an explicit error + non-zero exit code.
+function runInstaller(cwd) {
+  try {
+    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd, stdio: 'inherit' });
+  } catch {
+    console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
+    console.error(`${YELLOW}   See the output above for the failing step, then re-run:${RESET}`);
+    console.error(`${YELLOW}     npx -p github:cglab-public/agenfk agenfk${RESET}\n`);
+    process.exit(1);
+  }
+}
+
 // Download release asset — direct curl URL (no auth) first, gh CLI as fallback
 function downloadAsset(repo, tag, pattern, outputPath) {
   const url = `https://github.com/${repo}/releases/download/${tag}/${pattern}`;
@@ -166,7 +180,7 @@ if (isNpxCache) {
   }
 
   console.log(`\n${GREEN}Running setup from ${INSTALL_DIR}...${RESET}\n`);
-  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd: INSTALL_DIR, stdio: 'inherit' });
+  runInstaller(INSTALL_DIR);
 } else {
   // Running from a real git clone — install in place
   console.log(`${GREEN}Running install from ${REPO_ROOT}...${RESET}\n`);
@@ -186,18 +200,14 @@ if (isNpxCache) {
     }
   }
 
-  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd: REPO_ROOT, stdio: 'inherit' });
+  runInstaller(REPO_ROOT);
 }
 
-// Final reminder — always shown so it's visible at the end of install output
+// Reached only when the setup script above exited 0 (runInstaller exits non-zero on
+// failure). The PATH / "source <rc>" guidance is printed conditionally by install.mjs
+// itself — it knows whether an rc file was actually modified — so we don't repeat a
+// (potentially misleading) source hint here (issue #86 #3/#4).
 if (process.platform !== 'win32') {
-  const shell = process.env.SHELL ? path.basename(process.env.SHELL) : '';
-  const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
-    : shell === 'bash' ? 'source ~/.bashrc'
-    : shell === 'fish' ? 'source ~/.config/fish/config.fish'
-    : 'source your shell rc file';
   console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
-  console.log(`\n${CYAN}  To use the 'agenfk' command in this terminal, run:${RESET}`);
-  console.log(`${CYAN}    ${sourceHint}${RESET}`);
-  console.log(`\n${CYAN}  Then start services with: agenfk up${RESET}\n`);
+  console.log(`\n${CYAN}  Once 'agenfk' is on your PATH, start services with: agenfk up${RESET}\n`);
 }

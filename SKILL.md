@@ -1,7 +1,6 @@
 ---
 name: agenfk
 description: Agile, measurable, and reliable workflow enforcement for AI-assisted engineering.
-compatibility: antigravity
 metadata:
   framework: agenfk
   workflow: agile

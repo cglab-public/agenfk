@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
+import { render } from '@testing-library/react';
+import { createElement } from 'react';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { MetricsTilesRow } from '../components/MetricsTilesRow';
 
 const USER_DETAIL_SRC = readFileSync(
   path.resolve(__dirname, '../pages/UserDetail.tsx'),
@@ -21,9 +25,16 @@ describe('UserDetail — metrics tiles row', () => {
     expect(USER_DETAIL_SRC).toMatch(/MetricsTilesRow|<Tile/);
   });
 
-  it('shows tokens in/out tiles', () => {
-    expect(USER_DETAIL_SRC).toMatch(/[Tt]okens.in/i);
-    expect(USER_DETAIL_SRC).toMatch(/[Tt]okens.out/i);
+  it('renders the metrics tiles and no token tiles (tokens moved to server-side ingestion)', () => {
+    const totals = { events: 5, closed: 2, passes: 3, fails: 1, prsOpened: 4 };
+    const { container } = render(createElement(MetricsTilesRow, { totals }));
+    const text = container.textContent || '';
+    expect(text).toContain('Events');
+    expect(text).toContain('Closed');
+    expect(text).toContain('PRs');
+    expect(text).toMatch(/Validate/);
+    // Token tiles were intentionally removed; they must not render.
+    expect(text).not.toMatch(/tokens/i);
   });
 
   it('shows prs_opened / PRs tile', () => {

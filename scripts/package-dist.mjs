@@ -29,7 +29,6 @@ async function run() {
         'scripts/start-services.mjs',
         'scripts/install.mjs',
         'commands/',
-        'antigravityrules/',
         'clauderules/',
         'codexrules/',
         'cursorrules/',
