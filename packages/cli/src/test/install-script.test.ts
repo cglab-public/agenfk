@@ -88,7 +88,6 @@ describe('uninstall.mjs — step 3b skills removal respects --only flag', () => 
         expect(block3b).toMatch(/cursor.*skills/i);
         expect(block3b).toMatch(/codex.*skills/i);
         expect(block3b).toMatch(/gemini.*skills/i);
-        expect(block3b).toMatch(/antigravity.*skills/i);
     });
 
     it('step 3b only removes .agents/skills when no specific platform is targeted', () => {

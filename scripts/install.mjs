@@ -6,6 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
+import { resolveRulesScope, shellSourceHint } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -319,15 +320,23 @@ async function run() {
         } catch (e) {}
     }
 
-    // Resolve rulesScope: CLI flag → config → prompt
-    let rulesScope = rulesScopeArg || existingConfig.rulesScope || '';
-    if (!rulesScope && !onlyPlatform) {
+    // Resolve rulesScope: CLI flag → AGENFK_RULES_SCOPE env → config → prompt (TTY only).
+    // Under npx / piped stdin there is no TTY: prompting there used to leave the readline
+    // promise unresolved, so Node exited 0 and the rest of the install (incl. the CLI
+    // symlink) was silently skipped (issue #86). resolveRulesScope guarantees a decision
+    // without blocking when stdin is non-interactive.
+    let { scope: rulesScope, shouldPrompt } = resolveRulesScope({
+        rulesScopeArg,
+        envScope: process.env.AGENFK_RULES_SCOPE,
+        existingScope: existingConfig.rulesScope,
+        isTTY: process.stdin.isTTY,
+    });
+    if (shouldPrompt && !onlyPlatform) {
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         const answer = await ask(rl, `\n${BLUE}Where should AgEnFK workflow rules be installed?${NC}\n  1) global  — ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, etc.\n  2) project — .claude/CLAUDE.md, AGENTS.md in project root, etc.\n\nChoose [global/project] (default: global): `);
         rl.close();
         rulesScope = answer.trim().toLowerCase() === 'project' ? 'project' : 'global';
     }
-    if (!rulesScope) rulesScope = existingConfig.rulesScope || 'global';
     if (!onlyPlatform) console.log(`  Rules scope: ${rulesScope}`);
 
     let configDirty = false;
@@ -460,7 +469,7 @@ function resolveDbPath() {
             if (cfg.dbPath) return cfg.dbPath;
         } catch (e) {}
     }
-    return path.join(agenfkDir, 'db.json');
+    return path.join(agenfkDir, 'db.sqlite');
 }
 const dbPath = resolveDbPath();
 
@@ -700,43 +709,6 @@ process.exit(0);
         }
     }
 
-    // 6e. Configure Antigravity MCP
-    if (shouldRun('antigravity')) {
-        console.log(`${GREEN}[6e/14] Configuring Antigravity MCP...${NC}`);
-        const antigravityConfigDir = path.join(os.homedir(), '.gemini', 'antigravity');
-        const antigravityMcpPath = path.join(antigravityConfigDir, 'mcp_config.json');
-        try {
-            let antigravityMcp = {};
-            if (existsSync(antigravityMcpPath)) {
-                const rawContent = (await fs.readFile(antigravityMcpPath, 'utf8')).trim();
-                if (rawContent) {
-                    antigravityMcp = JSON.parse(rawContent);
-                }
-            } else {
-                await fs.mkdir(antigravityConfigDir, { recursive: true });
-                console.log(`  Antigravity config dir not found — creating it.`);
-            }
-            if (!antigravityMcp.mcpServers) antigravityMcp.mcpServers = {};
-
-            const antigravityServerPath = isMinGW ? toWindowsPath(serverPath) : serverPath;
-            const antigravityDbPath = isMinGW ? toWindowsPath(dbPath) : dbPath;
-
-            antigravityMcp.mcpServers.agenfk = {
-                command: 'node',
-                args: [antigravityServerPath],
-                env: {
-                    NODE_ENV: 'production',
-                    AGENFK_DB_PATH: antigravityDbPath
-                }
-            };
-
-            await fs.writeFile(antigravityMcpPath, JSON.stringify(antigravityMcp, null, 2));
-            console.log(`  Written: ${antigravityMcpPath}`);
-        } catch (e) {
-            console.error('  Error updating Antigravity mcp_config.json:', e.message);
-        }
-    }
-
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -843,76 +815,6 @@ process.exit(0);
         }
     }
 
-    // Antigravity: ~/.gemini/config/plugins/agenfk-plugin/skills/ (global customization plugin)
-    if (shouldRun('antigravity')) {
-        console.log(`${GREEN}Installing all Antigravity skills...${NC}`);
-        const pluginDir = path.join(os.homedir(), '.gemini', 'config', 'plugins', 'agenfk-plugin');
-        const antigravitySkillsDir = path.join(pluginDir, 'skills');
-        await fs.mkdir(pluginDir, { recursive: true });
-        
-        await fs.writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify({
-            name: "agenfk-plugin",
-            version: "1.0.0",
-            description: "AgEnFK workflow integration skills for Antigravity",
-            author: {
-                name: "AgEnFK"
-            },
-            license: "Apache-2.0"
-        }, null, 2), 'utf8');
-
-        await fs.writeFile(path.join(pluginDir, 'gemini-extension.json'), JSON.stringify({
-            name: "agenfk",
-            description: "AgEnFK integration commands & skills",
-            version: "1.0.0",
-            author: {
-                name: "AgEnFK"
-            }
-        }, null, 2), 'utf8');
-
-        const commandsDir = path.join(rootDir, 'commands');
-        if (existsSync(commandsDir)) {
-            const files = await fs.readdir(commandsDir);
-            for (const file of files) {
-                if (!file.endsWith('.md')) continue;
-                const skillName = file.replace(/\.md$/, '');
-                
-                let content;
-                if (skillName === 'agenfk-flow') {
-                    const antigravityFlowSkillSource = path.join(rootDir, 'skills', 'antigravity', 'agenfk-flow.md');
-                    if (existsSync(antigravityFlowSkillSource)) {
-                        content = await fs.readFile(antigravityFlowSkillSource, 'utf8');
-                    } else {
-                        content = await fs.readFile(path.join(commandsDir, file), 'utf8');
-                    }
-                } else {
-                    content = await fs.readFile(path.join(commandsDir, file), 'utf8');
-                }
-
-                // Inject 'name' field if missing
-                if (content.startsWith('---\n') && !content.match(/^name:\s/m)) {
-                    content = content.replace('---\n', `---\nname: ${skillName}\n`);
-                }
-
-                // Subdirectory structure: skills/<name>/SKILL.md
-                const subDir = path.join(antigravitySkillsDir, skillName);
-                await fs.mkdir(subDir, { recursive: true });
-                const subDest = path.join(subDir, 'SKILL.md');
-                await fs.writeFile(subDest, content, 'utf8');
-
-                console.log(`  Installed Antigravity Skill: ${skillName}`);
-            }
-        }
-
-        // Clean up legacy flat & folder-based skills in old directory
-        const legacySkillsDir = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
-        if (existsSync(legacySkillsDir)) {
-            try {
-                rmSync(legacySkillsDir, { recursive: true, force: true });
-                console.log(`  Cleaned up legacy skills dir: ${legacySkillsDir}`);
-            } catch (e) { /* ignore */ }
-        }
-    }
-
     // 8e. Universal skills: install all commands/*.md to ~/.agents/skills/<name>/SKILL.md
     // This path is the primary skill discovery location for Codex and is also supported
     // by OpenCode, Gemini CLI, Cursor, and other agents-compatible tools.
@@ -972,6 +874,7 @@ process.exit(0);
         if (os.platform() !== 'win32') {
             const pathDirs = (process.env.PATH || '').split(':');
             const alreadyOnPath = pathDirs.some(d => d === localBinDir || d === `${os.homedir()}/.local/bin`);
+            let rcModified = false;
             if (!alreadyOnPath) {
                 const exportLine = `\nexport PATH="$HOME/.local/bin:$PATH"`;
                 const rcFiles = [
@@ -984,19 +887,22 @@ process.exit(0);
                         const existing = existsSync(rc) ? readFileSync(rc, 'utf8') : '';
                         if (!existing.includes('.local/bin')) {
                             await fs.appendFile(rc, exportLine, 'utf8');
+                            rcModified = true;
                             console.log(`  Added ~/.local/bin to PATH in ${path.basename(rc)}`);
                         }
                     } catch { /* skip unwritable files */ }
                 }
             }
-            // Always show the source hint — even if ~/.local/bin is already in PATH,
-            // the current shell session won't see the new symlink without a restart.
+            // Only suggest sourcing an rc file when we actually modified one (#86 #4).
+            // If ~/.local/bin was already on PATH, sourcing rc does nothing for the
+            // freshly-created symlink — point at the real fix instead.
             const shell = path.basename(process.env.SHELL || '');
-            const sourceHint = shell === 'zsh' ? 'source ~/.zshrc'
-                : shell === 'bash' ? 'source ~/.bashrc'
-                : shell === 'fish' ? 'source ~/.config/fish/config.fish'
-                : 'source your shell rc file';
-            console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
+            const sourceHint = shellSourceHint({ rcModified, shell });
+            if (sourceHint) {
+                console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
+            } else {
+                console.log(`\n${YELLOW}  ⚠ '${cliDestBase}' is ready. If your shell doesn't find 'agenfk' yet, open a new terminal (or run: hash -r).${NC}`);
+            }
         }
     }
 
@@ -1317,19 +1223,6 @@ process.exit(0);
         }
     }
 
-    // 13e. Install Antigravity workflow rules (ANTIGRAVITY.md)
-    if (shouldRun('antigravity')) {
-        console.log(`${GREEN}[13e/14] Installing Antigravity workflow rules (ANTIGRAVITY.md)...${NC}`);
-        const globalAntigravityMd = path.join(os.homedir(), '.gemini', 'antigravity', 'ANTIGRAVITY.md');
-        const projectAntigravityMd = path.join(projectDir, 'ANTIGRAVITY.md');
-        const antigravityRulesSource = path.join(rootDir, 'antigravityrules', 'ANTIGRAVITY.md');
-        try {
-            await writeRulesWithScope(globalAntigravityMd, projectAntigravityMd, antigravityRulesSource, 'antigravityrules/ANTIGRAVITY.md');
-        } catch (e) {
-            console.error('  Error installing Antigravity rules:', e.message);
-        }
-    }
-
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
     if (shouldRun('claude')) {
         console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
@@ -1414,29 +1307,6 @@ process.exit(0);
             });
             await fs.writeFile(geminiSettingsPath, JSON.stringify(settings, null, 2), 'utf8');
             console.log(`  Registered AfterTool hook in ${geminiSettingsPath}`);
-        }
-    }
-
-    // 14e. Configure AfterTool hook for Antigravity (~/.gemini/antigravity/settings.json)
-    if (shouldRun('antigravity')) {
-        const antigravitySettingsPath = path.join(os.homedir(), '.gemini', 'antigravity', 'settings.json');
-        try {
-            await fs.mkdir(path.dirname(antigravitySettingsPath), { recursive: true });
-            let settings = {};
-            if (existsSync(antigravitySettingsPath)) {
-                try { settings = JSON.parse(await fs.readFile(antigravitySettingsPath, 'utf8')); } catch {}
-            }
-            if (!settings.hooks) settings.hooks = {};
-            if (!Array.isArray(settings.hooks.AfterTool)) settings.hooks.AfterTool = [];
-            settings.hooks.AfterTool = settings.hooks.AfterTool.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
-            settings.hooks.AfterTool.push({
-                matcher: 'run_shell_command',
-                command: `${prHookDest} --client antigravity`,
-            });
-            await fs.writeFile(antigravitySettingsPath, JSON.stringify(settings, null, 2), 'utf8');
-            console.log(`  Registered AfterTool hook in ${antigravitySettingsPath}`);
-        } catch (e) {
-            console.error('  Error configuring Antigravity AfterTool hook:', e.message);
         }
     }
 

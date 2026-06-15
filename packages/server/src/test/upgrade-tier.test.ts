@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, clearReleaseCache } from '../server';
+import { buildUpgradeNotice } from '../mcpUpgradeNotice';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,7 +24,6 @@ vi.mock('axios', () => {
 const TEST_DB = path.resolve('./upgrade-tier-test-db.sqlite');
 const CLI_PKG_PATH = path.resolve(__dirname, '../../../cli/package.json');
 const SERVER_PATH = path.resolve(__dirname, '../server.ts');
-const MCP_INDEX_PATH = path.resolve(__dirname, '../index.ts');
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
@@ -198,28 +198,31 @@ describe('ReleaseReminder.tsx — recommended tier styling (source)', () => {
 
 // ── Story 3: MCP response augmentation ───────────────────────────────────────
 
-describe('index.ts — MCP upgrade notice augmentation', () => {
-  const readIndex = () => fs.readFileSync(MCP_INDEX_PATH, 'utf8');
-
-  it('should check upgradeTier before returning MCP tool responses', () => {
-    const src = readIndex();
-    expect(src).toMatch(/upgradeTier/);
+// Behavioral tests for the MCP upgrade notice (the text appended to MCP tool
+// responses). The notice logic lives in mcpUpgradeNotice.ts (buildUpgradeNotice);
+// these assert what it actually produces per tier rather than grepping index.ts.
+describe('buildUpgradeNotice — MCP upgrade notice content', () => {
+  it('produces a mandatory upgrade notice when tier is mandatory and a newer version exists', () => {
+    const notice = buildUpgradeNotice({ tier: 'mandatory', version: '2.0.0', currentVersion: '1.0.0' });
+    expect(notice).toMatch(/mandatory/i);
+    expect(notice).toMatch(/upgrade/i);
+    expect(notice).toContain('2.0.0');
+    expect(notice).toMatch(/agenfk upgrade/);
   });
 
-  it('should append a mandatory upgrade notice to MCP responses when tier is mandatory', () => {
-    const src = readIndex();
-    // Must contain logic that adds an upgrade warning for mandatory tier
-    expect(src).toMatch(/mandatory.*upgrade|upgrade.*mandatory/i);
+  it('produces a recommended upgrade notice when tier is recommended and a newer version exists', () => {
+    const notice = buildUpgradeNotice({ tier: 'recommended', version: '2.0.0', currentVersion: '1.0.0' });
+    expect(notice).toMatch(/recommended/i);
+    expect(notice).toMatch(/upgrade/i);
+    expect(notice).toContain('2.0.0');
   });
 
-  it('should append a recommended upgrade notice to MCP responses when tier is recommended', () => {
-    const src = readIndex();
-    expect(src).toMatch(/recommended.*upgrade|upgrade.*recommended/i);
+  it('emits no notice for the optional tier', () => {
+    expect(buildUpgradeNotice({ tier: 'optional', version: '2.0.0', currentVersion: '1.0.0' })).toBe('');
   });
 
-  it('should include the upgrade notice text in MCP tool response content', () => {
-    const src = readIndex();
-    // The notice must be appended to the response content (not just logged)
-    expect(src).toMatch(/upgradeNotice|upgrade_notice|⚠️.*upgrade|UPGRADE REQUIRED/i);
+  it('emits no notice when the current version is already up to date', () => {
+    expect(buildUpgradeNotice({ tier: 'mandatory', version: '1.0.0', currentVersion: '1.0.0' })).toBe('');
+    expect(buildUpgradeNotice({ tier: 'recommended', version: '1.0.0', currentVersion: '2.0.0' })).toBe('');
   });
 });

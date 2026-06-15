@@ -2,6 +2,17 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// The hub outbox only receives events when the hub is configured (HubClient.isEnabled).
+// That config is read once, when ../server is first imported — so enable it here, before
+// the import is evaluated, otherwise these assertions only pass on a machine that happens
+// to have a real ~/.agenfk/hub.json (green locally, red in CI). Hoisted so it runs first.
+vi.hoisted(() => {
+  process.env.AGENFK_HUB_URL = process.env.AGENFK_HUB_URL || 'http://hub.test';
+  process.env.AGENFK_HUB_TOKEN = process.env.AGENFK_HUB_TOKEN || 'test-token';
+  process.env.AGENFK_HUB_ORG = process.env.AGENFK_HUB_ORG || 'test-org';
+});
+
 import { app, initStorage } from '../server';
 
 vi.mock('axios', () => {
@@ -15,6 +26,25 @@ vi.mock('axios', () => {
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const TEST_DB = path.resolve('./pr-registration-test-db.sqlite');
+
+// recordHubEvent enqueues into hub_outbox asynchronously: the POST/PUT handler
+// fires it without awaiting, and it awaits a flow-name + git-remote lookup before
+// inserting — so the row lands a tick or two after the HTTP response resolves.
+// Reading the table once (as the original tests did) races under CI load; poll instead.
+async function waitForOutboxPayload(
+  predicate: (p: any) => boolean,
+  timeoutMs = 5000,
+): Promise<any> {
+  const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
+    const found = rows.map(r => JSON.parse(r.payload)).find(predicate);
+    if (found) return found;
+    if (Date.now() >= deadline) return undefined;
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
 
 describe('register_pr / update_pr_sizing — static registration', () => {
   let src: string;
@@ -156,12 +186,7 @@ describe('POST /prs emits a hub event into the outbox', () => {
     });
     expect(res.status).toBe(201);
 
-    // @ts-ignore — access the raw SQLite db for assertion
-    const { SqliteStorage } = await import('@agenfk/storage-sqlite');
-    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
-    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
-    const payloads = rows.map(r => JSON.parse(r.payload));
-    const prEvent = payloads.find((p: any) => p.type === 'pr.opened');
+    const prEvent = await waitForOutboxPayload((p: any) => p.type === 'pr.opened');
     expect(prEvent).toBeDefined();
     expect(prEvent.payload?.prNumber).toBe(501);
     expect(prEvent.payload?.repo).toBe('org/repo');
@@ -180,10 +205,9 @@ describe('POST /prs emits a hub event into the outbox', () => {
     });
     expect(res.status).toBe(200);
 
-    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
-    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
-    const payloads = rows.map(r => JSON.parse(r.payload));
-    const updEvent = payloads.find((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 502);
+    const updEvent = await waitForOutboxPayload(
+      (p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 502,
+    );
     expect(updEvent).toBeDefined();
     expect(updEvent.payload?.sizing?.task).toBe(3);
   });
