@@ -2,10 +2,12 @@
 description: Execute the implementation plan and write code
 ---
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow these steps precisely:
 
 **Step 1 — Prepare**
-- Read the item details using `get_item(id)`.
+- Read the item details using `agenfk get <id> --json`.
 - **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - **Branch verification**: If the item has a `branchName`, run `git branch --show-current` and confirm you are on it. If not, run `git checkout <branchName>` before proceeding. **Never code on the wrong branch.**
 - Read the `implementationPlan` field.
@@ -16,7 +18,7 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
 - Execute the plan step-by-step.
 - After each significant code change (file creation or modification):
-    - Call `add_comment(id, "I have implemented: <description>")` to log your progress.
+    - Run `agenfk comment <id> "I have implemented: <description>"` to log your progress.
 - Ensure all code adheres to project conventions and architectural mandates.
 - **Bug/Error fixing**: Investigate root causes fully before applying fixes. Avoid workarounds that can create new problems. Trace errors from symptom to source. Apply one fix at a time and verify.
 
@@ -27,9 +29,9 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Fix any compilation or lint errors before proceeding.
 
 **Step 4 — Handover**
-- Call `add_comment(id, "IMPLEMENTATION COMPLETE: ...")` to log the final summary of code changes.
-- Call `add_comment(id, "Phase Code complete: Implementation and self-verification finished.")` to log the phase completion.
-- Call `workflow_gatekeeper(id)` — confirms authorization and surfaces exit criteria for the current step.
-- Call `validate_progress(id, evidence="<describe what was implemented and how it satisfies the step's exit criteria>", command="<build_command>")` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `update_item` for forward transitions.
+- Run `agenfk comment <id> "IMPLEMENTATION COMPLETE: ..."` to log the final summary of code changes.
+- Run `agenfk comment <id> "Phase Code complete: Implementation and self-verification finished."` to log the phase completion.
+- Run `agenfk gatekeeper --item-id <id>` — confirms authorization and surfaces exit criteria for the current step.
+- Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" "<build_command>"` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
 - **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
   - PR creation is the developer's responsibility — do NOT create a PR here.

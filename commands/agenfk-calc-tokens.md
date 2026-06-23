@@ -2,21 +2,25 @@
 description: Calculate and log token usage for the current session
 ---
 
-Run the token usage calculator to capture costs for the current session and log them to active AgenFK tasks.
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
 
-**Execute this command:**
+Inspect the token usage recorded for the current session. Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens. This command only **reads** the events the worker has already ingested.
+
+**Read recorded token events (compact output):**
 ```bash
-/home/danielp/.local/bin/agenfk-calc-tokens --cwd $CWD
+agenfk tokens --project <projectId> --json
 ```
 
-Where `$CWD` is the current working directory.
+Or scope to a single item:
+```bash
+agenfk tokens --item <itemId> --json
+```
+
+(MCP equivalent: `query_token_events`.)
 
 **What it does:**
-1. Finds the current Claude Code session transcript (most recent .jsonl) and parses token usage by model
-2. Scrapes recent Opencode sessions for this project directory
-3. Extracts task IDs from `workflow_gatekeeper` and `update_item` tool calls
-4. Logs token records to each task via the AgenFK REST API with deduplication
+1. The server-side ingestion worker finds each client's session transcript (Claude Code / Opencode .jsonl) and parses token usage by model.
+2. It attributes events to the active item using the task IDs surfaced through `agenfk gatekeeper` and `agenfk update` activity, deduplicating records automatically.
+3. `agenfk tokens --json` reads back those ingested events so you can show the user a per-model cost breakdown.
 
-**Show the output to the user** — it includes a cost breakdown per model and confirmation of records logged.
-
-To preview without writing, add `--dry-run`.
+**Show the output to the user** — it includes a cost breakdown per model. Use `--json` for machine-readable output.

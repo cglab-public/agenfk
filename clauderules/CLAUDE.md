@@ -102,22 +102,19 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Resize a PR | `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n>` | `update_pr_sizing` |
 | Analyze a request | `agenfk analyze "<request>"` | `analyze_request` |
 
-### Token-optimized output — `--toon`
+### Reading state — `--json`
 
-Read commands default to pretty JSON. Add the global `--toon` flag to emit **TOON
-(Token-Oriented Object Notation)** instead — a compact tabular form that drops the
-repeated keys JSON spends tokens on. **Prefer `--toon` when reading state into your
-own context** (it can cut output tokens substantially on lists):
+Read commands emit JSON. Append `--json` to `list`, `get`, `list-projects`, `flow show`,
+`flow list`, and `tokens` for machine-readable output you can parse into your context:
 
 ```bash
-agenfk list --project <id> --toon
-agenfk get <id> --toon
-agenfk flow show --project <id> --toon
-agenfk list-projects --toon
+agenfk list --project <id> --json
+agenfk get <id> --json
+agenfk flow show --project <id> --json
+agenfk list-projects --json
 ```
 
-`--toon` applies to `list`, `get`, `list-projects`, `flow list`, `flow show`,
-`tokens`, `pr-register`, `pr-resize`, and `update-project`. Omit it for JSON.
+A compact `--toon` format is also available on the same read commands if you want to save output tokens.
 
 ### Optional: MCP mode
 

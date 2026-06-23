@@ -2,12 +2,14 @@
 description: Commit local changes, push to remote, and create a GitHub beta/pre-release
 ---
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 You are executing the `/agenfk-release-beta` command. This command is **exempt from AgenFK workflow requirements** — do not create, check for, or require an IN_PROGRESS task. Follow these steps precisely:
 
 **Step 1 — Commit local changes**
 Check for local changes using `git status`. If there are unstaged or uncommitted changes:
 - Ask the user for a commit message (or offer to generate one).
-- **Cross-project guard**: If you generate or suggest a message that references a task ID (e.g. `[<uuid>]`), first call `get_item(<taskId>)` and verify its `projectId` matches `.agenfk/project.json`. If it does not match, omit the task reference and use a generic summary instead. Never embed a foreign task ID in a commit message.
+- **Cross-project guard**: If you generate or suggest a message that references a task ID (e.g. `[<uuid>]`), first run `agenfk get <taskId> --json` (MCP: `get_item`) and verify its `projectId` matches `.agenfk/project.json`. If it does not match, omit the task reference and use a generic summary instead. Never embed a foreign task ID in a commit message.
 - Run `git add . && git commit -m "<message>"` and show the output.
 
 **Step 2 — Push to remote**

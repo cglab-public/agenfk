@@ -2,10 +2,12 @@
 description: Generate tests and verify coverage requirements
 ---
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow these steps precisely:
 
 **Step 1 — Identify Test Surface**
-- Read the item details using `get_item(id)`.
+- Read the item details using `agenfk get <id> --json`.
 - **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - Use `git diff` or compare against the parent branch to see the files modified.
 - Locate the corresponding test files (e.g., `*.test.ts`, `test_*.py`).
@@ -24,14 +26,14 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 
 **Step 4 — Log Results & Yield**
 - If tests pass and coverage is met:
-    - Call `log_test_result(id, "<test-command>", "<full captured output>", "PASSED")` — this populates the Test Results tab.
-    - Call `add_comment(id, "TESTS PASSED: ... [85% Coverage]")` to log the summary.
-    - Call `add_comment(id, "Phase Test complete: Coverage threshold met and tests passed.")` to log the phase completion.
-    - **DO NOT call `validate_progress`** — the Closing Agent handles the final advance to DONE.
+    - Run `agenfk log-test <id> --command "<test-command>" --output "<full captured output>" --status PASSED` — this populates the Test Results tab.
+    - Run `agenfk comment <id> "TESTS PASSED: ... [85% Coverage]"` to log the summary.
+    - Run `agenfk comment <id> "Phase Test complete: Coverage threshold met and tests passed."` to log the phase completion.
+    - **DO NOT run `agenfk verify`** — the Closing Agent handles the final advance to DONE.
     - **DO NOT transition to DONE** — the Closing Agent handles TEST → DONE.
     - STOP and YIELD. The supervisor will assign a closing agent to finalize the task.
 - If failed:
-    - Call `log_test_result(id, "<test-command>", "<full captured output>", "FAILED")` to record the failure.
-    - Call `add_comment(id, "TESTS FAILED: ... [65% Coverage]")` and log the coverage gaps.
-    - Call `update_item(id, {status: "<coding-step>"})` to send it back for fixes (backward rollback — valid use of `update_item`).
+    - Run `agenfk log-test <id> --command "<test-command>" --output "<full captured output>" --status FAILED` to record the failure.
+    - Run `agenfk comment <id> "TESTS FAILED: ... [65% Coverage]"` and log the coverage gaps.
+    - Run `agenfk update <id> --status <coding-step>` to send it back for fixes (backward rollback — valid use of `agenfk update`).
     - STOP and YIELD.

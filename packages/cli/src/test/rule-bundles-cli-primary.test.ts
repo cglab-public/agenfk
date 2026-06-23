@@ -52,9 +52,8 @@ describe.each(BUNDLES)('rule bundle %s — CLI-primary', (bundle) => {
     expect(content).toMatch(/--with-mcp/);
   });
 
-  it('references the token-optimized --toon output switch', () => {
-    expect(content).toMatch(/--toon/);
-    expect(content).toMatch(/TOON/);
+  it('documents --json as the read output format', () => {
+    expect(content).toMatch(/--json/);
   });
 });
 

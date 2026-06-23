@@ -2,10 +2,12 @@
 description: Perform a deep code review for security, requirements, and architecture
 ---
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 You are executing the `/agenfk-review <id>` command as a **Review Agent**. Follow these steps precisely:
 
 **Step 1 — Understand Implementation**
-- Read the item details using `get_item(id)`.
+- Read the item details using `agenfk get <id> --json`.
 - **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
 - Use `git diff` or compare against the parent branch to see the actual code changes introduced for this task.
 - Read `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md`.
@@ -22,8 +24,8 @@ You are executing the `/agenfk-review <id>` command as a **Review Agent**. Follo
 - **Bug fix review**: For bug fixes, verify the root cause was actually addressed — not just the symptom. Flag workarounds that could introduce new problems.
 
 **Step 4 — Log Review Results + Build Gate**
-- Use `add_comment(id, "REVIEW PASSED: ...")` or `add_comment(id, "REVIEW FAILED: ...")` with detailed feedback.
-- Call `add_comment(id, "Phase Review complete: Audit and requirements traceability finished.")` to log the phase completion.
-- If review failed: call `update_item(id, {status: "<coding-step>"})` (backward rollback — this is the only valid use of `update_item` for status changes), provide actionable fix instructions, and **yield to the supervisor.**
-- If review passed: call `workflow_gatekeeper(id)` first (response includes exit criteria), then call `validate_progress(id, evidence="<summarize review findings and confirm criteria met>", command="<build_command>")` — pass a **compile/build command only**, never a test command. Advances to the next flow step on success (back to coding step on failure).
+- Run `agenfk comment <id> "REVIEW PASSED: ..."` or `agenfk comment <id> "REVIEW FAILED: ..."` with detailed feedback.
+- Run `agenfk comment <id> "Phase Review complete: Audit and requirements traceability finished."` to log the phase completion.
+- If review failed: run `agenfk update <id> --status <coding-step>` (backward rollback — this is the only valid use of `agenfk update --status` for status changes), provide actionable fix instructions, and **yield to the supervisor.**
+- If review passed: run `agenfk gatekeeper --item-id <id>` first (response includes exit criteria), then `agenfk verify <id> --evidence "<summarize review findings and confirm criteria met>" "<build_command>"` — pass a **compile/build command only**, never a test command. Advances to the next flow step on success (back to coding step on failure).
 - **Immediately stop and yield to the supervisor** after the above.
