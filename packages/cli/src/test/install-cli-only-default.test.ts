@@ -34,6 +34,33 @@ describe('bin/agenfk.js — forwards MCP opt-in flags to install.mjs', () => {
   });
 });
 
+describe('bin/agenfk.js — refuses to run destructively from a source checkout', () => {
+  it('derives hasGit from a .git probe (same signal as isNpxCache)', () => {
+    expect(bootstrapScript).toMatch(/hasGit\s*=\s*fs\.existsSync\([^)]*['"]\.git['"]/);
+  });
+
+  it('guards on a git working tree and honors the --force-install override', () => {
+    // The actual blocking condition — would fail if && became ||, or if the
+    // override check were dropped.
+    expect(bootstrapScript).toMatch(/if\s*\(\s*hasGit\s*&&\s*!forceInstall\s*\)/);
+    expect(bootstrapScript).toMatch(/forceInstall\s*=\s*process\.argv\.includes\(['"]--force-install['"]\)/);
+  });
+
+  it('the guard block itself terminates with process.exit(1)', () => {
+    const start = bootstrapScript.indexOf('if (hasGit && !forceInstall)');
+    expect(start).toBeGreaterThan(-1);
+    // The guard fires before either install branch, so its exit must precede the first runInstaller call.
+    const firstRunInstaller = bootstrapScript.indexOf('runInstaller(');
+    const guardBlock = bootstrapScript.slice(start, firstRunInstaller > start ? firstRunInstaller : undefined);
+    expect(guardBlock).toMatch(/process\.exit\(1\)/);
+  });
+
+  it('points the user to a safe alternative (install:framework or the CLI)', () => {
+    expect(bootstrapScript).toMatch(/install:framework/);
+    expect(bootstrapScript).toMatch(/agenfk <command>/);
+  });
+});
+
 describe('install.mjs — MCP is opt-in (CLI-only by default)', () => {
   it('parses a --with-mcp opt-in flag', () => {
     expect(installScript).toMatch(/--with-mcp/);

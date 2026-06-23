@@ -38,6 +38,23 @@ const isBeta = process.argv.includes('--beta');
 const withMcp = process.argv.includes('--with-mcp');
 const noMcp = process.argv.includes('--no-mcp');
 
+// SAFETY GUARD: this is the npx *installer bootstrap*, not the CLI dispatcher.
+// Run against a git checkout it installs in place, and scripts/install.mjs's
+// cleanStaleSrc step would DELETE packages/*/src. Refuse on ANY git working tree
+// (a `.git` dir — the same signal `isNpxCache` keys off; the npx cache has none)
+// unless explicitly forced. `hasSrc` only sharpens the warning.
+const hasGit = fs.existsSync(path.join(REPO_ROOT, '.git'));
+const hasSrc = fs.existsSync(path.join(REPO_ROOT, 'packages', 'cli', 'src'));
+const forceInstall = process.argv.includes('--force-install');
+if (hasGit && !forceInstall) {
+  console.error(`${YELLOW}❌ Refusing to run the AgEnFK installer bootstrap from a source checkout.${RESET}`);
+  console.error(`   This entry point (bin/agenfk.js) installs in place${hasSrc ? ` and would DELETE your\n   ${REPO_ROOT}/packages/*/src directories (via install.mjs cleanStaleSrc)` : ''}.\n`);
+  console.error(`   If you meant to run a CLI command, use the dispatcher: ${CYAN}agenfk <command>${RESET}`);
+  console.error(`   If you really want to (re)install from this clone: ${CYAN}npm run install:framework${RESET}`);
+  console.error(`   To override this guard anyway: ${CYAN}node bin/agenfk.js --force-install${RESET}\n`);
+  process.exit(1);
+}
+
 // On MSYS2 / Git-for-Windows (MinGW), Node.js reports process.platform === 'win32' but
 // the bundled tar is an MSYS2 binary that understands POSIX paths (/c/Users/...).
 // Converting Win32 paths to POSIX form avoids the "C: treated as remote hostname" error
