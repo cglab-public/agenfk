@@ -709,6 +709,55 @@ process.exit(0);
         }
     }
 
+    // 6e. Configure Pi MCP
+    if (shouldRun('pi')) {
+        console.log(`${GREEN}[6e/14] Configuring Pi MCP...${NC}`);
+        // Pi reads MCP servers from ~/.pi/agent/mcp.json
+        // ({ settings, mcpServers: { <name>: { command, args, env, lifecycle } } }).
+        const piMcpPath = path.join(os.homedir(), '.pi', 'agent', 'mcp.json');
+        const piConfigDir = path.dirname(piMcpPath);
+        const piCmd = getCliCommand('pi');
+        const piInstalled = existsSync(piConfigDir) ||
+            spawnSync(piCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        if (piInstalled) {
+            try {
+                let piMcp = {};
+                if (existsSync(piMcpPath)) {
+                    const rawContent = (await fs.readFile(piMcpPath, 'utf8')).trim();
+                    if (rawContent) {
+                        piMcp = JSON.parse(rawContent);
+                    }
+                } else {
+                    await fs.mkdir(piConfigDir, { recursive: true });
+                    console.log(`  Pi config dir not found — creating it.`);
+                }
+                if (!piMcp.mcpServers) piMcp.mcpServers = {};
+
+                // Pi (like Cursor) is a native app and cannot resolve MinGW POSIX
+                // paths (/c/Users/...), so normalize on Windows/Git-Bash.
+                const piServerPath = isMinGW ? toWindowsPath(serverPath) : serverPath;
+                const piDbPath = isMinGW ? toWindowsPath(dbPath) : dbPath;
+
+                piMcp.mcpServers.agenfk = {
+                    command: 'node',
+                    args: [piServerPath],
+                    env: {
+                        NODE_ENV: 'production',
+                        AGENFK_DB_PATH: piDbPath
+                    },
+                    lifecycle: 'keep-alive'
+                };
+
+                await fs.writeFile(piMcpPath, JSON.stringify(piMcp, null, 2));
+                console.log(`  Written: ${piMcpPath}`);
+            } catch (e) {
+                console.error('Error updating Pi mcp.json:', e.message);
+            }
+        } else if (!onlyPlatform) {
+            console.log(`  Pi not found. Skipping Pi MCP configuration.`);
+        }
+    }
+
     // 7. Configure Claude Code MCP (deferred — runs after step 9 once cliDest is known)
 
     // 8. Install AgenFK Skills
@@ -1372,7 +1421,7 @@ process.exit(0);
         console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
         console.log("");
         console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server).");
+        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, Gemini CLI, and Pi need a restart to pick up the new MCP server).");
         console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
         console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
         console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");

@@ -168,7 +168,7 @@ async function run() {
         console.log(`${YELLOW}This will remove:${NC}`);
         console.log("  - Slash commands from Claude Code, Opencode, and Gemini CLI");
         console.log("  - Opencode skill + plugins (gatekeeper, mcp-enforcer, pr-hook)");
-        console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, and Gemini CLI");
+        console.log("  - MCP server config from Claude Code, Opencode, Cursor, Codex, Gemini CLI, and Pi");
         console.log("  - Cursor workflow rules (agenfk.mdc) + afterShellExecution hook");
         console.log("  - Codex workflow rules (~/.codex/AGENTS.md) + PostToolUse hook");
         console.log("  - Gemini CLI workflow rules (~/.gemini/GEMINI.md) + AfterTool hook");
@@ -396,11 +396,30 @@ async function run() {
         return false;
     });
 
+    // 6e. MCP config — Pi
+    await step('Pi MCP config', shouldRun('pi'), async () => {
+        console.log(`${GREEN}[6e] Removing Pi MCP config...${NC}`);
+        const piMcpPath = path.join(os.homedir(), '.pi', 'agent', 'mcp.json');
+        if (existsSync(piMcpPath)) {
+            const piMcp = JSON.parse(await fs.readFile(piMcpPath, 'utf8'));
+            if (piMcp.mcpServers && piMcp.mcpServers.agenfk) {
+                delete piMcp.mcpServers.agenfk;
+                await fs.writeFile(piMcpPath, JSON.stringify(piMcp, null, 2));
+                console.log(`  Removed: agenfk MCP from ${piMcpPath}`);
+                return true;
+            }
+            console.log(`  Not found in ${piMcpPath} (skipping)`);
+        } else {
+            console.log(`  ${piMcpPath} not found (skipping)`);
+        }
+        return false;
+    });
+
     } // end if (!rulesOnly)
 
-    // 6e. Codex workflow rules (AGENTS.md) — clean up from both scopes
+    // 6f. Codex workflow rules (AGENTS.md) — clean up from both scopes
     await step('Codex workflow rules (AGENTS.md)', shouldRun('codex'), async () => {
-        console.log(`${GREEN}[6e] Removing Codex workflow rules (${rulesScope} scope)...${NC}`);
+        console.log(`${GREEN}[6f] Removing Codex workflow rules (${rulesScope} scope)...${NC}`);
         const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
         const projectAgentsMd = path.join(projectDir, 'AGENTS.md');
         let removed = false;
@@ -423,9 +442,9 @@ async function run() {
         return removed;
     });
 
-    // 6f. Cursor workflow rules (.mdc) — clean up from both scopes
+    // 6g. Cursor workflow rules (.mdc) — clean up from both scopes
     await step('Cursor workflow rules (.mdc)', shouldRun('cursor'), async () => {
-        console.log(`${GREEN}[6f] Removing Cursor workflow rules (${rulesScope} scope)...${NC}`);
+        console.log(`${GREEN}[6g] Removing Cursor workflow rules (${rulesScope} scope)...${NC}`);
         const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
         const projectCursorMdc = path.join(projectDir, '.cursor', 'rules', 'agenfk.mdc');
         let removed = false;
@@ -438,9 +457,9 @@ async function run() {
         return removed;
     });
 
-    // 6g. Gemini CLI workflow rules (GEMINI.md) — clean up from both scopes
+    // 6h. Gemini CLI workflow rules (GEMINI.md) — clean up from both scopes
     await step('Gemini CLI workflow rules (GEMINI.md)', shouldRun('gemini'), async () => {
-        console.log(`${GREEN}[6g] Removing Gemini CLI workflow rules (${rulesScope} scope)...${NC}`);
+        console.log(`${GREEN}[6h] Removing Gemini CLI workflow rules (${rulesScope} scope)...${NC}`);
         const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
         const projectGeminiMd = path.join(projectDir, 'GEMINI.md');
         let removed = false;

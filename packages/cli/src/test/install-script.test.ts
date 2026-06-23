@@ -298,6 +298,79 @@ describe('install.mjs — npm spawnSync uses shell:true on Windows', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// install.mjs + uninstall.mjs — Pi coding agent MCP registration
+// Pi reads MCP servers from ~/.pi/agent/mcp.json ({ settings, mcpServers: {...} }),
+// the same stdio shape as Cursor. Skills already work via ~/.agents/skills/;
+// the gap was registering the agenfk MCP server for Pi.
+// ---------------------------------------------------------------------------
+describe('install.mjs — Pi coding agent MCP config', () => {
+    // Extract the Pi configuration block so assertions don't accidentally match
+    // a different client's section.
+    const piStart = installScript.indexOf('Configure Pi MCP');
+    const piBlock = installScript.slice(piStart, piStart + 2200);
+
+    it('has a dedicated Pi MCP configuration step', () => {
+        expect(piStart).toBeGreaterThan(-1);
+    });
+
+    it('gates the Pi step behind shouldRun(\'pi\')', () => {
+        expect(piBlock).toMatch(/shouldRun\(\s*['"]pi['"]\s*\)/);
+    });
+
+    it('writes to Pi\'s ~/.pi/agent/mcp.json config file', () => {
+        // Pi's MCP config location is ~/.pi/agent/mcp.json.
+        expect(piBlock).toMatch(/['"]\.pi['"]\s*,\s*['"]agent['"]\s*,\s*['"]mcp\.json['"]/);
+    });
+
+    it('registers an agenfk MCP server launched via node + serverPath', () => {
+        expect(piBlock).toMatch(/mcpServers\.agenfk\s*=/);
+        expect(piBlock).toMatch(/command:\s*['"]node['"]/);
+        expect(piBlock).toMatch(/AGENFK_DB_PATH/);
+    });
+
+    it('sets lifecycle to keep-alive for the agenfk server', () => {
+        expect(piBlock).toMatch(/lifecycle:\s*['"]keep-alive['"]/);
+    });
+
+    it('merges into existing config rather than clobbering it', () => {
+        // Must read + JSON.parse any existing mcp.json and preserve other keys,
+        // mirroring the Cursor merge logic.
+        expect(piBlock).toMatch(/JSON\.parse/);
+        expect(piBlock).toMatch(/mcpServers\s*=\s*\{\}|!\w*[Mm]cp\.mcpServers/);
+    });
+
+    it('normalizes paths for MinGW like the other native clients', () => {
+        expect(piBlock).toMatch(/isMinGW/);
+    });
+
+    it('mentions Pi in the final restart guidance', () => {
+        // Users must be told to restart Pi to pick up the new MCP server.
+        const restartIdx = installScript.indexOf('to pick up the new MCP server');
+        expect(restartIdx).toBeGreaterThan(-1);
+        const restartLine = installScript.slice(restartIdx - 200, restartIdx + 50);
+        expect(restartLine).toMatch(/Pi/);
+    });
+});
+
+describe('uninstall.mjs — Pi coding agent MCP config removal', () => {
+    const piStart = uninstallScript.indexOf('MCP config — Pi');
+    const piBlock = uninstallScript.slice(piStart, piStart + 1200);
+
+    it('has a dedicated Pi MCP removal step', () => {
+        expect(piStart).toBeGreaterThan(-1);
+    });
+
+    it('gates the Pi removal behind shouldRun(\'pi\')', () => {
+        expect(piBlock).toMatch(/shouldRun\(\s*['"]pi['"]\s*\)/);
+    });
+
+    it('deletes the agenfk entry from ~/.pi/agent/mcp.json', () => {
+        expect(piBlock).toMatch(/['"]\.pi['"]\s*,\s*['"]agent['"]\s*,\s*['"]mcp\.json['"]/);
+        expect(piBlock).toMatch(/delete\s+\w*[Mm]cp\.mcpServers\.agenfk/);
+    });
+});
+
 describe('install.mjs — restarts running API server after a successful install (BUG 174270e6)', () => {
     it('captures the pre-install reachability of the API server', () => {
         // The pre-check at the top of run() must store its result somewhere
