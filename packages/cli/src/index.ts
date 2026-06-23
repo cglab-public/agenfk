@@ -353,9 +353,12 @@ function applyUpgradeTierAction(tier: string, latestVersion: string): void {
     console.error('');
     process.exit(1);
   } else if (tier === 'recommended') {
-    console.log(chalk.yellow.bold('\n⚠️  Recommended upgrade available'));
-    console.log(chalk.yellow(`AgEnFK v${latestVersion || 'latest'} is available with recommended improvements.`));
-    console.log(chalk.yellow('Run ') + chalk.bold('agenfk upgrade') + chalk.yellow(' when convenient.\n'));
+    // Emit on stderr, not stdout: this banner runs in the pre-parse startup path
+    // and would otherwise prepend to a command's stdout, corrupting machine-readable
+    // output (e.g. `agenfk list --json | jq` → JSONDecodeError). Diagnostics → stderr.
+    console.error(chalk.yellow.bold('\n⚠️  Recommended upgrade available'));
+    console.error(chalk.yellow(`AgEnFK v${latestVersion || 'latest'} is available with recommended improvements.`));
+    console.error(chalk.yellow('Run ') + chalk.bold('agenfk upgrade') + chalk.yellow(' when convenient.\n'));
   }
   // optional: silent — no output
 }
