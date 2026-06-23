@@ -2,6 +2,16 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.0-beta.2] — 2026-06-23
+
+### Changed
+- **All skill flavors are now CLI-first**: the main `agenfk` skill and every sibling (`agenfk-code/close/test/review/deep/plan/pr/flow/calc-tokens`, plus `SKILL.md` and the per-client flavor files) now instruct the `agenfk` CLI directly instead of MCP-style function calls — each skill is self-contained (agents like Pi load each `~/.agents/skills/<name>/SKILL.md` independently). MCP tool names remain as optional "(MCP: …)" equivalents.
+- Read commands in the skills and rule bundles use `--json` for machine-readable output.
+- Removed the stale `log_token_usage` tool reference (token usage is ingested server-side).
+
+### Fixed
+- `bin/agenfk.js` refuses to run destructively from a source checkout (carried from beta.1; tightened guard).
+
 ## [1.1.0-beta.1] — 2026-06-23
 
 ### Changed
