@@ -257,7 +257,16 @@ function setPausedIntegrations(list: string[]): void {
   fs.writeFileSync(AGENFK_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
 }
 
-if (process.env.NODE_ENV !== 'test' && !process.argv.includes('mcp') && !process.argv.includes('--json')) {
+// Only show the ASCII banner for interactive humans. When stdout is piped or
+// captured (the agent case — every mutating command runs through a shell and is
+// read back into context), the ~10-line figlet banner is pure token waste, so
+// gate on isTTY in addition to the existing --json / mcp suppression.
+if (
+  process.env.NODE_ENV !== 'test' &&
+  !process.argv.includes('mcp') &&
+  !process.argv.includes('--json') &&
+  process.stdout.isTTY
+) {
   console.log(
     chalk.cyan(
       figlet.textSync('AgEnFK', { font: 'Big' })
