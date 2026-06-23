@@ -1,6 +1,12 @@
 <!-- agenfk:start -->
 ## AgEnFK Workflow — MANDATORY
 
+> **AgEnFK is CLI-only by default.** All workflow operations below use the `agenfk`
+> CLI, which talks to the AgEnFK server (the single owner of state) and is fully
+> enforced server-side. If you installed with `--with-mcp` and `mcp__agenfk__*`
+> tools are present in your tool list, you may use the equivalent MCP tool for any
+> command — they are interchangeable. When in doubt, use the CLI.
+
 ### Clean Start — MANDATORY at task start
 
 Before creating or starting a new task:
@@ -10,15 +16,14 @@ Before creating or starting a new task:
 
 Before modifying ANY file (Edit, Write, NotebookEdit), you MUST:
 1. Have an AgEnFK task in any active working step for the active project.
-2. Call `workflow_gatekeeper(intent, itemId?)` via MCP to confirm authorization.
-   - Pass `itemId` whenever multiple tasks are active simultaneously.
-   - `role=` is accepted for backward compatibility but is no longer enforced.
+2. Run `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` to confirm authorization.
+   - Pass `--item-id` whenever multiple tasks are active simultaneously.
 
 If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
-- If no task is active — create and start one using MCP tools:
-  - `create_item(projectId, "TASK", "<title>")`
-  - `validate_progress(id, evidence="Starting task, advancing from TODO")` — advances from TODO to the first working step
-- If multiple tasks are active — use `itemId` to disambiguate.
+- If no task is active — create and start one:
+  - `agenfk create TASK "<title>" --project <id>`
+  - `agenfk verify <id> --evidence "Starting task, advancing from TODO"` — advances from TODO to the first working step
+- If multiple tasks are active — use `--item-id` to disambiguate.
 - Never proceed past a gatekeeper rejection.
 
 3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
@@ -27,28 +32,25 @@ If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 
 At the beginning of every session, check the active workflow flow for the project:
 
-**Via MCP (preferred):** Call `get_flow(projectId)` at session start — returns all steps in order with their exit criteria. This is your workflow contract: each step's exit criteria is your mandatory work definition before calling `validate_progress`.
-
-**Via CLI fallback:**
 ```bash
-agenfk flow show --project <projectId>
+agenfk flow show --project <projectId> --json
 ```
-Or via REST: `GET http://localhost:3000/projects/<projectId>/flow`
 
-**Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow with different step names and order. Always use the flow's actual step `name` values when calling `update_item({ status })`.
+This returns all steps in order with their exit criteria. This is your workflow contract: each step's exit criteria is your mandatory work definition before calling `agenfk verify`.
 
-After completing changes — using MCP tools:
-- `get_flow(projectId)` — call at session start to load the full flow with all steps and exit criteria. Your working contract for the session.
-- `validate_progress(itemId, evidence, command?)` — step-completion gate. `evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions** (including TODO → first working step). `command` is optional: if omitted, uses `project.verifyCommand` on the final step. If it returns `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `update_project({ id, verifyCommand })`, and retry. Only ask the developer as a last resort.
+**Rule:** Do NOT assume the default statuses (TODO → IN_PROGRESS → REVIEW → TEST → DONE) are active. The project may use a custom flow with different step names and order. Always use the flow's actual step `name` values when calling `agenfk update <id> --status <name>`.
+
+Working the flow:
+- `agenfk flow show --project <id> --json` — load the full flow with all steps and exit criteria at session start. Your working contract for the session.
+- `agenfk verify <id> --evidence "<evidence>" ["<command>"]` — step-completion gate. `--evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions** (including TODO → first working step). The command is optional: if omitted, uses `project.verifyCommand` on the final step. If verify reports `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retry. Only ask the developer as a last resort.
 
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY
 
-After running `gh pr create`, you MUST call `register_pr(itemId, prNumber, repo, sizing)` via MCP, where `sizing = { epic, story, task, bug }` counts the items included in this PR. After `git push` to a branch that already has a registered PR and you've added more items, call `update_pr_sizing(prNumber, repo, sizing)` with the new counts. The server records a shadow sizing computed from the item tree as a sanity check — only your declared count is authoritative. A PostToolUse hook prompts you to do this on each `gh pr create` / `git push`.
+After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>`, where the counts cover the items included in this PR. After `git push` to a branch that already has a registered PR and you've added more items, run `agenfk pr-resize --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>` with the new counts. The server records a shadow sizing computed from the item tree as a sanity check — only your declared count is authoritative. A PostToolUse hook prompts you to do this on each `gh pr create` / `git push`.
 
-**ALWAYS use MCP tools for workflow state changes. NEVER use the `agenfk` CLI
-to create items, update status, or close tasks — the CLI bypasses enforcement.**
+**Use `agenfk verify` (not `agenfk update --status`) for all FORWARD step transitions** — it enforces the exit-criteria gate and is the only way to reach the final step. `agenfk update <id> --status <name>` is for backward/rollback transitions only.
 
 **Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the active task requirement. Do not create or require a task when executing these commands.
 
@@ -58,37 +60,69 @@ to create items, update status, or close tasks — the CLI bypasses enforcement.
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
 - **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
 
-### MCP Access — STRICTLY FORBIDDEN shortcuts
+### STRICTLY FORBIDDEN shortcuts
 
-**NEVER** bypass MCP by using these shortcuts. PreToolUse hooks enforce this mechanically:
+**NEVER** bypass the `agenfk` CLI/server by using these shortcuts. PreToolUse hooks enforce this mechanically:
 
 | Forbidden | Use instead |
 |-----------|-------------|
-| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (Bash or Read) | `list_items()`, `get_item()` via MCP |
-| `curl` / `wget` to `http://localhost:3000` | `list_items()`, `create_item()`, `update_item()` via MCP |
-| `agenfk list`, `agenfk status`, `npx agenfk ...` CLI state queries | `list_items()`, `get_item()`, `list_projects()` via MCP |
+| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (Bash or Read) | `agenfk list --json`, `agenfk get <id> --json` |
+| `curl` / `wget` to `http://localhost:3000` | `agenfk list`, `agenfk create`, `agenfk update`, `agenfk verify` |
 
-Two PreToolUse hooks enforce the above:
+Two PreToolUse hooks enforce the workflow:
 - `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no active task.
-- `agenfk-mcp-enforcer` — blocks Bash/Read bypass routes listed above.
+- `agenfk-mcp-enforcer` — blocks the direct-DB and `curl localhost:3000` bypass routes above. (In CLI-only mode it permits the `agenfk` CLI; when MCP is registered it steers state queries to the MCP tools instead.)
 
-### MCP Unavailable — CLI Fallback
+### Command Reference — the `agenfk` CLI
 
-If MCP tools are not available (no `mcp__agenfk__*` tools in your tool list), use these
-CLI equivalents via Bash. The enforcer auto-detects MCP unavailability and allows them.
+This is the full workflow surface. Each row notes the equivalent MCP tool (available only if you installed with `--with-mcp`).
 
-| Instead of MCP tool | Use CLI fallback |
-|---------------------|-----------------|
-| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" --item-id <id>` |
-| `list_projects()` | `agenfk list-projects --json` |
-| `list_items(projectId)` | `agenfk list --project <id> --json` |
-| `get_item(id)` | `agenfk get <id> --json` |
-| `create_item(projectId, type, title)` | `agenfk create <type> "<title>" --project <id>` |
-| `update_item(id, {status, ...})` | `agenfk update <id> --status <status>` (backward/rollback only — use `validate_progress` for all forward transitions) |
-| `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
-| `get_flow(projectId)` | `agenfk flow show --project <id> --json` |
-| `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<evidence>" "<command>"` or `agenfk verify <id> --evidence "<evidence>"` |
-| `log_test_result(id, cmd, out, status)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED` |
+| Operation | CLI command | MCP tool |
+|-----------|-------------|----------|
+| Authorize a pre-edit | `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` | `workflow_gatekeeper` |
+| List projects | `agenfk list-projects --json` | `list_projects` |
+| Create a project | `agenfk create-project "<name>"` | `create_project` |
+| Update a project | `agenfk update-project <id> [--name][--description][--verify-command]` | `update_project` |
+| List items | `agenfk list --project <id> --json` | `list_items` |
+| Get an item | `agenfk get <id> --json` | `get_item` |
+| Create an item | `agenfk create <TYPE> "<title>" --project <id>` | `create_item` |
+| Update / roll back status | `agenfk update <id> --status <name>` (backward only) | `update_item` |
+| Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
+| Add a comment | `agenfk comment <id> "<text>"` | `add_comment` |
+| Attach context | `agenfk add-context <id> --path <path> [--description][--content]` | `add_context` |
+| Move an item | `agenfk move <id> <targetProjectId>` | `move_item` |
+| Pause work | `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>" [--files a,b][--git-diff]` | `pause_work` |
+| Resume work | `agenfk resume-work <id>` | `resume_work` |
+| Show the flow | `agenfk flow show --project <id> --json` | `get_flow` |
+| List flows | `agenfk flow list --json` | `list_flows` |
+| Activate a flow | `agenfk flow use <id> --project <id>` | `use_flow` |
+| Delete a flow | `agenfk flow delete <id>` | `delete_flow` |
+| Log a test result | `agenfk log-test <id> --command "..." --output "..." --status PASSED` | `log_test_result` |
+| Register a PR | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n>` | `register_pr` |
+| Resize a PR | `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n>` | `update_pr_sizing` |
+| Analyze a request | `agenfk analyze "<request>"` | `analyze_request` |
 
-The workflow rules still apply: call `agenfk gatekeeper` before editing files.
+### Token-optimized output — `--toon`
+
+Read commands default to pretty JSON. Add the global `--toon` flag to emit **TOON
+(Token-Oriented Object Notation)** instead — a compact tabular form that drops the
+repeated keys JSON spends tokens on. **Prefer `--toon` when reading state into your
+own context** (it can cut output tokens substantially on lists):
+
+```bash
+agenfk list --project <id> --toon
+agenfk get <id> --toon
+agenfk flow show --project <id> --toon
+agenfk list-projects --toon
+```
+
+`--toon` applies to `list`, `get`, `list-projects`, `flow list`, `flow show`,
+`tokens`, `pr-register`, `pr-resize`, and `update-project`. Omit it for JSON.
+
+### Optional: MCP mode
+
+MCP is **opt-in**. To register the AgEnFK MCP server with your client, install with
+`--with-mcp` (e.g. `npx agenfk@latest --with-mcp`, or `agenfk integration install <platform> --with-mcp`).
+When MCP tools are present, prefer them for state changes; the CLI commands above remain
+available and equivalent. To turn MCP back off, re-run the installer with `--no-mcp`.
 <!-- agenfk:end -->

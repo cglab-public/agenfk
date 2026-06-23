@@ -11,9 +11,19 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { registerHubCommands } from './commands/hub.js';
+import { toonEncode } from './toon.js';
 
 const program = new Command();
 const API_URL = getApiUrl();
+
+// Global --toon switch: emit token-optimized TOON instead of JSON on read
+// commands. Falls back to JSON when the flag is absent.
+program.option('--toon', 'Emit token-optimized TOON instead of JSON on read commands');
+
+/** Serialize structured data honoring the global --toon flag (else pretty JSON). */
+function structuredOutput(data: unknown): string {
+  return program.opts().toon ? toonEncode(data) : JSON.stringify(data, null, 2);
+}
 const INTEGRATION_ALIASES: Record<string, string> = {
   claude: 'claude',
   'claude-code': 'claude',
@@ -776,8 +786,8 @@ program
   .action(async (options) => {
     try {
       const { data: projects } = await axios.get(`${API_URL}/projects`);
-      if (options.json) {
-        console.log(JSON.stringify(projects, null, 2));
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(projects));
         return;
       }
       console.table(projects.map((p: any) => ({
@@ -1066,6 +1076,8 @@ integrationCommand
   .command('install <platform>')
   .description('Install one or all integrations. Use "all" to install everything.')
   .option('-y, --yes', 'Skip confirmation prompt')
+  .option('--with-mcp', 'Also register the agenfk MCP server (MCP is opt-in; CLI-only by default)')
+  .option('--no-mcp', 'Force CLI-only: do not register the agenfk MCP server')
   .action((platform, options) => {
     const installAll = platform.trim().toLowerCase() === 'all';
     const allPlatforms = Object.keys(INTEGRATION_LABELS);
@@ -1091,6 +1103,9 @@ integrationCommand
       console.log(chalk.blue(`Installing ${INTEGRATION_LABELS[p]}...`));
       const args = [`--only=${p}`];
       if (rulesScope) args.push(`--rules-scope=${rulesScope}`);
+      // --no-mcp takes precedence over --with-mcp, matching install.mjs.
+      if (options.mcp === false) args.push('--no-mcp');
+      else if (options.withMcp) args.push('--with-mcp');
       runIntegrationScript('install.mjs', args);
     }
 
@@ -1292,8 +1307,8 @@ program
 
       const { data: items } = await axios.get(`${API_URL}/items`, { params: query });
 
-      if (options.json) {
-        console.log(JSON.stringify(items, null, 2));
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(items));
         return;
       }
 
@@ -1398,6 +1413,111 @@ program
       const msg = error.response?.data?.error || error.message;
       console.error(chalk.red('Error moving item:'), msg);
     }
+  });
+
+program
+  .command('pause-work <id>')
+  .description('Pause work on an item, saving a resumable snapshot (MCP fallback: pause_work)')
+  .requiredOption('--summary <text>', 'What has been done so far')
+  .requiredOption('--resume-instructions <text>', 'How to pick the work back up later')
+  .option('--files <list>', 'Comma-separated list of modified files')
+  .option('--git-diff <diff>', 'Captured git diff to restore context')
+  .action(async (id, options) => {
+    try {
+      const payload: Record<string, unknown> = {
+        summary: options.summary,
+        resumeInstructions: options.resumeInstructions,
+      };
+      if (options.files) {
+        payload.filesModified = String(options.files).split(',').map((f: string) => f.trim()).filter(Boolean);
+      }
+      if (options.gitDiff) payload.gitDiff = options.gitDiff;
+      const { data } = await axios.post(`${API_URL}/items/${id}/pause`, payload);
+      console.log(chalk.green(`⏸️  Work paused on item [${id}].`));
+      console.log(chalk.gray(`   Snapshot ${data.id} • previous status: ${data.status}`));
+      console.log(chalk.gray(`   Resume later with: agenfk resume-work ${id}`));
+    } catch (error: any) {
+      console.error(chalk.red('Error pausing work:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('resume-work <id>')
+  .description('Resume previously paused work on an item (MCP fallback: resume_work)')
+  .action(async (id) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${id}/resume`);
+      const status = data.snapshot?.status ?? data.item?.status ?? 'unknown';
+      console.log(chalk.green(`▶️  Work resumed on item [${id}].`));
+      console.log(chalk.gray(`   Restored status: ${status}`));
+    } catch (error: any) {
+      console.error(chalk.red('Error resuming work:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('update-project <id>')
+  .description('Update a project\'s name, description, or verify command (MCP fallback: update_project)')
+  .option('--name <name>', 'New project name')
+  .option('--description <text>', 'New project description')
+  .option('--verify-command <cmd>', 'Project-level verification command')
+  .action(async (id, options) => {
+    try {
+      const updates: Record<string, unknown> = {};
+      if (options.name !== undefined) updates.name = options.name;
+      if (options.description !== undefined) updates.description = options.description;
+      if (options.verifyCommand !== undefined) updates.verifyCommand = options.verifyCommand;
+      if (Object.keys(updates).length === 0) {
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command.'));
+        process.exit(1);
+        return;
+      }
+      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      console.log(chalk.green(`✓ Project ${id} updated.`));
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error updating project:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('add-context <id>')
+  .description('Attach a file/context reference to an item (MCP fallback: add_context)')
+  .requiredOption('--path <path>', 'Path or URI of the context resource')
+  .option('--description <text>', 'Short description of the context')
+  .option('--content <text>', 'Optional inline content')
+  .action(async (id, options) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${id}`);
+      const context = Array.isArray(item.context) ? [...item.context] : [];
+      const entry: Record<string, unknown> = { id: randomUUID(), path: options.path };
+      if (options.description !== undefined) entry.description = options.description;
+      if (options.content !== undefined) entry.content = options.content;
+      context.push(entry);
+      await axios.put(`${API_URL}/items/${id}`, { context });
+      console.log(chalk.green(`✓ Context "${options.path}" attached to item [${id}].`));
+    } catch (error: any) {
+      console.error(chalk.red('Error adding context:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('analyze <request>')
+  .description('Get AgEnFK decomposition guidance for a user request (MCP fallback: analyze_request)')
+  .action((request) => {
+    console.log(chalk.blue(`\nComplexity analysis for: "${request}"\n`));
+    console.log('REMINDER: All work MUST follow these decomposition and inspection rules:');
+    console.log('  1. Minimum Decomposition: Every piece of work must be minimally a STORY with child');
+    console.log('     TASKS, or an EPIC with child STORIES and their TASKS. Direct coding on a STORY or');
+    console.log('     EPIC without child TASKS is prohibited.');
+    console.log('  2. Backlog Inspection: Only items in TODO status should be inspected when starting new');
+    console.log('     work; IDEAs (drafts) must be ignored.');
+    console.log('  3. Create ALL sub-items (Stories/Tasks) in TODO status.');
+    console.log('  4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.');
   });
 
 program
@@ -2509,8 +2629,8 @@ program
         targetId = found[0].id;
       }
       const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
-      if (options.json) {
-        console.log(JSON.stringify(item, null, 2));
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(item));
       } else {
         console.log(chalk.blue(`[${item.id.substring(0,8)}] ${item.title}`));
         console.log(`  Type:        ${item.type}`);
@@ -2561,7 +2681,7 @@ program
         repo: options.repo,
         sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
       });
-      console.log(JSON.stringify(data, null, 2));
+      console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error registering PR:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -2583,7 +2703,7 @@ program
         `${API_URL}/prs/${encodeURIComponent(options.repo)}/${options.number}`,
         { sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug } },
       );
-      console.log(JSON.stringify(data, null, 2));
+      console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error updating PR sizing:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -2609,7 +2729,7 @@ program
       if (options.until) params.until = options.until;
       if (options.limit) params.limit = options.limit;
       const { data } = await axios.get(`${API_URL}/token-events`, { params });
-      console.log(JSON.stringify(data, null, 2));
+      console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error querying token events:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -3006,9 +3126,14 @@ const flowCommand = program
 flowCommand
   .command('list')
   .description('List all flows')
-  .action(async () => {
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
     try {
       const { data: flows } = await axios.get(`${API_URL}/flows`);
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(flows));
+        return;
+      }
       if (flows.length === 0) {
         console.log(chalk.yellow('No flows found.'));
         return;
@@ -3024,11 +3149,28 @@ flowCommand
   });
 
 flowCommand
-  .command('show <id>')
-  .description('Show a flow and its steps in order')
-  .action(async (id) => {
+  .command('show [id]')
+  .description('Show a flow and its steps in order. Pass a flow <id>, or --project <id> to show that project\'s active flow.')
+  .option('--project <projectId>', 'Show the active flow for this project (defaults to current project when no id is given)')
+  .option('--json', 'Output as JSON')
+  .action(async (id, options) => {
     try {
-      const { data: flow } = await axios.get(`${API_URL}/flows/${id}`);
+      let flow: any;
+      if (id && !options.project) {
+        ({ data: flow } = await axios.get(`${API_URL}/flows/${id}`));
+      } else {
+        const projectId = options.project || findProjectId(process.cwd());
+        if (!projectId) {
+          console.error(chalk.red('Error: provide a flow <id>, or --project <id> (or run inside an initialized project).'));
+          process.exit(1);
+          return;
+        }
+        ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow`));
+      }
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(flow));
+        return;
+      }
       console.log(chalk.blue(`\nFlow: ${flow.name}`));
       if (flow.description) console.log(chalk.gray(`Description: ${flow.description}`));
       console.log();
@@ -3233,6 +3375,33 @@ flowCommand
       console.log(chalk.green(`Flow ${id} activated for project ${projectId}.`));
     } catch (error: any) {
       console.error(chalk.red('Error activating flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('delete <id>')
+  .description('Delete a flow (MCP fallback: delete_flow)')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(async (id, options) => {
+    try {
+      if (!options.yes) {
+        const inquirer = (await import('inquirer')).default;
+        const { confirm } = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'confirm',
+          message: `Delete flow ${id}? This cannot be undone.`,
+          default: false,
+        }]);
+        if (!confirm) {
+          console.log(chalk.yellow('Aborted.'));
+          return;
+        }
+      }
+      await axios.delete(`${API_URL}/flows/${id}`);
+      console.log(chalk.green(`✓ Flow ${id} deleted.`));
+    } catch (error: any) {
+      console.error(chalk.red('Error deleting flow:'), error.response?.data?.error || error.message);
+      process.exit(1);
     }
   });
 

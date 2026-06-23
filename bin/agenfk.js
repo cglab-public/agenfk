@@ -34,6 +34,9 @@ console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
 const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
+// MCP is opt-in (CLI-only by default): forward --with-mcp / --no-mcp to install.mjs.
+const withMcp = process.argv.includes('--with-mcp');
+const noMcp = process.argv.includes('--no-mcp');
 
 // On MSYS2 / Git-for-Windows (MinGW), Node.js reports process.platform === 'win32' but
 // the bundled tar is an MSYS2 binary that understands POSIX paths (/c/Users/...).
@@ -112,7 +115,7 @@ function fetchLatestTag(repo, beta = false) {
 // non-zero exit; we translate that into an explicit error + non-zero exit code.
 function runInstaller(cwd) {
   try {
-    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}`, { cwd, stdio: 'inherit' });
+    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}`, { cwd, stdio: 'inherit' });
   } catch {
     console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
     console.error(`${YELLOW}   See the output above for the failing step, then re-run:${RESET}`);

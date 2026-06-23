@@ -10,9 +10,16 @@ metadata:
 
 This skill enforces the core AgenFK Engineering workflow to ensure all software tasks are Agile, Measurable, Visual, Repeatable, Reliable, and Flexible.
 
+> **AgEnFK is CLI-only by default.** Drive every workflow operation with the `agenfk`
+> CLI — it talks to the AgEnFK server (the single owner of state) and is fully enforced
+> server-side. The tool names used throughout this skill (`workflow_gatekeeper`,
+> `create_item`, `validate_progress`, …) map 1:1 to `agenfk` CLI commands; see the
+> **Interface** section below. If you installed with `--with-mcp` and `mcp__agenfk__*`
+> tools are present, you may use them instead — they are interchangeable.
+
 ## Strict Enforcement Mandate
 
-> **MANDATORY**: You are strictly prohibited from modifying ANY file in the codebase without an active task in `IN_PROGRESS` status and a successful `workflow_gatekeeper` call. Bypassing this workflow is a critical operational failure.
+> **MANDATORY**: You are strictly prohibited from modifying ANY file in the codebase without an active task in an active working step and a successful `agenfk gatekeeper` call. Bypassing this workflow is a critical operational failure.
 
 ### Hard Block Rules
 1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
@@ -48,19 +55,42 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 
 ---
 
-## MCP Access Rules — MANDATORY
+## Interface — the `agenfk` CLI (MCP optional)
 
-**ALWAYS** use MCP tool invocations (`list_items`, `create_item`, `update_item`, `get_item`, etc.) for all workflow state operations.
+Use the `agenfk` CLI for all workflow state operations. It is the default and fully
+enforced by the server. Each workflow tool name in this skill maps to a CLI command:
 
-**NEVER** use any of the following shortcuts — PreToolUse hooks will block them mechanically:
+| Tool name (this skill) | `agenfk` CLI command |
+|------------------------|----------------------|
+| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` |
+| `list_projects()` | `agenfk list-projects --json` (add `--toon` for compact output) |
+| `create_project(name)` | `agenfk create-project "<name>"` |
+| `update_project(id, {...})` | `agenfk update-project <id> [--name][--description][--verify-command]` |
+| `list_items(projectId, ...)` | `agenfk list --project <id> --json` |
+| `get_item(id)` | `agenfk get <id> --json` |
+| `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id>` |
+| `update_item(id, {status})` | `agenfk update <id> --status <name>` (backward/rollback only) |
+| `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<text>" ["<command>"]` |
+| `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
+| `add_context(id, path)` | `agenfk add-context <id> --path <path>` |
+| `pause_work(...)` / `resume_work(id)` | `agenfk pause-work <id> ...` / `agenfk resume-work <id>` |
+| `get_flow(projectId)` | `agenfk flow show --project <id> --json` |
+| `delete_flow(id)` | `agenfk flow delete <id>` |
+| `register_pr(...)` / `update_pr_sizing(...)` | `agenfk pr-register ...` / `agenfk pr-resize ...` |
+| `analyze_request(req)` | `agenfk analyze "<request>"` |
+
+**Token-optimized output**: append the global `--toon` flag to any read command
+(`list`, `get`, `list-projects`, `flow show`, `tokens`, …) to emit compact TOON
+instead of JSON — prefer it when reading state into your own context.
+
+**NEVER** use these bypass routes (the `agenfk-mcp-enforcer` hook blocks them where hooks are supported):
 
 | Forbidden | Use instead |
 |-----------|-------------|
-| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (via Bash or Read tool) | `list_items(projectId)` · `get_item(id)` |
-| `curl` / `wget` to `http://localhost:3000` (direct REST API) | `list_items()` · `create_item()` · `update_item()` |
-| `agenfk list`, `agenfk status`, `agenfk get`, `npx agenfk ...` (CLI state queries) | `list_items()` · `get_item()` · `list_projects()` |
+| Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (via Bash or Read tool) | `agenfk list --json` · `agenfk get <id> --json` |
+| `curl` / `wget` to `http://localhost:3000` (direct REST API) | `agenfk list` · `agenfk create` · `agenfk update` · `agenfk verify` |
 
-If MCP tools are not available in your context, surface the connectivity problem clearly rather than falling back to a bypass route.
+MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to the CLI commands above.
 
 ---
 
@@ -118,7 +148,7 @@ If MCP tools are not available in your context, surface the connectivity problem
     *   **Self-Correction**: If you realize you are about to edit code without a card in `IN_PROGRESS`, STOP IMMEDIATELY. Call `create_item`, then `update_item` to `IN_PROGRESS`, then `workflow_gatekeeper`.
     *   **Mechanical Enforcement**: The gatekeeper will reject authorization if your `role` does not match the status of the active task (e.g., `just provide `itemId` to disambiguate when multiple tasks are active).
     *   **Branch Verification**: After gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
-    *   **CRITICAL**: Always use MCP tools (`create_item`, `update_item`, `validate_progress`, `log_token_usage`) for ALL workflow state changes. **Never use the `agenfk` CLI to create items, update status, or close tasks.** The CLI bypasses the enforcement layer built into the MCP server.
+    *   **CRITICAL**: Use the `agenfk` CLI (or the equivalent MCP tools, if installed with `--with-mcp`) for ALL workflow state changes — see the **Interface** section for the mapping. Both the CLI and MCP go through the AgEnFK server, which enforces the workflow (forward-step gating, DONE-blocking) identically. Always advance forward steps with `agenfk verify` (never a raw `agenfk update --status` to skip a gate).
 
 5.  **Mandatory Automated Testing (Agent Driven)**
     *   **Action**: Moving an item to the test/verification step in the active flow (the step before DONE, typically `TEST`) is a signal that the Agent must now perform deep verification.
