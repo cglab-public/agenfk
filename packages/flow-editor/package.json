@@ -1,7 +1,7 @@
 {
   "name": "@agenfk/flow-editor",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.5-beta.1",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
