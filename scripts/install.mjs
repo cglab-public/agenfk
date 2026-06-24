@@ -1053,12 +1053,18 @@ process.exit(0);
         }
     }
 
-    // 12. Install gatekeeper hook script
+    // 12. Mirror the shared hook scripts into ~/.agenfk/bin. This MUST happen
+    // regardless of --only target: in-process plugins (OpenCode) and the pi
+    // extension spawn these from ~/.agenfk/bin, so a targeted `--only=pi` /
+    // `--only=opencode` install must still leave them present.
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const internalBinDir = path.join(agenfkHome, 'bin');
     await fs.mkdir(internalBinDir, { recursive: true });
-    if (existsSync(gatekeeperSource)) {
-        await fs.copyFile(gatekeeperSource, path.join(internalBinDir, 'agenfk-gatekeeper.mjs'));
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
+        const src = path.join(rootDir, 'bin', script);
+        if (existsSync(src)) {
+            await fs.copyFile(src, path.join(internalBinDir, script));
+        }
     }
 
     if (!onlyPlatform) {
@@ -1096,16 +1102,9 @@ process.exit(0);
         }
         console.log(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
-        // 12d. Install agenfk-pr-hook script (used by PostToolUse hooks across clients)
+        // 12d. Install agenfk-pr-hook into ~/.local/bin (the ~/.agenfk/bin mirror
+        // is handled unconditionally above so --only installs are self-sufficient).
         const prHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook.mjs');
-        const internalBinDir = path.join(agenfkHome, 'bin');
-        await fs.mkdir(internalBinDir, { recursive: true });
-        await fs.copyFile(prHookSource, path.join(internalBinDir, 'agenfk-pr-hook.mjs'));
-        // The pi extension (and any in-process plugin) spawns the enforcer from
-        // ~/.agenfk/bin, so mirror it there alongside gatekeeper + pr-hook.
-        if (existsSync(enforcerSource)) {
-            await fs.copyFile(enforcerSource, path.join(internalBinDir, 'agenfk-mcp-enforcer.mjs'));
-        }
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');

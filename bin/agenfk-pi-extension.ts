@@ -89,7 +89,9 @@ export function composeReminder(baseMessage: string, model: string | null): stri
 
 function runHookScript(script: string, argv: string[], stdin: unknown): any | null {
   try {
-    const res = spawnSync('node', [path.join(HOOK_DIR, script), ...argv], {
+    // process.execPath is the Node binary pi itself is running under — more
+    // reliable than 'node' from PATH (pi may be launched with a minimal PATH).
+    const res = spawnSync(process.execPath, [path.join(HOOK_DIR, script), ...argv], {
       input: JSON.stringify(stdin),
       encoding: 'utf8',
       timeout: 2000,
@@ -134,7 +136,9 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   });
 
   // #3 — block edits/writes with no active task, and forbidden bash bypass routes.
-  pi.on('tool_call', async (event) => {
+  // Synchronous: the verdict comes from a blocking spawnSync, and returning it
+  // synchronously avoids any chance of the tool slipping past on a later tick.
+  pi.on('tool_call', (event) => {
     try {
       const name = event?.toolName;
       if (name === 'edit' || name === 'write') {
@@ -151,7 +155,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   });
 
   // #1 — after a bash command, nudge for PR sizing with the real model injected.
-  pi.on('tool_result', async (event, ctx) => {
+  pi.on('tool_result', (event, ctx) => {
     try {
       if (event?.toolName !== 'bash') return;
       const command = event?.input?.command ?? event?.input?.cmd;

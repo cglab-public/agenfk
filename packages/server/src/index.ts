@@ -726,7 +726,9 @@ async function callToolHandler(request: any): Promise<any> {
         // Resolve which task to authorize
         let task: any;
         if (itemId) {
-          task = workingItems.find((i: any) => i.id === itemId);
+          // Accept a full id or an unambiguous prefix (agents commonly pass the
+          // 8-char id shown in gatekeeper output) — matches the CLI/core decider.
+          task = workingItems.find((i: any) => i.id === itemId || i.id.startsWith(itemId));
           if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in an active working step or does not belong to project [${effectiveProjectId}].` }] };
           if (task.type === 'EPIC' || task.type === 'STORY') {
             return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type} [${task.id.substring(0,8)}] "${task.title}". Create or advance a TASK or BUG within this ${task.type} to an active step first, then call workflow_gatekeeper with that TASK/BUG's itemId.` }] };

@@ -111,7 +111,9 @@ function block(reason) {
 // queries) is Claude-Code-specific: it presumes MCP tools are the intended path.
 // CLI-first clients (e.g. pi) WANT the CLI, so they skip rule 3 entirely.
 const clientArgIdx = process.argv.indexOf('--client');
-const client = clientArgIdx >= 0 ? process.argv[clientArgIdx + 1] : 'claude-code';
+// Guard against a trailing `--client` with no value (would otherwise become
+// undefined and silently disable rule 3). Default to the strictest client.
+const client = (clientArgIdx >= 0 && process.argv[clientArgIdx + 1]) || 'claude-code';
 
 const toolIntent = await getToolIntent();
 if (!toolIntent) process.exit(0);
