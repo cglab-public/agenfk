@@ -138,12 +138,17 @@ const RegisterPrSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
+  // Agent-declared runtime, for observability on the pr.opened hub event.
+  model: z.string().optional(),
+  harness: z.string().optional(),
 });
 
 const UpdatePrSizingSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
+  model: z.string().optional(),
+  harness: z.string().optional(),
 });
 
 const AddContextSchema = z.object({
@@ -278,6 +283,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
+            model: { type: "string", description: "Agent-declared model id you are running (e.g. claude-opus-4-8, glm-5.2). Optional; recorded on the pr.opened hub event." },
+            harness: { type: "string", description: "Agent-declared harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode). Optional; recorded on the pr.opened hub event." },
           },
           required: ["itemId", "prNumber", "repo", "sizing"],
         },
@@ -300,6 +307,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
+            model: { type: "string", description: "Agent-declared model id. Optional; recorded on the pr.updated hub event." },
+            harness: { type: "string", description: "Agent-declared harness/client. Optional; recorded on the pr.updated hub event." },
           },
           required: ["prNumber", "repo", "sizing"],
         },
@@ -873,7 +882,11 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "update_pr_sizing": {
         const args = UpdatePrSizingSchema.parse(request.params.arguments);
-        const { data } = await api.put(`/prs/${encodeURIComponent(args.repo)}/${args.prNumber}`, { sizing: args.sizing });
+        const { data } = await api.put(`/prs/${encodeURIComponent(args.repo)}/${args.prNumber}`, {
+          sizing: args.sizing,
+          ...(args.model ? { model: args.model } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+        });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
       case "query_token_events": {

@@ -23,7 +23,7 @@ Check for local changes using `git status`. If there are unstaged or uncommitted
   1. Push the branch: `git push -u origin <branchName>`
   2. Create the PR via `gh pr create --title "<item.title>" --body "<summary>"` (adjust as needed).
   3. Capture the PR URL and number from the output.
-  4. Register the PR on the item: `agenfk pr-register --item <itemId> --number <number> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>` (MCP: `register_pr`), where the counts reflect the items included in this PR.
+  4. Register the PR on the item: `agenfk pr-register --item <itemId> --number <number> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n> --model <your model id> --harness <your client>` (MCP: `register_pr`), where the counts reflect the items included in this PR and `--model`/`--harness` are your own runtime (e.g. `--model claude-opus-4-8 --harness claude-code`) — they're recorded on the `pr.opened` hub event.
 
 **Step 3 — Confirm and wait**
 - Show the user the PR URL and instruct them:

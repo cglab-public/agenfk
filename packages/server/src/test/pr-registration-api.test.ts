@@ -166,6 +166,83 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   });
 });
 
+describe('agent-declared model + harness on PR events', () => {
+  // Static: CLI flags
+  it('CLI pr-register and pr-resize declare --model and --harness', () => {
+    const cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
+    // both occurrences (pr-register, pr-resize) must offer the flags
+    expect((cli.match(/--model <id>/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect((cli.match(/--harness <name>/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Static: MCP tool schemas
+  it('register_pr and update_pr_sizing MCP schemas expose model + harness', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
+    // The Zod schemas that back both MCP tools must carry optional model/harness.
+    expect(src).toMatch(/model:\s*z\.string\(\)\.optional\(\)/);
+    expect(src).toMatch(/harness:\s*z\.string\(\)\.optional\(\)/);
+  });
+
+  // Behavioral: the fields ride into the hub event payloads
+  it('POST /prs includes model + harness in the pr.opened payload', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    const res = await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 601, repo: 'org/mh',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+    expect(res.status).toBe(201);
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 601);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.model).toBe('claude-opus-4-8');
+    expect(ev.payload?.harness).toBe('claude-code');
+  });
+
+  it('PUT /prs includes model + harness in the pr.updated payload', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH2' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 602, repo: 'org/mh2',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+    });
+
+    const res = await request(app).put('/prs/org%2Fmh2/602').send({
+      sizing: { epic: 0, story: 0, task: 2, bug: 0 },
+      model: 'glm-5.2', harness: 'pi',
+    });
+    expect(res.status).toBe(200);
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 602);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.model).toBe('glm-5.2');
+    expect(ev.payload?.harness).toBe('pi');
+  });
+
+  it('omitting model/harness still works (backward compatible)', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH3' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    const res = await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 603, repo: 'org/mh3',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+    });
+    expect(res.status).toBe(201);
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 603);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.model).toBeUndefined();
+    expect(ev.payload?.harness).toBeUndefined();
+  });
+});
+
 describe('POST /prs emits a hub event into the outbox', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
