@@ -120,7 +120,7 @@ const GetItemSchema = z.object({
 const QueryTokenEventsSchema = z.object({
   itemId: z.string().optional(),
   projectId: z.string().optional(),
-  client: z.enum(['claude-code', 'codex', 'gemini', 'cursor', 'opencode']).optional(),
+  client: z.enum(['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi']).optional(),
   since: z.string().optional(),
   until: z.string().optional(),
   limit: z.number().int().positive().optional(),
@@ -323,7 +323,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             itemId: { type: "string", description: "Filter to events attributed to this item." },
             projectId: { type: "string" },
-            client: { type: "string", enum: ['claude-code', 'codex', 'gemini', 'cursor', 'opencode'] },
+            client: { type: "string", enum: ['claude-code', 'codex', 'gemini', 'cursor', 'opencode', 'pi'] },
             since: { type: "string", description: "ISO timestamp inclusive lower bound." },
             until: { type: "string", description: "ISO timestamp exclusive upper bound." },
             limit: { type: "number" },

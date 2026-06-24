@@ -51,6 +51,9 @@ export function buildDirective(client, message) {
       return { permission: 'allow', userMessage: message };
     case 'opencode':
       return { message };
+    case 'pi':
+      // The pi extension reads `.message` and re-emits it via pi.sendMessage().
+      return { message };
     default:
       return { message };
   }

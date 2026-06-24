@@ -3,43 +3,25 @@ import { describe, it, expect, vi } from 'vitest';
 // are exercised directly with a fake pi/ctx so no pi runtime is required.
 // @ts-ignore — .ts extension is loaded by pi via jiti; here we import it directly.
 import activate, {
-  extractModel,
   formatModel,
   composeReminder,
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-describe('extractModel (from before_provider_request payload)', () => {
-  it('reads provider + model from a request payload', () => {
-    expect(extractModel({ provider: 'anthropic', model: 'claude-opus-4-8' }))
+describe('formatModel (pi Model → provider/id)', () => {
+  it('formats provider/id', () => {
+    expect(formatModel({ provider: 'anthropic', id: 'claude-opus-4-8' }))
       .toBe('anthropic/claude-opus-4-8');
   });
 
-  it('reads a nested model object { provider, id }', () => {
-    expect(extractModel({ model: { provider: 'zhipu', id: 'glm-5.2' } }))
-      .toBe('zhipu/glm-5.2');
+  it('falls back to a bare id when provider is absent', () => {
+    expect(formatModel({ id: 'glm-5.2' })).toBe('glm-5.2');
   });
 
-  it('falls back to a bare model string when no provider is present', () => {
-    expect(extractModel({ model: 'claude-opus-4-8' })).toBe('claude-opus-4-8');
-  });
-
-  it('returns null for unrecognized shapes', () => {
-    expect(extractModel({})).toBeNull();
-    expect(extractModel(null)).toBeNull();
-    expect(extractModel(undefined)).toBeNull();
-  });
-});
-
-describe('formatModel (from model_select event.model)', () => {
-  it('formats provider/id', () => {
-    expect(formatModel({ provider: 'anthropic', id: 'claude-sonnet-4-6' }))
-      .toBe('anthropic/claude-sonnet-4-6');
-  });
-
-  it('returns null when model is missing', () => {
+  it('returns null when model is missing/empty', () => {
     expect(formatModel(null)).toBeNull();
+    expect(formatModel(undefined)).toBeNull();
     expect(formatModel({})).toBeNull();
   });
 });
@@ -50,8 +32,6 @@ describe('composeReminder', () => {
   it('injects the deterministic model id when known', () => {
     const out = composeReminder(base, 'zhipu/glm-5.2');
     expect(out).toContain(base);
-    expect(out).toContain('zhipu/glm-5.2');
-    // Must steer the agent to pass the real model, not guess.
     expect(out).toMatch(/--model\s+zhipu\/glm-5\.2/);
     expect(out).toContain('--harness pi');
   });
@@ -59,7 +39,6 @@ describe('composeReminder', () => {
   it('degrades gracefully when the model is unknown', () => {
     const out = composeReminder(base, null);
     expect(out).toContain(base);
-    // No bogus model token injected.
     expect(out).not.toMatch(/--model\s+null/);
   });
 });
@@ -74,8 +53,8 @@ function makeFakePi() {
     on: (event: string, handler: Function) => { handlers[event] = handler; },
     sendMessage: (message: any, options: any) => { sent.push({ message, options }); },
   };
-  const fire = (event: string, payload: any) =>
-    handlers[event] ? handlers[event](payload, {} as any) : undefined;
+  const fire = (event: string, payload: any, ctx: any = {}) =>
+    handlers[event] ? handlers[event](payload, ctx) : undefined;
   return { pi, handlers, sent, fire };
 }
 
@@ -89,30 +68,55 @@ function makeDeps(overrides: any = {}) {
   };
 }
 
+/** Fake ctx exposing the live model via getModel(). */
+const ctxWithModel = (provider: string, id: string) => ({ getModel: () => ({ provider, id }) });
+
 describe('activate(): PR-open reminder via tool_result', () => {
-  it('sends a steer message with the captured model when bash opens a PR', async () => {
+  it('sends a steer message with ctx.getModel() injected when bash opens a PR', async () => {
     const { pi, sent, fire } = makeFakePi();
     const deps = makeDeps({
       prReminder: vi.fn().mockReturnValue({ message: 'You just opened a PR. harness = "pi".' }),
     });
     activate(pi as any, deps);
 
-    // Model becomes known via a provider request first.
-    fire('before_provider_request', { provider: 'anthropic', model: 'claude-opus-4-8' });
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create --fill' } });
+    await fire(
+      'tool_result',
+      { toolName: 'bash', input: { command: 'gh pr create --fill' } },
+      ctxWithModel('anthropic', 'claude-opus-4-8'),
+    );
 
     expect(deps.prReminder).toHaveBeenCalledWith('gh pr create --fill');
     expect(sent).toHaveLength(1);
     expect(sent[0].options.deliverAs).toBe('steer');
-    expect(sent[0].message.content).toContain('claude-opus-4-8');
     expect(sent[0].message.customType).toBe('agenfk-pr');
+    expect(sent[0].message.content).toContain('anthropic/claude-opus-4-8');
+  });
+
+  it('falls back to the cached model_select model when ctx.getModel() is unavailable', async () => {
+    const { pi, sent, fire } = makeFakePi();
+    const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }) });
+    activate(pi as any, deps);
+
+    fire('model_select', { model: { provider: 'zhipu', id: 'glm-5.2' } });
+    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {}); // no getModel
+    expect(sent[0].message.content).toContain('zhipu/glm-5.2');
+  });
+
+  it('still reminds (without a model line) when no model can be resolved', async () => {
+    const { pi, sent, fire } = makeFakePi();
+    const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'open it' }) });
+    activate(pi as any, deps);
+    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {});
+    expect(sent).toHaveLength(1);
+    expect(sent[0].message.content).toContain('open it');
+    expect(sent[0].message.content).not.toMatch(/--model\s+null/);
   });
 
   it('does not send when the tool is not bash', async () => {
     const { pi, sent, fire } = makeFakePi();
     const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'x' }) });
     activate(pi as any, deps);
-    await fire('tool_result', { toolName: 'edit', input: { path: 'a.ts' } });
+    await fire('tool_result', { toolName: 'edit', input: { path: 'a.ts' } }, ctxWithModel('a', 'b'));
     expect(deps.prReminder).not.toHaveBeenCalled();
     expect(sent).toHaveLength(0);
   });
@@ -121,17 +125,8 @@ describe('activate(): PR-open reminder via tool_result', () => {
     const { pi, sent, fire } = makeFakePi();
     const deps = makeDeps({ prReminder: vi.fn().mockReturnValue(null) });
     activate(pi as any, deps);
-    await fire('tool_result', { toolName: 'bash', input: { command: 'ls -la' } });
+    await fire('tool_result', { toolName: 'bash', input: { command: 'ls -la' } }, ctxWithModel('a', 'b'));
     expect(sent).toHaveLength(0);
-  });
-
-  it('captures the model from model_select too', async () => {
-    const { pi, sent, fire } = makeFakePi();
-    const deps = makeDeps({ prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }) });
-    activate(pi as any, deps);
-    fire('model_select', { model: { provider: 'zhipu', id: 'glm-5.2' } });
-    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } });
-    expect(sent[0].message.content).toContain('zhipu/glm-5.2');
   });
 });
 

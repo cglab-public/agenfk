@@ -107,6 +107,12 @@ function block(reason) {
     process.exit(0);
 }
 
+// Which client invoked us. Rule 3 (blocking `agenfk list/get/...` CLI state
+// queries) is Claude-Code-specific: it presumes MCP tools are the intended path.
+// CLI-first clients (e.g. pi) WANT the CLI, so they skip rule 3 entirely.
+const clientArgIdx = process.argv.indexOf('--client');
+const client = clientArgIdx >= 0 ? process.argv[clientArgIdx + 1] : 'claude-code';
+
 const toolIntent = await getToolIntent();
 if (!toolIntent) process.exit(0);
 
@@ -145,7 +151,7 @@ if (tool === 'Bash') {
 
     // 3. Block agenfk CLI state query commands (only when MCP is available).
     // When MCP is policy-blocked, the CLI commands are the intended fallback.
-    if (isMcpAvailable() &&
+    if (client === 'claude-code' && isMcpAvailable() &&
         (/\bagenfk\s+(list|status|get|show|board)\b/.test(command) ||
          /\bnpx\s+agenfk\s+(list|status|get|show|board)\b/.test(command))) {
         block(

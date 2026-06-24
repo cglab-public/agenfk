@@ -349,6 +349,17 @@ async function run() {
         return removed;
     });
 
+    // 6a-pi. pi native extension
+    await step('pi extension', shouldRun('pi'), async () => {
+        console.log(`${GREEN}[6a] Removing pi extension...${NC}`);
+        const dest = path.join(os.homedir(), '.pi', 'agent', 'extensions', 'agenfk.ts');
+        if (await rmIfExists(dest)) {
+            console.log(`  Removed: ${dest}`);
+            return true;
+        }
+        return false;
+    });
+
     // 6b. MCP config — Cursor
     await step('Cursor MCP config', shouldRun('cursor'), async () => {
         console.log(`${GREEN}[6b] Removing Cursor MCP config...${NC}`);

@@ -1101,6 +1101,11 @@ process.exit(0);
         const internalBinDir = path.join(agenfkHome, 'bin');
         await fs.mkdir(internalBinDir, { recursive: true });
         await fs.copyFile(prHookSource, path.join(internalBinDir, 'agenfk-pr-hook.mjs'));
+        // The pi extension (and any in-process plugin) spawns the enforcer from
+        // ~/.agenfk/bin, so mirror it there alongside gatekeeper + pr-hook.
+        if (existsSync(enforcerSource)) {
+            await fs.copyFile(enforcerSource, path.join(internalBinDir, 'agenfk-mcp-enforcer.mjs'));
+        }
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
@@ -1140,6 +1145,25 @@ process.exit(0);
             }
         } else if (!onlyPlatform) {
             console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
+        }
+    }
+
+    // 12e. Install pi native extension (https://pi.dev). pi auto-loads single
+    // .ts files from ~/.pi/agent/extensions/ via jiti — no build, no node_modules.
+    // The extension delegates decisions to ~/.agenfk/bin/*.mjs (installed above).
+    if (shouldRun('pi')) {
+        const piHome = path.join(os.homedir(), '.pi');
+        const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
+        if (existsSync(piHome) || piInstalled) {
+            const piExtDir = path.join(piHome, 'agent', 'extensions');
+            await fs.mkdir(piExtDir, { recursive: true });
+            const piExtSource = path.join(rootDir, 'bin', 'agenfk-pi-extension.ts');
+            if (existsSync(piExtSource)) {
+                await fs.copyFile(piExtSource, path.join(piExtDir, 'agenfk.ts'));
+                console.log(`  Installed pi extension: ${path.join(piExtDir, 'agenfk.ts')}`);
+            }
+        } else if (!onlyPlatform) {
+            console.log(`  pi not found. Skipping pi extension installation.`);
         }
     }
 
