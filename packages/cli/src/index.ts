@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, slugifyTitle } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -2821,53 +2821,32 @@ program
       const projectId = findProjectId(process.cwd());
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
 
-      const activeItems = projectItems.filter((i: any) =>
-        i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED'
-      );
-      const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
-      const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
-      const testItems = activeItems.filter((i: any) => i.status === 'TEST');
-
-      const role = (options.role || 'coding').toLowerCase();
-      const intent = options.intent || '(no intent provided)';
-      let authorized = false;
-      let message = '';
-      let task: any = null;
-
-      if (role === 'coding') {
-        if (inProgressItems.length === 0) {
-          message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS. Create a task and set it to IN_PROGRESS first.`;
-        } else if (options.itemId) {
-          task = inProgressItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId));
-          if (!task) { message = `❌ WORKFLOW BREACH: Item [${options.itemId}] is not IN_PROGRESS.`; }
-          else { authorized = true; message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-        } else if (inProgressItems.length > 1) {
-          message = `⚠️ AMBIGUOUS: Multiple tasks are IN_PROGRESS. Provide --item-id to disambiguate.\n${inProgressItems.map((i: any) => `  [${i.id.substring(0,8)}] ${i.title}`).join('\n')}`;
-        } else {
-          task = inProgressItems[0];
-          authorized = true;
-          message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`;
-        }
-      } else if (role === 'review') {
-        const target = options.itemId ? reviewItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : reviewItems[0];
-        if (!target) { message = `❌ WORKFLOW BREACH: No task is in REVIEW status.`; }
-        else { authorized = true; task = target; message = `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-      } else if (role === 'testing') {
-        const target = options.itemId ? testItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : testItems[0];
-        if (!target) { message = `❌ WORKFLOW BREACH: No task is in TEST status.`; }
-        else { authorized = true; task = target; message = `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-      } else {
-        // Generic: just check for IN_PROGRESS
-        if (inProgressItems.length === 0) { message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS.`; }
-        else { authorized = true; task = inProgressItems[0]; message = `✅ WORKFLOW VALIDATED.\n\nActive Item: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
+      // Fetch the project's active flow so authorization is flow-aware: any
+      // TASK/BUG in a non-anchor working step is authorizable, regardless of
+      // whether the step is literally named IN_PROGRESS. Falls back to default
+      // TODO/DONE anchors when no flow is resolvable.
+      let activeFlow: any = null;
+      if (projectId) {
+        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${projectId}/flow`)); }
+        catch { activeFlow = null; }
       }
+
+      const decision = decideGatekeeperAuthorization(projectItems, activeFlow, {
+        itemId: options.itemId,
+        intent: options.intent,
+        role: options.role,
+      });
 
       if (options.json) {
-        console.log(JSON.stringify({ authorized, message, task: task ? { id: task.id, title: task.title, status: task.status } : null }));
+        console.log(JSON.stringify({
+          authorized: decision.authorized,
+          message: decision.message,
+          task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+        }));
       } else {
-        console.log(authorized ? chalk.green(message) : chalk.red(message));
+        console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
       }
-      process.exit(authorized ? 0 : 1);
+      process.exit(decision.authorized ? 0 : 1);
     } catch (error: any) {
       console.error(chalk.red('Error checking workflow:'), error.response?.data?.error || error.message);
       process.exit(1);
