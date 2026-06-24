@@ -22,6 +22,14 @@ describe('buildUpgradeNotice', () => {
     expect(notice).toBe('');
   });
 
+  it('never renders a blank-version mandatory nag when the target version is missing', () => {
+    for (const version of ['', undefined as unknown as string]) {
+      const notice = buildUpgradeNotice({ tier: 'mandatory', version, currentVersion: '1.0.0' });
+      expect(notice).toBe('');
+      expect(notice).not.toContain('v must be installed');
+    }
+  });
+
   it('still emits notices when the target version is newer than the installed beta', () => {
     const notice = buildUpgradeNotice({
       tier: 'recommended',

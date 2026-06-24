@@ -130,6 +130,49 @@ describe('activate(): PR-open reminder via tool_result', () => {
   });
 });
 
+describe('activate(): session_start load-confirmation notify', () => {
+  /** ctx with both a notify spy and getModel(). */
+  const ctxWithUi = (provider?: string, id?: string) => {
+    const notify = vi.fn();
+    const ctx: any = { ui: { notify } };
+    if (id) ctx.getModel = () => ({ provider, id });
+    return { ctx, notify };
+  };
+
+  it('notifies on session_start so the extension proves it loaded + fired on pi', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    const { ctx, notify } = ctxWithUi('zhipu', 'glm-5.2');
+
+    await fire('session_start', { type: 'session_start', reason: 'startup' }, ctx);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const [msg, level] = notify.mock.calls[0];
+    expect(msg).toContain('agenfk');
+    expect(msg).toContain('zhipu/glm-5.2');
+    expect(level).toBe('info');
+  });
+
+  it('still notifies (without a model) when getModel() is unavailable', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    const { ctx, notify } = ctxWithUi(); // no getModel
+
+    await fire('session_start', { type: 'session_start', reason: 'startup' }, ctx);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0][0]).toContain('agenfk');
+  });
+
+  it('never throws when ctx.ui is missing (cannot break the host)', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    await expect(
+      Promise.resolve(fire('session_start', { type: 'session_start', reason: 'startup' }, {})),
+    ).resolves.not.toThrow();
+  });
+});
+
 describe('activate(): gatekeeper enforcement via tool_call', () => {
   it('blocks edit when no task is active', async () => {
     const { pi, fire } = makeFakePi();

@@ -15,15 +15,19 @@
  *   • #3 Enforcement parity — on tool_call(edit|write) delegate to agenfk-gatekeeper.mjs
  *        (block when no task is active) and on tool_call(bash) delegate to
  *        agenfk-mcp-enforcer.mjs (block direct-DB / curl-localhost bypass routes).
+ *   • #4 Load confirmation — on session_start, emit a one-line ctx.ui.notify toast
+ *        proving the extension actually loaded AND that pi's event bus dispatches to
+ *        it; it carries the detected model so it doubles as a getModel() smoke test.
  *
  * Decision logic is delegated to the same ~/.agenfk/bin/*.mjs scripts every other
  * client uses, so there is a single source of truth. The only natively-pi parts
  * are model capture (a spawned script cannot see pi's ctx) and message injection.
  *
- * Verified against the pi 0.79.10 extension API:
+ * Verified against the pi extension API (stable across the 0.79.x–0.80.x line):
  *   - handlers are (event, ctx) => …            (ExtensionHandler<E,R>)
  *   - tool_call blocks via return { block, reason }   (ToolCallEventResult)
  *   - ctx.getModel(): Model | undefined          (ExtensionContextActions)
+ *   - ctx.ui.notify(message, "info" | "warning" | "error")  (ExtensionUIContext)
  *   - pi.sendMessage(msg, { deliverAs, triggerTurn })
  *
  * Every handler is wrapped so a failure can never break the host agent.
@@ -42,7 +46,8 @@ interface PiEvent {
   model?: PiModel;
   [k: string]: unknown;
 }
-interface PiContext { getModel?: () => PiModel | undefined }
+interface PiUi { notify?: (message: string, type?: 'info' | 'warning' | 'error') => void }
+interface PiContext { getModel?: () => PiModel | undefined; ui?: PiUi }
 interface PiMessage { customType: string; content: string; display?: boolean }
 interface PiSendOptions { deliverAs?: 'steer' | 'followUp' | 'nextTurn'; triggerTurn?: boolean }
 interface PiApi {
@@ -133,6 +138,17 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
 
   pi.on('model_select', (event) => {
     try { const m = formatModel(event?.model); if (m) lastSelectedModel = m; } catch { /* ignore */ }
+  });
+
+  // #4 — load confirmation. On session_start, prove the extension loaded and that
+  // pi's event bus dispatches to it (the open question on every pi upgrade). The
+  // detected model rides along so this doubles as a ctx.getModel() smoke test.
+  pi.on('session_start', (_event, ctx) => {
+    try {
+      const model = formatModel(ctx?.getModel?.()) || lastSelectedModel;
+      const suffix = model ? ` — model: ${model}` : '';
+      ctx?.ui?.notify?.(`[agenfk] extension active (pi)${suffix}`, 'info');
+    } catch { /* never break the host */ }
   });
 
   // #3 — block edits/writes with no active task, and forbidden bash bypass routes.
