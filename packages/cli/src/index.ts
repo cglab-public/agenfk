@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization, findItemAcrossProjects, findDuplicateProjectRoots } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -1621,8 +1621,30 @@ program
       issues++;
     }
 
-    console.log('\n' + (issues === 0 
-      ? chalk.green('✨ All systems healthy!') 
+    // Duplicate projectRoot check — multiple projects sharing one directory make
+    // cwd→project resolution fragile and cause items to be tracked against the
+    // wrong project for a repo.
+    process.stdout.write('Checking for duplicate project roots... ');
+    try {
+      const { data: projects } = await axios.get(`${API_URL}/projects`);
+      const dupes = findDuplicateProjectRoots(projects as any[]);
+      if (dupes.length === 0) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.yellow('DUPLICATES FOUND'));
+        for (const g of dupes) {
+          console.log(chalk.yellow(`   - ${g.projectRoot} is claimed by ${g.projects.length} projects:`));
+          for (const p of g.projects) console.log(chalk.gray(`       [${p.id.substring(0, 8)}] ${p.name}`));
+        }
+        console.log(chalk.gray('   Consolidate or repoint these (agenfk update-project <id>) so each repo maps to one project.'));
+        issues++;
+      }
+    } catch {
+      console.log(chalk.yellow('SKIPPED (server unreachable)'));
+    }
+
+    console.log('\n' + (issues === 0
+      ? chalk.green('✨ All systems healthy!')
       : chalk.yellow(`⚠️ Found ${issues} potential issue(s). Run './agenfk up' to fix.`)) + '\n');
   });
 
@@ -2820,6 +2842,30 @@ program
       const { data: items } = await axios.get(`${API_URL}/items`);
       const projectId = findProjectId(process.cwd());
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
+
+      // Cross-project diagnostic: if an explicit --item-id resolves to an item
+      // in a DIFFERENT project than the current directory, say so plainly. The
+      // old behaviour reported a misleading "not in an active working step",
+      // which sent agents into a card-thrashing spiral over a misfiled item.
+      if (options.itemId && projectId) {
+        const globalMatch: any = findItemAcrossProjects(items as any[], options.itemId);
+        if (globalMatch && globalMatch.projectId && globalMatch.projectId !== projectId) {
+          let nameOf = (id: string) => id?.substring(0, 8);
+          try {
+            const { data: projects } = await axios.get(`${API_URL}/projects`);
+            const m: Record<string, string> = Object.fromEntries(projects.map((p: any) => [p.id, p.name]));
+            nameOf = (id: string) => (m[id] ? `${id.substring(0, 8)} (${m[id]})` : id?.substring(0, 8));
+          } catch { /* names are best-effort */ }
+          const msg = `❌ WORKFLOW BREACH: Item [${globalMatch.id.substring(0, 8)}] "${globalMatch.title}" belongs to project ${nameOf(globalMatch.projectId)}, but this directory is project ${nameOf(projectId)}.\n→ Move it:  agenfk move ${globalMatch.id} ${projectId}\n  …or run agenfk from the item's own project repo.`;
+          if (options.json) {
+            console.log(JSON.stringify({ authorized: false, crossProject: true, message: msg, task: null }));
+          } else {
+            console.log(chalk.red(msg));
+          }
+          process.exit(1);
+          return;
+        }
+      }
 
       // Fetch the project's active flow so authorization is flow-aware: any
       // TASK/BUG in a non-anchor working step is authorizable, regardless of

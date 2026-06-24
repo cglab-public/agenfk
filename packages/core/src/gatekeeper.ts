@@ -47,6 +47,22 @@ export function getActiveStepItems(
   });
 }
 
+/**
+ * Find an item by full id or unambiguous prefix across ALL items, ignoring
+ * project scoping. Used by `agenfk gatekeeper --item-id`: when the caller names
+ * an item explicitly, it should be resolvable even if it lives in a different
+ * project than the current working directory — so the gatekeeper can give a
+ * clear "wrong project" diagnostic instead of a misleading "not in an active
+ * working step" breach.
+ */
+export function findItemAcrossProjects<T extends { id: string }>(
+  items: T[],
+  itemId: string | undefined,
+): T | null {
+  if (!itemId) return null;
+  return items.find(i => i.id === itemId || i.id.startsWith(itemId)) ?? null;
+}
+
 export interface GatekeeperDecision {
   authorized: boolean;
   message: string;

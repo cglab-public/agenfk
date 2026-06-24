@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   getActiveStepItems,
   decideGatekeeperAuthorization,
+  findItemAcrossProjects,
   type GatekeeperFlow,
   type GatekeeperItem,
 } from '../gatekeeper';
@@ -109,5 +110,28 @@ describe('decideGatekeeperAuthorization', () => {
     const d = decideGatekeeperAuthorization([item('e1', 'IN_PROGRESS', 'EPIC', 'Epic X')], tddFlow, { itemId: 'e1' });
     expect(d.authorized).toBe(false);
     expect(d.message).toContain('EPIC');
+  });
+});
+
+describe('findItemAcrossProjects', () => {
+  const items = [
+    { id: 'aaaaaaaa-1111', projectId: 'projA', title: 'A' },
+    { id: 'bbbbbbbb-2222', projectId: 'projB', title: 'B' },
+  ];
+
+  it('finds an item by full id regardless of project', () => {
+    expect(findItemAcrossProjects(items, 'bbbbbbbb-2222')?.projectId).toBe('projB');
+  });
+
+  it('finds an item by id prefix', () => {
+    expect(findItemAcrossProjects(items, 'aaaaaaaa')?.projectId).toBe('projA');
+  });
+
+  it('returns null when nothing matches', () => {
+    expect(findItemAcrossProjects(items, 'zzzz')).toBeNull();
+  });
+
+  it('returns null for empty/blank id', () => {
+    expect(findItemAcrossProjects(items, '')).toBeNull();
   });
 });
