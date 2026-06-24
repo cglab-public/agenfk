@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, slugifyTitle } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -353,8 +353,10 @@ async function checkUpgradeTier(): Promise<void> {
 }
 
 function applyUpgradeTierAction(tier: string, latestVersion: string): void {
-  // If we already have the latest version, suppress all warnings regardless of tier.
-  if (latestVersion && latestVersion === CURRENT_VERSION) return;
+  // Suppress all warnings when the advertised version is not strictly newer than
+  // what's installed — never nag to "upgrade" to an equal or OLDER version (e.g.
+  // recommending stable 1.0.4 while on 1.1.0-beta.8). Uses proper semver ordering.
+  if (latestVersion && CURRENT_VERSION && !isUpgrade(latestVersion, CURRENT_VERSION)) return;
   if (tier === 'mandatory') {
     console.error(chalk.red.bold('\n⛔ MANDATORY UPGRADE REQUIRED'));
     console.error(chalk.red(`AgEnFK v${latestVersion || 'latest'} is a mandatory upgrade and must be applied before continuing.`));
@@ -414,10 +416,36 @@ async function warnIfHubFlusherHalted(): Promise<void> {
   }
 }
 
+// Report an unrecognized command/subcommand and exit non-zero.
+// The program registers a default `.action` (banner + help) which runs for the
+// no-command case. Because that action handler exists, Commander never reaches
+// its own unknown-command path, so a typo like `agenfk flows show` would
+// otherwise silently print the full root help and exit 0, masking the mistake.
+// We detect leftover operands in the default action and route them here instead.
+function reportUnknownCommand(operands: string[]): never {
+  const unknown = operands[0];
+  console.error(chalk.red(`error: unknown command '${unknown}'`));
+  const available = program.commands.map((c) => c.name());
+  const suggestion = available.find(
+    (n) => n.startsWith(unknown) || unknown.startsWith(n) || `${unknown}s` === n || `${n}s` === unknown,
+  );
+  if (suggestion) {
+    console.error(chalk.yellow(`(did you mean '${suggestion}'?)`));
+  }
+  console.error(`\nRun "agenfk --help" to see available commands.`);
+  process.exit(1);
+}
+
 program
   .action(async () => {
+    // If the user passed an unrecognized command/subcommand, the leftover
+    // tokens land in program.args. Treat that as a typo, not a help request.
+    if (program.args.length > 0) {
+      reportUnknownCommand(program.args);
+    }
+
     console.log(chalk.blue(`AgEnFK CLI v${CURRENT_VERSION}`));
-    
+
     // Check for updates silently
     try {
       const REPO = 'cglab-public/agenfk';
@@ -431,7 +459,7 @@ program
     } catch (e) {
       // Silence errors for version check
     }
-    
+
     program.help();
   });
 
@@ -1595,8 +1623,34 @@ program
       issues++;
     }
 
-    console.log('\n' + (issues === 0 
-      ? chalk.green('✨ All systems healthy!') 
+    // Duplicate projectRoot check — multiple projects sharing one directory make
+    // cwd→project resolution fragile and cause items to be tracked against the
+    // wrong project for a repo.
+    process.stdout.write('Checking for duplicate project roots... ');
+    try {
+      const { data: projects } = await axios.get(`${API_URL}/projects`);
+      if (!Array.isArray(projects)) {
+        console.log(chalk.yellow('SKIPPED (unexpected /projects response)'));
+      } else {
+        const dupes = findDuplicateProjectRoots(projects as any[]);
+        if (dupes.length === 0) {
+          console.log(chalk.green('OK'));
+        } else {
+          console.log(chalk.yellow('DUPLICATES FOUND'));
+          for (const g of dupes) {
+            console.log(chalk.yellow(`   - ${g.projectRoot} is claimed by ${g.projects.length} projects:`));
+            for (const p of g.projects) console.log(chalk.gray(`       [${p.id.substring(0, 8)}] ${p.name}`));
+          }
+          console.log(chalk.gray('   Consolidate or repoint these (agenfk update-project <id>) so each repo maps to one project.'));
+          issues++;
+        }
+      }
+    } catch {
+      console.log(chalk.yellow('SKIPPED (server unreachable)'));
+    }
+
+    console.log('\n' + (issues === 0
+      ? chalk.green('✨ All systems healthy!')
       : chalk.yellow(`⚠️ Found ${issues} potential issue(s). Run './agenfk up' to fix.`)) + '\n');
   });
 
@@ -2795,53 +2849,58 @@ program
       const projectId = findProjectId(process.cwd());
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
 
-      const activeItems = projectItems.filter((i: any) =>
-        i.status !== 'DONE' && i.status !== 'ARCHIVED' && i.status !== 'TRASHED'
-      );
-      const inProgressItems = activeItems.filter((i: any) => i.status === 'IN_PROGRESS');
-      const reviewItems = activeItems.filter((i: any) => i.status === 'REVIEW');
-      const testItems = activeItems.filter((i: any) => i.status === 'TEST');
-
-      const role = (options.role || 'coding').toLowerCase();
-      const intent = options.intent || '(no intent provided)';
-      let authorized = false;
-      let message = '';
-      let task: any = null;
-
-      if (role === 'coding') {
-        if (inProgressItems.length === 0) {
-          message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS. Create a task and set it to IN_PROGRESS first.`;
-        } else if (options.itemId) {
-          task = inProgressItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId));
-          if (!task) { message = `❌ WORKFLOW BREACH: Item [${options.itemId}] is not IN_PROGRESS.`; }
-          else { authorized = true; message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-        } else if (inProgressItems.length > 1) {
-          message = `⚠️ AMBIGUOUS: Multiple tasks are IN_PROGRESS. Provide --item-id to disambiguate.\n${inProgressItems.map((i: any) => `  [${i.id.substring(0,8)}] ${i.title}`).join('\n')}`;
-        } else {
-          task = inProgressItems[0];
-          authorized = true;
-          message = `✅ AUTHORIZED (CODING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`;
+      // Cross-project diagnostic: if an explicit --item-id resolves ONLY to an
+      // item in a DIFFERENT project than the current directory (no in-project
+      // match), say so plainly. The old behaviour reported a misleading "not in
+      // an active working step", which sent agents into a card-thrashing spiral
+      // over a misfiled item. detectCrossProjectItem prefers an in-project match
+      // so a colliding id-prefix never wrongly short-circuits legitimate work.
+      if (options.itemId && projectId) {
+        const globalMatch: any = detectCrossProjectItem(items as any[], options.itemId, projectId);
+        if (globalMatch) {
+          let nameOf = (id: string) => id?.substring(0, 8);
+          try {
+            const { data: projects } = await axios.get(`${API_URL}/projects`);
+            const m: Record<string, string> = Object.fromEntries(projects.map((p: any) => [p.id, p.name]));
+            nameOf = (id: string) => (m[id] ? `${id.substring(0, 8)} (${m[id]})` : id?.substring(0, 8));
+          } catch { /* names are best-effort */ }
+          const msg = `❌ WORKFLOW BREACH: Item [${globalMatch.id.substring(0, 8)}] "${globalMatch.title}" belongs to project ${nameOf(globalMatch.projectId)}, but this directory is project ${nameOf(projectId)}.\n→ Move it:  agenfk move ${globalMatch.id} ${projectId}\n  …or run agenfk from the item's own project repo.`;
+          if (options.json) {
+            console.log(JSON.stringify({ authorized: false, crossProject: true, message: msg, task: null }));
+          } else {
+            console.log(chalk.red(msg));
+          }
+          process.exit(1);
+          return;
         }
-      } else if (role === 'review') {
-        const target = options.itemId ? reviewItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : reviewItems[0];
-        if (!target) { message = `❌ WORKFLOW BREACH: No task is in REVIEW status.`; }
-        else { authorized = true; task = target; message = `✅ AUTHORIZED (REVIEW).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-      } else if (role === 'testing') {
-        const target = options.itemId ? testItems.find((i: any) => i.id === options.itemId || i.id.startsWith(options.itemId)) : testItems[0];
-        if (!target) { message = `❌ WORKFLOW BREACH: No task is in TEST status.`; }
-        else { authorized = true; task = target; message = `✅ AUTHORIZED (TESTING).\n\nTask: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
-      } else {
-        // Generic: just check for IN_PROGRESS
-        if (inProgressItems.length === 0) { message = `❌ WORKFLOW BREACH: No task is IN_PROGRESS.`; }
-        else { authorized = true; task = inProgressItems[0]; message = `✅ WORKFLOW VALIDATED.\n\nActive Item: [${task.id.substring(0,8)}] ${task.title}\nIntent: "${intent}"`; }
       }
+
+      // Fetch the project's active flow so authorization is flow-aware: any
+      // TASK/BUG in a non-anchor working step is authorizable, regardless of
+      // whether the step is literally named IN_PROGRESS. Falls back to default
+      // TODO/DONE anchors when no flow is resolvable.
+      let activeFlow: any = null;
+      if (projectId) {
+        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${projectId}/flow`)); }
+        catch { activeFlow = null; }
+      }
+
+      const decision = decideGatekeeperAuthorization(projectItems, activeFlow, {
+        itemId: options.itemId,
+        intent: options.intent,
+        role: options.role,
+      });
 
       if (options.json) {
-        console.log(JSON.stringify({ authorized, message, task: task ? { id: task.id, title: task.title, status: task.status } : null }));
+        console.log(JSON.stringify({
+          authorized: decision.authorized,
+          message: decision.message,
+          task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+        }));
       } else {
-        console.log(authorized ? chalk.green(message) : chalk.red(message));
+        console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
       }
-      process.exit(authorized ? 0 : 1);
+      process.exit(decision.authorized ? 0 : 1);
     } catch (error: any) {
       console.error(chalk.red('Error checking workflow:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -3602,7 +3661,7 @@ program.helpInformation = function () {
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
     ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
     ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test', 'tokens']],
-    ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
+    ['Integrations & Rules',  ['integration', 'skills', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr', 'pr-register', 'pr-resize']],
     ['Flows',                 ['flow']],
     ['External Sync',         ['github', 'jira']],

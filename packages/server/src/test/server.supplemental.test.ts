@@ -2107,8 +2107,16 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
       .send({ command: longOutputCommand('r4') });
 
     const fetched = (await request(app).get(`/items/${item.id}`)).body;
+    // setupItemInCoding's PUT→IN_PROGRESS also emits a ValidateTool "Validation"
+    // comment, so the item has TWO. Distinguish by content, not array position:
+    // only the validate-with-command call carries a "Full log:" reference (a plain
+    // forward transition runs no command). .find()'s first match was nondeterministic
+    // once the two comments' timestamps collided under full-suite load.
     const validationComment = fetched.comments.find((c: any) =>
-      c.author === 'ValidateTool' && typeof c.content === 'string' && c.content.includes('Validation')
+      c.author === 'ValidateTool' &&
+      typeof c.content === 'string' &&
+      c.content.includes('Validation') &&
+      c.content.includes('Full log:')
     );
     expect(validationComment).toBeDefined();
     // Comment should contain the head and tail markers from the output

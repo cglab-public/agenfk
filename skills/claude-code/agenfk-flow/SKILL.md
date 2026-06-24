@@ -82,16 +82,16 @@ Ask: "Does this look right? Type **yes** to create, **edit** to change a step, o
 Once confirmed, run via Bash:
 
 ```bash
-agenfk flow create "[name]" --project "[projectId]"
+agenfk flow create "[name]"
 ```
 
-The CLI will interactively prompt for description and steps. However, since you have already
-collected all the data, use the **server API directly** via MCP if available, or construct
-the CLI call non-interactively using the `agenfk flow create` command.
+The CLI gathers the description and steps interactively, then prints the new flow's ID.
+`agenfk flow create` takes only the flow name as an argument — it has no `--project` flag;
+associate the flow with a project later via `agenfk flow use` (Step 6).
 
-**Option A — MCP server API (preferred when MCP is available):**
+**Option A — MCP tool (preferred when installed with `--with-mcp`):**
 
-Call `POST /flows` via the agenfk MCP server:
+Call the `create_flow` MCP tool with the full flow body you collected:
 ```json
 {
   "name": "<name>",
@@ -105,16 +105,13 @@ Call `POST /flows` via the agenfk MCP server:
 }
 ```
 
-Since there is no direct `create_flow` MCP tool, use Bash to call the server REST API:
-```bash
-curl -s -X POST http://localhost:3000/flows \
-  -H "Content-Type: application/json" \
-  -d '{"name":"<name>","description":"<desc>","projectId":"<id>","steps":[...]}'
-```
+(There is also an `update_flow` MCP tool for editing an existing flow.) Do **not**
+`curl http://localhost:3000` — that bypass route is blocked by the `agenfk-mcp-enforcer`
+hook. Go through the MCP tool or the CLI.
 
-**Option B — CLI (fallback):**
+**Option B — CLI (default, no MCP required):**
 ```bash
-agenfk flow create "<name>" --project "<projectId>"
+agenfk flow create "<name>"
 ```
 Then enter each step when prompted.
 

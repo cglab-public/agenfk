@@ -1053,12 +1053,18 @@ process.exit(0);
         }
     }
 
-    // 12. Install gatekeeper hook script
+    // 12. Mirror the shared hook scripts into ~/.agenfk/bin. This MUST happen
+    // regardless of --only target: in-process plugins (OpenCode) and the pi
+    // extension spawn these from ~/.agenfk/bin, so a targeted `--only=pi` /
+    // `--only=opencode` install must still leave them present.
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const internalBinDir = path.join(agenfkHome, 'bin');
     await fs.mkdir(internalBinDir, { recursive: true });
-    if (existsSync(gatekeeperSource)) {
-        await fs.copyFile(gatekeeperSource, path.join(internalBinDir, 'agenfk-gatekeeper.mjs'));
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
+        const src = path.join(rootDir, 'bin', script);
+        if (existsSync(src)) {
+            await fs.copyFile(src, path.join(internalBinDir, script));
+        }
     }
 
     if (!onlyPlatform) {
@@ -1096,11 +1102,9 @@ process.exit(0);
         }
         console.log(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
-        // 12d. Install agenfk-pr-hook script (used by PostToolUse hooks across clients)
+        // 12d. Install agenfk-pr-hook into ~/.local/bin (the ~/.agenfk/bin mirror
+        // is handled unconditionally above so --only installs are self-sufficient).
         const prHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook.mjs');
-        const internalBinDir = path.join(agenfkHome, 'bin');
-        await fs.mkdir(internalBinDir, { recursive: true });
-        await fs.copyFile(prHookSource, path.join(internalBinDir, 'agenfk-pr-hook.mjs'));
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
@@ -1140,6 +1144,27 @@ process.exit(0);
             }
         } else if (!onlyPlatform) {
             console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
+        }
+    }
+
+    // 12e. Install pi native extension (https://pi.dev). pi auto-loads single
+    // .ts files from ~/.pi/agent/extensions/ via jiti — no build, no node_modules.
+    // The extension delegates decisions to ~/.agenfk/bin/*.mjs (installed above).
+    if (shouldRun('pi')) {
+        if (!onlyPlatform) console.log(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
+        const piHome = path.join(os.homedir(), '.pi');
+        const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
+        if (existsSync(piHome) || piInstalled) {
+            const piExtDir = path.join(piHome, 'agent', 'extensions');
+            await fs.mkdir(piExtDir, { recursive: true });
+            const piExtSource = path.join(rootDir, 'bin', 'agenfk-pi-extension.ts');
+            if (existsSync(piExtSource)) {
+                await fs.copyFile(piExtSource, path.join(piExtDir, 'agenfk.ts'));
+                console.log(`  Installed pi extension: ${path.join(piExtDir, 'agenfk.ts')}`);
+                console.log(`  pi enforcement is native (pre-edit gatekeeper + mcp-enforcer + PR-sizing reminder with deterministic model detection). Restart pi to load it.`);
+            }
+        } else if (!onlyPlatform) {
+            console.log(`  pi not found. Skipping pi extension installation.`);
         }
     }
 
@@ -1455,7 +1480,7 @@ process.exit(0);
         console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
         console.log("");
         console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server).");
+        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server; pi needs a restart to load its native extension).");
         console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
         console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
         console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");

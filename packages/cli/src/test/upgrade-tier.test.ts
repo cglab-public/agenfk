@@ -187,20 +187,21 @@ describe('CLI startup — suppress tier warning when already on latest version',
     expect(funcSection).toMatch(/CURRENT_VERSION|currentVersion/i);
   });
 
-  it('applyUpgradeTierAction returns early when latestVersion === CURRENT_VERSION', () => {
+  it('applyUpgradeTierAction returns early when the advertised version is not strictly newer', () => {
     const cli = readCli();
     const funcSection = getApplyFuncSection(cli);
     expect(funcSection.length).toBeGreaterThan(0);
-    // Must have an early-return guard: if versions match → return without printing
-    expect(funcSection).toMatch(/===.*CURRENT_VERSION|CURRENT_VERSION.*===|latestVersion.*===|===.*latestVersion/i);
+    // Must have an early-return guard gated on a proper semver comparison
+    // (isUpgrade/compareSemver) so an equal OR older version never nags.
+    expect(funcSection).toMatch(/(isUpgrade|compareSemver)\([^)]*CURRENT_VERSION/i);
   });
 
-  it('recommended banner is NOT shown when latestVersion equals current version', () => {
+  it('recommended banner is NOT shown unless the advertised version is newer', () => {
     const cli = readCli();
     const funcSection = getApplyFuncSection(cli);
     expect(funcSection.length).toBeGreaterThan(0);
-    // The version equality check must appear BEFORE the recommended block
-    const versionCheckIdx = funcSection.search(/===.*CURRENT_VERSION|CURRENT_VERSION.*===|latestVersion.*CURRENT_VERSION/i);
+    // The version-newness guard must appear BEFORE the recommended block.
+    const versionCheckIdx = funcSection.search(/(isUpgrade|compareSemver)\([^)]*CURRENT_VERSION/i);
     const recommendedIdx = funcSection.search(/recommended/i);
     expect(versionCheckIdx).toBeGreaterThan(-1);
     expect(recommendedIdx).toBeGreaterThan(-1);

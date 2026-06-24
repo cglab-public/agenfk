@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { compareSemver } from './version-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -75,24 +76,11 @@ function toPosixPath(p) {
 // On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
 const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
 
-// Semver comparator gating the redownload-on-update path. Returns negative,
-// zero, or positive following semver ordering, with the prerelease rule that
-// a release is greater than its prerelease (1.0.0 > 1.0.0-rc.1).
-function compareSemver(a, b) {
-  const parse = (s) => {
-    const m = String(s || '').replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-    if (!m) return null;
-    return { major: +m[1], minor: +m[2], patch: +m[3], pre: m[4] || '' };
-  };
-  const pa = parse(a); const pb = parse(b);
-  if (!pa || !pb) return String(a).localeCompare(String(b));
-  if (pa.major !== pb.major) return pa.major - pb.major;
-  if (pa.minor !== pb.minor) return pa.minor - pb.minor;
-  if (pa.patch !== pb.patch) return pa.patch - pb.patch;
-  if (pa.pre === '' && pb.pre !== '') return 1;
-  if (pa.pre !== '' && pb.pre === '') return -1;
-  return pa.pre.localeCompare(pb.pre);
-}
+// compareSemver gates the redownload-on-update downgrade guard. It is imported
+// from ./version-utils.mjs (top of file) so prerelease ordering is correct
+// (numeric identifiers compared numerically: 1.1.0-beta.10 > 1.1.0-beta.8). The
+// previous inline copy compared prerelease strings lexically and pinned
+// `npx … --beta` to beta.8.
 
 // Read the local install's version. Returns null if the file is missing or unreadable.
 function readLocalVersion(installDir) {

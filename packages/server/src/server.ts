@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1986,9 +1986,16 @@ app.post("/items/:id/pause", asyncHandler(async (req: any, res: any) => {
   const item = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
-  const pausable = [Status.IN_PROGRESS, Status.REVIEW, Status.TEST];
-  if (!pausable.includes(item.status)) {
-    return res.status(400).json({ error: `Cannot pause item in ${item.status} status. Must be IN_PROGRESS, REVIEW, or TEST.` });
+  // Flow-aware: an item is pausable when it sits in an active working step of
+  // its project's active flow (any non-anchor, non-inactive step) — not a
+  // hardcoded IN_PROGRESS/REVIEW/TEST set, which excluded custom-flow steps
+  // like DISCOVERY / CREATE_UNIT_TESTS.
+  const pauseProject = await storage.getProject(item.projectId);
+  const pauseFlows = await storage.listFlows();
+  const pauseActiveFlow = getActiveFlow((pauseProject as any)?.flowId, pauseFlows);
+  const pausable = getActiveStepItems([item as any], pauseActiveFlow as any).length > 0;
+  if (!pausable) {
+    return res.status(400).json({ error: `Cannot pause item in ${item.status} status — it must be in an active working step of its flow (not an anchor like TODO/DONE, and not already BLOCKED/PAUSED).` });
   }
 
   const { summary, filesModified, resumeInstructions, gitDiff } = req.body;
