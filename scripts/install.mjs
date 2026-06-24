@@ -1151,6 +1151,7 @@ process.exit(0);
     // .ts files from ~/.pi/agent/extensions/ via jiti — no build, no node_modules.
     // The extension delegates decisions to ~/.agenfk/bin/*.mjs (installed above).
     if (shouldRun('pi')) {
+        if (!onlyPlatform) console.log(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
         const piHome = path.join(os.homedir(), '.pi');
         const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(piHome) || piInstalled) {
@@ -1160,6 +1161,7 @@ process.exit(0);
             if (existsSync(piExtSource)) {
                 await fs.copyFile(piExtSource, path.join(piExtDir, 'agenfk.ts'));
                 console.log(`  Installed pi extension: ${path.join(piExtDir, 'agenfk.ts')}`);
+                console.log(`  pi enforcement is native (pre-edit gatekeeper + mcp-enforcer + PR-sizing reminder with deterministic model detection). Restart pi to load it.`);
             }
         } else if (!onlyPlatform) {
             console.log(`  pi not found. Skipping pi extension installation.`);
@@ -1478,7 +1480,7 @@ process.exit(0);
         console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
         console.log("");
         console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server).");
+        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server; pi needs a restart to load its native extension).");
         console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
         console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
         console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");
