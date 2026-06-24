@@ -9,6 +9,8 @@ metadata:
 
 # AgenFK Flow Manager
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 This skill guides you through creating or editing a custom workflow **flow** for an AgEnFK project.
 A flow defines the ordered steps (statuses) that items move through — replacing the default
 TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline with a tailored one for your team.
@@ -27,7 +29,7 @@ Follow these steps in order. Ask one section at a time — do not dump all quest
 ### Step 1 — Identify the project
 
 1. Check for `.agenfk/project.json` in the working directory to get the `projectId`.
-2. If not found, call `list_projects()` via MCP and ask the user which project to scope the flow to.
+2. If not found, run `agenfk list-projects --json` (MCP: `list_projects`) and ask the user which project to scope the flow to.
 3. Confirm: "I'll create this flow for project **[name]** (`[projectId]`). Is that correct?"
 
 ### Step 2 — Flow identity
@@ -79,7 +81,13 @@ Ask: "Does this look right? Type **yes** to create, **edit** to change a step, o
 
 ### Step 5 — Create the flow
 
-Once confirmed, call the `create_flow` MCP tool:
+Once confirmed, run `agenfk flow create "<name>"` (MCP: `create_flow`). The CLI gathers the description and steps interactively, then prints the new flow's ID. (Activate it for a project in Step 6.)
+
+```bash
+agenfk flow create "<name>"
+```
+
+The equivalent MCP call accepts the full step list and an optional `projectId` to create-and-activate in one call:
 
 ```
 create_flow(
@@ -95,25 +103,13 @@ create_flow(
 )
 ```
 
-If `projectId` is provided, the flow is created **and** activated for that project in one call.
+### Step 6 — Activate the flow for the project
 
-**Fallback — CLI (if MCP is unavailable):**
-```bash
-agenfk flow create "<name>" --project "<projectId>"
-```
-
-### Step 6 — Optionally activate the flow for the project
-
-If you did not pass `projectId` in Step 5, ask:
+Ask:
 > "Would you like to activate this flow for project **[name]** now?"
 
-If yes, call the `use_flow` MCP tool:
+If yes, run `agenfk flow use <flowId> --project <projectId>` (MCP: `use_flow`):
 
-```
-use_flow(projectId: "<projectId>", flowId: "<flowId>")
-```
-
-**Fallback — CLI:**
 ```bash
 agenfk flow use <flowId> --project <projectId>
 ```
@@ -124,7 +120,7 @@ Report back:
 - Flow ID and name
 - Number of steps created
 - Whether it was activated for the project
-- CLI command to inspect it: `agenfk flow show <flowId>`
+- CLI command to inspect it: `agenfk flow show <flowId> --json`
 
 ---
 
@@ -132,9 +128,15 @@ Report back:
 
 If the user wants to edit a flow instead of creating one:
 
-1. **List flows** — call `list_flows()` via MCP (or `agenfk flow list`).
-2. **Show the target flow** — call `get_flow(projectId)` for the active flow, or inspect the full list.
-3. **Update** — call `update_flow(id, name?, description?, steps?)` via MCP:
+1. **List flows** — run `agenfk flow list --json` (MCP: `list_flows`).
+2. **Show the target flow** — run `agenfk flow show --project <projectId> --json` for the active flow (MCP: `get_flow`), or inspect the full list.
+3. **Update** — run `agenfk flow edit <id>` (MCP: `update_flow`):
+
+```bash
+agenfk flow edit <id>
+```
+
+The equivalent MCP call accepts the full step list:
 
 ```
 update_flow(
@@ -145,20 +147,15 @@ update_flow(
 )
 ```
 
-**Fallback — CLI:**
-```bash
-agenfk flow edit <id>
-```
-
 ## Deleting a flow
 
-Call `delete_flow(id)` via MCP, or `agenfk flow delete <id>`.
+Run `agenfk flow delete <id>` (MCP: `delete_flow`).
 
 ---
 
 ## Notes
 
 - Flow names must be unique.
-- `workflow_gatekeeper` returns the active flow's steps automatically — all platforms benefit once a flow is activated.
-- To reset a project back to the default flow: `use_flow(projectId, "")` (empty flowId) or `agenfk flow reset --project <projectId>`.
+- `agenfk gatekeeper` returns the active flow's steps automatically — all platforms benefit once a flow is activated.
+- To reset a project back to the default flow: `agenfk flow use "" --project <projectId>` (empty flowId) or `agenfk flow reset --project <projectId>`.
 - To share a flow with the community: `agenfk flow publish <flowId>`.

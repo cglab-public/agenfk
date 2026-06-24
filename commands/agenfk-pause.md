@@ -2,17 +2,21 @@
 description: Pause work on the current task, saving full context for later resumption
 ---
 
-You are executing the `/agenfk-pause [id]` command. Follow these steps precisely:
+You are executing the `/agenfk-pause [id]` command. Follow these steps precisely.
+
+> All workflow operations use the `agenfk` CLI (CLI-only is the default). If
+> `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent
+> MCP tool shown in parentheses is interchangeable.
 
 **Step 1 — Identify the item to pause**
 - If an `<id>` argument was provided, use it directly.
-- Otherwise, call `list_items(projectId, status="IN_PROGRESS")` to find the active task.
+- Otherwise, run `agenfk list --status IN_PROGRESS --json` to find the active task (MCP: `list_items`).
 - If multiple items are IN_PROGRESS, ask the user which one to pause.
 - If no items are IN_PROGRESS, check for items in REVIEW or TEST status.
 - Confirm the item ID and title before proceeding.
 
 **Step 2 — Gather context**
-- Read the item details with `get_item(id)` to get the current status, comments, and implementation plan.
+- Read the item details with `agenfk get <id> --json` to get the current status, comments, and implementation plan (MCP: `get_item`).
 - Run `git diff --name-only` (via Bash) to get the list of modified files.
 - Run `git branch --show-current` (via Bash) to capture the current branch.
 - Run `git diff --stat` (via Bash) to get a condensed summary of changes.
@@ -30,8 +34,16 @@ You are executing the `/agenfk-pause [id]` command. Follow these steps precisely
   4. Any dependencies or sequencing requirements
 
 **Step 4 — Pause the item**
-- Call `pause_work(itemId, summary, filesModified, resumeInstructions, gitDiff)` MCP tool with all the gathered context.
-- The tool will:
+- Run:
+  ```bash
+  agenfk pause-work <id> \
+    --summary "<summary>" \
+    --resume-instructions "<resume instructions>" \
+    --files "<comma-separated modified files>" \
+    --git-diff "<git diff text>"
+  ```
+  (MCP: `pause_work(itemId, summary, filesModified, resumeInstructions, gitDiff)`.)
+- The command will:
   - Save a snapshot of the context
   - Set the item status to PAUSED
   - Add a comment to the item

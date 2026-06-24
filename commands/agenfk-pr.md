@@ -2,12 +2,14 @@
 description: Create a PR for the current item's branch and manage the PR lifecycle
 ---
 
+> Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
+
 You are executing the `/agenfk-pr <itemId>` command. Follow these steps precisely:
 
 **Step 1 — Verify branch and item state**
-- Call `get_item(itemId)` to read the current item.
+- Run `agenfk get <itemId> --json` to read the current item (MCP: `get_item`).
 - Check `item.branchName`:
-  - If no branch is linked, inform the user: "No branch is linked to this item. Ask the user to link a branch via `update_item({ id, branchName: '<branch-name>' })`."
+  - If no branch is linked, inform the user: "No branch is linked to this item. Create and link one with `agenfk branch create <itemId>` (optionally `--name <branch-name>`)."
   - If a branch exists, confirm you are on it (`git branch --show-current`). If not, run `git checkout <branchName>`.
 
 **Step 1.5 — Commit local changes**
@@ -20,8 +22,8 @@ Check for local changes using `git status`. If there are unstaged or uncommitted
 - Otherwise:
   1. Push the branch: `git push -u origin <branchName>`
   2. Create the PR via `gh pr create --title "<item.title>" --body "<summary>"` (adjust as needed).
-  3. Capture the PR URL from the output.
-  4. Store the result on the item: `update_item({ id: itemId, prUrl: "<url>", prNumber: <number>, prStatus: "open" })`.
+  3. Capture the PR URL and number from the output.
+  4. Register the PR on the item: `agenfk pr-register --item <itemId> --number <number> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>` (MCP: `register_pr`), where the counts reflect the items included in this PR.
 
 **Step 3 — Confirm and wait**
 - Show the user the PR URL and instruct them:
@@ -30,7 +32,7 @@ Check for local changes using `git status`. If there are unstaged or uncommitted
 
 **Step 4 — (Optional) Check PR status**
 If the user asks whether the PR is ready:
-- Re-read the item with `get_item(itemId)` and check `prStatus`.
+- Re-read the item with `agenfk get <itemId> --json` (MCP: `get_item`) and check `prStatus`.
 - Alternatively, run `gh pr view <prNumber> --json state` for a live check.
 - If merged → tell the user to run `/agenfk-release`.
 - If still open or in draft → tell the user to wait for approval.

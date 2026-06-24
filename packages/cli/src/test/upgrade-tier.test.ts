@@ -117,6 +117,41 @@ describe('CLI startup — recommended tier shows banner', () => {
   });
 });
 
+// ── Recommended banner must not corrupt stdout ────────────────────────────────
+// The recommended-upgrade banner runs in the pre-parse startup path, so it
+// prepends to whatever a command would print. Emitting it on stdout corrupts
+// machine-readable output (`agenfk list --json | jq` → JSONDecodeError).
+// Diagnostics belong on stderr; only command *data* goes to stdout.
+
+describe('CLI startup — recommended banner is written to stderr, not stdout', () => {
+  function getApplyFuncSection(cli: string): string {
+    const defIdx = cli.search(/function applyUpgradeTierAction/i);
+    if (defIdx === -1) return '';
+    return cli.slice(defIdx, defIdx + 1200);
+  }
+
+  function getRecommendedBlock(cli: string): string {
+    const func = getApplyFuncSection(cli);
+    // Grab from the recommended conditional up to the next `}` chain / end.
+    const recIdx = func.search(/===\s*['"]recommended['"]/);
+    return recIdx >= 0 ? func.slice(recIdx, recIdx + 500) : '';
+  }
+
+  it('recommended branch emits the banner via console.error', () => {
+    const cli = readCli();
+    const block = getRecommendedBlock(cli);
+    expect(block.length).toBeGreaterThan(0);
+    expect(block).toMatch(/console\.error/);
+  });
+
+  it('recommended branch does NOT emit the banner via console.log (would corrupt --json stdout)', () => {
+    const cli = readCli();
+    const block = getRecommendedBlock(cli);
+    expect(block.length).toBeGreaterThan(0);
+    expect(block).not.toMatch(/console\.log/);
+  });
+});
+
 // ── Optional tier ─────────────────────────────────────────────────────────────
 
 describe('CLI startup — optional tier is silent', () => {

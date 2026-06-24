@@ -77,6 +77,13 @@ async function run() {
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
     const rulesOnly = process.argv.includes('--rules-only');
+    // MCP is opt-in: AgenFK is CLI-only by default. `--with-mcp` registers the
+    // agenfk MCP server with each detected client; `--no-mcp` force-disables it.
+    // The resolved preference is persisted in ~/.agenfk/config.json so that
+    // re-installs (e.g. via `agenfk resume` / `agenfk integration install`)
+    // honor a prior opt-in without re-passing the flag.
+    const withMcpArg = process.argv.includes('--with-mcp');
+    const noMcpArg = process.argv.includes('--no-mcp');
     // When installing project-scoped rules via `agenfk rules install`, the target
     // project is the user's current working directory, not the framework install dir.
     const projectDir = rulesOnly ? process.cwd() : rootDir;
@@ -320,6 +327,21 @@ async function run() {
         } catch (e) {}
     }
 
+    // Resolve the effective MCP preference (CLI-only is the default):
+    //   --no-mcp           → false (and persisted)
+    //   --with-mcp         → true  (and persisted)
+    //   AGENFK_WITH_MCP=1  → true
+    //   config.withMcp     → prior opt-in
+    //   otherwise          → false (CLI-only)
+    const withMcp = noMcpArg
+        ? false
+        : (withMcpArg || process.env.AGENFK_WITH_MCP === '1' || existingConfig.withMcp === true);
+    if (!onlyPlatform) {
+        console.log(withMcp
+            ? `  MCP: enabled (registering agenfk MCP server with detected clients)`
+            : `  MCP: disabled — CLI-only mode (pass --with-mcp to register the MCP server)`);
+    }
+
     // Resolve rulesScope: CLI flag → AGENFK_RULES_SCOPE env → config → prompt (TTY only).
     // Under npx / piped stdin there is no TTY: prompting there used to leave the readline
     // promise unresolved, so Node exited 0 and the rest of the install (incl. the CLI
@@ -357,9 +379,13 @@ async function run() {
         configDirty = true;
     }
 
+    if (existingConfig.withMcp !== withMcp) {
+        configDirty = true;
+    }
+
     if (configDirty) {
         // 3a. Write ~/.agenfk/config.json
-        const configData = { ...existingConfig, dbPath, rulesScope, telemetry: existingConfig.telemetry ?? true };
+        const configData = { ...existingConfig, dbPath, rulesScope, withMcp, telemetry: existingConfig.telemetry ?? true };
         await fs.writeFile(agenfkConfigPath, JSON.stringify(configData, null, 2), 'utf8');
         console.log(`  Config written: ${agenfkConfigPath}`);
     }
@@ -565,7 +591,7 @@ process.exit(0);
     const serverPath = path.join(rootDir, 'packages', 'server', 'dist', 'index.js');
 
     // 6. Configure Opencode MCP
-    if (shouldRun('opencode')) {
+    if (withMcp && shouldRun('opencode')) {
         console.log(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
         const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
         const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
@@ -604,7 +630,7 @@ process.exit(0);
     }
 
     // 6b. Configure Cursor MCP
-    if (shouldRun('cursor')) {
+    if (withMcp && shouldRun('cursor')) {
         console.log(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
@@ -650,7 +676,7 @@ process.exit(0);
     }
 
     // 6c. Configure Codex MCP
-    if (shouldRun('codex')) {
+    if (withMcp && shouldRun('codex')) {
         console.log(`${GREEN}[6c/14] Configuring Codex MCP...${NC}`);
         const codexCmd = getCliCommand('codex');
         const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
@@ -680,7 +706,7 @@ process.exit(0);
     }
 
     // 6d. Configure Gemini CLI MCP
-    if (shouldRun('gemini')) {
+    if (withMcp && shouldRun('gemini')) {
         console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
         const geminiCmd = getCliCommand('gemini');
         const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
@@ -706,6 +732,63 @@ process.exit(0);
             }
         } else if (!onlyPlatform) {
             console.log(`  Gemini CLI not found. Skipping Gemini CLI MCP configuration.`);
+        }
+    }
+
+    // 6e. CLI-only cleanup: when MCP is NOT opted into, ensure no stale agenfk MCP
+    // server remains registered with any client. This makes upgrades flip cleanly
+    // to CLI-only instead of leaving a half-state where old registrations linger.
+    // Idempotent: removing an unregistered server is a no-op.
+    if (!withMcp) {
+        console.log(`${GREEN}[6e/14] Ensuring CLI-only mode (unregistering any existing agenfk MCP server)...${NC}`);
+
+        if (shouldRun('claude')) {
+            const claudeCmd = getCliCommand('claude');
+            if (spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
+                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            }
+        }
+        if (shouldRun('codex')) {
+            const codexCmd = getCliCommand('codex');
+            if (spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
+                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            }
+        }
+        if (shouldRun('gemini')) {
+            const geminiCmd = getCliCommand('gemini');
+            if (spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
+                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+            }
+        }
+        if (shouldRun('opencode')) {
+            const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+            if (existsSync(opencodeConfigPath)) {
+                try {
+                    const cfg = JSON.parse((await fs.readFile(opencodeConfigPath, 'utf8')).trim() || '{}');
+                    if (cfg.mcp && cfg.mcp.agenfk) {
+                        delete cfg.mcp.agenfk;
+                        await fs.writeFile(opencodeConfigPath, JSON.stringify(cfg, null, 2));
+                        console.log(`  Removed agenfk MCP from ${opencodeConfigPath}`);
+                    }
+                } catch (e) {
+                    console.error('  Error cleaning opencode.json:', e.message);
+                }
+            }
+        }
+        if (shouldRun('cursor')) {
+            const cursorMcpPath = getCursorMcpPath();
+            if (existsSync(cursorMcpPath)) {
+                try {
+                    const cursorMcp = JSON.parse((await fs.readFile(cursorMcpPath, 'utf8')).trim() || '{}');
+                    if (cursorMcp.mcpServers && cursorMcp.mcpServers.agenfk) {
+                        delete cursorMcp.mcpServers.agenfk;
+                        await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
+                        console.log(`  Removed agenfk MCP from ${cursorMcpPath}`);
+                    }
+                } catch (e) {
+                    console.error('  Error cleaning Cursor mcp.json:', e.message);
+                }
+            }
         }
     }
 
@@ -1061,7 +1144,7 @@ process.exit(0);
     }
 
     // 7 (deferred). Configure Claude Code MCP via official CLI
-    if (shouldRun('claude')) {
+    if (withMcp && shouldRun('claude')) {
         console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
         try {
             const claudeCmd = getCliCommand('claude');

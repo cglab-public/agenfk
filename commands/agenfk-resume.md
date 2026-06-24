@@ -2,20 +2,24 @@
 description: Resume work on a paused task with full context restoration
 ---
 
-You are executing the `/agenfk-resume [id]` command. Follow these steps precisely:
+You are executing the `/agenfk-resume [id]` command. Follow these steps precisely.
+
+> All workflow operations use the `agenfk` CLI (CLI-only is the default). If
+> `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent
+> MCP tool shown in parentheses is interchangeable.
 
 **Step 1 — Identify the item to resume**
 - If an `<id>` argument was provided, use it directly.
-- Otherwise, call `list_items(projectId, status="PAUSED")` to find paused items.
+- Otherwise, run `agenfk list --status PAUSED --json` to find paused items (MCP: `list_items`).
 - If multiple paused items exist, present the list and ask the user which one to resume.
 - If no paused items exist, inform the user: "No paused items found in this project."
 
 **Step 2 — Restore context**
-- Call `resume_work(itemId)` MCP tool. This will:
+- Run `agenfk resume-work <id>` (MCP: `resume_work`). This will:
   - Retrieve the full pause snapshot (summary, files modified, resume instructions, git diff, branch)
   - Restore the item to its pre-pause status
   - Add a resume comment to the item
-- The tool returns all the context you need to continue working.
+- The command returns all the context you need to continue working. (Use `agenfk get <id> --json` if you need to re-read the item afterwards.)
 
 **Step 3 — Set up the workspace**
 - If the snapshot includes a `branchName`, check out that branch:
@@ -25,12 +29,12 @@ You are executing the `/agenfk-resume [id]` command. Follow these steps precisel
 - Read the resume instructions carefully — they contain the next agent's action plan.
 
 **Step 4 — Continue the workflow**
-- Call `workflow_gatekeeper(intent="Resuming paused work", itemId=<id>)` to authorize code changes.
+- Run `agenfk gatekeeper --intent "Resuming paused work" --item-id <id>` to authorize code changes (MCP: `workflow_gatekeeper`).
 - Follow the resume instructions to pick up where the previous agent left off.
 - Continue through the standard AgenFK workflow phases (Code → Review → Test → Done).
 
 **Step 5 — Log progress**
-- Call `add_comment(itemId, "Resumed work from pause snapshot. Starting with: <first action>")` to record the handoff.
+- Run `agenfk comment <id> "Resumed work from pause snapshot. Starting with: <first action>"` to record the handoff (MCP: `add_comment`).
 
 
 ARGUMENTS: $ARGUMENTS
