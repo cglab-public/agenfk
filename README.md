@@ -92,6 +92,7 @@ This default flow is the main workflow, but AgEnFK is designed to adapt to how *
 |---|---|---|---|
 | **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations |
 | **Opencode** | Fully Supported | MCP + skill integration | Native slash commands and skill system |
+| **pi** (0.79+) | Fully Supported | Native extension (mechanical) | `~/.pi/agent/extensions/agenfk.ts` — pre-edit blocking + PR reminder with deterministic model detection |
 | **Google Gemini CLI** | Fully Supported | MCP + workflow rules | Native slash commands and skill system |
 | **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
 | **OpenAI Codex CLI** | Fully Supported | MCP + skills | Skills invoked via `$agenfk` (type `$` in Codex to browse); `AGENTS.md` workflow rules |
@@ -211,6 +212,7 @@ This removes:
 - All slash commands and skills from Claude Code, Opencode, and Gemini CLI
 - MCP server configuration from all editors (Claude Code, Opencode, Cursor, Codex CLI, Gemini CLI)
 - Cursor workflow rules (`agenfk.mdc`)
+- The pi native extension (`~/.pi/agent/extensions/agenfk.ts`)
 - Workflow rules from all scopes (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`)
 - The AgEnFK PreToolUse hook from `~/.claude/settings.json`
 - The `~/.agenfk-system` framework files
@@ -471,7 +473,7 @@ In short: **JIRA manages the sprint. AgEnFK manages the agent.**
 
 ### Does AgEnFK work with any AI coding platform?
 
-AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, Google Gemini CLI, and OpenAI Codex CLI (all fully supported via MCP + workflow rules), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
+AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, pi (fully, with mechanical enforcement via a native extension), Google Gemini CLI, and OpenAI Codex CLI (all fully supported via MCP + workflow rules), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
 
 ---
 

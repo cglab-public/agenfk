@@ -27,7 +27,8 @@ export type TokenClient =
   | 'codex'
   | 'gemini'
   | 'cursor'
-  | 'opencode';
+  | 'opencode'
+  | 'pi';
 
 export interface TokenEvent {
   id: string;

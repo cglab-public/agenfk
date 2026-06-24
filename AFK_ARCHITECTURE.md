@@ -52,20 +52,21 @@ This automation ensures consistent engineering rigor while minimizing human micr
 
 ## Supported AI Clients
 
-AgenFK supports five AI coding assistants. Each integrates with the same MCP server but uses a different hook mechanism for workflow enforcement. **As of 2025–2026, all five clients now have hooks** — the prior "instructional-only" gap for Codex / Cursor / Gemini has closed.
+AgenFK supports six AI coding assistants. Each integrates with the same MCP server but uses a different hook mechanism for workflow enforcement. **All six clients now have hooks** — the prior "instructional-only" gap for Codex / Cursor / Gemini has closed, and pi gets mechanical pre-edit blocking via its native extension event API.
 
 | Client | MCP Registration | Workflow Rules | Pre-edit hook | Post-tool hook (PR sizing) |
 |--------|-----------------|----------------|---------------|----------------------------|
 | **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | `PreToolUse` — `agenfk-gatekeeper` + `agenfk-mcp-enforcer` | `PostToolUse` matcher `Bash` — `agenfk-pr-hook --client claude-code` |
 | **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) | `tool.execute.after` plugin (`agenfk-pr-hook-opencode.mjs`) |
+| **pi** (0.79+) | opt-in (pi MCP config; not auto-registered) | (not yet bundled — extension provides enforcement) | native extension `~/.pi/agent/extensions/agenfk.ts` — `tool_call(edit\|write)` → gatekeeper, `tool_call(bash)` → mcp-enforcer (delegates to `~/.agenfk/bin/*.mjs`) | same extension — `tool_result(bash)` → `agenfk-pr-hook --client pi`, with the live model from `ctx.getModel()` injected into the reminder |
 | **Codex CLI** | `codex mcp add` | `~/.codex/AGENTS.md` | (no equivalent — CLAUDE.md-style instructional) | `PostToolUse` matcher `shell` (hooks reliably fire only for shell) — `agenfk-pr-hook --client codex` |
 | **Gemini CLI** (v0.26+) | `gemini mcp add` | `~/.gemini/GEMINI.md` | (no equivalent — instructional) | `AfterTool` matcher `run_shell_command` — `agenfk-pr-hook --client gemini` |
 | **Cursor** (1.7+) | `~/.cursor/mcp.json` | `~/.cursor/rules/agenfk.mdc` | (no equivalent — instructional + `alwaysApply: true` rule) | `afterShellExecution` — `agenfk-pr-hook --client cursor` |
 
 ### Enforcement model
 
-- **Pre-edit gatekeeping** (does the agent have an active IN_PROGRESS task?) is mechanical only on Claude Code + OpenCode, where their hook systems support pre-tool blocking. On Codex / Gemini / Cursor, this remains **instructional** via the per-client rule docs — backed by the server-side `workflow_gatekeeper` audit trail.
-- **PR sizing prompt** (after `gh pr create` / `git push`) is mechanical on **all five** clients via their respective post-tool hook events. Even when the post-tool directive isn't followed, the per-client instruction docs include a belt-and-suspenders rule asking the agent to call `register_pr` / `update_pr_sizing`.
+- **Pre-edit gatekeeping** (is a TASK/BUG in an active working step?) is mechanical on Claude Code, OpenCode, and **pi** — their hook systems support pre-tool blocking (pi via the `tool_call` event returning `{ block, reason }`). On Codex / Gemini / Cursor, this remains **instructional** via the per-client rule docs — backed by the server-side `workflow_gatekeeper` audit trail.
+- **PR sizing prompt** (after `gh pr create` / `git push`) is mechanical on **all six** clients via their respective post-tool hook events. On pi the reminder additionally carries the deterministically-detected model id (`ctx.getModel()`), so the agent reports the real model instead of guessing. Even when the post-tool directive isn't followed, the per-client instruction docs include a belt-and-suspenders rule asking the agent to call `register_pr` / `update_pr_sizing`.
 
 ### Note on Codex hook coverage
 
