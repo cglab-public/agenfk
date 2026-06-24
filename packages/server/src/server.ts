@@ -827,6 +827,9 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
     return res.status(400).json({ error: 'itemId, prNumber, repo, sizing{epic,story,task,bug} required' });
   }
+  if (typeof model !== 'string' || !model.trim() || typeof harness !== 'string' || !harness.trim()) {
+    return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
+  }
 
   const shadow = await computeShadowSizing(itemId);
   const now = new Date().toISOString();
@@ -879,6 +882,9 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
     || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
     || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
     return res.status(400).json({ error: 'sizing{epic,story,task,bug} required' });
+  }
+  if (typeof model !== 'string' || !model.trim() || typeof harness !== 'string' || !harness.trim()) {
+    return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
   const existing = await storage.getPrByRepoNumber(repo, prNumber);

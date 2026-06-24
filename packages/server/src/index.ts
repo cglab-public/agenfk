@@ -138,17 +138,18 @@ const RegisterPrSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
-  // Agent-declared runtime, for observability on the pr.opened hub event.
-  model: z.string().optional(),
-  harness: z.string().optional(),
+  // Agent-declared runtime, REQUIRED, for observability on the pr.opened hub event.
+  // Report YOUR actual model (derive from harness config/session log) — never an example.
+  model: z.string(),
+  harness: z.string(),
 });
 
 const UpdatePrSizingSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
-  model: z.string().optional(),
-  harness: z.string().optional(),
+  model: z.string(),
+  harness: z.string(),
 });
 
 const AddContextSchema = z.object({
@@ -283,10 +284,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
-            model: { type: "string", description: "Agent-declared model id you are running (e.g. claude-opus-4-8, glm-5.2). Optional; recorded on the pr.opened hub event." },
-            harness: { type: "string", description: "Agent-declared harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode). Optional; recorded on the pr.opened hub event." },
+            model: { type: "string", description: "REQUIRED. YOUR actual model id — determine it from your harness config or current session log; never copy an example. Recorded on the pr.opened hub event." },
+            harness: { type: "string", description: "REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode). Recorded on the pr.opened hub event." },
           },
-          required: ["itemId", "prNumber", "repo", "sizing"],
+          required: ["itemId", "prNumber", "repo", "sizing", "model", "harness"],
         },
       },
       {
@@ -307,10 +308,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
-            model: { type: "string", description: "Agent-declared model id. Optional; recorded on the pr.updated hub event." },
-            harness: { type: "string", description: "Agent-declared harness/client. Optional; recorded on the pr.updated hub event." },
+            model: { type: "string", description: "REQUIRED. YOUR actual model id — determine it from your harness config or current session log; never copy an example. Recorded on the pr.updated hub event." },
+            harness: { type: "string", description: "REQUIRED. YOUR harness/client. Recorded on the pr.updated hub event." },
           },
-          required: ["prNumber", "repo", "sizing"],
+          required: ["prNumber", "repo", "sizing", "model", "harness"],
         },
       },
       {

@@ -38,6 +38,17 @@ describe('PR model-discovery guidance (harness that cannot introspect its model)
   }
 });
 
+describe('PR model reporting resists example-parroting', () => {
+  // pi/GLM copied the literal "claude-opus-4-8" example instead of its own model.
+  // The pi-facing skill must explicitly tell agents not to copy the example and
+  // to report their own model.
+  it('commands/agenfk-pr.md tells agents not to copy the example model id', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'commands/agenfk-pr.md'), 'utf8');
+    expect(src).toMatch(/do not copy|don'?t copy|never copy|not.{0,15}copy/i);
+    expect(src).toMatch(/your (own |actual )?model/i);
+  });
+});
+
 describe('AFK_ARCHITECTURE.md client matrix', () => {
   it('no longer claims Codex / Cursor / Gemini are instructional-only on hooks', () => {
     const src = fs.readFileSync(path.join(ROOT, 'AFK_ARCHITECTURE.md'), 'utf8');
