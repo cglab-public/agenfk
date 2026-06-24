@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization, findItemAcrossProjects, findDuplicateProjectRoots } from '@agenfk/core';
+import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -1627,17 +1627,21 @@ program
     process.stdout.write('Checking for duplicate project roots... ');
     try {
       const { data: projects } = await axios.get(`${API_URL}/projects`);
-      const dupes = findDuplicateProjectRoots(projects as any[]);
-      if (dupes.length === 0) {
-        console.log(chalk.green('OK'));
+      if (!Array.isArray(projects)) {
+        console.log(chalk.yellow('SKIPPED (unexpected /projects response)'));
       } else {
-        console.log(chalk.yellow('DUPLICATES FOUND'));
-        for (const g of dupes) {
-          console.log(chalk.yellow(`   - ${g.projectRoot} is claimed by ${g.projects.length} projects:`));
-          for (const p of g.projects) console.log(chalk.gray(`       [${p.id.substring(0, 8)}] ${p.name}`));
+        const dupes = findDuplicateProjectRoots(projects as any[]);
+        if (dupes.length === 0) {
+          console.log(chalk.green('OK'));
+        } else {
+          console.log(chalk.yellow('DUPLICATES FOUND'));
+          for (const g of dupes) {
+            console.log(chalk.yellow(`   - ${g.projectRoot} is claimed by ${g.projects.length} projects:`));
+            for (const p of g.projects) console.log(chalk.gray(`       [${p.id.substring(0, 8)}] ${p.name}`));
+          }
+          console.log(chalk.gray('   Consolidate or repoint these (agenfk update-project <id>) so each repo maps to one project.'));
+          issues++;
         }
-        console.log(chalk.gray('   Consolidate or repoint these (agenfk update-project <id>) so each repo maps to one project.'));
-        issues++;
       }
     } catch {
       console.log(chalk.yellow('SKIPPED (server unreachable)'));
@@ -2843,13 +2847,15 @@ program
       const projectId = findProjectId(process.cwd());
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
 
-      // Cross-project diagnostic: if an explicit --item-id resolves to an item
-      // in a DIFFERENT project than the current directory, say so plainly. The
-      // old behaviour reported a misleading "not in an active working step",
-      // which sent agents into a card-thrashing spiral over a misfiled item.
+      // Cross-project diagnostic: if an explicit --item-id resolves ONLY to an
+      // item in a DIFFERENT project than the current directory (no in-project
+      // match), say so plainly. The old behaviour reported a misleading "not in
+      // an active working step", which sent agents into a card-thrashing spiral
+      // over a misfiled item. detectCrossProjectItem prefers an in-project match
+      // so a colliding id-prefix never wrongly short-circuits legitimate work.
       if (options.itemId && projectId) {
-        const globalMatch: any = findItemAcrossProjects(items as any[], options.itemId);
-        if (globalMatch && globalMatch.projectId && globalMatch.projectId !== projectId) {
+        const globalMatch: any = detectCrossProjectItem(items as any[], options.itemId, projectId);
+        if (globalMatch) {
           let nameOf = (id: string) => id?.substring(0, 8);
           try {
             const { data: projects } = await axios.get(`${API_URL}/projects`);

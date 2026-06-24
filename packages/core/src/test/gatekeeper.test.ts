@@ -3,6 +3,7 @@ import {
   getActiveStepItems,
   decideGatekeeperAuthorization,
   findItemAcrossProjects,
+  detectCrossProjectItem,
   type GatekeeperFlow,
   type GatekeeperItem,
 } from '../gatekeeper';
@@ -133,5 +134,44 @@ describe('findItemAcrossProjects', () => {
 
   it('returns null for empty/blank id', () => {
     expect(findItemAcrossProjects(items, '')).toBeNull();
+  });
+
+  it('prefers an EXACT id match over a prefix match', () => {
+    const colliding = [
+      { id: 'abc-prefix-first', projectId: 'projA' },
+      { id: 'abc', projectId: 'projB' }, // exact match, listed second
+    ];
+    expect(findItemAcrossProjects(colliding, 'abc')?.projectId).toBe('projB');
+  });
+});
+
+describe('detectCrossProjectItem (B1: prefer in-project, avoid prefix-collision false positives)', () => {
+  it('returns null when an in-project item matches — even if another project shares the prefix', () => {
+    const all = [
+      { id: 'bbbb1111-9999', projectId: 'projX', title: 'X-item' }, // other project, same prefix, listed first
+      { id: 'bbbb1111-0000', projectId: 'projY', title: 'Y-item' }, // the cwd project's legit item
+    ];
+    // cwd = projY; prefix 'bbbb1111' collides, but Y has a match → NOT cross-project
+    expect(detectCrossProjectItem(all, 'bbbb1111', 'projY')).toBeNull();
+  });
+
+  it('returns the other-project item only when no in-project match exists', () => {
+    const all = [
+      { id: 'cccc2222-1111', projectId: 'projX', title: 'X-only' },
+      { id: 'dddd3333-1111', projectId: 'projY', title: 'Y-other' },
+    ];
+    const r = detectCrossProjectItem(all, 'cccc2222', 'projY');
+    expect(r?.projectId).toBe('projX');
+  });
+
+  it('returns null when the match is already in the current project', () => {
+    const all = [{ id: 'eeee4444', projectId: 'projY', title: 'mine' }];
+    expect(detectCrossProjectItem(all, 'eeee4444', 'projY')).toBeNull();
+  });
+
+  it('returns null without an item id or current project', () => {
+    const all = [{ id: 'x', projectId: 'projX' }];
+    expect(detectCrossProjectItem(all, undefined, 'projY')).toBeNull();
+    expect(detectCrossProjectItem(all, 'x', undefined)).toBeNull();
   });
 });

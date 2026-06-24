@@ -48,19 +48,42 @@ export function getActiveStepItems(
 }
 
 /**
- * Find an item by full id or unambiguous prefix across ALL items, ignoring
- * project scoping. Used by `agenfk gatekeeper --item-id`: when the caller names
- * an item explicitly, it should be resolvable even if it lives in a different
- * project than the current working directory — so the gatekeeper can give a
- * clear "wrong project" diagnostic instead of a misleading "not in an active
- * working step" breach.
+ * Find an item by full id (preferred) or id-prefix across ALL items, ignoring
+ * project scoping. An exact id match always wins over a prefix match. With a
+ * colliding prefix the first prefix match (in input order) is returned — callers
+ * that must not act on an ambiguous prefix should prefer an exact id or use
+ * `detectCrossProjectItem`, which only treats a match as cross-project when no
+ * in-project item matches.
  */
 export function findItemAcrossProjects<T extends { id: string }>(
   items: T[],
   itemId: string | undefined,
 ): T | null {
   if (!itemId) return null;
-  return items.find(i => i.id === itemId || i.id.startsWith(itemId)) ?? null;
+  return items.find(i => i.id === itemId) ?? items.find(i => i.id.startsWith(itemId)) ?? null;
+}
+
+/**
+ * Decide whether an explicit `--item-id` refers to an item in a DIFFERENT
+ * project than the current working directory. Returns that item only when:
+ *   - no item in the current project matches the id/prefix (so we don't
+ *     short-circuit a legitimate in-project match on a colliding prefix), AND
+ *   - a match exists in another project.
+ * Otherwise returns null (let normal in-project authorization proceed).
+ */
+export function detectCrossProjectItem<T extends { id: string; projectId?: string }>(
+  allItems: T[],
+  itemId: string | undefined,
+  currentProjectId: string | undefined,
+): T | null {
+  if (!itemId || !currentProjectId) return null;
+  const inProject = allItems.find(
+    i => i.projectId === currentProjectId && (i.id === itemId || i.id.startsWith(itemId)),
+  );
+  if (inProject) return null; // a valid in-project match exists — not cross-project
+  const match = findItemAcrossProjects(allItems, itemId);
+  if (match && match.projectId && match.projectId !== currentProjectId) return match;
+  return null;
 }
 
 export interface GatekeeperDecision {
