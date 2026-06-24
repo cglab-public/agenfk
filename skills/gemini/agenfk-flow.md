@@ -73,7 +73,7 @@ curl -s -X POST http://localhost:3000/flows \
 
 Or via CLI (interactive):
 ```bash
-agenfk flow create "<name>" --project "<projectId>"
+agenfk flow create "<name>"
 ```
 
 ### Step 6 — Optionally activate the flow
