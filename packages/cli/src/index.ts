@@ -3066,10 +3066,12 @@ const prCmd = program
 
 prCmd
   .command('create <itemId>')
-  .description('Create a pull request for the item\'s branch and store the PR URL/number on the item')
+  .description('Create a pull request for the item\'s branch, store the PR URL/number, and auto-register sizing (emits pr.opened)')
   .option('--title <title>', 'PR title (defaults to item title)')
   .option('--body <body>', 'PR body/description')
   .option('--draft', 'Create as a draft PR')
+  .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
   .action(async (itemId, options) => {
     if (!checkGhCli()) {
       console.error(chalk.red('❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/'));
@@ -3108,6 +3110,27 @@ prCmd
       await axios.put(`${API_URL}/items/${itemId}`, { prUrl, prNumber, prStatus: 'open' });
       console.log(chalk.green(`✅ PR created: ${prUrl}`));
       if (prNumber) console.log(chalk.dim(`   PR #${prNumber} linked to item [${itemId.substring(0, 8)}]`));
+
+      // Auto-register the PR so the pr.opened hub event fires without a separate
+      // pr-register call. Sizing is OMITTED — the server derives it from the item
+      // tree (shadow). model/harness ride into the event. Parse owner/repo from the
+      // PR URL (https://github.com/<owner>/<repo>/pull/<n>).
+      const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/);
+      const repo = repoMatch ? repoMatch[1] : undefined;
+      if (repo && typeof prNumber === 'number') {
+        try {
+          await axios.post(`${API_URL}/prs`, {
+            itemId, prNumber, repo, model: options.model, harness: options.harness,
+          });
+          console.log(chalk.dim(`   Registered sizing (auto-derived from item tree) — pr.opened recorded for ${repo}#${prNumber}.`));
+        } catch (e: any) {
+          // The PR is already open; a registration hiccup must not fail the command.
+          console.log(chalk.yellow(`   ⚠️  Could not auto-register PR sizing: ${e.response?.data?.error || e.message}. Run 'agenfk pr-register' manually.`));
+        }
+      } else {
+        console.log(chalk.yellow(`   ⚠️  Could not parse repo/number from PR URL — skipped auto-registration. Run 'agenfk pr-register' manually.`));
+      }
+
       console.log(chalk.cyan('\nWhen your PR is approved and merged, run /agenfk-release to create a release.'));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
