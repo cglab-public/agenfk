@@ -3114,8 +3114,9 @@ prCmd
       // Auto-register the PR so the pr.opened hub event fires without a separate
       // pr-register call. Sizing is OMITTED — the server derives it from the item
       // tree (shadow). model/harness ride into the event. Parse owner/repo from the
-      // PR URL (https://github.com/<owner>/<repo>/pull/<n>).
-      const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/);
+      // PR URL (https://<host>/<owner>/<repo>/pull/<n>) — host-agnostic so GitHub
+      // Enterprise hosts auto-register too, not just github.com.
+      const repoMatch = prUrl.match(/[/]([^/]+\/[^/]+)\/pull\/\d+/);
       const repo = repoMatch ? repoMatch[1] : undefined;
       if (repo && typeof prNumber === 'number') {
         try {

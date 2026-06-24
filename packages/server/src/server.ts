@@ -838,6 +838,12 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
+  // POST /prs is idempotent on (repo, prNumber). Detect a re-registration BEFORE
+  // the upsert so we emit the right hub event: pr.opened only the first time, and
+  // pr.updated on subsequent calls — otherwise auto-register (agenfk pr create)
+  // followed by a manual pr-register would double-count the open.
+  const alreadyRegistered = await storage.getPrByRepoNumber(repo, prNumber);
+
   const shadow = await computeShadowSizing(itemId);
   const effectiveSizing = sizingProvided ? sizing : shadow;
   const now = new Date().toISOString();
@@ -865,7 +871,7 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
 
   const item = await storage.getItem(itemId);
   recordHubEvent({
-    type: 'pr.opened',
+    type: alreadyRegistered ? 'pr.updated' : 'pr.opened',
     projectId: item?.projectId,
     // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
     // the server process cannot infer them). Optional — omitted when not supplied.

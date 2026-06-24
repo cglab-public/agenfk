@@ -301,6 +301,34 @@ describe('agent-declared model + harness on PR events', () => {
     expect(ev.payload?.harness).toBe('pi');
   });
 
+  it('POST /prs emits pr.opened only on first registration; re-register emits pr.updated (no double-open)', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PDEDUP' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    // First POST → pr.opened
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 710, repo: 'org/dedup', model: 'glm-5.2', harness: 'pi',
+    });
+    const opened = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 710);
+    expect(opened).toBeDefined();
+
+    // Second POST for the same (repo, prNumber) → pr.updated, NOT a second pr.opened
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 710, repo: 'org/dedup',
+      sizing: { epic: 0, story: 0, task: 2, bug: 0 }, model: 'glm-5.2', harness: 'pi',
+    });
+    const updated = await waitForOutboxPayload((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 710);
+    expect(updated).toBeDefined();
+
+    // Exactly one pr.opened for this PR.
+    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
+    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
+    const opens = rows.map(r => JSON.parse(r.payload)).filter(p => p.type === 'pr.opened' && p.payload?.prNumber === 710);
+    expect(opens).toHaveLength(1);
+  });
+
   it('POST /prs still rejects (400) when model/harness omitted even on the derive path', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
