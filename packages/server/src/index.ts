@@ -138,12 +138,18 @@ const RegisterPrSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
+  // Agent-declared runtime, REQUIRED, for observability on the pr.opened hub event.
+  // Report YOUR actual model (derive from harness config/session log) — never an example.
+  model: z.string(),
+  harness: z.string(),
 });
 
 const UpdatePrSizingSchema = z.object({
   prNumber: z.number().int().positive(),
   repo: z.string(),
   sizing: PrSizingSchema,
+  model: z.string(),
+  harness: z.string(),
 });
 
 const AddContextSchema = z.object({
@@ -278,8 +284,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
+            model: { type: "string", description: "REQUIRED. YOUR actual model id — determine it from your harness config or current session log; never copy an example. Recorded on the pr.opened hub event." },
+            harness: { type: "string", description: "REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode). Recorded on the pr.opened hub event." },
           },
-          required: ["itemId", "prNumber", "repo", "sizing"],
+          required: ["itemId", "prNumber", "repo", "sizing", "model", "harness"],
         },
       },
       {
@@ -300,8 +308,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               },
               required: ["epic", "story", "task", "bug"],
             },
+            model: { type: "string", description: "REQUIRED. YOUR actual model id — determine it from your harness config or current session log; never copy an example. Recorded on the pr.updated hub event." },
+            harness: { type: "string", description: "REQUIRED. YOUR harness/client. Recorded on the pr.updated hub event." },
           },
-          required: ["prNumber", "repo", "sizing"],
+          required: ["prNumber", "repo", "sizing", "model", "harness"],
         },
       },
       {
@@ -873,7 +883,11 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "update_pr_sizing": {
         const args = UpdatePrSizingSchema.parse(request.params.arguments);
-        const { data } = await api.put(`/prs/${encodeURIComponent(args.repo)}/${args.prNumber}`, { sizing: args.sizing });
+        const { data } = await api.put(`/prs/${encodeURIComponent(args.repo)}/${args.prNumber}`, {
+          sizing: args.sizing,
+          ...(args.model ? { model: args.model } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+        });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
       case "query_token_events": {

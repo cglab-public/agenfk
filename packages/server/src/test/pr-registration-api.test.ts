@@ -92,6 +92,7 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
       prNumber: 100,
       repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 2, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -111,10 +112,12 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
     await request(app).post('/prs').send({
       itemId: item.id, prNumber: 200, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     const second = await request(app).post('/prs').send({
       itemId: item.id, prNumber: 200, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 5, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(second.status).toBe(201);
     expect(second.body.sizing).toEqual({ epic: 0, story: 1, task: 5, bug: 0 });
@@ -126,10 +129,12 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
     await request(app).post('/prs').send({
       itemId: item.id, prNumber: 300, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
 
     const res = await request(app).put('/prs/foo%2Fbar/300').send({
       sizing: { epic: 0, story: 1, task: 4, bug: 1 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(200);
     expect(res.body.sizing).toEqual({ epic: 0, story: 1, task: 4, bug: 1 });
@@ -139,6 +144,7 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   it('PUT /prs/:repo/:number returns 404 when PR not registered', async () => {
     const res = await request(app).put('/prs/foo%2Fbar/999').send({
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(404);
   });
@@ -159,10 +165,103 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
     const res = await request(app).post('/prs').send({
       itemId: epic.id, prNumber: 400, repo: 'foo/bar',
       sizing: { epic: 1, story: 1, task: 99, bug: 99 }, // deliberately wrong
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(201);
     expect(res.body.sizing).toEqual({ epic: 1, story: 1, task: 99, bug: 99 }); // agent's number persists
     expect(res.body.sizingShadow).toEqual({ epic: 1, story: 1, task: 2, bug: 1 }); // server's truth
+  });
+});
+
+describe('agent-declared model + harness on PR events', () => {
+  // Static: CLI flags — must be REQUIRED on both commands.
+  it('CLI pr-register and pr-resize REQUIRE --model and --harness', () => {
+    const cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
+    expect((cli.match(/\.requiredOption\(\s*['"]--model <id>/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect((cli.match(/\.requiredOption\(\s*['"]--harness <name>/g) || []).length).toBeGreaterThanOrEqual(2);
+    // ...and must NOT be declared as plain (optional) .option()
+    expect(cli).not.toMatch(/\.option\(\s*['"]--model <id>/);
+    expect(cli).not.toMatch(/\.option\(\s*['"]--harness <name>/);
+  });
+
+  // Static: MCP tool schemas — model/harness must be REQUIRED (non-optional).
+  it('register_pr and update_pr_sizing MCP schemas REQUIRE model + harness', () => {
+    const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
+    // Zod fields must be required (not .optional()).
+    expect(src).toMatch(/model:\s*z\.string\(\),/);
+    expect(src).toMatch(/harness:\s*z\.string\(\),/);
+    expect(src).not.toMatch(/model:\s*z\.string\(\)\.optional\(\)/);
+    expect(src).not.toMatch(/harness:\s*z\.string\(\)\.optional\(\)/);
+    // Both advertised inputSchema required[] arrays must list model & harness.
+    expect((src.match(/required:\s*\[[^\]]*"model"[^\]]*"harness"[^\]]*\]/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Behavioral: the fields ride into the hub event payloads
+  it('POST /prs includes model + harness in the pr.opened payload', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    const res = await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 601, repo: 'org/mh',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+    expect(res.status).toBe(201);
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 601);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.model).toBe('claude-opus-4-8');
+    expect(ev.payload?.harness).toBe('claude-code');
+  });
+
+  it('PUT /prs includes model + harness in the pr.updated payload', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH2' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 602, repo: 'org/mh2',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+
+    const res = await request(app).put('/prs/org%2Fmh2/602').send({
+      sizing: { epic: 0, story: 0, task: 2, bug: 0 },
+      model: 'glm-5.2', harness: 'pi',
+    });
+    expect(res.status).toBe(200);
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 602);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.model).toBe('glm-5.2');
+    expect(ev.payload?.harness).toBe('pi');
+  });
+
+  it('POST /prs rejects (400) when model or harness is omitted', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH3' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const base = { itemId: item.id, prNumber: 603, repo: 'org/mh3', sizing: { epic: 0, story: 0, task: 1, bug: 0 } };
+
+    expect((await request(app).post('/prs').send(base)).status).toBe(400); // both missing
+    expect((await request(app).post('/prs').send({ ...base, model: 'glm-5.2' })).status).toBe(400); // harness missing
+    expect((await request(app).post('/prs').send({ ...base, harness: 'pi' })).status).toBe(400); // model missing
+  });
+
+  it('PUT /prs rejects (400) when model or harness is omitted', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PMH4' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 604, repo: 'org/mh4',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 }, model: 'glm-5.2', harness: 'pi',
+    });
+    const res = await request(app).put('/prs/org%2Fmh4/604').send({ sizing: { epic: 0, story: 0, task: 2, bug: 0 } });
+    expect(res.status).toBe(400);
   });
 });
 
@@ -183,6 +282,7 @@ describe('POST /prs emits a hub event into the outbox', () => {
     const res = await request(app).post('/prs').send({
       itemId: item.id, prNumber: 501, repo: 'org/repo',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(201);
 
@@ -198,10 +298,12 @@ describe('POST /prs emits a hub event into the outbox', () => {
     await request(app).post('/prs').send({
       itemId: item.id, prNumber: 502, repo: 'org/repo2',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
 
     const res = await request(app).put('/prs/org%2Frepo2/502').send({
       sizing: { epic: 0, story: 0, task: 3, bug: 0 },
+      model: 'claude-opus-4-8', harness: 'claude-code',
     });
     expect(res.status).toBe(200);
 

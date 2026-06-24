@@ -821,11 +821,14 @@ async function computeShadowSizing(rootItemId: string): Promise<{ epic: number; 
 }
 
 app.post("/prs", asyncHandler(async (req: any, res: any) => {
-  const { itemId, prNumber, repo, sizing } = req.body || {};
+  const { itemId, prNumber, repo, sizing, model, harness } = req.body || {};
   if (!itemId || typeof prNumber !== 'number' || !repo || !sizing
     || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
     || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
     return res.status(400).json({ error: 'itemId, prNumber, repo, sizing{epic,story,task,bug} required' });
+  }
+  if (typeof model !== 'string' || !model.trim() || typeof harness !== 'string' || !harness.trim()) {
+    return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
   const shadow = await computeShadowSizing(itemId);
@@ -856,7 +859,13 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: 'pr.opened',
     projectId: item?.projectId,
-    payload: { prNumber, repo, sizing, sizingShadow: shadow },
+    // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
+    // the server process cannot infer them). Optional — omitted when not supplied.
+    payload: {
+      prNumber, repo, sizing, sizingShadow: shadow,
+      ...(typeof model === 'string' && model ? { model } : {}),
+      ...(typeof harness === 'string' && harness ? { harness } : {}),
+    },
   });
 
   res.status(201).json(pr);
@@ -868,11 +877,14 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   if (!Number.isFinite(prNumber)) {
     return res.status(400).json({ error: 'PR number must be an integer' });
   }
-  const { sizing } = req.body || {};
+  const { sizing, model, harness } = req.body || {};
   if (!sizing
     || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
     || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
     return res.status(400).json({ error: 'sizing{epic,story,task,bug} required' });
+  }
+  if (typeof model !== 'string' || !model.trim() || typeof harness !== 'string' || !harness.trim()) {
+    return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
   const existing = await storage.getPrByRepoNumber(repo, prNumber);
@@ -894,7 +906,11 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   recordHubEvent({
     type: 'pr.updated',
     projectId: anchorItem?.projectId,
-    payload: { prNumber, repo, sizing, sizingShadow: shadow },
+    payload: {
+      prNumber, repo, sizing, sizingShadow: shadow,
+      ...(typeof model === 'string' && model ? { model } : {}),
+      ...(typeof harness === 'string' && harness ? { harness } : {}),
+    },
   });
 
   res.json(updated);

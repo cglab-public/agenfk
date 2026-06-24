@@ -2685,6 +2685,8 @@ program
   .requiredOption('--story <n>', 'Story count', (v) => parseInt(v, 10))
   .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
+  .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.opened hub event')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.opened hub event')
   .action(async (options) => {
     try {
       const { data } = await axios.post(`${API_URL}/prs`, {
@@ -2692,6 +2694,8 @@ program
         prNumber: options.number,
         repo: options.repo,
         sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.harness ? { harness: options.harness } : {}),
       });
       console.log(structuredOutput(data));
     } catch (error: any) {
@@ -2709,11 +2713,17 @@ program
   .requiredOption('--story <n>', 'Story count', (v) => parseInt(v, 10))
   .requiredOption('--task <n>', 'Task count', (v) => parseInt(v, 10))
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
+  .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.updated hub event')
+  .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.updated hub event')
   .action(async (options) => {
     try {
       const { data } = await axios.put(
         `${API_URL}/prs/${encodeURIComponent(options.repo)}/${options.number}`,
-        { sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug } },
+        {
+          sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
+          ...(options.model ? { model: options.model } : {}),
+          ...(options.harness ? { harness: options.harness } : {}),
+        },
       );
       console.log(structuredOutput(data));
     } catch (error: any) {

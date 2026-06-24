@@ -127,9 +127,10 @@ async function main() {
 
   if (trigger.kind === 'open') {
     emit(buildDirective(client,
-      'You just opened a PR. Reply by calling `register_pr(itemId, prNumber, repo, sizing)` ' +
+      'You just opened a PR. Reply by calling `register_pr(itemId, prNumber, repo, sizing, model, harness)` ' +
       'with sizing = { epic, story, task, bug } counted across all items included in this PR. ' +
-      'Use the active item id as itemId.'));
+      `Use the active item id as itemId, model = the model id you are running, and harness = "${client}". ` +
+      `(CLI: \`agenfk pr-register … --model <id> --harness ${client}\`.)`));
   }
 
   // push trigger: only nudge if the branch already has a registered PR.
@@ -141,8 +142,8 @@ async function main() {
   // (last_sizing_check_at within 5 min) prevents wasted turns.
   emit(buildDirective(client,
     `You just pushed to '${branch}'. If this branch has an open PR registered with AgEnFK and ` +
-    'more items were added since the last sizing, call `update_pr_sizing(prNumber, repo, sizing)` ' +
-    'with the new counts. If unchanged, take no action.'));
+    'more items were added since the last sizing, call `update_pr_sizing(prNumber, repo, sizing, model, harness)` ' +
+    `with the new counts (model = the model id you are running, harness = "${client}"). If unchanged, take no action.`));
 }
 
 // ESM script entry detection: only run main() when executed directly, not when imported.
