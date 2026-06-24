@@ -90,7 +90,7 @@ curl -s -X POST http://localhost:3000/flows \
 
 Or via CLI:
 ```bash
-agenfk flow create "<name>" --project "<projectId>"
+agenfk flow create "<name>"
 ```
 
 **Display every MCP call parameter and return value** (Opencode transparency requirement).

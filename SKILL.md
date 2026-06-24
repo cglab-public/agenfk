@@ -63,21 +63,24 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 
 | Tool name (this skill) | `agenfk` CLI command |
 |------------------------|----------------------|
-| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` |
+| `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--json]` |
 | `list_projects()` | `agenfk list-projects --json` |
-| `create_project(name)` | `agenfk create-project "<name>"` |
-| `update_project(id, {...})` | `agenfk update-project <id> [--name][--description][--verify-command]` |
-| `list_items(projectId, ...)` | `agenfk list --project <id> --json` |
+| `create_project(name)` | `agenfk create-project "<name>" [-d/--description <desc>]` |
+| `update_project(id, {...})` | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` |
+| `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` |
 | `get_item(id)` | `agenfk get <id> --json` |
-| `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id>` |
-| `update_item(id, {status})` | `agenfk update <id> --status <name>` (backward/rollback only) |
+| `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` |
+| `update_item(id, {status})` | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) |
 | `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<text>" ["<command>"]` |
-| `add_comment(id, text)` | `agenfk comment <id> "<text>"` |
-| `add_context(id, path)` | `agenfk add-context <id> --path <path>` |
-| `pause_work(...)` / `resume_work(id)` | `agenfk pause-work <id> ...` / `agenfk resume-work <id>` |
-| `get_flow(projectId)` | `agenfk flow show --project <id> --json` |
-| `delete_flow(id)` | `agenfk flow delete <id>` |
-| `register_pr(...)` / `update_pr_sizing(...)` | `agenfk pr-register ...` / `agenfk pr-resize ...` |
+| `add_comment(id, text)` | `agenfk comment <id> "<text>" [--author <name>]` |
+| `add_context(id, path)` | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` |
+| `move_item(id, target)` / `delete_item(id)` | `agenfk move <id> <targetProjectId>` / `agenfk delete <id>` |
+| `pause_work(...)` / `resume_work(id)` | `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>" [--files a,b][--git-diff <diff>]` / `agenfk resume-work <id>` |
+| `get_flow(projectId)` / `list_flows()` | `agenfk flow show [id] [--project <id>] [--json]` (bare `flow show` auto-detects the current project's **active** flow; `--project` is optional) / `agenfk flow list [--json]` |
+| `use_flow(id, projectId)` / `delete_flow(id)` | `agenfk flow use <id> [--project <id>]` / `agenfk flow delete <id> [-y/--yes]` |
+| `log_test_result(...)` | `agenfk log-test <id> --command "..." --output "..." --status PASSED\|FAILED` |
+| `query_token_events(...)` | `agenfk tokens [--item <id>][--project <id>][--client <name>][--since <ts>][--until <ts>][--limit <n>][--json]` |
+| `register_pr(...)` / `update_pr_sizing(...)` | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` / `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` (`--model` and `--harness` are **REQUIRED** on both) |
 | `analyze_request(req)` | `agenfk analyze "<request>"` |
 
 **Read output**: append `--json` to any read command (`list`, `get`, `list-projects`,
@@ -216,7 +219,7 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `agenfk add-context <id> --path <path>`: Attach relevant file paths.
 *   `agenfk analyze "<request>"`: Categorization strategy.
 *   `agenfk gatekeeper --intent "<intent>" [--item-id <id>]`: Pre-flight authorization.
-*   `agenfk flow show --project <id> --json`: Loads the full active flow with all steps and exit criteria — run at session start to understand your complete workflow contract.
+*   `agenfk flow show [--project <id>] --json`: Loads the full active flow with all steps and exit criteria — run at session start to understand your complete workflow contract. `--project` is optional: bare `agenfk flow show` inside an initialized project auto-detects the current project and shows its active flow.
 *   `agenfk verify <id> --evidence "<text>" ["<command>"]`: Step-completion gate — `evidence` (how you satisfied the exit criteria, logged as a tagged comment) is required; the command is optional. Advances to next step on success.
 *   `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>"`: Save context snapshot and pause item.
 *   `agenfk resume-work <id>`: Restore context and resume paused item.

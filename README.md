@@ -388,8 +388,8 @@ Flows can be shared, discovered, and installed from the **AgEnFK Community Regis
 
 ```bash
 agenfk flow browse               # Search the community registry
-agenfk flow install <name>       # Install a flow by name
-agenfk flow publish              # Publish the active flow to the registry
+agenfk flow install <filename>   # Install a flow by registry filename
+agenfk flow publish <id>         # Publish a flow (by id) to the registry
 ```
 
 ---

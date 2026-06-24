@@ -79,32 +79,90 @@ Codex does not support PreToolUse hooks, so the above is enforced by instruction
 
 ### Command Reference — the `agenfk` CLI
 
-This is the full workflow surface. Each row notes the equivalent MCP tool (available only if you installed with `--with-mcp`).
+This is the full workflow surface. Each row notes the equivalent MCP tool (available only if you installed with `--with-mcp`; `—` means there is no MCP equivalent — use the CLI). Run `agenfk <command> --help` for the authoritative option list; only the flags that matter day-to-day are shown here.
+
+**Workflow & items**
 
 | Operation | CLI command | MCP tool |
 |-----------|-------------|----------|
-| Authorize a pre-edit | `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` | `workflow_gatekeeper` |
+| Authorize a pre-edit | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--json]` | `workflow_gatekeeper` |
 | List projects | `agenfk list-projects --json` | `list_projects` |
-| Create a project | `agenfk create-project "<name>"` | `create_project` |
-| Update a project | `agenfk update-project <id> [--name][--description][--verify-command]` | `update_project` |
-| List items | `agenfk list --project <id> --json` | `list_items` |
+| Create a project | `agenfk create-project "<name>" [-d/--description <desc>]` | `create_project` |
+| Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
+| List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` | `list_items` |
 | Get an item | `agenfk get <id> --json` | `get_item` |
-| Create an item | `agenfk create <TYPE> "<title>" --project <id>` | `create_item` |
-| Update / roll back status | `agenfk update <id> --status <name>` (backward only) | `update_item` |
+| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` | `create_item` |
+| Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
-| Add a comment | `agenfk comment <id> "<text>"` | `add_comment` |
-| Attach context | `agenfk add-context <id> --path <path> [--description][--content]` | `add_context` |
+| Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
+| Attach context | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` | `add_context` |
 | Move an item | `agenfk move <id> <targetProjectId>` | `move_item` |
-| Pause work | `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>" [--files a,b][--git-diff]` | `pause_work` |
+| Delete an item | `agenfk delete <id>` | `delete_item` |
+| Pause work | `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>" [--files a,b][--git-diff <diff>]` | `pause_work` |
 | Resume work | `agenfk resume-work <id>` | `resume_work` |
-| Show the flow | `agenfk flow show --project <id> --json` | `get_flow` |
-| List flows | `agenfk flow list --json` | `list_flows` |
-| Activate a flow | `agenfk flow use <id> --project <id>` | `use_flow` |
-| Delete a flow | `agenfk flow delete <id>` | `delete_flow` |
-| Log a test result | `agenfk log-test <id> --command "..." --output "..." --status PASSED` | `log_test_result` |
-| Register a PR | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n>` | `register_pr` |
-| Resize a PR | `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n>` | `update_pr_sizing` |
+| Log a test result | `agenfk log-test <id> --command "..." --output "..." --status PASSED\|FAILED` | `log_test_result` |
 | Analyze a request | `agenfk analyze "<request>"` | `analyze_request` |
+| Query token events | `agenfk tokens [--item <id>][--project <id>][--client <name>][--since <ts>][--until <ts>][--limit <n>][--json]` | `query_token_events` |
+
+**Flows**
+
+| Operation | CLI command | MCP tool |
+|-----------|-------------|----------|
+| Show a flow | `agenfk flow show [id] [--project <id>] [--json]` — bare `agenfk flow show` inside an initialized project auto-detects the current project and shows its **active** flow; `--project` is optional | `get_flow` |
+| List flows | `agenfk flow list [--json]` | `list_flows` |
+| Create a flow | `agenfk flow create <name>` (interactive) | `create_flow` |
+| Edit a flow | `agenfk flow edit <id>` (interactive) | `update_flow` |
+| Activate a flow | `agenfk flow use <id> [--project <id>]` (defaults to current project) | `use_flow` |
+| Delete a flow | `agenfk flow delete <id> [-y/--yes]` | `delete_flow` |
+| Reset to default flow | `agenfk flow reset [--project <id>]` | — |
+| Publish a flow | `agenfk flow publish <id> [--registry <owner/repo>]` | — |
+| Browse community flows | `agenfk flow browse [--registry <owner/repo>]` | — |
+| Install a community flow | `agenfk flow install <filename> [--registry <owner/repo>]` | — |
+
+**Git, PRs & release sizing**
+
+| Operation | CLI command | MCP tool |
+|-----------|-------------|----------|
+| Create a branch for an item | `agenfk branch create <itemId> [--name <name>]` | — |
+| Push an item's branch | `agenfk branch push <itemId>` | — |
+| Show an item's branch status | `agenfk branch status <itemId>` | — |
+| Create a PR for an item | `agenfk pr create <itemId> [--title <t>][--body <b>][--draft]` | — |
+| Check a PR's status | `agenfk pr status <itemId>` | — |
+| Check whether a PR is merged | `agenfk pr check <itemId>` | — |
+| Register a PR (sizing) | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` (`--model` and `--harness` are **REQUIRED**) | `register_pr` |
+| Resize a PR (sizing) | `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` (`--model` and `--harness` are **REQUIRED**) | `update_pr_sizing` |
+
+**Services, install & maintenance** (CLI-only — no MCP equivalents)
+
+| Operation | CLI command |
+|-----------|-------------|
+| Start services (server + UI) | `agenfk up [-q/--quiet][--debuglog]` |
+| Stop services | `agenfk down` |
+| Restart services | `agenfk restart [-q/--quiet]` |
+| Force-kill all processes/ports | `agenfk kill` |
+| Open / show the dashboard | `agenfk ui` |
+| Check framework health | `agenfk health` |
+| Upgrade the framework | `agenfk upgrade [-f/--force][-b/--beta][--version <ver>][--json][--debuglog]` |
+| Back up the database | `agenfk backup` |
+| Show database type/path/backups | `agenfk db status` |
+| Initialize a project in the cwd | `agenfk init [name] [-d/--description <desc>]` |
+| Fix Claude Code MCP integration | `agenfk configure-ide` |
+| Start the MCP server (stdio) | `agenfk mcp` |
+
+**Integrations, rules/skills & config** (CLI-only)
+
+| Operation | CLI command |
+|-----------|-------------|
+| List supported integrations | `agenfk integration list` |
+| Install integration(s) | `agenfk integration install <platform\|all> [-y/--yes][--with-mcp][--no-mcp]` |
+| Uninstall integration(s) | `agenfk integration uninstall <platform\|all> [-y/--yes]` |
+| Pause integration(s) | `agenfk integration pause <platform\|all> [-y/--yes]` |
+| Resume integration(s) | `agenfk integration resume <platform\|all> [-y/--yes]` |
+| Install/uninstall workflow rules & skills | `agenfk skills install [-g/--global][-p/--project]` · `agenfk skills uninstall [-g/--global][-p/--project]` · `agenfk skills status` |
+| Enable/disable telemetry | `agenfk config set telemetry <true\|false>` |
+| Set the community flow registry | `agenfk config set flowRegistry <owner/repo>` |
+| Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` |
+| Configure GitHub Issues import | `agenfk github setup [--owner <owner>][--repo <repo>]` · `agenfk github status` · `agenfk github disconnect` |
 
 ### Reading state — `--json`
 

@@ -399,4 +399,55 @@ describe('CLI Commands', () => {
       expect(program.description()).toContain('AgEnFK');
     });
   });
+
+  describe('grouped help output', () => {
+    it('should include the skills command (not a phantom "rules" entry)', () => {
+      const help = program.helpInformation();
+      // The command is registered as "skills"; the grouped-help block must
+      // reference that real name so it is not silently dropped.
+      expect(help).toContain('skills');
+      expect(program.commands.map(c => c.name())).toContain('skills');
+    });
+
+    it('should list every grouped command name as a registered command', () => {
+      // Re-derive the grouped names from help output lines that are indented
+      // command rows, and assert each resolves to a real command. This guards
+      // against future phantom entries in the grouped-help block.
+      const registered = new Set(program.commands.map(c => c.name()));
+      const help = program.helpInformation();
+      const referenced = help
+        .split('\n')
+        .map(l => l.match(/^ {2}([a-z][a-z0-9-]*)\s{2,}/i))
+        .filter((m): m is RegExpMatchArray => Boolean(m))
+        .map(m => m[1])
+        .filter(n => n !== '-V,' && n !== '-h,');
+      for (const name of referenced) {
+        expect(registered.has(name)).toBe(true);
+      }
+    });
+  });
+
+  describe('unknown command handling', () => {
+    it('should error and exit non-zero on an unknown command', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`__exit__:${code ?? 0}`);
+      }) as never);
+      let exitCode: number | undefined;
+      let errored = false;
+      try {
+        await program.parseAsync(['node', 'agenfk', 'flows', 'show']);
+      } catch (e: any) {
+        errored = true;
+        const m = String(e?.message ?? '').match(/^__exit__:(\d+)$/);
+        if (m) exitCode = parseInt(m[1], 10);
+      }
+      const errOutput = errSpy.mock.calls.flat().join(' ');
+      expect(errored).toBe(true);
+      expect(exitCode).toBeGreaterThan(0);
+      expect(errOutput.toLowerCase()).toContain('unknown command');
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
 });

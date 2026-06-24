@@ -414,10 +414,36 @@ async function warnIfHubFlusherHalted(): Promise<void> {
   }
 }
 
+// Report an unrecognized command/subcommand and exit non-zero.
+// The program registers a default `.action` (banner + help) which runs for the
+// no-command case. Because that action handler exists, Commander never reaches
+// its own unknown-command path, so a typo like `agenfk flows show` would
+// otherwise silently print the full root help and exit 0, masking the mistake.
+// We detect leftover operands in the default action and route them here instead.
+function reportUnknownCommand(operands: string[]): never {
+  const unknown = operands[0];
+  console.error(chalk.red(`error: unknown command '${unknown}'`));
+  const available = program.commands.map((c) => c.name());
+  const suggestion = available.find(
+    (n) => n.startsWith(unknown) || unknown.startsWith(n) || `${unknown}s` === n || `${n}s` === unknown,
+  );
+  if (suggestion) {
+    console.error(chalk.yellow(`(did you mean '${suggestion}'?)`));
+  }
+  console.error(`\nRun "agenfk --help" to see available commands.`);
+  process.exit(1);
+}
+
 program
   .action(async () => {
+    // If the user passed an unrecognized command/subcommand, the leftover
+    // tokens land in program.args. Treat that as a typo, not a help request.
+    if (program.args.length > 0) {
+      reportUnknownCommand(program.args);
+    }
+
     console.log(chalk.blue(`AgEnFK CLI v${CURRENT_VERSION}`));
-    
+
     // Check for updates silently
     try {
       const REPO = 'cglab-public/agenfk';
@@ -431,7 +457,7 @@ program
     } catch (e) {
       // Silence errors for version check
     }
-    
+
     program.help();
   });
 
@@ -3602,7 +3628,7 @@ program.helpInformation = function () {
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
     ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
     ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test', 'tokens']],
-    ['Integrations & Rules',  ['integration', 'rules', 'configure-ide']],
+    ['Integrations & Rules',  ['integration', 'skills', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr', 'pr-register', 'pr-resize']],
     ['Flows',                 ['flow']],
     ['External Sync',         ['github', 'jira']],
