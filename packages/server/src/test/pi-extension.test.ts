@@ -6,6 +6,8 @@ import activate, {
   formatModel,
   composeReminder,
   injectDeterministicModel,
+  resolveModelId,
+  readPiDefaultModel,
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -112,6 +114,36 @@ describe('injectDeterministicModel (force the real model onto agenfk pr commands
   });
 });
 
+describe('resolveModelId (bare id; getModel → lastSelected → settings.json)', () => {
+  it('prefers the live ctx.getModel().id (bare, not provider/id)', () => {
+    const ctx = { getModel: () => ({ provider: 'cloudflare-workers-ai', id: '@cf/zai-org/glm-5.2' }) };
+    expect(resolveModelId(ctx as any, 'cached', () => 'fromfile')).toBe('@cf/zai-org/glm-5.2');
+  });
+
+  it('falls back to the cached model_select id when getModel is unavailable', () => {
+    expect(resolveModelId({} as any, 'glm-5.2', () => 'fromfile')).toBe('glm-5.2');
+  });
+
+  it('falls back to settings.json defaultModel when neither getModel nor cache is available', () => {
+    expect(resolveModelId({} as any, null, () => '@cf/zai-org/glm-5.2')).toBe('@cf/zai-org/glm-5.2');
+  });
+
+  it('returns null when no source yields a model', () => {
+    expect(resolveModelId({} as any, null, () => null)).toBeNull();
+  });
+});
+
+describe('readPiDefaultModel (parse ~/.pi/agent/settings.json)', () => {
+  it('returns the defaultModel id', () => {
+    expect(readPiDefaultModel(() => JSON.stringify({ defaultModel: '@cf/zai-org/glm-5.2' }))).toBe('@cf/zai-org/glm-5.2');
+  });
+  it('returns null when defaultModel is absent or JSON is bad', () => {
+    expect(readPiDefaultModel(() => JSON.stringify({ other: 1 }))).toBeNull();
+    expect(readPiDefaultModel(() => 'not json')).toBeNull();
+    expect(readPiDefaultModel(() => { throw new Error('ENOENT'); })).toBeNull();
+  });
+});
+
 // ── Native activate() behavior with a fake pi/ctx ────────────────────────────
 
 /** Build a fake pi that records handlers and spies sendMessage. */
@@ -133,6 +165,8 @@ function makeDeps(overrides: any = {}) {
     gatekeeperVerdict: vi.fn().mockReturnValue(null),
     enforcerVerdict: vi.fn().mockReturnValue(null),
     prReminder: vi.fn().mockReturnValue(null),
+    // Stubbed so activate() tests never read the real ~/.pi/agent/settings.json.
+    readDefaultModel: () => null,
     ...overrides,
   };
 }
@@ -158,7 +192,9 @@ describe('activate(): PR-open reminder via tool_result', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].options.deliverAs).toBe('steer');
     expect(sent[0].message.customType).toBe('agenfk-pr');
-    expect(sent[0].message.content).toContain('anthropic/claude-opus-4-8');
+    // Bare model id (not provider/id) — matches settings.json + claude-code convention.
+    expect(sent[0].message.content).toContain('claude-opus-4-8');
+    expect(sent[0].message.content).not.toContain('anthropic/claude-opus-4-8');
   });
 
   it('falls back to the cached model_select model when ctx.getModel() is unavailable', async () => {
@@ -168,7 +204,19 @@ describe('activate(): PR-open reminder via tool_result', () => {
 
     fire('model_select', { model: { provider: 'zhipu', id: 'glm-5.2' } });
     await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {}); // no getModel
-    expect(sent[0].message.content).toContain('zhipu/glm-5.2');
+    expect(sent[0].message.content).toContain('glm-5.2');
+  });
+
+  it('falls back to ~/.pi/agent/settings.json defaultModel when getModel + model_select are both unavailable', async () => {
+    const { pi, sent, fire } = makeFakePi();
+    const deps = makeDeps({
+      prReminder: vi.fn().mockReturnValue({ message: 'open. harness = "pi".' }),
+      readDefaultModel: () => '@cf/zai-org/glm-5.2', // the live-pi reality: model only known from config
+    });
+    activate(pi as any, deps);
+
+    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create' } }, {}); // no getModel, no model_select
+    expect(sent[0].message.content).toContain('@cf/zai-org/glm-5.2');
   });
 
   it('still reminds (without a model line) when no model can be resolved', async () => {
@@ -218,7 +266,8 @@ describe('activate(): session_start load-confirmation notify', () => {
     expect(notify).toHaveBeenCalledTimes(1);
     const [msg, level] = notify.mock.calls[0];
     expect(msg).toContain('agenfk');
-    expect(msg).toContain('zhipu/glm-5.2');
+    expect(msg).toContain('glm-5.2');
+    expect(msg).not.toContain('zhipu/glm-5.2'); // bare id, not provider/id
     expect(level).toBe('info');
   });
 
@@ -279,7 +328,9 @@ describe('activate(): deterministic model injection on agenfk pr commands', () =
     activate(pi as any, makeDeps());
     const event: any = { toolName: 'bash', input: { command: 'agenfk pr create abc --model claude-sonnet-4-5 --harness pi --title "T"' } };
     await fire('tool_call', event, ctxWithModel('cloudflare-workers-ai', '@cf/zai-org/glm-5.2'));
-    expect(event.input.command).toMatch(/--model cloudflare-workers-ai\/@cf\/zai-org\/glm-5\.2 --harness pi$/);
+    // Bare model id appended last (overrides the agent's guess), not provider/id.
+    expect(event.input.command).toMatch(/--model @cf\/zai-org\/glm-5\.2 --harness pi$/);
+    expect(event.input.command).not.toContain('cloudflare-workers-ai/@cf');
   });
 
   it('leaves an ordinary bash command unchanged', async () => {

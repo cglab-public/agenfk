@@ -34,6 +34,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -62,11 +63,53 @@ export interface PiExtensionDeps {
   gatekeeperVerdict: (filePath: string | undefined) => BlockVerdict | null;
   enforcerVerdict: (command: string | undefined) => BlockVerdict | null;
   prReminder: (command: string | undefined) => ReminderResult | null;
+  // The model pi is configured to run, read from ~/.pi/agent/settings.json. This
+  // is the ONLY reliable source in live pi: ctx.getModel() is often undefined and
+  // model_select does not fire for the config-default model, so without this the
+  // model never reaches the PR reminder / command rewrite.
+  readDefaultModel: () => string | null;
 }
 
 const HOOK_DIR = path.join(os.homedir(), '.agenfk', 'bin');
 
 // ── Pure helpers (exported for tests) ────────────────────────────────────────
+
+/**
+ * Read pi's configured model (`defaultModel`) from ~/.pi/agent/settings.json.
+ * Returns the bare model id (e.g. "@cf/zai-org/glm-5.2") or null. Never throws —
+ * a missing/unreadable/garbage file yields null. The reader is injectable for tests.
+ */
+export function readPiDefaultModel(
+  read: () => string = () => fs.readFileSync(path.join(os.homedir(), '.pi', 'agent', 'settings.json'), 'utf8'),
+): string | null {
+  try {
+    const j = JSON.parse(read());
+    const m = j && j.defaultModel;
+    return m ? String(m) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the BARE model id (not provider/id) from the most reliable source:
+ *   1. ctx.getModel().id   — the live model, when pi exposes it
+ *   2. lastSelected        — cached from a model_select event
+ *   3. readDefault()       — ~/.pi/agent/settings.json defaultModel (the live-pi
+ *                            fallback, since 1 & 2 are usually unavailable there)
+ * Bare id keeps reporting consistent with settings.json and the claude-code
+ * convention (e.g. "claude-opus-4-8"), avoiding a redundant provider prefix.
+ */
+export function resolveModelId(
+  ctx: PiContext | undefined,
+  lastSelected: string | null,
+  readDefault: () => string | null = readPiDefaultModel,
+): string | null {
+  const live = ctx && ctx.getModel ? ctx.getModel() : undefined;
+  if (live && live.id) return String(live.id);
+  if (lastSelected) return lastSelected;
+  return readDefault();
+}
 
 /** Format a pi Model ({ provider, id }) into a `provider/id` string. */
 export function formatModel(model: any): string | null {
@@ -180,26 +223,29 @@ export function defaultDeps(): PiExtensionDeps {
       command
         ? runHookScript('agenfk-pr-hook.mjs', ['--client', 'pi'], { args: { command } })
         : null,
+    readDefaultModel: () => readPiDefaultModel(),
   };
 }
 
 // ── Extension entry point ────────────────────────────────────────────────────
 
 export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps()): void {
-  // Fallback model source: ctx.getModel() is authoritative, but cache the most
-  // recent model_select in case getModel() is unavailable at reminder time.
+  // Cache the most recent model_select id (bare). resolveModelId prefers the live
+  // ctx.getModel(), then this cache, then ~/.pi/agent/settings.json (deps.readDefaultModel).
   let lastSelectedModel: string | null = null;
+  const modelFor = (ctx: PiContext | undefined) =>
+    resolveModelId(ctx, lastSelectedModel, deps.readDefaultModel);
 
   pi.on('model_select', (event) => {
-    try { const m = formatModel(event?.model); if (m) lastSelectedModel = m; } catch { /* ignore */ }
+    try { const id = event?.model?.id; if (id) lastSelectedModel = String(id); } catch { /* ignore */ }
   });
 
   // #4 — load confirmation. On session_start, prove the extension loaded and that
   // pi's event bus dispatches to it (the open question on every pi upgrade). The
-  // detected model rides along so this doubles as a ctx.getModel() smoke test.
+  // detected model rides along so this doubles as a model-resolution smoke test.
   pi.on('session_start', (_event, ctx) => {
     try {
-      const model = formatModel(ctx?.getModel?.()) || lastSelectedModel;
+      const model = modelFor(ctx);
       const suffix = model ? ` — model: ${model}` : '';
       ctx?.ui?.notify?.(`[agenfk] extension active (pi)${suffix}`, 'info');
     } catch { /* never break the host */ }
@@ -220,7 +266,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
         // Force the real model onto agenfk PR-registration commands BEFORE they run
         // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
         // event.input in place (pi's supported way to modify tool arguments).
-        const model = formatModel(ctx?.getModel?.()) || lastSelectedModel;
+        const model = modelFor(ctx);
         if (event?.input && typeof command === 'string') {
           const rewritten = injectDeterministicModel(command, model);
           if (rewritten !== command) {
@@ -242,7 +288,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
       const command = event?.input?.command ?? event?.input?.cmd;
       const r = deps.prReminder(command);
       if (r && r.message) {
-        const model = formatModel(ctx?.getModel?.()) || lastSelectedModel;
+        const model = modelFor(ctx);
         pi.sendMessage(
           { customType: 'agenfk-pr', content: composeReminder(r.message, model), display: true },
           { deliverAs: 'steer', triggerTurn: false },
