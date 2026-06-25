@@ -79,6 +79,26 @@ describe('injectDeterministicModel (force the real model onto agenfk pr commands
     expect(out).toBe('agenfk pr create abc --title "T" --body "see --model docs" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
   });
 
+  it('does not split a --body containing an escaped quote then a shell metachar', () => {
+    const cmd = 'agenfk pr create abc --body "a \\" ; rm -rf"';
+    const out = injectDeterministicModel(cmd, M);
+    // The escaped quote keeps us inside the body, so the `;` is NOT treated as a
+    // top-level operator — flags append cleanly after the closing quote.
+    expect(out).toBe('agenfk pr create abc --body "a \\" ; rm -rf" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
+  });
+
+  it('does not treat a literal ;/| inside a quoted --body as an operator', () => {
+    const cmd = 'agenfk pr create abc --body "first; then | also"';
+    const out = injectDeterministicModel(cmd, M);
+    expect(out).toBe('agenfk pr create abc --body "first; then | also" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
+  });
+
+  it('refuses to inject a model containing whitespace or quotes (would corrupt the command)', () => {
+    const cmd = 'agenfk pr create abc --model x --harness pi';
+    expect(injectDeterministicModel(cmd, 'has space')).toBe(cmd);
+    expect(injectDeterministicModel(cmd, 'has"quote')).toBe(cmd);
+  });
+
   it('leaves non-PR / non-agenfk commands untouched', () => {
     expect(injectDeterministicModel('npm test', M)).toBe('npm test');
     expect(injectDeterministicModel('agenfk list --json', M)).toBe('agenfk list --json');

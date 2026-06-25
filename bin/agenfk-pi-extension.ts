@@ -105,19 +105,27 @@ export function composeReminder(baseMessage: string, model: string | null): stri
  */
 export function injectDeterministicModel(command: string, model: string | null): string {
   if (!command || !model) return command;
+  // A model id is a single shell token (provider/id); refuse to inject anything
+  // with whitespace or a quote, which would corrupt the rewritten command.
+  if (/[\s"']/.test(model)) return command;
   // Must be the leading command (not piped-into / embedded / echoed).
   if (!/^\s*agenfk\s+pr(\s+create|-register|-resize)\b/.test(command)) return command;
 
-  // Find the first top-level shell operator, honoring single/double quotes, so we
-  // insert the flags as args of the agenfk command rather than after a pipe.
+  // Find the first top-level shell operator, honoring single/double quotes and
+  // backslash escapes, so we insert the flags as args of the agenfk command
+  // rather than after a pipe and never split an escaped quote inside --body.
   let quote: string | null = null;
   let cut = command.length;
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i];
     if (quote) {
+      // In double quotes (and unquoted) a backslash escapes the next char; in
+      // single quotes a backslash is literal (no escaping), per POSIX shell.
+      if (ch === '\\' && quote === '"') { i += 1; continue; }
       if (ch === quote) quote = null;
       continue;
     }
+    if (ch === '\\') { i += 1; continue; } // escaped char outside quotes
     if (ch === '"' || ch === "'") { quote = ch; continue; }
     if (ch === '|' || ch === ';' || ch === '&' || ch === '>' || ch === '<') {
       cut = i;
