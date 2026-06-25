@@ -90,6 +90,52 @@ export function composeReminder(baseMessage: string, model: string | null): stri
   );
 }
 
+/**
+ * Force the deterministically-detected model onto an `agenfk pr create` /
+ * `pr-register` / `pr-resize` command BEFORE it runs, so the agent cannot
+ * misreport its model (weak harnesses guess wrong — e.g. pi/GLM reported
+ * "claude-sonnet-4-5" while actually running glm-5.2). We append
+ * `--model <model> --harness pi` as the LAST args of the agenfk command, so
+ * commander's last-one-wins overrides any value the agent supplied. The flags
+ * are inserted before the first top-level (unquoted) shell operator so a trailing
+ * `| head` / `2>&1` still works, and `--body` text is never rewritten.
+ *
+ * No-ops (returns the command unchanged) when the model is unknown, or when the
+ * command is not a leading `agenfk pr (create|-register|-resize)` invocation.
+ */
+export function injectDeterministicModel(command: string, model: string | null): string {
+  if (!command || !model) return command;
+  // Must be the leading command (not piped-into / embedded / echoed).
+  if (!/^\s*agenfk\s+pr(\s+create|-register|-resize)\b/.test(command)) return command;
+
+  // Find the first top-level shell operator, honoring single/double quotes, so we
+  // insert the flags as args of the agenfk command rather than after a pipe.
+  let quote: string | null = null;
+  let cut = command.length;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (ch === '|' || ch === ';' || ch === '&' || ch === '>' || ch === '<') {
+      cut = i;
+      // A redirect can carry a leading file descriptor (e.g. `2>&1`): back up over
+      // those digits so we cut before the fd, not in the middle of the operator.
+      if (ch === '>' || ch === '<') {
+        while (cut > 0 && /\d/.test(command[cut - 1])) cut -= 1;
+      }
+      break;
+    }
+  }
+
+  const head = command.slice(0, cut).replace(/\s+$/, '');
+  const tail = command.slice(cut); // shell operator + rest (or '')
+  const injected = `${head} --model ${model} --harness pi`;
+  return tail ? `${injected} ${tail.replace(/^\s+/, '')}` : injected;
+}
+
 // ── Delegation to the shared decision scripts ────────────────────────────────
 
 function runHookScript(script: string, argv: string[], stdin: unknown): any | null {
@@ -154,7 +200,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
   // #3 — block edits/writes with no active task, and forbidden bash bypass routes.
   // Synchronous: the verdict comes from a blocking spawnSync, and returning it
   // synchronously avoids any chance of the tool slipping past on a later tick.
-  pi.on('tool_call', (event) => {
+  pi.on('tool_call', (event, ctx) => {
     try {
       const name = event?.toolName;
       if (name === 'edit' || name === 'write') {
@@ -163,6 +209,17 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
         if (v && v.decision === 'block') return { block: true, reason: v.reason };
       } else if (name === 'bash') {
         const command = event?.input?.command ?? event?.input?.cmd;
+        // Force the real model onto agenfk PR-registration commands BEFORE they run
+        // so the pr.opened/pr.updated event can't carry a guessed model. Mutate
+        // event.input in place (pi's supported way to modify tool arguments).
+        const model = formatModel(ctx?.getModel?.()) || lastSelectedModel;
+        if (event?.input && typeof command === 'string') {
+          const rewritten = injectDeterministicModel(command, model);
+          if (rewritten !== command) {
+            if ('command' in event.input) event.input.command = rewritten;
+            else if ('cmd' in event.input) event.input.cmd = rewritten;
+          }
+        }
         const v = deps.enforcerVerdict(command);
         if (v && v.decision === 'block') return { block: true, reason: v.reason };
       }

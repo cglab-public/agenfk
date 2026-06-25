@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import activate, {
   formatModel,
   composeReminder,
+  injectDeterministicModel,
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -40,6 +41,54 @@ describe('composeReminder', () => {
     const out = composeReminder(base, null);
     expect(out).toContain(base);
     expect(out).not.toMatch(/--model\s+null/);
+  });
+});
+
+describe('injectDeterministicModel (force the real model onto agenfk pr commands)', () => {
+  const M = 'cloudflare-workers-ai/@cf/zai-org/glm-5.2';
+
+  it('overrides an agent-guessed --model on `agenfk pr create` (last-wins)', () => {
+    const out = injectDeterministicModel(
+      'agenfk pr create abc123 --model claude-sonnet-4-5 --harness pi --title "T" --body "B"', M,
+    );
+    // The real model is appended LAST so commander last-wins picks it.
+    expect(out).toMatch(/--model claude-sonnet-4-5 --harness pi --title "T" --body "B" --model cloudflare-workers-ai\/@cf\/zai-org\/glm-5\.2 --harness pi$/);
+  });
+
+  it('adds --model/--harness when the agent omitted them', () => {
+    const out = injectDeterministicModel('agenfk pr create abc123 --title "T"', M);
+    expect(out).toBe('agenfk pr create abc123 --title "T" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
+  });
+
+  it('handles pr-register and pr-resize', () => {
+    expect(injectDeterministicModel('agenfk pr-register --item x --number 5 --repo o/r --epic 0 --story 0 --task 1 --bug 0', M))
+      .toMatch(/--bug 0 --model \S+ --harness pi$/);
+    expect(injectDeterministicModel('agenfk pr-resize --number 5 --repo o/r --epic 0 --story 0 --task 2 --bug 0', M))
+      .toMatch(/--bug 0 --model \S+ --harness pi$/);
+  });
+
+  it('inserts before a trailing shell pipe/redirect, not after it', () => {
+    const out = injectDeterministicModel('agenfk pr create abc --model x --harness pi 2>&1 | head -40', M);
+    expect(out).toBe('agenfk pr create abc --model x --harness pi --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi 2>&1 | head -40');
+  });
+
+  it('does not corrupt a --body that literally contains "--model"', () => {
+    const cmd = 'agenfk pr create abc --title "T" --body "see --model docs"';
+    const out = injectDeterministicModel(cmd, M);
+    // The body text is untouched; the injected flags are appended after it.
+    expect(out).toBe('agenfk pr create abc --title "T" --body "see --model docs" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
+  });
+
+  it('leaves non-PR / non-agenfk commands untouched', () => {
+    expect(injectDeterministicModel('npm test', M)).toBe('npm test');
+    expect(injectDeterministicModel('agenfk list --json', M)).toBe('agenfk list --json');
+    expect(injectDeterministicModel('echo agenfk pr create', M)).toBe('echo agenfk pr create');
+  });
+
+  it('no-ops when the model is unknown (null/empty)', () => {
+    const cmd = 'agenfk pr create abc --model x --harness pi';
+    expect(injectDeterministicModel(cmd, null)).toBe(cmd);
+    expect(injectDeterministicModel(cmd, '')).toBe(cmd);
   });
 });
 
@@ -201,6 +250,24 @@ describe('activate(): gatekeeper enforcement via tool_call', () => {
     activate(pi as any, deps);
     const res = await fire('tool_call', { toolName: 'edit', input: { path: '/repo/a.ts' } });
     expect(res).toBeFalsy();
+  });
+});
+
+describe('activate(): deterministic model injection on agenfk pr commands', () => {
+  it('rewrites event.input.command to force the real ctx.getModel() on `agenfk pr create`', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    const event: any = { toolName: 'bash', input: { command: 'agenfk pr create abc --model claude-sonnet-4-5 --harness pi --title "T"' } };
+    await fire('tool_call', event, ctxWithModel('cloudflare-workers-ai', '@cf/zai-org/glm-5.2'));
+    expect(event.input.command).toMatch(/--model cloudflare-workers-ai\/@cf\/zai-org\/glm-5\.2 --harness pi$/);
+  });
+
+  it('leaves an ordinary bash command unchanged', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps());
+    const event: any = { toolName: 'bash', input: { command: 'npm test' } };
+    await fire('tool_call', event, ctxWithModel('a', 'b'));
+    expect(event.input.command).toBe('npm test');
   });
 });
 
