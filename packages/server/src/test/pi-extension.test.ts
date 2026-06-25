@@ -3,7 +3,6 @@ import { describe, it, expect, vi } from 'vitest';
 // are exercised directly with a fake pi/ctx so no pi runtime is required.
 // @ts-ignore — .ts extension is loaded by pi via jiti; here we import it directly.
 import activate, {
-  formatModel,
   composeReminder,
   injectDeterministicModel,
   resolveModelId,
@@ -11,23 +10,6 @@ import activate, {
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
-
-describe('formatModel (pi Model → provider/id)', () => {
-  it('formats provider/id', () => {
-    expect(formatModel({ provider: 'anthropic', id: 'claude-opus-4-8' }))
-      .toBe('anthropic/claude-opus-4-8');
-  });
-
-  it('falls back to a bare id when provider is absent', () => {
-    expect(formatModel({ id: 'glm-5.2' })).toBe('glm-5.2');
-  });
-
-  it('returns null when model is missing/empty', () => {
-    expect(formatModel(null)).toBeNull();
-    expect(formatModel(undefined)).toBeNull();
-    expect(formatModel({})).toBeNull();
-  });
-});
 
 describe('composeReminder', () => {
   const base = 'You just opened a PR. Reply by calling register_pr(...). harness = "pi".';
@@ -95,10 +77,20 @@ describe('injectDeterministicModel (force the real model onto agenfk pr commands
     expect(out).toBe('agenfk pr create abc --body "first; then | also" --model cloudflare-workers-ai/@cf/zai-org/glm-5.2 --harness pi');
   });
 
-  it('refuses to inject a model containing whitespace or quotes (would corrupt the command)', () => {
+  it('refuses to inject a model that is not a clean id token (shell-injection guard)', () => {
     const cmd = 'agenfk pr create abc --model x --harness pi';
-    expect(injectDeterministicModel(cmd, 'has space')).toBe(cmd);
-    expect(injectDeterministicModel(cmd, 'has"quote')).toBe(cmd);
+    // settings.json defaultModel is free-form; anything outside the id allowlist
+    // (incl. shell metacharacters) must be rejected so it can't reach the shell.
+    for (const bad of ['has space', 'has"quote', "has'quote", 'glm;rm -rf', 'glm$(whoami)',
+      'glm`whoami`', 'glm&&echo', 'glm|cat', 'glm>/etc/x', 'a()b']) {
+      expect(injectDeterministicModel(cmd, bad)).toBe(cmd);
+    }
+  });
+
+  it('accepts legitimate model ids', () => {
+    const cmd = 'agenfk pr create abc --title "T"';
+    expect(injectDeterministicModel(cmd, '@cf/zai-org/glm-5.2')).toContain('--model @cf/zai-org/glm-5.2 --harness pi');
+    expect(injectDeterministicModel(cmd, 'claude-opus-4-8')).toContain('--model claude-opus-4-8 --harness pi');
   });
 
   it('leaves non-PR / non-agenfk commands untouched', () => {

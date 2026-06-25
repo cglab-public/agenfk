@@ -111,14 +111,6 @@ export function resolveModelId(
   return readDefault();
 }
 
-/** Format a pi Model ({ provider, id }) into a `provider/id` string. */
-export function formatModel(model: any): string | null {
-  if (!model || typeof model !== 'object') return null;
-  if (model.provider && model.id) return `${model.provider}/${model.id}`;
-  if (model.id) return String(model.id);
-  return null;
-}
-
 /**
  * Append the deterministically-detected model to a PR reminder so the agent
  * reports the real model id + harness=pi instead of guessing. No-ops cleanly
@@ -148,9 +140,12 @@ export function composeReminder(baseMessage: string, model: string | null): stri
  */
 export function injectDeterministicModel(command: string, model: string | null): string {
   if (!command || !model) return command;
-  // A model id is a single shell token (provider/id); refuse to inject anything
-  // with whitespace or a quote, which would corrupt the rewritten command.
-  if (/[\s"']/.test(model)) return command;
+  // The model is spliced UNQUOTED into a command pi runs through a real shell, and
+  // it now comes from a free-form file (~/.pi/agent/settings.json). Allowlist the
+  // characters a legitimate model id uses (e.g. "@cf/zai-org/glm-5.2",
+  // "claude-opus-4-8") and refuse anything else, so shell metacharacters
+  // (; | & $ ` > < (), whitespace, quotes) can never reach the rewritten command.
+  if (!/^[\w.@:/-]+$/.test(model)) return command;
   // Must be the leading command (not piped-into / embedded / echoed).
   if (!/^\s*agenfk\s+pr(\s+create|-register|-resize)\b/.test(command)) return command;
 
@@ -207,6 +202,15 @@ function runHookScript(script: string, argv: string[], stdin: unknown): any | nu
 }
 
 export function defaultDeps(): PiExtensionDeps {
+  // settings.json is read at most once per process: in live pi this is consulted
+  // on most bash ops (getModel()/model_select are usually unavailable), and the
+  // file rarely changes mid-session — an interactive model switch fires
+  // model_select, whose cached id takes precedence over this fallback anyway.
+  let cachedDefault: string | null | undefined;
+  const readDefaultModel = () => {
+    if (cachedDefault === undefined) cachedDefault = readPiDefaultModel();
+    return cachedDefault;
+  };
   return {
     gatekeeperVerdict: (filePath) =>
       filePath
@@ -223,7 +227,7 @@ export function defaultDeps(): PiExtensionDeps {
       command
         ? runHookScript('agenfk-pr-hook.mjs', ['--client', 'pi'], { args: { command } })
         : null,
-    readDefaultModel: () => readPiDefaultModel(),
+    readDefaultModel,
   };
 }
 
