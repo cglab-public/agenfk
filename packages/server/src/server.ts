@@ -822,16 +822,30 @@ async function computeShadowSizing(rootItemId: string): Promise<{ epic: number; 
 
 app.post("/prs", asyncHandler(async (req: any, res: any) => {
   const { itemId, prNumber, repo, sizing, model, harness } = req.body || {};
-  if (!itemId || typeof prNumber !== 'number' || !repo || !sizing
-    || typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
-    || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number') {
-    return res.status(400).json({ error: 'itemId, prNumber, repo, sizing{epic,story,task,bug} required' });
+  if (!itemId || typeof prNumber !== 'number' || !repo) {
+    return res.status(400).json({ error: 'itemId, prNumber, repo required' });
+  }
+  // sizing is OPTIONAL: when omitted, derive it from the item tree (shadow). This
+  // is the auto-registration path used by `agenfk pr create`, where one CLI call
+  // both opens and registers the PR. When provided, it must be well-formed.
+  const sizingProvided = sizing != null;
+  if (sizingProvided
+    && (typeof sizing.epic !== 'number' || typeof sizing.story !== 'number'
+      || typeof sizing.task !== 'number' || typeof sizing.bug !== 'number')) {
+    return res.status(400).json({ error: 'sizing{epic,story,task,bug} must be numeric when provided' });
   }
   if (typeof model !== 'string' || !model.trim() || typeof harness !== 'string' || !harness.trim()) {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
+  // POST /prs is idempotent on (repo, prNumber). Detect a re-registration BEFORE
+  // the upsert so we emit the right hub event: pr.opened only the first time, and
+  // pr.updated on subsequent calls — otherwise auto-register (agenfk pr create)
+  // followed by a manual pr-register would double-count the open.
+  const alreadyRegistered = await storage.getPrByRepoNumber(repo, prNumber);
+
   const shadow = await computeShadowSizing(itemId);
+  const effectiveSizing = sizingProvided ? sizing : shadow;
   const now = new Date().toISOString();
   const pr = await storage.insertPr({
     id: crypto.randomUUID(),
@@ -839,30 +853,30 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     repo,
     itemId,
     openedAt: now,
-    sizing,
+    sizing: effectiveSizing,
     sizingDeclaredAt: now,
     sizingShadow: shadow,
     lastSizingCheckAt: now,
   });
 
   const matches =
-    sizing.epic === shadow.epic && sizing.story === shadow.story
-    && sizing.task === shadow.task && sizing.bug === shadow.bug;
+    effectiveSizing.epic === shadow.epic && effectiveSizing.story === shadow.story
+    && effectiveSizing.task === shadow.task && effectiveSizing.bug === shadow.bug;
   if (!matches) {
     console.log(
       `[PR_SIZING] discrepancy on ${repo}#${prNumber} (item ${itemId}): ` +
-      `agent=${JSON.stringify(sizing)} shadow=${JSON.stringify(shadow)}`,
+      `agent=${JSON.stringify(effectiveSizing)} shadow=${JSON.stringify(shadow)}`,
     );
   }
 
   const item = await storage.getItem(itemId);
   recordHubEvent({
-    type: 'pr.opened',
+    type: alreadyRegistered ? 'pr.updated' : 'pr.opened',
     projectId: item?.projectId,
     // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
     // the server process cannot infer them). Optional — omitted when not supplied.
     payload: {
-      prNumber, repo, sizing, sizingShadow: shadow,
+      prNumber, repo, sizing: effectiveSizing, sizingShadow: shadow,
       ...(typeof model === 'string' && model ? { model } : {}),
       ...(typeof harness === 'string' && harness ? { harness } : {}),
     },

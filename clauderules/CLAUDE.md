@@ -122,7 +122,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Create a branch for an item | `agenfk branch create <itemId> [--name <name>]` | — |
 | Push an item's branch | `agenfk branch push <itemId>` | — |
 | Show an item's branch status | `agenfk branch status <itemId>` | — |
-| Create a PR for an item | `agenfk pr create <itemId> [--title <t>][--body <b>][--draft]` | — |
+| Create + auto-register a PR for an item | `agenfk pr create <itemId> [--title <t>][--body <b>][--draft] --model <id> --harness <name>` (`--model`/`--harness` **REQUIRED**; auto-emits `pr.opened` with item-tree-derived sizing — no separate `pr-register` needed) | — |
 | Check a PR's status | `agenfk pr status <itemId>` | — |
 | Check whether a PR is merged | `agenfk pr check <itemId>` | — |
 | Register a PR (sizing) | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` (`--model` and `--harness` are **REQUIRED**) | `register_pr` |

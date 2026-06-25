@@ -184,6 +184,15 @@ describe('agent-declared model + harness on PR events', () => {
     expect(cli).not.toMatch(/\.option\(\s*['"]--harness <name>/);
   });
 
+  // `agenfk pr create` must ALSO require --model/--harness (it auto-registers the
+  // PR, so the pr.opened event carries the runtime). Three commands now require
+  // them: pr-register, pr-resize, pr create.
+  it('CLI "pr create" REQUIRES --model and --harness', () => {
+    const cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
+    expect((cli.match(/\.requiredOption\(\s*['"]--model <id>/g) || []).length).toBeGreaterThanOrEqual(3);
+    expect((cli.match(/\.requiredOption\(\s*['"]--harness <name>/g) || []).length).toBeGreaterThanOrEqual(3);
+  });
+
   // Static: MCP tool schemas — model/harness must be REQUIRED (non-optional).
   it('register_pr and update_pr_sizing MCP schemas REQUIRE model + harness', () => {
     const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
@@ -261,6 +270,72 @@ describe('agent-declared model + harness on PR events', () => {
       sizing: { epic: 0, story: 0, task: 1, bug: 0 }, model: 'glm-5.2', harness: 'pi',
     });
     const res = await request(app).put('/prs/org%2Fmh4/604').send({ sizing: { epic: 0, story: 0, task: 2, bug: 0 } });
+    expect(res.status).toBe(400);
+  });
+
+  // Auto-registration path (used by `agenfk pr create`): sizing is OMITTED and the
+  // server derives it from the item tree (shadow), so a single CLI call both opens
+  // and registers the PR. model/harness stay required.
+  it('POST /prs derives sizing from the item tree when sizing is omitted', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PAUTO' })).body;
+    const epic = (await request(app).post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
+    const story = (await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S', parentId: epic.id })).body;
+    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T1', parentId: story.id });
+    await request(app).post('/items').send({ projectId: project.id, type: 'BUG', title: 'B', parentId: story.id, severity: 'LOW' });
+
+    const res = await request(app).post('/prs').send({
+      itemId: epic.id, prNumber: 700, repo: 'org/auto',
+      model: 'glm-5.2', harness: 'pi', // no sizing
+    });
+    expect(res.status).toBe(201);
+    // Declared sizing equals the shadow (derived from the tree).
+    expect(res.body.sizing).toEqual({ epic: 1, story: 1, task: 1, bug: 1 });
+    expect(res.body.sizingShadow).toEqual({ epic: 1, story: 1, task: 1, bug: 1 });
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 700);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.sizing).toEqual({ epic: 1, story: 1, task: 1, bug: 1 });
+    expect(ev.payload?.model).toBe('glm-5.2');
+    expect(ev.payload?.harness).toBe('pi');
+  });
+
+  it('POST /prs emits pr.opened only on first registration; re-register emits pr.updated (no double-open)', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PDEDUP' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+
+    // First POST → pr.opened
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 710, repo: 'org/dedup', model: 'glm-5.2', harness: 'pi',
+    });
+    const opened = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 710);
+    expect(opened).toBeDefined();
+
+    // Second POST for the same (repo, prNumber) → pr.updated, NOT a second pr.opened
+    await request(app).post('/prs').send({
+      itemId: item.id, prNumber: 710, repo: 'org/dedup',
+      sizing: { epic: 0, story: 0, task: 2, bug: 0 }, model: 'glm-5.2', harness: 'pi',
+    });
+    const updated = await waitForOutboxPayload((p: any) => p.type === 'pr.updated' && p.payload?.prNumber === 710);
+    expect(updated).toBeDefined();
+
+    // Exactly one pr.opened for this PR.
+    const db: import('better-sqlite3').Database = (await import('../server')).storage['database'];
+    const rows = db.prepare('SELECT payload FROM hub_outbox').all() as { payload: string }[];
+    const opens = rows.map(r => JSON.parse(r.payload)).filter(p => p.type === 'pr.opened' && p.payload?.prNumber === 710);
+    expect(opens).toHaveLength(1);
+  });
+
+  it('POST /prs still rejects (400) when model/harness omitted even on the derive path', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PAUTO2' })).body;
+    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    // sizing omitted AND model/harness omitted → still 400
+    const res = await request(app).post('/prs').send({ itemId: item.id, prNumber: 701, repo: 'org/auto2' });
     expect(res.status).toBe(400);
   });
 });
