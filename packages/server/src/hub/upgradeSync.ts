@@ -15,7 +15,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import {
   readUpgradeState, writeUpgradeState, clearUpgradeState,
   UpgradeState,
@@ -79,6 +79,24 @@ async function defaultSelfExtract(input: { installRoot: string; targetVersion: s
   } finally {
     try { if (fs.existsSync(tmpFile)) fs.rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Restart the server so a recovered (self-extracted) version actually goes
+ * live. self-extract only overlays files on disk — the running process keeps
+ * executing the old code until cycled. Detached + unref'd so it survives this
+ * process being killed by the restart's own `down`. BUG f3caf48c.
+ */
+function defaultRestartServer(installRoot: string): void {
+  try {
+    const child = spawn('node', [path.join(installRoot, 'packages/cli/bin/agenfk.js'), 'restart', '--quiet'], {
+      cwd: installRoot,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => { /* best effort — operator can restart manually */ });
+    child.unref();
+  } catch { /* best effort */ }
 }
 
 export interface FetchedDirective {
@@ -155,6 +173,10 @@ export interface ReconcileArgs {
   installRoot?: string;
   // Default downloads the GitHub release tarball and tar -xzf into installRoot.
   selfExtractImpl?: SelfExtractImpl;
+  // Restart the server after a successful self-extract recovery (which only
+  // overlays files). Default spawns a detached `agenfk restart --quiet`; tests
+  // inject a fake. BUG f3caf48c.
+  restartServerImpl?: (installRoot: string) => void;
 }
 
 export interface ReplayArgs {
@@ -308,6 +330,12 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
             },
           });
           clearUpgradeState(args.dbDir);
+          // BUG f3caf48c: self-extract only overlaid files on disk; the running
+          // server is still executing the old code. Restart it so the recovered
+          // version goes live. Flush the succeeded event FIRST so the hub records
+          // the outcome before the restart cycles (and possibly kills) us.
+          await args.flushNow(5_000).catch(() => { /* deliver best-effort */ });
+          (args.restartServerImpl ?? defaultRestartServer)(installRoot);
           return;
         }
         const reason = sx.ok
