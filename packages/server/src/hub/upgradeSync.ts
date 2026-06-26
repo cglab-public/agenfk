@@ -211,10 +211,13 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
     });
 
     // 2. Persist intent BEFORE we hand control to a process that might kill us.
+    //    startedAt lets install.mjs distinguish a fresh in-flight upgrade from
+    //    a stale marker left behind by an interrupted one (BUG 2f491181).
     writeUpgradeState(args.dbDir, {
       lastDirectiveId: body.directiveId,
       outcome: 'started',
       resultVersion: body.targetVersion, // intent — replay compares against this.
+      startedAt: occurredAt,
     });
 
     // 3. Drain the outbox so the hub sees `started` before we suicide.
