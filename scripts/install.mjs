@@ -148,6 +148,103 @@ async function run() {
         }
     }
 
+    // BUG 2f491181: the reachability probe above is NOT sufficient on its own.
+    // An upgrade must restart the running server in EVERY scenario, so we union
+    // four independent signals — if any says a server was running, we restart:
+    //
+    //   1. The reachability probe above (cheap, but a 1s localhost curl can
+    //      false-negative under install load).
+    //   2. A direct process-liveness scan of the process table for the server
+    //      bin. Timing-robust where the probe is flaky, and the decisive signal
+    //      for direct / `npx` installs that never run `down`, so the server is
+    //      still alive when install.mjs runs.
+    //   3. AGENFK_SERVER_WAS_RUNNING — set by the `agenfk upgrade` CLI from the
+    //      pre-`down` `servicesRunning` capture. Covers the manual path, where
+    //      `down` has already killed the server before install.mjs runs (so 1+2
+    //      both read false).
+    //   4. An in-flight hub upgrade marker: `upgrade-state.json` with
+    //      outcome === 'started', which the hub reconciler writes before it
+    //      spawns the CLI. Self-heals the hub-driven path on the very upgrade
+    //      that ships this code, since install.mjs is the only part of the
+    //      upgrade that runs as the NEW (just-extracted) version.
+    let upgradeInFlight = false;
+    {
+        const truthy = (v) => !!v && v !== '0' && v.toLowerCase() !== 'false';
+        if (truthy(process.env.AGENFK_SERVER_WAS_RUNNING || '')) {
+            wasReachableBeforeInstall = true;
+        }
+        // Signal 2: is an agenfk server process actually alive right now?
+        // Cross-platform, mirrors the CLI's killPattern detection. This does
+        // not depend on HTTP timing or hub connectivity — if the process is
+        // there, we restart it onto the new code.
+        const SERVER_PATTERN = 'packages/server/dist/server.js';
+        // Only count a line as the live server if it is an actual node/bun
+        // invocation of the server bin — not just any process whose argv happens
+        // to embed the path (an editor with the file open, a `grep`/`tail`, this
+        // install's own tooling). Mirrors killPattern's grep/ps exclusion but
+        // tighter: it must look like `… node|bun … packages/server/dist/server.js`.
+        const looksLikeServerCmd = (line) =>
+            line.includes(SERVER_PATTERN) && /(^|[\/\\\s])(node|node\.exe|bun)([\s.]|$)/i.test(line);
+        function serverProcessAlive() {
+            try {
+                if (process.platform === 'win32' && !(process.env.MSYSTEM || process.env.WSL_DISTRO_NAME)) {
+                    const pat = SERVER_PATTERN.replace(/\//g, '\\\\');
+                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8' });
+                    return (out.stdout || '').split('\n').some(looksLikeServerCmd);
+                }
+                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8' });
+                if (out.status === 0 && typeof out.stdout === 'string') {
+                    return out.stdout.split('\n').some(looksLikeServerCmd);
+                }
+                // Fallback: pgrep against a node-anchored regex if ps is unavailable.
+                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${SERVER_PATTERN.replace(/\./g, '\\.')}`], { encoding: 'utf8' });
+                return pg.status === 0 && (pg.stdout || '').trim().length > 0;
+            } catch {
+                return false;
+            }
+        }
+        if (!wasReachableBeforeInstall && serverProcessAlive()) {
+            wasReachableBeforeInstall = true;
+        }
+        // Resolve the .agenfk dir the server uses, mirroring the server's own
+        // dbPath resolution (server.ts / start-services.mjs): AGENFK_DB_PATH,
+        // then ~/.agenfk/config.json's dbPath, then <rootDir>/.agenfk.
+        let dbDir = path.join(rootDir, '.agenfk');
+        if (process.env.AGENFK_DB_PATH) {
+            dbDir = path.dirname(process.env.AGENFK_DB_PATH);
+        } else {
+            try {
+                const cfg = JSON.parse(readFileSync(path.join(agenfkHome, 'config.json'), 'utf8'));
+                if (cfg && typeof cfg.dbPath === 'string' && cfg.dbPath) dbDir = path.dirname(cfg.dbPath);
+            } catch { /* no/invalid config → keep default */ }
+        }
+        const upgradeStatePath = path.join(dbDir, 'upgrade-state.json');
+        try {
+            if (existsSync(upgradeStatePath)) {
+                const st = JSON.parse(readFileSync(upgradeStatePath, 'utf8'));
+                // Only treat the marker as "a server is mid-upgrade right now"
+                // when it is genuinely fresh. An interrupted upgrade (install
+                // threw, machine rebooted, Ctrl-C) leaves a 'started' marker
+                // that is only cleared on the next server boot's replay; without
+                // this age guard a later unrelated install would read that stale
+                // landmine and spuriously start a server the user never ran.
+                // BUG 2f491181. Markers from older servers have no startedAt —
+                // those are only ever written moments before install.mjs runs,
+                // so treat a missing timestamp as fresh for back-compat.
+                const STALE_MS = 10 * 60 * 1000;
+                let fresh = true;
+                if (st && typeof st.startedAt === 'string') {
+                    const age = Date.now() - Date.parse(st.startedAt);
+                    fresh = Number.isFinite(age) && age >= 0 && age < STALE_MS;
+                }
+                if (st && st.outcome === 'started' && fresh) {
+                    upgradeInFlight = true;
+                    wasReachableBeforeInstall = true;
+                }
+            }
+        } catch { /* unreadable/malformed marker → ignore */ }
+    }
+
     function shouldRun(platform) {
         if (onlyPlatform) return onlyPlatform.toLowerCase() === platform.toLowerCase();
         if (skipPlatform) return skipPlatform.toLowerCase() !== platform.toLowerCase();
@@ -1449,7 +1546,12 @@ process.exit(0);
     // Strategy: kill processes matching the server bin path, then spawn a
     // detached `agenfk up` so the user's foreground stays free. `agenfk up`
     // also handles the UI process and port persistence.
-    if (wasReachableBeforeInstall && !onlyPlatform) {
+    // BUG 2f491181: restart when the probe saw a live server OR an explicit
+    // out-of-band signal says one was running before `down` ran (the env flag
+    // from the CLI, or the in-flight hub upgrade marker). `upgradeInFlight` is
+    // already folded into wasReachableBeforeInstall above, but we keep it in
+    // the guard so the intent is legible and the trigger is not a lone probe.
+    if ((wasReachableBeforeInstall || upgradeInFlight) && !onlyPlatform) {
         console.log(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
         // Delegate to `agenfk up`. It internally calls killPattern (which
         // already handles Windows via wmic and POSIX via ps/pgrep) and then
@@ -1463,6 +1565,16 @@ process.exit(0);
                 [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart', '--quiet'],
                 { cwd: rootDir, detached: true, stdio: 'ignore' },
             );
+            // BUG 2f491181: install.mjs is now the SOLE owner of the post-
+            // upgrade restart (the CLI no longer fires a fallback `up`). A
+            // detached, unref'd child with no 'error' listener would let an
+            // async spawn failure (ENOENT, EAGAIN) escalate to an unhandled
+            // error and crash install.mjs at the finish line. Handle it so we
+            // degrade to printed guidance instead.
+            child.on('error', (e) => {
+                console.log(`${YELLOW}Could not auto-restart server: ${e?.message ?? e}${NC}`);
+                console.log(`${YELLOW}Run \`agenfk restart\` manually to bring the new version online.${NC}`);
+            });
             child.unref();
             console.log(`${GREEN}Server restart triggered (running in background).${NC}`);
         } catch (e) {

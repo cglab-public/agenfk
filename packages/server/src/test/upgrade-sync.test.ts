@@ -338,6 +338,10 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     // the upgrade child process, so a self-restarting upgrade can be replayed.
     expect(stateAtFlush?.lastDirectiveId).toBe('d-4');
     expect(stateAtFlush?.outcome).toBe('started');
+    // BUG 2f491181: the started marker must carry a timestamp so a consumer
+    // (install.mjs) can tell a fresh in-flight upgrade from a stale landmine.
+    expect(typeof stateAtFlush?.startedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(stateAtFlush.startedAt))).toBe(false);
   });
 
   it('awaits an async spawnImpl (production uses spawn-as-Promise so the API event loop stays responsive — without await, the same-process success path would observe pre-spawn state)', async () => {
