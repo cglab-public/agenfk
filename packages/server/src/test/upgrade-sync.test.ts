@@ -252,6 +252,44 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(readUpgradeState(dbDir)).toBeNull();
   });
 
+  it('stale CLI: self-extract recovery restarts the server (files alone are not live) and flushes the succeeded event first', async () => {
+    // BUG f3caf48c: self-extract only overlays files on disk; the running
+    // server keeps executing the old code until restarted. The recovery must
+    // trigger a restart, and must flush the succeeded event BEFORE cycling the
+    // process so the hub isn't left without the outcome.
+    let onDiskNow = '0.2.28';
+    const f = makeFakes({
+      directive: { directiveId: 'd-stale-restart', targetVersion: '0.3.0-beta.27' },
+      spawnExitCode: 0,
+      spawnStdout: '0.2.28\n',
+    });
+    f.readInstalledVersionImpl.mockImplementation(() => onDiskNow);
+    const selfExtractImpl = vi.fn(async () => { onDiskNow = '0.3.0-beta.27'; return { ok: true as const }; });
+    const calls: string[] = [];
+    f.flushNow.mockImplementation(async () => { calls.push('flush'); });
+    const restartServerImpl = vi.fn(() => { calls.push('restart'); });
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '0.2.28',
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
+      restartServerImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    expect(restartServerImpl).toHaveBeenCalledTimes(1);
+    expect(restartServerImpl.mock.calls[0][0]).toBe('/fake/install/root');
+    // Restart must come AFTER a flush so the succeeded event is delivered first.
+    expect(calls.indexOf('restart')).toBeGreaterThan(calls.indexOf('flush'));
+    expect(calls.indexOf('flush')).toBeGreaterThan(-1);
+  });
+
   it('stale CLI: self-extract failure → emits failed with predates-pinned-version remediation hint', async () => {
     const f = makeFakes({
       directive: { directiveId: 'd-stale-2', targetVersion: '0.3.0-beta.27' },
