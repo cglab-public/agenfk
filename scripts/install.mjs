@@ -149,22 +149,61 @@ async function run() {
     }
 
     // BUG 2f491181: the reachability probe above is NOT sufficient on its own.
-    // `agenfk upgrade` runs `down` BEFORE invoking install.mjs, so by the time
-    // we probe, the server we must restart is already gone and the probe reads
-    // false. We therefore also honor two explicit, out-of-band signals that a
-    // server was running before the upgrade began:
+    // An upgrade must restart the running server in EVERY scenario, so we union
+    // four independent signals — if any says a server was running, we restart:
     //
-    //   1. AGENFK_SERVER_WAS_RUNNING — set by the `agenfk upgrade` CLI from the
-    //      pre-`down` `servicesRunning` capture. Fixes the manual upgrade path.
-    //   2. An in-flight hub upgrade marker: `upgrade-state.json` with
+    //   1. The reachability probe above (cheap, but a 1s localhost curl can
+    //      false-negative under install load).
+    //   2. A direct process-liveness scan of the process table for the server
+    //      bin. Timing-robust where the probe is flaky, and the decisive signal
+    //      for direct / `npx` installs that never run `down`, so the server is
+    //      still alive when install.mjs runs.
+    //   3. AGENFK_SERVER_WAS_RUNNING — set by the `agenfk upgrade` CLI from the
+    //      pre-`down` `servicesRunning` capture. Covers the manual path, where
+    //      `down` has already killed the server before install.mjs runs (so 1+2
+    //      both read false).
+    //   4. An in-flight hub upgrade marker: `upgrade-state.json` with
     //      outcome === 'started', which the hub reconciler writes before it
-    //      spawns the CLI. This self-heals the hub-driven path on the very
-    //      upgrade that ships this code, because install.mjs is the only part
-    //      of the upgrade that runs as the NEW (just-extracted) version.
+    //      spawns the CLI. Self-heals the hub-driven path on the very upgrade
+    //      that ships this code, since install.mjs is the only part of the
+    //      upgrade that runs as the NEW (just-extracted) version.
     let upgradeInFlight = false;
     {
         const truthy = (v) => !!v && v !== '0' && v.toLowerCase() !== 'false';
         if (truthy(process.env.AGENFK_SERVER_WAS_RUNNING || '')) {
+            wasReachableBeforeInstall = true;
+        }
+        // Signal 2: is an agenfk server process actually alive right now?
+        // Cross-platform, mirrors the CLI's killPattern detection. This does
+        // not depend on HTTP timing or hub connectivity — if the process is
+        // there, we restart it onto the new code.
+        const SERVER_PATTERN = 'packages/server/dist/server.js';
+        // Only count a line as the live server if it is an actual node/bun
+        // invocation of the server bin — not just any process whose argv happens
+        // to embed the path (an editor with the file open, a `grep`/`tail`, this
+        // install's own tooling). Mirrors killPattern's grep/ps exclusion but
+        // tighter: it must look like `… node|bun … packages/server/dist/server.js`.
+        const looksLikeServerCmd = (line) =>
+            line.includes(SERVER_PATTERN) && /(^|[\/\\\s])(node|node\.exe|bun)([\s.]|$)/i.test(line);
+        function serverProcessAlive() {
+            try {
+                if (process.platform === 'win32' && !(process.env.MSYSTEM || process.env.WSL_DISTRO_NAME)) {
+                    const pat = SERVER_PATTERN.replace(/\//g, '\\\\');
+                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8' });
+                    return (out.stdout || '').split('\n').some(looksLikeServerCmd);
+                }
+                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8' });
+                if (out.status === 0 && typeof out.stdout === 'string') {
+                    return out.stdout.split('\n').some(looksLikeServerCmd);
+                }
+                // Fallback: pgrep against a node-anchored regex if ps is unavailable.
+                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${SERVER_PATTERN.replace(/\./g, '\\.')}`], { encoding: 'utf8' });
+                return pg.status === 0 && (pg.stdout || '').trim().length > 0;
+            } catch {
+                return false;
+            }
+        }
+        if (!wasReachableBeforeInstall && serverProcessAlive()) {
             wasReachableBeforeInstall = true;
         }
         // Resolve the .agenfk dir the server uses, mirroring the server's own
