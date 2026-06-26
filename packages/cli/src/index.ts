@@ -375,7 +375,14 @@ function applyUpgradeTierAction(tier: string, latestVersion: string): void {
 }
 
 program
-  .version(CURRENT_VERSION, '-V, --version', 'output the CLI version number')
+  // BUG 7f85715b: do NOT register a global `--version` flag here. commander's
+  // global version option would intercept `agenfk upgrade --version <ver>`
+  // (the form the hub reconciler always uses) and print the CLI version + exit
+  // instead of pinning the upgrade target — so pinned/hub upgrades never
+  // installed. We bind only `-V` to commander and handle bare `--version`
+  // manually at the top level (see below), leaving the long `--version` free
+  // for the `upgrade` subcommand's `--version <ver>` option.
+  .version(CURRENT_VERSION, '-V', 'output the CLI version number')
   .description('AgEnFK Engineering CLI')
 ;
 
@@ -3717,6 +3724,16 @@ program.helpInformation = function () {
 };
 
 if (process.env.NODE_ENV !== 'test') {
+  // BUG 7f85715b: handle a bare `agenfk --version` / `agenfk -V` here, since we
+  // intentionally did not bind the long `--version` to commander's global flag
+  // (it would otherwise swallow `agenfk upgrade --version <ver>`). Only the
+  // exact top-level, single-arg form prints the version; anything else (e.g.
+  // `agenfk upgrade --version <ver>`) falls through to normal subcommand parse.
+  const rootArgs = process.argv.slice(2);
+  if (rootArgs.length === 1 && (rootArgs[0] === '--version' || rootArgs[0] === '-V')) {
+    console.log(CURRENT_VERSION);
+    process.exit(0);
+  }
   (async () => {
     await checkUpgradeTier();
     program.parse(process.argv);
