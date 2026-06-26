@@ -73,17 +73,24 @@ describe('agenfk upgrade CLI command', () => {
     expect(stopIdx).toBeLessThan(installIdx);
   });
 
-  it('should start server after install when it was previously running', () => {
+  it('should delegate the post-upgrade restart to install.mjs via AGENFK_SERVER_WAS_RUNNING', () => {
+    // BUG 2f491181: the CLI used to spawn `agenfk up` after install, but that
+    // raced install.mjs's own restart for the port and was skipped whenever
+    // the pre-`down` probe false-negatived. install.mjs is now the single
+    // restart owner; the CLI hands it the pre-`down` running state explicitly
+    // so it restarts even though `down` already made the server unreachable.
     const cli = readCli();
     const upgradeActionStart = cli.indexOf(".command('upgrade')");
     const upgradeActionEnd = cli.indexOf(".command('up')", upgradeActionStart);
     const upgradeSection = cli.slice(upgradeActionStart, upgradeActionEnd);
 
     const installIdx = upgradeSection.indexOf('install.mjs');
-    const startIdx = upgradeSection.search(/agenfk\.js.*up['"]\s*\)|\.js['"]\s*,\s*['"]up['"]/);
     expect(installIdx).toBeGreaterThan(-1);
-    expect(startIdx).toBeGreaterThan(-1);
-    expect(startIdx).toBeGreaterThan(installIdx);
+    // The env signal is passed, derived from the pre-`down` servicesRunning capture.
+    expect(upgradeSection).toMatch(/AGENFK_SERVER_WAS_RUNNING/);
+    expect(upgradeSection).toMatch(/servicesRunning/);
+    // And the CLI no longer fires its own `up` that would race install.mjs.
+    expect(upgradeSection).not.toMatch(/spawn\(\s*['"]node['"]\s*,\s*\[[^\]]*['"]up['"]/);
   });
 
   it('should not delete dist dirs after extracting the tarball', () => {

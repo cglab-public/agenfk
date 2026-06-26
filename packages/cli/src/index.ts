@@ -592,7 +592,17 @@ program
       const debuglogFlag = options.debuglog ? ' --debuglog' : '';
       log(chalk.gray('Running install script (pre-built mode)...'));
       try {
-        execSync(`node scripts/install.mjs${debuglogFlag}`, { cwd: rootDir, stdio: isJson ? 'ignore' : 'inherit' });
+        // BUG 2f491181: `down` ran above, so install.mjs's own reachability
+        // probe will read the server as gone and skip the post-upgrade
+        // restart. Hand it the pre-`down` truth explicitly so it restarts the
+        // server onto the new code. install.mjs is the single owner of the
+        // restart now (it spawns `agenfk restart --quiet`); we no longer fire
+        // a second `up` here, which would race it for the port.
+        execSync(`node scripts/install.mjs${debuglogFlag}`, {
+          cwd: rootDir,
+          stdio: isJson ? 'ignore' : 'inherit',
+          env: { ...process.env, AGENFK_SERVER_WAS_RUNNING: servicesRunning ? '1' : '0' },
+        });
       } catch (e: any) {
         const msg = `Upgrade failed during installation: ${e?.message ?? e}`;
         emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion, error: msg });
@@ -601,21 +611,8 @@ program
       }
 
       log(chalk.green(`Successfully upgraded to ${targetVersion}`));
-
       if (servicesRunning) {
-        log(chalk.blue('Starting services with new version...'));
-        try {
-          const start = spawn('node', ['packages/cli/bin/agenfk.js', 'up'], {
-            cwd: rootDir,
-            detached: true,
-            stdio: isJson ? 'ignore' : 'inherit',
-          });
-          start.unref();
-          log(chalk.green('Services started in background.'));
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        } catch (e) {
-          errLog(chalk.red('Auto-start failed. Please run "agenfk up" manually.'));
-        }
+        log(chalk.green('Server restart was triggered by the installer (running in background).'));
       }
 
       emitResult({ status: 'upgraded', fromVersion: CURRENT_VERSION, toVersion: targetVersion });

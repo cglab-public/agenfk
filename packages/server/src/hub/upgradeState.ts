@@ -26,6 +26,10 @@ export interface UpgradeState {
   outcome: UpgradeOutcome;
   resultVersion?: string;
   error?: string;
+  // ISO timestamp written when outcome flips to 'started'. Lets a consumer
+  // (install.mjs) tell a genuinely in-flight upgrade from a stale marker left
+  // behind by an interrupted one. BUG 2f491181.
+  startedAt?: string;
   finishedAt?: string;
 }
 
