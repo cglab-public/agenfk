@@ -54,7 +54,7 @@ The core experience is simple: you describe what you want in plain language, and
 
 ### 1. You make a request
 
-Open your AI coding agent (Claude Code, [pi](https://pi.dev), Opencode, Gemini CLI, etc.). In slash-command clients, type `/agenfk` followed by what you need; in pi the AgEnFK skill is auto-discovered from `~/.agents/skills/`, so just describe your request:
+Open your AI coding agent (Claude Code, [pi](https://pi.dev), Opencode, Gemini CLI, etc.) and invoke the skill followed by what you need — `/agenfk` in most clients, `/skill:agenfk` in pi, `$agenfk` in Codex:
 
 ```
 /agenfk Add a retry mechanism to the API client with exponential backoff
@@ -407,18 +407,18 @@ agenfk flow publish <id>         # Publish a flow (by id) to the registry
 
 After installation, skills and slash commands are available in your AI editor:
 
-| Command | Claude Code / OpenCode / Gemini / Cursor | Codex |
-|---|---|---|
-| Start task | `/agenfk` | `$agenfk` |
-| Deep mode | `/agenfk-deep` | `$agenfk-deep` |
-| Release | `/agenfk-release` | `$agenfk-release` |
-| Beta release | `/agenfk-release-beta` | `$agenfk-release-beta` |
+| Command | Claude Code / OpenCode / Gemini / Cursor | [pi](https://pi.dev) | Codex |
+|---|---|---|---|
+| Start task | `/agenfk` | `/skill:agenfk` | `$agenfk` |
+| Deep mode | `/agenfk-deep` | `/skill:agenfk-deep` | `$agenfk-deep` |
+| Release | `/agenfk-release` | `/skill:agenfk-release` | `$agenfk-release` |
+| Beta release | `/agenfk-release-beta` | `/skill:agenfk-release-beta` | `$agenfk-release-beta` |
 
-> **Codex note:** Codex uses `$skill-name` to invoke skills (type `$` to browse available skills). It does not support `/skill-name` slash commands. The slash-command clients above use `/skill-name`.
+> **[pi](https://pi.dev) note:** pi invokes skills with the `/skill:<name>` prefix (e.g. `/skill:agenfk`). They are auto-discovered from `~/.agents/skills/` (or load one explicitly with `pi --skill ~/.agents/skills/agenfk`). Its native extension enforces the workflow regardless of how a skill is invoked.
 >
-> **[pi](https://pi.dev) note:** pi has no slash-command palette. It auto-discovers the AgEnFK skills from `~/.agents/skills/` (or load one explicitly with `pi --skill ~/.agents/skills/agenfk`); just describe your task and the agent invokes the skill. Its native extension enforces the workflow regardless.
+> **Codex note:** Codex uses `$skill-name` to invoke skills (type `$` to browse available skills). It does not support `/skill-name` slash commands.
 
-Type `/agenfk` (or `$agenfk` in Codex) in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
+Type `/agenfk` (or `/skill:agenfk` in pi, `$agenfk` in Codex) in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
 
 ## Operation Modes
 
