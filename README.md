@@ -54,7 +54,7 @@ The core experience is simple: you describe what you want in plain language, and
 
 ### 1. You make a request
 
-Open your AI coding agent (Claude Code, Opencode, Gemini CLI, etc.) and type `/agenfk` followed by what you need:
+Open your AI coding agent (Claude Code, [pi](https://pi.dev), Opencode, Gemini CLI, etc.). In slash-command clients, type `/agenfk` followed by what you need; in pi the AgEnFK skill is auto-discovered from `~/.agents/skills/`, so just describe your request:
 
 ```
 /agenfk Add a retry mechanism to the API client with exponential backoff
@@ -91,13 +91,13 @@ This default flow is the main workflow, but AgEnFK is designed to adapt to how *
 | Platform | Support Level | Enforcement | Notes |
 |---|---|---|---|
 | **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations; gatekeeper + mcp-enforcer hooks install even in CLI-only mode |
+| **[pi](https://pi.dev)** (0.79+) | Fully Supported | Native extension (mechanical) | `~/.pi/agent/extensions/agenfk.ts`, auto-loaded via jiti (no build, no `node_modules`). Full enforcement parity with Claude Code — pre-edit gatekeeper + bash mcp-enforcer + PR-sizing reminder, all delegating to the same `~/.agenfk/bin/*.mjs` scripts. Resolves the model deterministically — primarily from pi's `~/.pi/agent/settings.json` `defaultModel`, with `ctx.getModel()` when pi exposes it live — so PR events carry the real model id + `harness=pi` |
 | **Opencode** | Fully Supported | CLI + skill integration | Native slash commands and skill system; MCP optional (`--with-mcp`) |
-| **pi** (0.79+) | Fully Supported | Native extension (mechanical) | `~/.pi/agent/extensions/agenfk.ts` — pre-edit blocking + PR reminder with deterministic model detection |
 | **Google Gemini CLI** | Fully Supported | CLI + workflow rules | Native slash commands and skill system; MCP optional (`--with-mcp`) |
 | **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
 | **OpenAI Codex CLI** | Fully Supported | CLI + skills | Skills invoked via `$agenfk` (type `$` in Codex to browse); `AGENTS.md` workflow rules; MCP optional (`--with-mcp`) |
 
-> All platforms drive the workflow through the **`agenfk` CLI** by default — MCP is opt-in everywhere via `--with-mcp` (see [Installation & Setup](#installation--setup)). Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI accesses skills with `$skill-name` (not `/`).
+> All platforms drive the workflow through the **`agenfk` CLI** by default — MCP is opt-in everywhere via `--with-mcp` (see [Installation & Setup](#installation--setup)). **Claude Code** and **[pi](https://pi.dev)** are the two clients with *mechanical* enforcement: Claude Code via PreToolUse hooks, pi via a native in-process extension. Both block edits when no AgEnFK task is active and both block the direct-DB / `curl localhost` bypass routes. Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI accesses skills with `$skill-name` (not `/`).
 
 ## Installation & Setup
 
@@ -112,7 +112,8 @@ This will:
 *   Install all dependencies and build the full stack.
 *   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access — this is the primary, fully server-enforced interface for the entire workflow.
 *   Install **workflow rules** into each detected platform (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.mdc` for Cursor).
-*   Install the **`/agenfk`** and **`/agenfk-release`** slash commands and the **Agent Skills** in your AI editors.
+*   Install the **`/agenfk`** and **`/agenfk-release`** slash commands and the **Agent Skills** in your AI editors (including the universal skills at `~/.agents/skills/`, which [pi](https://pi.dev) loads natively).
+*   Install the **[pi](https://pi.dev) native extension** to `~/.pi/agent/extensions/agenfk.ts` when pi is detected — auto-loaded via jiti, giving pi the same mechanical enforcement as Claude Code.
 *   Configure the **`start:services`** Node script to launch the API and Web UI.
 
 > **AgEnFK is CLI-only by default.** The `agenfk` MCP server is **not** registered on install. MCP is opt-in:
@@ -129,7 +130,7 @@ This will:
 
 After installation, complete the setup:
 
-1.  **Restart your AI editor** (Opencode requires a restart to pick up the new MCP server).
+1.  **Restart your AI editor** (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up MCP if you opted in; [pi](https://pi.dev) needs a restart to load its native extension).
 2.  **Start the services** in a dedicated terminal — this keeps the API and Web UI running in the background:
     ```bash
     agenfk up
@@ -203,6 +204,8 @@ agenfk resume all --yes
 Paused integrations are tracked in `~/.agenfk/config.json` under `pausedIntegrations`. Resume respects your configured `rulesScope` (global or project) so rules are reinstalled in the correct location.
 
 > **Supported platform IDs:** `claude`, `opencode`, `cursor`, `codex`, `gemini`. You can also use the alias `claude-code` for `claude`.
+>
+> **Note on [pi](https://pi.dev):** pi's native extension is managed by the main installer (and removed by `agenfk uninstall`), not by the `agenfk integration` / `pause` / `resume` commands. To remove just the pi extension, delete `~/.pi/agent/extensions/agenfk.ts`; re-run the installer to restore it.
 
 ### Uninstalling AgEnFK
 
@@ -411,7 +414,9 @@ After installation, skills and slash commands are available in your AI editor:
 | Release | `/agenfk-release` | `$agenfk-release` |
 | Beta release | `/agenfk-release-beta` | `$agenfk-release-beta` |
 
-> **Codex note:** Codex uses `$skill-name` to invoke skills (type `$` to browse available skills). It does not support `/skill-name` slash commands. All other platforms use `/skill-name`.
+> **Codex note:** Codex uses `$skill-name` to invoke skills (type `$` to browse available skills). It does not support `/skill-name` slash commands. The slash-command clients above use `/skill-name`.
+>
+> **[pi](https://pi.dev) note:** pi has no slash-command palette. It auto-discovers the AgEnFK skills from `~/.agents/skills/` (or load one explicitly with `pi --skill ~/.agents/skills/agenfk`); just describe your task and the agent invokes the skill. Its native extension enforces the workflow regardless.
 
 Type `/agenfk` (or `$agenfk` in Codex) in any project to initialize the framework context. Use `/agenfk-deep` for complex features requiring maximum oversight.
 
@@ -477,7 +482,7 @@ In short: **JIRA manages the sprint. AgEnFK manages the agent.**
 
 ### Does AgEnFK work with any AI coding platform?
 
-AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, pi (fully, with mechanical enforcement via a native extension), Google Gemini CLI, and OpenAI Codex CLI (all fully supported via the `agenfk` CLI + workflow rules, with MCP as an opt-in extra), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
+AgEnFK supports two clients with **mechanical** enforcement — Claude Code (via PreToolUse hooks) and [pi](https://pi.dev) (via a native in-process extension) — plus Opencode, Google Gemini CLI, and OpenAI Codex CLI (all fully supported via the `agenfk` CLI + workflow rules, with MCP as an opt-in extra), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
 
 ---
 
