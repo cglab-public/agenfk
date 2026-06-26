@@ -52,6 +52,22 @@ describe('BUG 2f491181: install.mjs restart trigger is not gated solely on the p
     expect(INSTALL_SCRIPT).toMatch(/started/);
   });
 
+  it('detects a live server process directly (timing-robust), not just via the 1s HTTP probe', () => {
+    // BUG 2f491181 follow-up: the 1-second localhost curl can false-negative
+    // under load, and direct/npx installs never run `down`, so a live server is
+    // still up when install.mjs runs. A process-liveness scan (ps/wmic for the
+    // server bin) is the reliable signal that the HTTP probe is not. The restart
+    // must fire whenever the server process is actually alive.
+    expect(INSTALL_SCRIPT).toMatch(/serverProcessAlive/);
+    // It must scan the process table (ps on POSIX, wmic on Windows, pgrep fallback).
+    expect(INSTALL_SCRIPT).toMatch(/ps -ax|ps -ef|pgrep/);
+    expect(INSTALL_SCRIPT).toMatch(/wmic|tasklist/);
+    // It must anchor on an actual node/bun invocation of the bin, not a bare
+    // substring match (else an editor/grep with the path in argv false-positives
+    // and spuriously starts a server on a machine that wasn't running one).
+    expect(INSTALL_SCRIPT).toMatch(/looksLikeServerCmd|node\|bun|node\)/);
+  });
+
   it('age-guards the in-flight marker so a stale one cannot spuriously restart', () => {
     // An interrupted upgrade leaves upgrade-state.json at outcome 'started';
     // it is only cleared on the next server boot. Without an age guard a later
