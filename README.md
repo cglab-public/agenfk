@@ -90,14 +90,14 @@ This default flow is the main workflow, but AgEnFK is designed to adapt to how *
 
 | Platform | Support Level | Enforcement | Notes |
 |---|---|---|---|
-| **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations |
-| **Opencode** | Fully Supported | MCP + skill integration | Native slash commands and skill system |
+| **Claude Code** | Fully Supported | PreToolUse hooks (mechanical) | Automatic blocking of workflow violations; gatekeeper + mcp-enforcer hooks install even in CLI-only mode |
+| **Opencode** | Fully Supported | CLI + skill integration | Native slash commands and skill system; MCP optional (`--with-mcp`) |
 | **pi** (0.79+) | Fully Supported | Native extension (mechanical) | `~/.pi/agent/extensions/agenfk.ts` — pre-edit blocking + PR reminder with deterministic model detection |
-| **Google Gemini CLI** | Fully Supported | MCP + workflow rules | Native slash commands and skill system |
+| **Google Gemini CLI** | Fully Supported | CLI + workflow rules | Native slash commands and skill system; MCP optional (`--with-mcp`) |
 | **Cursor** | Experimental | Instructional (`.mdc` rules) | `alwaysApply: true` rule file |
-| **OpenAI Codex CLI** | Fully Supported | MCP + skills | Skills invoked via `$agenfk` (type `$` in Codex to browse); `AGENTS.md` workflow rules |
+| **OpenAI Codex CLI** | Fully Supported | CLI + skills | Skills invoked via `$agenfk` (type `$` in Codex to browse); `AGENTS.md` workflow rules; MCP optional (`--with-mcp`) |
 
-> Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI is fully supported via MCP integration; skills are accessed with `$skill-name` (not `/`).
+> All platforms drive the workflow through the **`agenfk` CLI** by default — MCP is opt-in everywhere via `--with-mcp` (see [Installation & Setup](#installation--setup)). Cursor remains experimental because it relies on instructional rules without mechanical enforcement hooks. Codex CLI accesses skills with `$skill-name` (not `/`).
 
 ## Installation & Setup
 
@@ -110,16 +110,20 @@ npx github:cglab-public/agenfk
 This will:
 *   Download the framework directly from GitHub.
 *   Install all dependencies and build the full stack.
-*   Configure the **MCP Server** for all detected AI coding agents (Claude Code, Opencode, Cursor, Codex CLI, Gemini CLI).
-*   Install the **`/agenfk`** and **`/agenfk-release`** slash commands in your AI editors.
-*   Install **workflow rules** into each platform (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.mdc` for Cursor).
-*   Install the **Agent Skill** into Opencode.
-*   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access.
+*   Symlink the **`agenfk`** CLI to `~/.local/bin` for global access — this is the primary, fully server-enforced interface for the entire workflow.
+*   Install **workflow rules** into each detected platform (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.mdc` for Cursor).
+*   Install the **`/agenfk`** and **`/agenfk-release`** slash commands and the **Agent Skills** in your AI editors.
 *   Configure the **`start:services`** Node script to launch the API and Web UI.
+
+> **AgEnFK is CLI-only by default.** The `agenfk` MCP server is **not** registered on install. MCP is opt-in:
+> *   `npx github:cglab-public/agenfk --with-mcp` — also register the MCP server with every detected client.
+> *   `npx github:cglab-public/agenfk --no-mcp` — force CLI-only (and unregister any previously registered agenfk MCP server).
+>
+> Your choice is persisted in `~/.agenfk/config.json` and honored on every upgrade, so you only need to pass the flag once. You can also flip it later per-platform with `agenfk integration install <platform> --with-mcp` / `--no-mcp`. When MCP tools are present, agents may use them interchangeably with the CLI — the CLI commands remain the canonical, equivalent path.
 
 > **Requirements**: Node.js 22.5+, git, and npm. To create GitHub releases, install the [gh CLI](https://cli.github.com/).
 
-**To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup.
+**To update**, run the same command again — npm will fetch the latest from GitHub and re-run setup. A default (no `--with-mcp`) upgrade cleanly unregisters any stale agenfk MCP server, so you never end up in a half-state.
 
 ### Post-Install Steps
 
@@ -239,7 +243,7 @@ agenfk skills uninstall --project  # remove project-scoped rules & skills
 AgEnFK supports managing multiple distinct projects from a single unified backend.
 
 *   **Local Linking**: Each local repository is linked to a database project via a `.agenfk/project.json` file.
-*   **Automatic Context Switching**: When an AI Agent (via MCP) or a developer (via CLI) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
+*   **Automatic Context Switching**: When an AI Agent or a developer (via the `agenfk` CLI, or MCP when enabled) starts working on a task, the API server automatically detects the project context and broadcasts an event via WebSockets.
 *   **Reactive Dashboard**: The Web UI instantly and automatically switches its Kanban view to the active project being worked on, keeping the developer perfectly in sync with the agent's actions.
 *   **Cross-Browser Drag & Drop**: Easily reorganize priorities with robust drag-and-drop card reordering that syncs instantly via WebSockets and optimistic UI updates.
 *   **Deep Type Filtering**: Toggle view filters (e.g., "Stories Only") without losing your custom priority order across hidden items.
@@ -279,7 +283,7 @@ This auto-detects the `owner/repo` from your git remote and links it to the acti
 
 #### MCP Tool
 
-AI agents can sync via the `github_sync` MCP tool:
+When MCP is enabled (`--with-mcp`), AI agents can also sync via the `github_sync` MCP tool:
 
 ```
 github_sync(projectId, direction: "push" | "pull" | "both", itemId?)
@@ -314,7 +318,7 @@ AgEnFK ships an optional self-hosted **Corporate Hub** (`packages/hub` + `packag
 *   **Org isolation**. Every event, item, user, and api-key is scoped by `org_id`. A staging org and a production org can run on the same hub instance without bleeding into each other. The hub also supports an atomic **org rename** (`POST /v1/admin/orgs/rename` plus the `agenfk hub repoint` CLI on each spoke) for zero-touch staging→prod migration.
 *   **Hub-managed workflow flows**. Define a flow once in **Admin → Flows**, assign it at org / project / installation scope, and every spoke reconciles to that definition on its next poll (per-project ETag-cached). Local writes to a hub-sourced flow are refused so the central definition stays canonical. Project-scoped overrides win over org-default; installation-scoped overrides win over both — useful for piloting a new flow with one team before rolling it out fleet-wide.
 *   **Fleet upgrade orchestration**. Admins issue an upgrade directive against a target version (sourced from a fleet-floor-filtered list of public GitHub releases) and a chosen scope (org-wide or specific installations). Each spoke polls, runs `agenfk upgrade --version <x>`, reports the on-disk outcome, and the **Admin → Upgrades** page renders rollout state with auto-refresh and per-installation reporting versions. Single-pending guard, downgrade confirmation, and an audit log keep the rollout safe.
-*   **Storage** is SQLite by default (single binary, no external deps) and **Postgres** for enterprise rollouts (`AGENFK_HUB_DB_URL=postgres://…`). Both backends share the same async `HubDb` interface and run identical test suites under pg-mem.
+*   **Storage** is SQLite by default (single binary, no external deps) and **Postgres** for enterprise rollouts (`AGENFK_HUB_DB=postgres` with `AGENFK_HUB_PG_URL=postgres://…`). Both backends share the same async `HubDb` interface and run identical test suites under pg-mem.
 *   **User management**. Admins can issue/revoke installation api-keys, invite/promote/deactivate users, and **permanently delete** other users (self-row delete is blocked at the backend so the last admin can't lock themselves out).
 
 ### What it does not do
@@ -329,11 +333,11 @@ The hub does not own your code, your local database, or your editor. Everything 
 
 AgEnFK utilizes a **Single Owner Architecture** to ensure data consistency and real-time reactivity. This architecture prevents "split brain" scenarios where the AI agent and the human developer are looking at different states.
 
-*   **API Server (The Owner)**: The heart of the framework. Built with Node.js and Express. It is the exclusive manager of the `db.json` storage. It actively watches the disk for changes and broadcasts real-time updates to all connected clients via **WebSockets**.
-*   **MCP Server (The Bridge)**: A lightweight Model Context Protocol client. It exposes the AgEnFK tools (`create_item`, `validate_progress`, `workflow_gatekeeper`, etc.) to AI Agents. Instead of modifying the database directly, it forwards all tool invocations to the API Server via HTTP, ensuring all actions are logged and broadcasted.
-*   **CLI (The Interface)**: A unified command-line tool (`./agenfk`) written in TypeScript. It allows both humans and agents to manage the backlog and framework state. Like the MCP server, it acts as a client to the API Server.
+*   **API Server (The Owner)**: The heart of the framework. Built with Node.js and Express. It is the exclusive manager of the storage layer and broadcasts real-time updates to all connected clients via **WebSockets**.
+*   **CLI (The Primary Interface)**: A unified command-line tool (`agenfk`) written in TypeScript and the **default, fully server-enforced** way both humans and agents drive the workflow. It acts as a client to the API Server, so every command is logged and broadcast. Read commands accept `--json` (machine-readable) or `--toon` (compact TOON format, fewer tokens).
+*   **MCP Server (The Optional Bridge)**: A lightweight Model Context Protocol client, **opt-in** via `--with-mcp`. When registered, it exposes the AgEnFK tools (`create_item`, `validate_progress`, `workflow_gatekeeper`, etc.) to AI Agents as an equivalent to the CLI. Like the CLI, it forwards all tool invocations to the API Server via HTTP rather than touching the database directly.
 *   **Web Dashboard (The UI)**: A modern React/Vite application utilizing TanStack Query for state management. It provides a hierarchical Kanban board, token metrics, real-time progress logs (comments), detailed test results, and seamless context switching.
-*   **Storage (The Memory)**: Uses an atomic, file-based JSON storage plugin by default for maximum portability. The plugin uses temporary file swapping (`fs.renameSync`) to ensure atomic writes and prevent database corruption during concurrent operations.
+*   **Storage (The Memory)**: Defaults to a **SQLite** backend (`.agenfk/db.sqlite`) — a single file with no external dependencies. A legacy JSON database (`db.json`) is auto-detected at install and migrated into SQLite on the next server start. For enterprise rollouts the Corporate Hub additionally supports Postgres.
 
 ## Custom Workflow Flows
 
@@ -364,16 +368,16 @@ The Kanban board columns update instantly to reflect the active flow.
 
 ### Agent Integration
 
-Agents load the full flow at session start using the `get_flow` MCP tool:
+Agents load the full flow at session start with the CLI (or the equivalent `get_flow` MCP tool when MCP is opted into):
 
-```
-get_flow(projectId) → { steps: [{ name, exitCriteria }] }
+```bash
+agenfk flow show --project <id> --json   # → { steps: [{ name, exitCriteria }] }
 ```
 
-Every call to `validate_progress` is flow-aware. The agent must provide `evidence` describing how it satisfied the **current step's exit criteria**. On success, the response includes the **next step's exit criteria** as mandatory work instructions for the agent.
+Every forward step transition is flow-aware. The agent advances a step with `agenfk verify` (MCP: `validate_progress`), providing `evidence` describing how it satisfied the **current step's exit criteria**. On success, the response includes the **next step's exit criteria** as mandatory work instructions for the agent.
 
-```
-validate_progress(itemId, evidence, command?) → { nextStep, exitCriteria }
+```bash
+agenfk verify <itemId> --evidence "<text>" ["<command>"]   # → { nextStep, exitCriteria }
 ```
 
 ### Community Registry
@@ -473,7 +477,7 @@ In short: **JIRA manages the sprint. AgEnFK manages the agent.**
 
 ### Does AgEnFK work with any AI coding platform?
 
-AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, pi (fully, with mechanical enforcement via a native extension), Google Gemini CLI, and OpenAI Codex CLI (all fully supported via MCP + workflow rules), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
+AgEnFK supports Claude Code (fully, with mechanical enforcement via PreToolUse hooks), Opencode, pi (fully, with mechanical enforcement via a native extension), Google Gemini CLI, and OpenAI Codex CLI (all fully supported via the `agenfk` CLI + workflow rules, with MCP as an opt-in extra), and Cursor (experimental, via instructional `.mdc` rules). See the [Supported Platforms](#supported-platforms) table for details.
 
 ---
 
@@ -485,7 +489,7 @@ No. AgEnFK runs entirely on your local machine — the API server, Kanban UI, an
 
 ### What happens if the AgEnFK server is not running?
 
-The AI agent will be unable to call MCP tools (`create_item`, `validate_progress`, etc.) and the workflow gatekeeper will block edits. Run `agenfk up` to start the services before beginning a session.
+The `agenfk` CLI commands (and the optional MCP tools) all talk to the API server, so they will fail and the workflow gatekeeper will block edits. Run `agenfk up` to start the services before beginning a session.
 
 ---
 
