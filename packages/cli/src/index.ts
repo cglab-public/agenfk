@@ -1512,15 +1512,33 @@ program
       const updates: Record<string, unknown> = {};
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
-      if (options.verifyCommand !== undefined) updates.verifyCommand = options.verifyCommand;
-      if (Object.keys(updates).length === 0) {
+      if (options.verifyCommand === undefined && Object.keys(updates).length === 0) {
         console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command.'));
         process.exit(1);
         return;
       }
-      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      let data: unknown;
+      if (Object.keys(updates).length > 0) {
+        ({ data } = await axios.put(`${API_URL}/projects/${id}`, updates));
+      }
+      // verifyCommand is a privileged shell string — set it via the internal
+      // endpoint with the install-time token (mirrors `agenfk backup`).
+      if (options.verifyCommand !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/verify-command`,
+          { verifyCommand: options.verifyCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
       console.log(chalk.green(`✓ Project ${id} updated.`));
-      console.log(structuredOutput(data));
+      if (data !== undefined) console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error updating project:'), error.response?.data?.error || error.message);
       process.exit(1);

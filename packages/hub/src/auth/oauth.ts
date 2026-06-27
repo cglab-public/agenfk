@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { Request, Response } from 'express';
 import { DB } from '../db.js';
-import { setSessionCookie, signSession } from './session.js';
+import { setSessionCookie, signSession, cookieSecure } from './session.js';
 import { recordLogin, UserRow } from './password.js';
 import { SessionPayload } from '../types.js';
 
@@ -32,7 +32,7 @@ export function checkEmailAllowlist(email: string, allowlistJson: string | null)
 export function issueOAuthState(res: Response): string {
   const state = randomBytes(24).toString('hex');
   res.cookie(OAUTH_STATE_COOKIE, state, {
-    httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production',
+    httpOnly: true, sameSite: 'lax', secure: cookieSecure(res.req),
     maxAge: OAUTH_STATE_TTL_MS, path: '/',
   });
   return state;

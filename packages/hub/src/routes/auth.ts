@@ -15,6 +15,12 @@ import {
   setSessionCookie,
   signSession,
 } from '../auth/session.js';
+import { rateLimit, FailedAttemptTracker } from '../util/rateLimit.js';
+
+// Brute-force defences for password login (Security: bug 210b3d34):
+//  - per-IP rate limit so one source can't fire unlimited attempts
+//  - per-account lockout so a slow distributed attack still trips a wall
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 interface AuthConfigRow {
   password_enabled: number;
@@ -24,6 +30,10 @@ interface AuthConfigRow {
 
 export function authRouter(ctx: HubServerContext): Router {
   const router = Router();
+  // Per-hub-instance state (not module-level) so each process/app has its own
+  // counters and tests stay isolated.
+  const loginRateLimit = rateLimit({ windowMs: LOGIN_WINDOW_MS, max: 20, message: 'Too many login attempts, try again later.' });
+  const loginFailures = new FailedAttemptTracker(/* maxFailures */ 5, LOGIN_WINDOW_MS, /* lockMs */ LOGIN_WINDOW_MS);
 
   router.get('/providers', async (_req: Request, res: Response) => {
     const cfg = await ctx.db.get<AuthConfigRow>(
@@ -38,24 +48,33 @@ export function authRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/login', async (req: Request, res: Response) => {
+  router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'email and password required' });
     }
 
+    // Account lockout: too many recent failures for this email → refuse without
+    // even hitting the password hash, regardless of source IP. (bug 210b3d34.)
+    if (loginFailures.isLocked(email)) {
+      return res.status(429).json({ error: 'Account temporarily locked due to repeated failed logins. Try again later.' });
+    }
+
     const user = await findUserByEmail(ctx.db, email);
 
     if (!user || !user.password_hash || !user.active) {
+      loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     if (user.provider !== 'password') {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
     if (!verifyPassword(password, user.password_hash)) {
+      loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    loginFailures.clear(email);
     await recordLogin(ctx.db, user.id);
     const token = signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret);
     setSessionCookie(res, token);

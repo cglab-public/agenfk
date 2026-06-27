@@ -156,7 +156,11 @@ export const api = {
     return data;
   },
   triggerUpdate: async (): Promise<{ jobId: string }> => {
-    const { data } = await axios.post(`${API_URL}/releases/update`);
+    // The custom header forces a CORS preflight so the API's localhost-origin
+    // allowlist gates this RCE-trigger route against malicious pages. (bug 968259c4.)
+    const { data } = await axios.post(`${API_URL}/releases/update`, undefined, {
+      headers: { 'x-agenfk-ui': '1' },
+    });
     return data;
   },
   getUpdateStatus: async (jobId: string): Promise<{ status: 'running' | 'success' | 'error'; output: string; exitCode?: number }> => {

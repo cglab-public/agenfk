@@ -158,7 +158,11 @@ describe('agenfk update-project <id>', () => {
     expect(program.commands.map(c => c.name())).toContain('update-project');
   });
 
-  it('PUTs only the fields that were provided', async () => {
+  it('PUTs name/description on the open route and verifyCommand on the gated route', async () => {
+    // verifyCommand is privileged (shell string) → goes to the internal
+    // endpoint with the verify token, never the open PUT. (Security: bug e60e20aa.)
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-verify-token');
     mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1', name: 'Renamed' } });
 
     await program.parseAsync([
@@ -167,12 +171,21 @@ describe('agenfk update-project <id>', () => {
       '--verify-command', 'npm test',
     ]);
 
+    // name → open route (no verifyCommand mixed in)
     expect(mockedAxios.put).toHaveBeenCalledWith(
       `${API}/projects/proj-1`,
-      { name: 'Renamed', verifyCommand: 'npm test' },
+      { name: 'Renamed' },
     );
-    const payload = mockedAxios.put.mock.calls[0][1] as Record<string, unknown>;
-    expect(payload).not.toHaveProperty('description');
+    const openPayload = mockedAxios.put.mock.calls[0][1] as Record<string, unknown>;
+    expect(openPayload).not.toHaveProperty('verifyCommand');
+    expect(openPayload).not.toHaveProperty('description');
+
+    // verifyCommand → gated route with the internal token header
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      `${API}/projects/proj-1/verify-command`,
+      { verifyCommand: 'npm test' },
+      { headers: { 'x-agenfk-internal': 'test-verify-token' } },
+    );
   });
 });
 
