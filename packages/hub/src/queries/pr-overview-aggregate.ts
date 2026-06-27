@@ -2,17 +2,61 @@ import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/co
 
 // One json_extract-shaped row per pr.opened / pr.updated event. Sizing fields are
 // read from the server-computed shadow (the only source that knows leaf stories).
+//
+// Field types intentionally allow both backends' shapes: SQLite returns TEXT
+// (string) timestamps and INTEGER numerics, while Postgres returns TIMESTAMPTZ as
+// a JS Date and jsonb_extract_path_text numerics as strings. normaliseRow()
+// reconciles them before any aggregation.
 export interface PrEventRow {
   user_key: string;
-  occurred_at: string;
+  occurred_at: string | Date;
   type: string; // 'pr.opened' | 'pr.updated'
   repo: string | null;
-  pr_number: number | null;
-  leaf_story: number | null;
-  task: number | null;
-  bug: number | null;
+  pr_number: number | string | null;
+  leaf_story: number | string | null;
+  task: number | string | null;
+  bug: number | string | null;
   model: string | null;
   harness: string | null;
+}
+
+// Normalised, backend-agnostic event used internally.
+interface NormRow {
+  user_key: string;
+  occurred_at: string; // ISO-8601 UTC
+  type: string;
+  repo: string | null;
+  pr_number: string | null;
+  leafStory: number;
+  task: number;
+  bug: number;
+  model: string | null;
+  harness: string | null;
+}
+
+const toIso = (v: unknown): string =>
+  v instanceof Date ? v.toISOString()
+    : typeof v === 'string' ? v
+      : new Date(v as never).toISOString();
+
+const toNum = (v: unknown): number => {
+  const n = v == null ? 0 : typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function normaliseRow(r: PrEventRow): NormRow {
+  return {
+    user_key: r.user_key,
+    occurred_at: toIso(r.occurred_at),
+    type: r.type,
+    repo: r.repo,
+    pr_number: r.pr_number == null ? null : String(r.pr_number),
+    leafStory: toNum(r.leaf_story),
+    task: toNum(r.task),
+    bug: toNum(r.bug),
+    model: r.model,
+    harness: r.harness,
+  };
 }
 
 type SizeDist = Record<SizeBucket, number>;
@@ -28,8 +72,8 @@ export interface PrOverviewResult {
 
 const emptyDist = (): SizeDist => ({ xs: 0, s: 0, m: 0, l: 0, xl: 0 });
 const dayOf = (iso: string): string => iso.slice(0, 10);
-const pointsOf = (r: PrEventRow): number =>
-  prSizePoints({ leafStory: r.leaf_story, task: r.task, bug: r.bug });
+const pointsOf = (r: NormRow): number =>
+  prSizePoints({ leafStory: r.leafStory, task: r.task, bug: r.bug });
 
 /** Optional opener-day window + model filter. The window is applied to the PR's
  *  OPEN time, not to individual events — so a PR opened before `from` is excluded
@@ -55,8 +99,9 @@ interface ResolvedPr {
 // new PR — it re-sizes the existing one. The PR is counted once, placed on its
 // OPEN day at its LATEST size, and attributed to whoever OPENED it.
 function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
-  const groups = new Map<string, PrEventRow[]>();
-  for (const r of rows) {
+  const groups = new Map<string, NormRow[]>();
+  for (const raw of rows) {
+    const r = normaliseRow(raw);
     if (!r.repo || r.pr_number == null) continue; // not a sizeable PR event
     const key = `${r.repo}#${r.pr_number}`;
     const g = groups.get(key);
