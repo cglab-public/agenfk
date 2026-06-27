@@ -50,6 +50,21 @@ function makeFakes(opts: {
   return { events, flushNowCalls, fetchImpl, recordEvent, flushNow, spawnImpl, readInstalledVersionImpl };
 }
 
+describe('BUG bbe794bc — forced self-extract installs deps (no false success)', () => {
+  // Source-introspection: defaultSelfExtract shells out, so we assert the
+  // production impl runs `npm ci` after the tar, ordered after extraction.
+  // Without this, a dep-changing target would advance the version on disk but
+  // boot with missing node_modules while reporting success.
+  const SRC = fs.readFileSync(path.join(__dirname, '../hub/upgradeSync.ts'), 'utf8');
+  it('runs `npm ci --omit=dev` inside defaultSelfExtract, after the tar extract', () => {
+    const fn = SRC.slice(SRC.indexOf('async function defaultSelfExtract'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    expect(body).toMatch(/tar -xzf/);
+    expect(body).toMatch(/ci --omit=dev/);
+    expect(body.indexOf('ci --omit=dev')).toBeGreaterThan(body.indexOf('tar -xzf'));
+  });
+});
+
 describe('Story 3b — reconcileUpgradeDirective', () => {
   it('no-op when the hub returns 204 (no pending directive)', async () => {
     const f = makeFakes({ directive: undefined });
@@ -142,14 +157,17 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
   });
 
-  it('emits failed when CLI exits 0 + emits no JSON envelope BUT the on-disk version is unchanged (regression for directive→0.3.0-beta.24, 97f4db4c)', async () => {
+  it('CLI exits 0 + no JSON + on-disk unchanged → forces a CLI-independent recovery; if THAT also fails, emits an honest failure (never a false success) — BUG bbe794bc', async () => {
     const f = makeFakes({
       directive: { directiveId: 'd-real', targetVersion: '0.3.0-beta.24' },
       spawnExitCode: 0,
-      // CLI was killed mid-install before emitting JSON.
+      // CLI exited cleanly but never installed (killed mid-emit / silent no-op).
       spawnStdout: 'Some non-JSON noise that snuck in\n',
       installedVersion: '0.2.28', // unchanged — install never landed
     });
+    // Forced recovery is attempted even though this is NOT the bare-semver
+    // "printed its own version" signature — any clean-exit non-advance qualifies.
+    const selfExtractImpl = vi.fn(async () => ({ ok: false as const, error: 'curl: could not download' }));
     await reconcileUpgradeDirective({
       dbDir,
       currentVersion: '0.2.28',
@@ -158,16 +176,58 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
       flushNow: f.flushNow,
       spawnImpl: f.spawnImpl,
       readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
       hubUrl: 'http://hub.test',
       installationId: 'inst-1',
       hubToken: 't',
     });
+    expect(selfExtractImpl).toHaveBeenCalledTimes(1);
     const failed = f.events.find(e => e.type === 'fleet:upgrade:failed');
     expect(failed).toBeDefined();
     // Error must mention both the intent and the actual on-disk version.
     expect(failed!.payload.error).toMatch(/0\.3\.0-beta\.24/);
     expect(failed!.payload.error).toMatch(/0\.2\.28/);
+    // And must NOT have falsely reported success.
+    expect(f.events.find(e => e.type === 'fleet:upgrade:succeeded')).toBeUndefined();
     expect(readUpgradeState(dbDir)?.outcome).toBe('failed');
+  });
+
+  it('forced recovery: reproduces the real hub failure (broken CLI printed its own version; running reconciler version differs from on-disk) → self-extract + restart + succeeded — BUG bbe794bc', async () => {
+    // This is the exact shape the user hit: `agenfk upgrade --version` hit the
+    // commander collision, printed the on-disk version and exited 0. The OLD
+    // narrow recovery refused to act because on-disk !== the running reconciler
+    // version. The generalized recovery must act regardless of that.
+    let onDiskNow = '1.1.1-beta.1';
+    const f = makeFakes({
+      directive: { directiveId: 'd-user', targetVersion: '1.1.2' },
+      spawnExitCode: 0,
+      spawnStdout: '1.1.1-beta.1\n',
+    });
+    f.readInstalledVersionImpl.mockImplementation(() => onDiskNow);
+    const selfExtractImpl = vi.fn(async () => { onDiskNow = '1.1.2'; return { ok: true as const }; });
+    const restartServerImpl = vi.fn();
+    await reconcileUpgradeDirective({
+      dbDir,
+      currentVersion: '1.1.0', // running reconciler differs from on-disk — the anomaly
+      fetchImpl: f.fetchImpl,
+      recordEvent: f.recordEvent,
+      flushNow: f.flushNow,
+      spawnImpl: f.spawnImpl,
+      readInstalledVersionImpl: f.readInstalledVersionImpl,
+      installRoot: '/fake/install/root',
+      selfExtractImpl,
+      restartServerImpl,
+      hubUrl: 'http://hub.test',
+      installationId: 'inst-1',
+      hubToken: 't',
+    });
+    expect(selfExtractImpl).toHaveBeenCalledTimes(1);
+    const succeeded = f.events.find(e => e.type === 'fleet:upgrade:succeeded');
+    expect(succeeded?.payload.resultVersion).toBe('1.1.2');
+    expect(restartServerImpl).toHaveBeenCalledTimes(1);
+    expect(f.events.find(e => e.type === 'fleet:upgrade:failed')).toBeUndefined();
+    expect(readUpgradeState(dbDir)).toBeNull();
   });
 
   it('emits succeeded when on-disk version matches intent even if CLI was killed mid-emit (no JSON, exit 0)', async () => {
@@ -315,9 +375,8 @@ describe('Story 3b — reconcileUpgradeDirective', () => {
     expect(selfExtractImpl).toHaveBeenCalledTimes(1);
     const failed = f.events.find(e => e.type === 'fleet:upgrade:failed');
     expect(failed).toBeDefined();
-    // Error must explain WHY (CLI predates --version) and HOW (manual remediation),
-    // not just the cryptic "exited 0 but on-disk version is X" message.
-    expect(failed!.payload.error).toMatch(/predates|does not recognise|--version/i);
+    // Error must reference the target and give a manual remediation path.
+    expect(failed!.payload.error).toMatch(/0\.3\.0-beta\.27/);
     expect(failed!.payload.error).toMatch(/agenfk upgrade --beta|npx github:cglab-public\/agenfk/);
     // Underlying self-extract error should be referenced for diagnosis.
     expect(failed!.payload.error).toMatch(/curl: 404/);
