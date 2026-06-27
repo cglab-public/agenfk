@@ -3,6 +3,7 @@ import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 // Plug-and-play hub onboarding endpoints — see the STORY for context.
 //
@@ -14,6 +15,11 @@ import { issueApiKey } from '../auth/apiKey.js';
 const DEVICE_CODE_TTL_S = 600;        // 10 minutes
 const DEVICE_POLL_INTERVAL_S = 2;
 const INVITE_TTL_MS = 14 * 86400_000; // 14 days
+
+// /device/start is unauthenticated; without limits anyone can inflate the
+// device_codes table unbounded (and expired rows were never pruned). Cap the
+// pending backlog and rate-limit per IP. (Security: bug 72f8da10.)
+const MAX_PENDING_DEVICE_CODES = 1000;
 
 // Avoid look-alikes (0/O, 1/I, etc.) so users can read codes off a screen.
 const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -69,12 +75,26 @@ function verifyInviteToken(token: string, secret: string): { orgId: string; nonc
 
 export function connectRouter(ctx: HubServerContext): Router {
   const router = Router();
+  // Per-instance rate limiter (not module-level) — see auth.ts rationale.
+  const deviceStartRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many device-code requests, slow down.' });
   const guard = requireSession(ctx.config.sessionSecret);
   const adminGuard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Device-code flow ──────────────────────────────────────────────────────
 
-  router.post('/device/start', async (req: Request, res: Response) => {
+  router.post('/device/start', deviceStartRateLimit, async (req: Request, res: Response) => {
+    const nowIso = new Date().toISOString();
+    // Prune expired rows so the table self-cleans, then refuse if the pending
+    // backlog is already saturated (cheap DoS guard). (bug 72f8da10.)
+    await ctx.db.run('DELETE FROM device_codes WHERE expires_at < ?', [nowIso]);
+    const pending = await ctx.db.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM device_codes WHERE approved_at IS NULL AND expires_at > ?',
+      [nowIso],
+    );
+    if (pending && Number(pending.n) >= MAX_PENDING_DEVICE_CODES) {
+      res.status(429).json({ error: 'Too many pending device codes, try again later.' });
+      return;
+    }
     const deviceCode = randomBytes(32).toString('base64url');
     let code = userCode();
     for (let i = 0; i < 5; i++) {

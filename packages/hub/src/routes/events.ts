@@ -84,8 +84,16 @@ export function eventsRouter(ctx: HubServerContext): Router {
   // accept anything malformed.
   const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+  // Hard ceiling on events processed in a single /v1/events transaction.
+  const MAX_EVENTS_PER_BATCH = 500;
+
   router.post('/events', requireKey, async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
+    // An installation-bound key may only post events for its OWN installation.
+    // Without this, any org key could stamp fleet:upgrade:* state or running
+    // versions for another installation (BOLA). Legacy org-wide keys (null
+    // installation_id) are exempt for backward compatibility. (Security: bug a7a448dc.)
+    const keyInstallation = req.hubApiKey!.installationId ?? null;
     const installationFromHeader = (req.headers['x-installation-id'] as string | undefined) ?? null;
     const headerVerRaw = (req.headers['x-agenfk-version'] as string | undefined) ?? null;
     const agenfkVersion = headerVerRaw && SEMVER_TAG_RE.test(headerVerRaw) ? headerVerRaw : null;
@@ -93,6 +101,12 @@ export function eventsRouter(ctx: HubServerContext): Router {
     const events: any[] = Array.isArray(body?.events) ? body.events : [];
     if (events.length === 0) {
       return res.status(400).json({ error: 'Body must contain a non-empty events array' });
+    }
+    // Bound the per-batch work: a single 10MB body could otherwise carry
+    // thousands of events processed inside one SQLite transaction, blocking
+    // every other writer (write-amplification DoS). (Security: bug 035a4736.)
+    if (events.length > MAX_EVENTS_PER_BATCH) {
+      return res.status(413).json({ error: `Too many events in one batch (max ${MAX_EVENTS_PER_BATCH})` });
     }
 
     const now = new Date().toISOString();
@@ -105,6 +119,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
         if (e.orgId !== orgId) { rejected++; continue; }
+        if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         seenInstallations.add(e.installationId);
         const userKey = userKeyFor(e.actor);

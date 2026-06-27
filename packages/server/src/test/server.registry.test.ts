@@ -7,10 +7,13 @@ import request from 'supertest';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Hoist execSync mock so it's ready before server.ts is imported
-const { mockExecSync } = vi.hoisted(() => ({ mockExecSync: vi.fn() }));
+// Hoist mocks so they're ready before server.ts is imported. The publish
+// handler runs git/gh via execFileSync (argv, no shell — Security: bugs
+// 6d0a982f/57b4d95b); only the read-only gh probes still use execSync.
+const { mockExecSync, mockExecFileSync } = vi.hoisted(() => ({ mockExecSync: vi.fn(), mockExecFileSync: vi.fn() }));
 vi.mock('child_process', () => ({
   execSync: mockExecSync,
+  execFileSync: mockExecFileSync,
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -27,14 +30,28 @@ import { app, initStorage } from '../server';
 
 const TEST_DB = path.resolve('./server-registry-test-db.sqlite');
 
+// Read-only gh probes still go through execSync.
 function makeExecMock(ghUser: string) {
   return (cmd: string) => {
     if (cmd.includes('gh --version')) return 'gh version 2.0.0';
     if (cmd.includes('gh api user')) return `${ghUser}\n`;
     if (cmd.includes('gh auth token')) return 'test-token\n';
-    if (cmd.includes('gh pr create')) return 'https://github.com/cglab-public/agenfk-flows/pull/42\n';
     return '';
   };
+}
+
+// git/gh mutations go through execFileSync (file, argv). `gh pr create`
+// returns the PR URL; everything else returns empty.
+function makeExecFileMock() {
+  return (file: string, args: string[] = []) => {
+    const joined = `${file} ${args.join(' ')}`;
+    if (joined.includes('pr create')) return 'https://github.com/cglab-public/agenfk-flows/pull/42\n';
+    return '';
+  };
+}
+// Flatten execFileSync calls to "file arg1 arg2 …" so substring assertions read naturally.
+function execFileCmds() {
+  return mockExecFileSync.mock.calls.map((c: any[]) => `${c[0]} ${((c[1] as string[]) || []).join(' ')}`);
 }
 
 describe('POST /registry/flows/publish', () => {
@@ -69,6 +86,7 @@ describe('POST /registry/flows/publish', () => {
   it('owner: pushes directly to main without forking, returns kind=direct', async () => {
     // ghUser 'cglab-public' matches the default REGISTRY_OWNER
     mockExecSync.mockImplementation(makeExecMock('cglab-public'));
+    mockExecFileSync.mockImplementation(makeExecFileMock());
 
     const res = await request(app).post('/registry/flows/publish').send({ flowId });
 
@@ -76,11 +94,11 @@ describe('POST /registry/flows/publish', () => {
     expect(res.body.kind).toBe('direct');
     expect(res.body.url).toContain('cglab-public/agenfk-flows');
 
-    const cmds = mockExecSync.mock.calls.map((c: any[]) => c[0] as string);
+    const cmds = execFileCmds();
     // No fork
     expect(cmds.some(c => c.includes('repo fork'))).toBe(false);
     // No PR
-    expect(cmds.some(c => c.includes('gh pr create'))).toBe(false);
+    expect(cmds.some(c => c.includes('pr create'))).toBe(false);
     // Pushed to main
     expect(cmds.some(c => c.includes('push origin main'))).toBe(true);
     // No branch switch
@@ -90,6 +108,7 @@ describe('POST /registry/flows/publish', () => {
   it('non-owner: forks and opens a PR, returns kind=pr', async () => {
     // ghUser 'external-user' does NOT match REGISTRY_OWNER 'cglab-public'
     mockExecSync.mockImplementation(makeExecMock('external-user'));
+    mockExecFileSync.mockImplementation(makeExecFileMock());
 
     const res = await request(app).post('/registry/flows/publish').send({ flowId });
 
@@ -97,7 +116,7 @@ describe('POST /registry/flows/publish', () => {
     expect(res.body.kind).toBe('pr');
     expect(res.body.url).toContain('pull/42');
 
-    const cmds = mockExecSync.mock.calls.map((c: any[]) => c[0] as string);
+    const cmds = execFileCmds();
     // Fork was called
     expect(cmds.some(c => c.includes('repo fork'))).toBe(true);
     // Remote switched to fork
@@ -105,7 +124,7 @@ describe('POST /registry/flows/publish', () => {
     // Branch created
     expect(cmds.some(c => c.includes('checkout -b'))).toBe(true);
     // PR opened
-    expect(cmds.some(c => c.includes('gh pr create'))).toBe(true);
+    expect(cmds.some(c => c.includes('pr create'))).toBe(true);
   });
 
   it('returns 400 when flowId is missing', async () => {

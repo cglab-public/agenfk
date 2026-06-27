@@ -553,7 +553,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   it('runs verifyCommand on final step (TEST→DONE) when no explicit command given', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PV4' })).body;
-    await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo verify-ok' });
+    await request(app).put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN).send({ verifyCommand: 'echo verify-ok' });
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV4', projectId: p.id })).body;
     await request(app)
       .post('/items/bulk')
@@ -660,8 +660,8 @@ describe('POST /items/:id/test success paths', () => {
   it('moves TEST item to DONE when verifyCommand passes', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'P2' })).body;
-    // Set verifyCommand on the project
-    await request(app).put(`/projects/${p.id}`).send({ verifyCommand: 'echo done-ok' });
+    // Set verifyCommand via the gated internal endpoint (mass-assignment closed).
+    await request(app).put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN).send({ verifyCommand: 'echo done-ok' });
 
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T2', projectId: p.id })).body;
 
@@ -1122,7 +1122,7 @@ describe('GET /releases/latest cache hit', () => {
 
 describe('GET /releases/update/:jobId success', () => {
   it('returns job status after POST /releases/update', async () => {
-    const postRes = await request(app).post('/releases/update');
+    const postRes = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
     expect(postRes.status).toBe(202);
     const jobId = postRes.body.jobId;
 
@@ -1138,7 +1138,7 @@ describe('GET /releases/update/:jobId success', () => {
     // is the dedicated setReleasesUpdateExecImpl injection at the top of
     // this file — verify the stub captured the call.
     const callsBefore = stubReleasesUpdateExec.mock.calls.length;
-    await request(app).post('/releases/update');
+    await request(app).post('/releases/update').set('x-agenfk-ui', '1');
     expect(stubReleasesUpdateExec.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(stubReleasesUpdateExec.mock.calls.at(-1)![0]).toMatch(/npx -y github:cglab-public\/agenfk/);
   });
@@ -1852,10 +1852,17 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
   it('does not overwrite an existing projectRoot when cwd is absent', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'CWD2' })).body;
-    await request(app).put(`/projects/${p.id}`).send({ projectRoot: '/stored/root' });
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD2', projectId: p.id })).body;
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
+    // Establish projectRoot the legitimate way — a validate that carries cwd
+    // (projectRoot is no longer mass-assignable via PUT /projects/:id).
+    await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ cwd: '/stored/root' });
+
+    // A later validate with no cwd must not clobber the stored projectRoot.
     await request(app)
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)

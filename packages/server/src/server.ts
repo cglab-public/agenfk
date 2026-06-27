@@ -28,15 +28,32 @@ export const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec, execSync, spawn } from "child_process";
+import { exec, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
+
+// The local API server is for this machine only. It binds to loopback by
+// default (override with AGENFK_HOST) and only accepts browser requests from
+// localhost origins, so unauthenticated routes are neither LAN-reachable nor
+// drivable by a malicious page on another origin. (Security: bug 55229bae.)
+export const BIND_HOST = process.env.AGENFK_HOST || "127.0.0.1";
+
+// Allow requests with no Origin header (CLI, curl, same-origin, server-to-
+// server) and any loopback origin on any port (the UI dev server, previews).
+// Everything else is rejected — no wildcard.
+const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+export const isAllowedOrigin = (origin: string | undefined | null): boolean =>
+  !origin || LOCAL_ORIGIN_RE.test(origin);
+const corsOriginFn = (
+  origin: string | undefined,
+  cb: (err: Error | null, allow?: boolean) => void,
+): void => cb(null, isAllowedOrigin(origin));
 
 export const app = express();
 export const httpServer = createServer(app);
 export const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: corsOriginFn,
     methods: ["GET", "POST"]
   }
 });
@@ -49,9 +66,9 @@ const REQUESTED_PORT = Number.parseInt(
 );
 
 app.use(cors({
-  origin: "*",
+  origin: corsOriginFn,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-agenfk-internal", "x-agenfk-ui"]
 }));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
@@ -715,8 +732,40 @@ app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
+  // Allowlist the mutable fields. Passing req.body straight through let an
+  // unauthenticated caller overwrite verifyCommand (a shell string later run
+  // by validate_progress), projectRoot (its cwd) and flowId — mass assignment
+  // → RCE. verifyCommand has its own internal-only endpoint below; flowId has
+  // POST /projects/:id/flow. (Security: bug e60e20aa.)
+  const updates: Partial<{ name: string; description: string }> = {};
+  if (typeof req.body?.name === 'string') updates.name = req.body.name;
+  if (typeof req.body?.description === 'string') updates.description = req.body.description;
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: "Provide at least one of: name, description. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+  }
   try {
-    const updated = await storage.updateProject(req.params.id, req.body);
+    const updated = await storage.updateProject(req.params.id, updates);
+    io.emit('items_updated');
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
+}));
+
+// verifyCommand is a shell string executed by validate_progress on the final
+// step, so setting it is privileged. Gate it with the install-time secret like
+// /backup — only a local trusted caller (the CLI, which reads
+// ~/.agenfk/verify-token) may set it, never a browser or LAN peer. (bug e60e20aa.)
+app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { verifyCommand } = req.body ?? {};
+  if (typeof verifyCommand !== 'string') {
+    return res.status(400).json({ error: "verifyCommand (string) required" });
+  }
+  try {
+    const updated = await storage.updateProject(req.params.id, { verifyCommand } as any);
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -838,17 +887,18 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: 'model and harness are required (your actual model id + harness; do not omit or copy an example)' });
   }
 
-  // POST /prs is idempotent on (repo, prNumber). Detect a re-registration BEFORE
-  // the upsert so we emit the right hub event: pr.opened only the first time, and
-  // pr.updated on subsequent calls — otherwise auto-register (agenfk pr create)
-  // followed by a manual pr-register would double-count the open.
-  const alreadyRegistered = await storage.getPrByRepoNumber(repo, prNumber);
-
+  // POST /prs is idempotent on (repo, prNumber). Newness is decided ATOMICALLY
+  // by the upsert, not by a separate pre-read: insertPr does INSERT … ON CONFLICT
+  // DO UPDATE without touching `id`, so the returned row keeps our freshly minted
+  // id only when this call won the insert. Two concurrent first-registrations
+  // therefore can't both see "not registered" and both emit pr.opened — exactly
+  // one wins the unique index. (Security: bug fe03d054.)
+  const newId = crypto.randomUUID();
   const shadow = await computeShadowSizing(itemId);
   const effectiveSizing = sizingProvided ? sizing : shadow;
   const now = new Date().toISOString();
   const pr = await storage.insertPr({
-    id: crypto.randomUUID(),
+    id: newId,
     prNumber,
     repo,
     itemId,
@@ -858,6 +908,7 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     sizingShadow: shadow,
     lastSizingCheckAt: now,
   });
+  const isNewRegistration = pr.id === newId;
 
   const matches =
     effectiveSizing.epic === shadow.epic && effectiveSizing.story === shadow.story
@@ -871,7 +922,7 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
 
   const item = await storage.getItem(itemId);
   recordHubEvent({
-    type: alreadyRegistered ? 'pr.updated' : 'pr.opened',
+    type: isNewRegistration ? 'pr.opened' : 'pr.updated',
     projectId: item?.projectId,
     // model/harness are agent-declared (the CLI/MCP caller knows its own runtime;
     // the server process cannot infer them). Optional — omitted when not supplied.
@@ -1164,24 +1215,36 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     ? (registry as string).split('/')
     : [REGISTRY_OWNER, REGISTRY_REPO];
 
+  // registry is attacker-controllable and is interpolated into git/gh commands
+  // and URLs below. Validate to a GitHub-safe charset so it can never break out
+  // of an argument (combined with argv-form exec, no shell). (Security: bug 6d0a982f.)
+  // Must not start with '-' (GitHub names never do) so the value can't be read
+  // as a flag when passed as an argv element to gh/git. (Security: bug 6d0a982f.)
+  const GH_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+  if (!registryOwner || !registryRepo || !GH_NAME_RE.test(registryOwner) || !GH_NAME_RE.test(registryRepo)) {
+    return res.status(400).json({ error: 'registry must be "owner/repo" using only letters, digits, dot, dash, underscore' });
+  }
+
   const slug = flow.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const filename = `${slug}.json`;
 
   const isOwner = ghUser === registryOwner;
 
-  // Non-owners publish via a fork; owners push directly
+  // Non-owners publish via a fork; owners push directly. All git/gh shellouts
+  // below use argv form (no shell) so flow.name, registry and the embedded gh
+  // token can never be interpreted as shell. (Security: bugs 6d0a982f, 57b4d95b.)
   if (!isOwner) {
-    execSync(`gh repo fork ${registryOwner}/${registryRepo} --clone=false`, { stdio: 'pipe' });
+    execFileSync('gh', ['repo', 'fork', `${registryOwner}/${registryRepo}`, '--clone=false'], { stdio: 'pipe' });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
     // Shallow-clone the upstream to check for name clashes
-    execSync(`git clone --depth 1 --quiet https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git ${tmpDir}`, { stdio: 'pipe' });
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', `https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git`, tmpDir], { stdio: 'pipe' });
 
     // Non-owners switch the push remote to their fork
     if (!isOwner) {
-      execSync(`git -C ${tmpDir} remote set-url origin https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`, { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'remote', 'set-url', 'origin', `https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`], { stdio: 'pipe' });
     }
 
     const flowsDir = path.join(tmpDir, 'flows');
@@ -1227,24 +1290,28 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       // Non-owners commit on a feature branch; owners commit directly on the cloned main
       const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
       if (branchName) {
-        execSync(`git -C ${tmpDir} checkout -b ${branchName}`, { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'checkout', '-b', branchName], { stdio: 'pipe' });
       }
 
       fs.writeFileSync(targetPath, content + '\n');
-      execSync(`git -C ${tmpDir} add flows/${filename}`, { stdio: 'pipe' });
-      execSync(`git -C ${tmpDir} commit -m "${commitMsg}"`, { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'add', `flows/${filename}`], { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'commit', '-m', commitMsg], { stdio: 'pipe' });
 
       if (isOwner) {
-        execSync(`git -C ${tmpDir} push origin main`, { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe' });
         const fileUrl = `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`;
         return res.json({ url: fileUrl, kind: 'direct', version });
       } else {
-        execSync(`git -C ${tmpDir} push origin ${branchName}`, { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe' });
         const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
-        const prUrl = execSync(
-          `gh pr create --repo ${registryOwner}/${registryRepo} --head ${ghUser}:${branchName} --base main --title "${commitMsg}" --body "${prBody.replace(/"/g, '\\"')}"`,
-          { stdio: 'pipe' }
-        ).toString().trim();
+        const prUrl = execFileSync('gh', [
+          'pr', 'create',
+          '--repo', `${registryOwner}/${registryRepo}`,
+          '--head', `${ghUser}:${branchName}`,
+          '--base', 'main',
+          '--title', commitMsg,
+          '--body', prBody,
+        ], { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
         return res.json({ url: prUrl, kind: 'pr', version });
       }
     }
@@ -2400,12 +2467,18 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
   const { summary, statusCategory } = req.query;
   
   try {
-    let jqlParts = [`project = "${key}"`];
-    
+    // Escape any user input placed inside a JQL double-quoted string so it
+    // can't break out of the clause and read issues from other projects the
+    // token can see. statusCategory is restricted to the known mapping rather
+    // than passed through verbatim. (Security: bug 25f871be.)
+    const jqlEsc = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    let jqlParts = [`project = "${jqlEsc(key)}"`];
+
     if (summary && summary !== 'undefined') {
-      jqlParts.push(`(summary ~ "${summary}*" OR issueKey = "${summary}")`);
+      const s = jqlEsc(String(summary));
+      jqlParts.push(`(summary ~ "${s}*" OR issueKey = "${s}")`);
     }
-    
+
     if (statusCategory && statusCategory !== 'undefined') {
       // Map UI category names to JQL statusCategory names or IDs
       const mapping: Record<string, string> = {
@@ -2413,8 +2486,13 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
         'In Progress': '"In Progress"',
         'Done': '"Done"'
       };
-      const categories = String(statusCategory).split(',').map((s: string) => mapping[s.trim()] || `"${s.trim()}"`).join(',');
-      jqlParts.push(`statusCategory in (${categories})`);
+      const categories = String(statusCategory).split(',')
+        .map((s: string) => mapping[s.trim()])
+        .filter((v): v is string => Boolean(v));
+      if (categories.length === 0) {
+        return res.status(400).json({ error: "statusCategory must be one or more of: To Do, In Progress, Done" });
+      }
+      jqlParts.push(`statusCategory in (${categories.join(',')})`);
     }
     
     const jql = encodeURIComponent(jqlParts.join(' AND ') + ' ORDER BY created DESC');
@@ -2602,15 +2680,24 @@ app.get("/github/issues", async (req: any, res: any) => {
     if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
     if (!verifyGhCli()) return res.status(400).json({ error: 'GitHub CLI not authenticated. Run: gh auth login' });
 
-    const args = [`-R ${config.owner}/${config.repo}`];
-    args.push(`--state ${state || 'open'}`);
-    args.push('--limit 100');
-    if (search) args.push(`--search "${(search as string).replace(/"/g, '\\"')}"`);
-    args.push('--json number,title,state,labels,url,createdAt');
+    // state and search are interpolated into a gh shellout. Allowlist state and
+    // pass everything as argv (no shell) so search can't inject. (Security: bug f9380911.)
+    const stateVal = String(state || 'open');
+    if (!['open', 'closed', 'all'].includes(stateVal)) {
+      return res.status(400).json({ error: "state must be one of: open, closed, all" });
+    }
+    const ghArgs = [
+      'issue', 'list',
+      '-R', `${config.owner}/${config.repo}`,
+      '--state', stateVal,
+      '--limit', '100',
+    ];
+    if (search) { ghArgs.push('--search', String(search)); }
+    ghArgs.push('--json', 'number,title,state,labels,url,createdAt');
 
-    const result = execSync(`gh issue list ${args.join(' ')}`, {
+    const result = execFileSync('gh', ghArgs, {
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     const issues = JSON.parse(result);
     res.json(issues.map((i: any) => ({
@@ -2639,9 +2726,17 @@ app.post("/github/import", async (req: any, res: any) => {
 
     for (const { issueNumber, type } of items) {
       try {
-        const result = execSync(
-          `gh issue view ${issueNumber} -R ${config.owner}/${config.repo} --json number,title,body,state,url`,
-          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        // issueNumber is interpolated into a gh shellout — require an integer
+        // and pass via argv so it can't inject commands. (Security: bug 4c939916.)
+        const issueNum = Number(issueNumber);
+        if (!Number.isInteger(issueNum) || issueNum <= 0) {
+          errors.push(`Issue #${issueNumber}: invalid issue number`);
+          continue;
+        }
+        const result = execFileSync(
+          'gh',
+          ['issue', 'view', String(issueNum), '-R', `${config.owner}/${config.repo}`, '--json', 'number,title,body,state,url'],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
         );
         const issue = JSON.parse(result);
 
@@ -2745,7 +2840,16 @@ export const resetReleasesUpdateExecImpl = (): void => {
   releasesUpdateExecImpl = null;
 };
 
-app.post("/releases/update", asyncHandler(async (_req: any, res: any) => {
+app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
+  // This route shells out (npx) and restarts the server — an RCE trigger. It is
+  // only ever invoked by the local UI. Require a custom header: a cross-origin
+  // browser request carrying it forces a CORS preflight, which the localhost
+  // origin allowlist rejects; a no-preflight "simple" POST won't carry it and is
+  // refused here. Together with loopback binding, that closes the CSRF/LAN
+  // vector while keeping the in-app Update button working. (Security: bug 968259c4.)
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const jobId = uuidv4();
   const job: UpdateJob = { status: 'running', output: [] };
   updateJobs.set(jobId, job);
@@ -2867,12 +2971,12 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
     process.on('SIGINT', shutdown);
 
     findAvailablePort(REQUESTED_PORT).then((port) => {
-      httpServer.listen(port, () => {
+      httpServer.listen(port, BIND_HOST, () => {
         writeServerPortFile(port);
         if (port !== REQUESTED_PORT) {
           console.log(`AgEnFK API Server: requested port ${REQUESTED_PORT} was in use, bound to ${port} instead`);
         }
-        console.log(`AgEnFK API Server running on port ${port} (with WebSockets)`);
+        console.log(`AgEnFK API Server running on ${BIND_HOST}:${port} (with WebSockets)`);
         telemetry.capture('server_started', {
           version: getCurrentVersion(),
           storageBackend: 'sqlite',

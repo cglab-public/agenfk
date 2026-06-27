@@ -21,7 +21,7 @@ describe('Server Release Update API', () => {
   });
 
   it('should trigger update with the correct npx command', async () => {
-    const res = await request(app).post('/releases/update');
+    const res = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
     expect(res.status).toBe(202);
     expect(res.body).toHaveProperty('jobId');
 
@@ -32,7 +32,7 @@ describe('Server Release Update API', () => {
   });
 
   it('uses the injected exec implementation when one is set (defense in depth)', async () => {
-    const res = await request(app).post('/releases/update');
+    const res = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
     expect(res.status).toBe(202);
 
     expect(stubExec).toHaveBeenCalledTimes(1);

@@ -608,14 +608,22 @@ async function callToolHandler(request: any): Promise<any> {
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "update_project": {
-        const { id, ...updates } = z.object({
+        const { id, verifyCommand, ...updates } = z.object({
           id: z.string(),
           name: z.string().optional(),
           description: z.string().optional(),
           verifyCommand: z.string().optional(),
         }).parse(request.params.arguments);
-        const { data } = await api.put(`/projects/${id}`, updates);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        let data: unknown;
+        if (Object.keys(updates).length > 0) {
+          ({ data } = await api.put(`/projects/${id}`, updates));
+        }
+        // verifyCommand is privileged (shell string) — set it via the gated
+        // internal endpoint with the verify token. (Security: bug e60e20aa.)
+        if (verifyCommand !== undefined) {
+          ({ data } = await api.put(`/projects/${id}/verify-command`, { verifyCommand }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } }));
+        }
+        return { content: [{ type: "text", text: JSON.stringify(data ?? { id }, null, 2) }] };
       }
       case "log_test_result": {
         const { itemId, command, output, status } = z.object({ 

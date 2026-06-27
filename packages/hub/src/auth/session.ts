@@ -23,10 +23,26 @@ export function verifySession(token: string, secret: string): SessionPayload | n
   }
 }
 
+// Whether to mark auth cookies Secure. Tying this to NODE_ENV alone meant a
+// TLS-terminated staging hub (NODE_ENV !== 'production') set the session JWT
+// WITHOUT Secure, so a protocol downgrade could leak it. Derive from the actual
+// request protocol (req.secure / x-forwarded-proto) and an explicit override,
+// so any HTTPS-served deployment gets Secure. (Security: bug f3d62844.)
+export function cookieSecure(req?: Request): boolean {
+  const explicit = process.env.AGENFK_HUB_COOKIE_SECURE;
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
+  if (req) {
+    const xfp = (req.headers?.['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim().toLowerCase();
+    if (req.secure || xfp === 'https') return true;
+  }
+  return process.env.NODE_ENV === 'production';
+}
+
 export function setSessionCookie(res: Response, token: string): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: cookieSecure(res.req),
     sameSite: 'lax',
     maxAge: SESSION_TTL_HOURS * 3600 * 1000,
     path: '/',
