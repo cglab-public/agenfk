@@ -72,6 +72,16 @@ async function defaultSelfExtract(input: { installRoot: string; targetVersion: s
   try {
     execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe' });
     execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe' });
+    // BUG bbe794bc: the tarball ships package.json + lockfile + dist/, but NOT
+    // node_modules. A tar-only overlay would advance the on-disk version while
+    // leaving deps unsatisfied if the target added/bumped a production dep — the
+    // server would then boot with a missing module yet we'd have reported
+    // success. Install deps to make the forced recovery a COMPLETE install,
+    // mirroring install.mjs's `npm ci --omit=dev --ignore-scripts`. If this
+    // fails (e.g. offline), we surface it as a failure rather than a false
+    // success.
+    const npmCmd = (os.platform() === 'win32') ? 'npm.cmd' : 'npm';
+    execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: input.installRoot, stdio: 'pipe' });
     return { ok: true };
   } catch (e: any) {
     const msg = e?.stderr?.toString?.()?.trim() || e?.message || String(e);
@@ -287,30 +297,32 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
       return;
     }
 
-    // ── Stale-CLI bootstrap recovery ──
-    // Old fleet clients (pre-`--version` option) treat `--version <ver>` as
-    // commander's global -V flag: they print their own version and exit 0
-    // with no install side-effects. Detect that signature (exit 0 + no
-    // parsed status + on-disk unchanged + on-disk === currentVersion) and
-    // try a self-extract recovery instead of giving up. Without this, every
-    // future directive on those installations will permanently re-fail.
-    // A stale CLI prints its own version on stdout (commander's -V handler)
-    // and exits 0. We look for that exact footprint: last non-empty line is a
-    // bare semver and equals the on-disk version. This avoids false positives
-    // when the CLI emits arbitrary diagnostics on the same exit path.
-    const lastStdoutLine = (result.stdout || '').trim().split('\n').filter(Boolean).pop() ?? '';
-    const stdoutIsBareSemver = SEMVER_TAG_RE.test(lastStdoutLine);
-    const looksLikeStaleCli =
-      exitOk
-      && !cliReportedSucceeded
-      && !cliReportedFailed
-      && !!onDisk
-      && !onDiskMatchesIntent
-      && stripV(onDisk) === stripV(args.currentVersion)
-      && stdoutIsBareSemver
-      && stripV(lastStdoutLine) === stripV(onDisk);
+    // ── Forced CLI-independent recovery (BUG bbe794bc) ──
+    // We reach here whenever the spawned CLI exited CLEANLY (exit 0) but did
+    // NOT advance the on-disk version to the target and did not itself report a
+    // failure — i.e. an old/buggy CLI that mis-parsed the args (the historical
+    // `--version`-vs-global-flag collision), a silent no-op, or a process
+    // killed mid-emit. Don't trust the CLI to ever self-correct: force the
+    // install through a path the reconciler fully controls — download the
+    // release tarball, extract it in place, and restart so the new code goes
+    // live. This fires for ANY such clean-exit non-advance (not just the narrow
+    // "printed its own version" signature) and REGARDLESS of the running
+    // reconciler's own version, so a fleet wedged behind a CLI flag bug
+    // self-heals on the next directive.
+    //
+    // The forced install is COMPLETE, not a bare overlay: defaultSelfExtract
+    // untars AND runs `npm ci --omit=dev` (node_modules aren't in the tarball),
+    // and only reports ok if both succeed — so a dep-changing target can't
+    // produce a false success. We still do NOT force-extract over a non-zero
+    // exit or an explicit `status:"failed"`: those are the CLI's own genuine
+    // install errors, and retrying the same install blindly would just mask
+    // them; they fall through to the generic failure path below. Single
+    // attempt: the directiveId guard + failed-state write prevent the next poll
+    // from re-running a hopeless target.
+    const cliCleanNonAdvance =
+      exitOk && !cliReportedSucceeded && !cliReportedFailed && !!onDisk && !onDiskMatchesIntent;
 
-    if (looksLikeStaleCli) {
+    if (cliCleanNonAdvance) {
       const installRoot = args.installRoot ?? defaultInstallRoot();
       if (installRoot) {
         const sx = await (args.selfExtractImpl ?? defaultSelfExtract)({
@@ -339,9 +351,9 @@ export async function reconcileUpgradeDirective(args: ReconcileArgs): Promise<vo
           return;
         }
         const reason = sx.ok
-          ? `self-heal extraction completed but on-disk version is ${newOnDisk ?? '<unknown>'}`
-          : `self-heal extraction failed: ${sx.error}`;
-        const error = `fleet CLI predates pinned-version upgrades (does not recognise --version), and ${reason}. Run 'agenfk upgrade --beta' or 'npx github:cglab-public/agenfk' on the host to recover.`;
+          ? `forced self-extract completed but on-disk version is ${newOnDisk ?? '<unknown>'}`
+          : `forced self-extract failed: ${sx.error}`;
+        const error = `agenfk upgrade exited 0 but did not advance on-disk to ${body.targetVersion} (on-disk: ${onDisk}); ${reason}. Recover with 'agenfk upgrade --beta' or 'npx github:cglab-public/agenfk' on the host.`;
         args.recordEvent({
           installationId: args.installationId,
           type: 'fleet:upgrade:failed',
