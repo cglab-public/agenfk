@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
 
 function Logo({ version }: { version?: string | null }) {
   return (
@@ -75,6 +75,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <Logo version={health.data?.version ?? null} />
         </div>
         <NavItem to="/" icon={<LayoutDashboard className="w-4 h-4" />} label="Org rollup" />
+        <NavItem to="/prs" icon={<GitPullRequest className="w-4 h-4" />} label="PR overview" />
         {me.data?.role === 'admin' && (
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" />
         )}

@@ -4,6 +4,7 @@ import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
+import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 
 function parseList(s: string | undefined): string[] | null {
@@ -202,6 +203,61 @@ export function queriesRouter(ctx: HubServerContext): Router {
     );
 
     res.json({ bucket, buckets: aggregateHistogramRows(rows) });
+  });
+
+  // PR Overview: total PRs per developer per size (XS–XL, derived from leaf
+  // items), per period, total + daily, with a model breakdown/filter. pr.updated
+  // re-sizes the same PR (counted once, at its latest sizing, attributed to the
+  // opener).
+  router.get('/prs/overview', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const f = readEventFilters(req);
+    const model = ((req.query.model as string | undefined) ?? '').trim() || null;
+
+    // Fetch PR events with only the UPPER time bound applied in SQL (`upTo`). The
+    // lower bound (`from`) and the model filter are intentionally NOT pushed down:
+    // the aggregator needs each PR's true opener to decide window membership and
+    // attribution, and a PR re-sized by a different runtime must still be matched
+    // by its OPENER's model — pushing model into SQL would fetch only the matching
+    // event and corrupt the opener. When `upTo` is null (open-ended), all events
+    // are read so "latest sizing wins" reflects every re-size.
+    const fetchRows = async (upTo: string | null): Promise<PrEventRow[]> => {
+      const base = applyEventFilters(orgId, { ...f, types: null, itemTypes: null, from: null, to: upTo });
+      const where = [...base.where, `type IN ('pr.opened', 'pr.updated')`];
+      return ctx.db.all<PrEventRow>(
+        `SELECT user_key, occurred_at, type,
+                json_extract(payload, '$.payload.repo') AS repo,
+                json_extract(payload, '$.payload.prNumber') AS pr_number,
+                json_extract(payload, '$.payload.leafStory') AS leaf_story,
+                json_extract(payload, '$.payload.sizingShadow.task') AS task,
+                json_extract(payload, '$.payload.sizingShadow.bug') AS bug,
+                json_extract(payload, '$.payload.model') AS model,
+                json_extract(payload, '$.payload.harness') AS harness
+         FROM events WHERE ${where.join(' AND ')}
+         ORDER BY occurred_at ASC`,
+        base.params,
+      );
+    };
+
+    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, model });
+
+    // Previous equal-length window for deltas — only when a lower bound is set.
+    // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened
+    // exactly at `from` is counted in the current window only, never both.
+    let previous: { prs: number; sizePoints: number } | null = null;
+    if (f.from) {
+      const toMs = (f.to ? new Date(f.to) : new Date()).getTime();
+      const fromMs = new Date(f.from).getTime();
+      if (Number.isFinite(toMs) && Number.isFinite(fromMs) && toMs > fromMs) {
+        const span = toMs - fromMs;
+        const prevFrom = new Date(fromMs - span).toISOString();
+        const prevTo = new Date(fromMs - 1).toISOString();
+        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, model });
+        previous = { prs: prev.totals.prs, sizePoints: prev.totals.sizePoints };
+      }
+    }
+
+    res.json({ period: { from: f.from, to: f.to }, ...result, previous });
   });
 
   return router;

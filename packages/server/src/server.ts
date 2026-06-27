@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -847,26 +847,25 @@ app.get("/flows", asyncHandler(async (_req: any, res: any) => {
 // shadow sizing by walking the item tree from the anchor item — logged for
 // discrepancy detection but never overrides the agent's number.
 
-async function computeShadowSizing(rootItemId: string): Promise<{ epic: number; story: number; task: number; bug: number }> {
-  const counts = { epic: 0, story: 0, task: 0, bug: 0 };
+// Walks the item subtree anchored at `rootItemId` and returns per-tier counts,
+// including `leafStory` (STORYs with no children). The leaf-story count lets the
+// hub size a PR by its atomic work without double-counting container tiers.
+async function computeShadowSizing(rootItemId: string): Promise<SizingCounts> {
+  const empty: SizingCounts = { epic: 0, story: 0, task: 0, bug: 0, leafStory: 0 };
   const root = await storage.getItem(rootItemId);
-  if (!root) return counts;
+  if (!root) return empty;
+  const collected: Array<{ id: string; type: string; parentId?: string | null }> = [];
   const stack: any[] = [root];
   const seen = new Set<string>();
   while (stack.length) {
     const node = stack.pop()!;
     if (seen.has(node.id)) continue;
     seen.add(node.id);
-    switch (node.type) {
-      case 'EPIC':  counts.epic++;  break;
-      case 'STORY': counts.story++; break;
-      case 'TASK':  counts.task++;  break;
-      case 'BUG':   counts.bug++;   break;
-    }
+    collected.push({ id: node.id, type: node.type, parentId: node.parentId ?? null });
     const children = await storage.listChildren(node.id);
     for (const c of children) stack.push(c);
   }
-  return counts;
+  return computeSizingFromItems(collected);
 }
 
 app.post("/prs", asyncHandler(async (req: any, res: any) => {
@@ -894,7 +893,10 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
   // therefore can't both see "not registered" and both emit pr.opened — exactly
   // one wins the unique index. (Security: bug fe03d054.)
   const newId = crypto.randomUUID();
-  const shadow = await computeShadowSizing(itemId);
+  const shadowCounts = await computeShadowSizing(itemId);
+  // Stored sizingShadow keeps the flat PrSizing shape; leafStory rides separately
+  // in the hub payload so the hub can size by leaf work.
+  const shadow = { epic: shadowCounts.epic, story: shadowCounts.story, task: shadowCounts.task, bug: shadowCounts.bug };
   const effectiveSizing = sizingProvided ? sizing : shadow;
   const now = new Date().toISOString();
   const pr = await storage.insertPr({
@@ -928,6 +930,7 @@ app.post("/prs", asyncHandler(async (req: any, res: any) => {
     // the server process cannot infer them). Optional — omitted when not supplied.
     payload: {
       prNumber, repo, sizing: effectiveSizing, sizingShadow: shadow,
+      leafStory: shadowCounts.leafStory,
       ...(typeof model === 'string' && model ? { model } : {}),
       ...(typeof harness === 'string' && harness ? { harness } : {}),
     },
@@ -955,7 +958,8 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
   const existing = await storage.getPrByRepoNumber(repo, prNumber);
   if (!existing) return res.status(404).json({ error: `PR ${repo}#${prNumber} not registered` });
 
-  const shadow = await computeShadowSizing(existing.itemId);
+  const shadowCounts = await computeShadowSizing(existing.itemId);
+  const shadow = { epic: shadowCounts.epic, story: shadowCounts.story, task: shadowCounts.task, bug: shadowCounts.bug };
   const updated = await storage.updatePrSizing(repo, prNumber, sizing, shadow);
 
   const matches =
@@ -973,6 +977,7 @@ app.put("/prs/:repo/:number", asyncHandler(async (req: any, res: any) => {
     projectId: anchorItem?.projectId,
     payload: {
       prNumber, repo, sizing, sizingShadow: shadow,
+      leafStory: shadowCounts.leafStory,
       ...(typeof model === 'string' && model ? { model } : {}),
       ...(typeof harness === 'string' && harness ? { harness } : {}),
     },
