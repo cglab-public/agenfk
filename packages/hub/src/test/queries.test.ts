@@ -422,3 +422,94 @@ describe('hub query endpoints', () => {
     expect(after[0]?.tokens_in).toBe(0);
   });
 });
+
+describe('GET /v1/prs/overview', () => {
+  let app: any;
+  let ctx: any;
+  let cookie: string;
+
+  beforeEach(async () => {
+    cleanup();
+    const out = await createHubApp({
+      dbPath: TEST_DB,
+      secretKey: SECRET,
+      sessionSecret: 'test-session-secret',
+      defaultOrgId: 'org',
+    });
+    app = out.app;
+    ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    cookie = login.headers['set-cookie']?.[0] ?? '';
+
+    const token = await issueApiKey(ctx.db, 'org', 'test');
+    const send = (events: any[]) =>
+      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+
+    const pr = (over: any) => sample({
+      type: 'pr.opened',
+      remoteUrl: 'git@github.com:acme/api.git',
+      ...over,
+      payload: { prNumber: over.prNumber, repo: 'acme/api', model: over.model, harness: 'claude-code',
+        sizing: over.sizing, sizingShadow: over.sizing, leafStory: over.leafStory ?? 0 },
+    });
+
+    await send([
+      // alice: PR#1 opened small (1 task → 2pts → xs)
+      pr({ eventId: 'p1', occurredAt: '2026-05-03T10:00:00Z',
+        actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' },
+        prNumber: 1, model: 'claude-opus-4-8', sizing: { epic: 0, story: 0, task: 1, bug: 0 } }),
+      // alice: PR#2 opened then resized bigger (leafStory 1 + task 4 → 12pts → m)
+      pr({ eventId: 'p2a', occurredAt: '2026-05-03T11:00:00Z',
+        actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' },
+        prNumber: 2, model: 'claude-opus-4-8', sizing: { epic: 0, story: 1, task: 1, bug: 0 }, leafStory: 1 }),
+      pr({ eventId: 'p2b', type: 'pr.updated', occurredAt: '2026-05-04T09:00:00Z',
+        actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' },
+        prNumber: 2, model: 'claude-opus-4-8', sizing: { epic: 0, story: 1, task: 4, bug: 0 }, leafStory: 1 }),
+      // bob: PR#3 (2 tasks → 4pts → s) via a different model
+      pr({ eventId: 'p3', occurredAt: '2026-05-04T10:00:00Z',
+        actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' },
+        prNumber: 3, model: 'claude-sonnet-4-6', sizing: { epic: 0, story: 0, task: 2, bug: 0 } }),
+    ]);
+  });
+
+  afterEach(async () => { await ctx.db.close(); cleanup(); });
+
+  it('requires a session', async () => {
+    const r = await supertest(app).get('/v1/prs/overview');
+    expect(r.status).toBe(401);
+  });
+
+  it('returns totals, per-developer, per-model, daily and resize breakdowns', async () => {
+    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets).toEqual(['xs', 's', 'm', 'l', 'xl']);
+    // 3 distinct PRs (the pr.updated must NOT add a 4th)
+    expect(r.body.totals.prs).toBe(3);
+    expect(r.body.totals.developers).toBe(2);
+    expect(r.body.resized).toEqual({ count: 1, grew: 1, shrank: 0 });
+
+    const alice = r.body.byDeveloper.find((d: any) => d.user_key === 'alice@acme.com');
+    expect(alice.prs).toBe(2);
+    expect(alice.sizes).toEqual({ xs: 1, s: 0, m: 1, l: 0, xl: 0 }); // PR#2 counted at its LATEST (m) size
+
+    const opus = r.body.byModel.find((m: any) => m.model === 'claude-opus-4-8');
+    expect(opus.prs).toBe(2);
+  });
+
+  it('filters by model', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?model=claude-sonnet-4-6').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(1);
+    expect(r.body.byModel).toHaveLength(1);
+    expect(r.body.byModel[0].model).toBe('claude-sonnet-4-6');
+  });
+
+  it('filters by date range', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    // Only bob's PR#3 was opened on 05-04 (alice's PRs opened 05-03)
+    expect(r.body.totals.prs).toBe(1);
+    expect(r.body.byDeveloper[0].user_key).toBe('bob@acme.com');
+  });
+});

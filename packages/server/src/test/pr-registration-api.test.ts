@@ -171,6 +171,28 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
     expect(res.body.sizing).toEqual({ epic: 1, story: 1, task: 99, bug: 99 }); // agent's number persists
     expect(res.body.sizingShadow).toEqual({ epic: 1, story: 1, task: 2, bug: 1 }); // server's truth
   });
+
+  it('POST /prs emits a leafStory count (stories with no subtasks) in the pr.opened payload', async () => {
+    process.env.AGENFK_DB_PATH = TEST_DB;
+    await initStorage();
+    const project = (await request(app).post('/projects').send({ name: 'PLS' })).body;
+    const epic = (await request(app).post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
+    // s1 is a container (has a task); s2 is a LEAF story (no children).
+    const s1 = (await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S1', parentId: epic.id })).body;
+    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T', parentId: s1.id });
+    await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S2 (leaf)', parentId: epic.id });
+
+    const res = await request(app).post('/prs').send({
+      itemId: epic.id, prNumber: 800, repo: 'foo/leaf',
+      model: 'claude-opus-4-8', harness: 'claude-code',
+    });
+    expect(res.status).toBe(201);
+
+    const ev = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 800);
+    expect(ev).toBeDefined();
+    expect(ev.payload?.leafStory).toBe(1); // only S2 is a leaf story
+    expect(ev.payload?.sizingShadow).toEqual({ epic: 1, story: 2, task: 1, bug: 0 });
+  });
 });
 
 describe('agent-declared model + harness on PR events', () => {
