@@ -8,7 +8,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "uuid": "^9.0.1"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@agenfk/core": "1.1.3",
