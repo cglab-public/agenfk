@@ -165,6 +165,48 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.sizePoints).toBe(2); // leaf_story null treated as 0
   });
 
+  it('handles Postgres row shapes — Date occurred_at and string-typed numerics', () => {
+    // On Postgres, occurred_at (TIMESTAMPTZ) comes back as a JS Date and
+    // jsonb_extract_path_text numerics come back as strings. The aggregator must
+    // normalise both rather than calling .slice()/.localeCompare() on a Date or
+    // doing string math. (Regression: prod 500 "iso.slice is not a function".)
+    const pgRow = (o: Record<string, unknown>) => ({
+      user_key: 'alice@acme.com',
+      occurred_at: new Date('2026-05-03T10:00:00Z'),
+      type: 'pr.opened',
+      repo: 'acme/api',
+      pr_number: '7',          // pg returns text
+      leaf_story: '1',
+      task: '4',
+      bug: '0',
+      model: 'claude-opus-4-8',
+      harness: 'claude-code',
+      ...o,
+    }) as unknown as PrEventRow;
+
+    const r = aggregatePrOverview([
+      pgRow({}),
+      pgRow({ type: 'pr.updated', occurred_at: new Date('2026-05-04T10:00:00Z'), task: '1', leaf_story: '0' }),
+    ]);
+    expect(r.totals.prs).toBe(1);
+    expect(r.totals.sizePoints).toBe(2); // latest: leafStory 0 + task 1 → 2
+    expect(r.byDay).toEqual([
+      { day: '2026-05-03', sizes: { xs: 1, s: 0, m: 0, l: 0, xl: 0 }, total: 1 },
+    ]);
+    expect(r.resized).toEqual({ count: 1, grew: 0, shrank: 1 });
+  });
+
+  it('applies the opener-day window correctly when occurred_at is a Date (Postgres)', () => {
+    const r = aggregatePrOverview(
+      [{
+        user_key: 'a@x', occurred_at: new Date('2026-05-03T10:00:00Z'), type: 'pr.opened',
+        repo: 'acme/api', pr_number: 1, leaf_story: 0, task: 1, bug: 0, model: 'm', harness: 'h',
+      } as unknown as PrEventRow],
+      { from: '2026-05-01T00:00:00Z', to: '2026-05-05T00:00:00Z' },
+    );
+    expect(r.totals.prs).toBe(1); // Date openerAt must compare correctly against ISO bounds
+  });
+
   it('ignores rows without a repo/prNumber', () => {
     const r = aggregatePrOverview([row({ repo: null }), row({ pr_number: null })]);
     expect(r.totals.prs).toBe(0);
