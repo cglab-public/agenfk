@@ -318,7 +318,7 @@ export function PrOverviewPage() {
                     return lines ? `${head}\n${lines}` : head;
                   };
                   return (
-                    <div key={day} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
+                    <div key={day} className="flex-1 max-w-[44px] flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
                       {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
                         <div
                           key={s.key}
@@ -333,7 +333,7 @@ export function PrOverviewPage() {
               </div>
               <div className="flex gap-1.5 mt-2 min-w-[420px]">
                 {axis.map((day, i) => (
-                  <div key={day} className="flex-1 text-center font-mono text-[9px] text-slate-400">
+                  <div key={day} className="flex-1 max-w-[44px] text-center font-mono text-[9px] text-slate-400">
                     {i % Math.ceil(axis.length / 10 || 1) === 0 ? day.slice(5) : ''}
                   </div>
                 ))}
@@ -431,7 +431,7 @@ export function PrOverviewPage() {
                             <div
                               key={day}
                               title={`${dev.user_key} · ${day}: ${c} PRs`}
-                              className="flex-1 aspect-square rounded-[3px] min-w-[10px]"
+                              className="flex-1 aspect-square rounded-[3px] min-w-[10px] max-w-[40px]"
                               style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
                             >
                               {c === 0 && <div className="w-full h-full rounded-[3px] bg-slate-100 dark:bg-slate-800" />}
