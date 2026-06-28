@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
 import { api } from '../api';
@@ -103,13 +104,36 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
 }
 
 export function PrOverviewPage() {
-  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:prs:projects' });
-  const devSel = useToggleSet([], { storageKey: 'agenfk-hub:prs:developers' });
-  const [range, setRange] = useState<RangeKey>('30d');
-  const [model, setModel] = useState<string>('');
+  // The URL query string is the source of truth for every filter, so a refresh
+  // or a shared link restores the exact same view. State is seeded from the URL
+  // on first render and written back (replace) whenever a filter changes.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const csv = (k: string) => (searchParams.get(k) ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const urlRange = searchParams.get('range');
+  const initRange = (RANGES.some(r => r.key === urlRange) ? urlRange : '30d') as RangeKey;
+
+  const projectSel = useToggleSet(csv('projects'));
+  const devSel = useToggleSet(csv('developers'));
+  const [range, setRange] = useState<RangeKey>(initRange);
+  const [model, setModel] = useState<string>(searchParams.get('model') ?? '');
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
-  const [customFrom, setCustomFrom] = useState<string>('');
-  const [customTo, setCustomTo] = useState<string>('');
+  const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
+  const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
+
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
+    if (model) p.set('model', model);
+    if (customFrom || customTo) {
+      // Explicit range takes precedence over the preset in the URL too.
+      if (customFrom) p.set('from', customFrom);
+      if (customTo) p.set('to', customTo);
+    } else if (range !== '30d') {
+      p.set('range', range); // omit the default to keep the URL clean
+    }
+    setSearchParams(p, { replace: true });
+  }, [projectSel.set, devSel.set, model, range, customFrom, customTo, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -318,7 +342,7 @@ export function PrOverviewPage() {
                     return lines ? `${head}\n${lines}` : head;
                   };
                   return (
-                    <div key={day} className="flex-1 max-w-[44px] flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
+                    <div key={day} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
                       {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
                         <div
                           key={s.key}
@@ -333,7 +357,7 @@ export function PrOverviewPage() {
               </div>
               <div className="flex gap-1.5 mt-2 min-w-[420px]">
                 {axis.map((day, i) => (
-                  <div key={day} className="flex-1 max-w-[44px] text-center font-mono text-[9px] text-slate-400">
+                  <div key={day} className="flex-1 text-center font-mono text-[9px] text-slate-400">
                     {i % Math.ceil(axis.length / 10 || 1) === 0 ? day.slice(5) : ''}
                   </div>
                 ))}
