@@ -21,7 +21,12 @@ interface PrOverviewResponse {
   buckets: SizeKey[];
   totals: { prs: number; sizePoints: number; developers: number; medianBucket: SizeKey | null };
   resized: { count: number; grew: number; shrank: number };
-  byDay: Array<{ day: string; sizes: SizeDist; total: number }>;
+  byDay: Array<{
+    day: string;
+    sizes: SizeDist;
+    total: number;
+    devBySize: Record<SizeKey, Array<{ user_key: string; count: number }>>;
+  }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
   previous: { prs: number; sizePoints: number } | null;
@@ -29,6 +34,8 @@ interface PrOverviewResponse {
 interface ProjectsResponse { projects: string[] }
 
 const EMPTY: SizeDist = { xs: 0, s: 0, m: 0, l: 0, xl: 0 };
+// XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
+const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
 function DeltaBadge({ value }: { value: number | null }) {
@@ -97,42 +104,66 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
 
 export function PrOverviewPage() {
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:prs:projects' });
+  const devSel = useToggleSet([], { storageKey: 'agenfk-hub:prs:developers' });
   const [range, setRange] = useState<RangeKey>('30d');
   const [model, setModel] = useState<string>('');
+  // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
+  const [customFrom, setCustomFrom] = useState<string>('');
+  const [customTo, setCustomTo] = useState<string>('');
 
-  const from = useMemo(() => fromIsoForRange(new Date(), range), [range]);
+  const from = useMemo(
+    () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
+    [customFrom, range],
+  );
+  // Inclusive end-of-day so a PR opened any time on `customTo` is counted.
+  const toParam = customTo ? `${customTo}T23:59:59.999Z` : '';
 
+  // Shared filters (project + date window). Model and developer are NOT here —
+  // they're applied only to the data query, so the options query can list the
+  // full set of models/developers available in the window.
   const baseQs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     p.set('from', from);
+    if (toParam) p.set('to', toParam);
     return p;
-  }, [projectSel.set, from]);
+  }, [projectSel.set, from, toParam]);
 
   const dataQs = useMemo(() => {
     const p = new URLSearchParams(baseQs);
     if (model) p.set('model', model);
+    if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, model]);
+  }, [baseQs, model, devSel.set]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
     queryFn: async () => (await api.get(`/v1/prs/overview?${dataQs}`)).data,
   });
 
-  // Model dropdown options come from the UNFILTERED overview (same project +
-  // period). When no model is selected the main `overview` already holds the
-  // full list, so we only run a second request once a model is picked.
+  // Model + developer dropdown options come from the overview UNFILTERED by
+  // model/developer (same project + window). When neither filter is active the
+  // main `overview` already holds the full lists, so the extra request only runs
+  // once a model or developer is selected.
+  const filtersActive = !!model || devSel.set.size > 0;
   const optionsQuery = useQuery<PrOverviewResponse>({
-    queryKey: ['pr-overview-models', baseQs.toString()],
+    queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
-    enabled: !!model,
+    enabled: filtersActive,
+    placeholderData: prev => prev, // keep prior options during refetch — don't blank the facet
   });
-  const modelOptions = (model ? optionsQuery.data : overview.data)?.byModel.map(m => m.model) ?? [];
+  // While the unfiltered options query is still loading, fall back to the main
+  // overview so the Developer/Model controls (and the selected chip) never vanish.
+  const optionsData = (filtersActive ? optionsQuery.data : overview.data) ?? overview.data;
+  const modelOptions = optionsData?.byModel.map(m => m.model) ?? [];
+  const devOptions = optionsData?.byDeveloper.map(x => x.user_key) ?? [];
   const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
 
+  // Picking a preset clears any explicit date range so the two don't fight.
+  const pickRange = (r: RangeKey) => { setRange(r); setCustomFrom(''); setCustomTo(''); };
+
   const d = overview.data;
-  const to = d?.period.to ?? new Date().toISOString();
+  const to = d?.period.to ?? (toParam || new Date().toISOString());
   const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
   const maxDayTotal = Math.max(1, ...(d?.byDay.map(x => x.total) ?? [1]));
   const byDayMap = useMemo(() => new Map((d?.byDay ?? []).map(x => [x.day, x])), [d]);
@@ -157,17 +188,48 @@ export function PrOverviewPage() {
             {modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
           <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
-            {RANGES.map(r => (
+            {RANGES.map(r => {
+              const active = !customFrom && !customTo && range === r.key;
+              return (
+                <button
+                  key={r.key}
+                  onClick={() => pickRange(r.key)}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${active
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                >
+                  {r.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <input
+              type="date"
+              value={customFrom}
+              max={customTo || undefined}
+              onChange={e => setCustomFrom(e.target.value)}
+              aria-label="From date"
+              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 px-2 py-1"
+            />
+            <span>→</span>
+            <input
+              type="date"
+              value={customTo}
+              min={customFrom || undefined}
+              onChange={e => setCustomTo(e.target.value)}
+              aria-label="To date"
+              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 px-2 py-1"
+            />
+            {(customFrom || customTo) && (
               <button
-                key={r.key}
-                onClick={() => setRange(r.key)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                onClick={() => { setCustomFrom(''); setCustomTo(''); }}
+                className="ml-0.5 px-1.5 py-1 rounded-md text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                title="Clear date range"
               >
-                {r.label}
+                ✕
               </button>
-            ))}
+            )}
           </div>
         </div>
       </header>
@@ -181,6 +243,16 @@ export function PrOverviewPage() {
         optionLabel={shortRemote}
         inlineThreshold={6}
         placeholder="Search projects…"
+      />
+
+      <FacetMultiselect
+        label="Developer"
+        options={devOptions}
+        selected={devSel.set}
+        onToggle={devSel.toggle}
+        onClear={devSel.clear}
+        inlineThreshold={6}
+        placeholder="Search developers…"
       />
 
       {overview.isLoading && <div className="text-sm text-slate-500 py-8 text-center">Loading…</div>}
@@ -236,11 +308,24 @@ export function PrOverviewPage() {
             <div className="overflow-x-auto">
               <div className="flex items-end gap-1.5 h-44 min-w-[420px]">
                 {axis.map(day => {
-                  const entry = byDayMap.get(day) ?? { sizes: EMPTY, total: 0 };
+                  const entry = byDayMap.get(day);
+                  const sizes = entry?.sizes ?? EMPTY;
+                  const total = entry?.total ?? 0;
+                  const sliceTitle = (key: SizeKey, label: string) => {
+                    const devs = entry?.devBySize?.[key] ?? [];
+                    const head = `${label} · ${day} · ${sizes[key]} PR${sizes[key] === 1 ? '' : 's'}`;
+                    const lines = devs.map(x => `  ${x.user_key}: ${x.count}`).join('\n');
+                    return lines ? `${head}\n${lines}` : head;
+                  };
                   return (
-                    <div key={day} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${entry.total} PRs`}>
-                      {SIZE_META.slice().reverse().filter(s => entry.sizes[s.key] > 0).map(s => (
-                        <div key={s.key} style={{ background: s.color, height: `${(entry.sizes[s.key] / maxDayTotal) * 100}%` }} className="rounded-[2px]" />
+                    <div key={day} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
+                      {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
+                        <div
+                          key={s.key}
+                          style={{ background: s.color, height: `${(sizes[s.key] / maxDayTotal) * 100}%` }}
+                          className="rounded-[2px] hover:opacity-80 transition-opacity cursor-default"
+                          title={sliceTitle(s.key, s.label)}
+                        />
                       ))}
                     </div>
                   );

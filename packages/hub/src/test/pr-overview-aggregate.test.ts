@@ -23,7 +23,7 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.prs).toBe(1);
     expect(r.totals.sizePoints).toBe(6);
     expect(r.totals.developers).toBe(1);
-    expect(r.byDay).toEqual([
+    expect(r.byDay).toMatchObject([
       { day: '2026-05-03', sizes: { xs: 0, s: 1, m: 0, l: 0, xl: 0 }, total: 1 },
     ]);
     expect(r.byDeveloper[0].user_key).toBe('alice@acme.com');
@@ -39,7 +39,7 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.prs).toBe(1); // counted ONCE
     expect(r.totals.sizePoints).toBe(12); // latest sizing wins
     // placed on the OPEN day, at its final (latest) size
-    expect(r.byDay).toEqual([
+    expect(r.byDay).toMatchObject([
       { day: '2026-05-03', sizes: { xs: 0, s: 0, m: 1, l: 0, xl: 0 }, total: 1 },
     ]);
     expect(r.resized).toEqual({ count: 1, grew: 1, shrank: 0 });
@@ -165,6 +165,50 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.sizePoints).toBe(2); // leaf_story null treated as 0
   });
 
+  it('byDay carries a per-size developer breakdown (for slice tooltips)', () => {
+    const rows = [
+      row({ pr_number: 1, user_key: 'alice@acme.com', occurred_at: '2026-05-03T10:00:00Z', task: 1 }),               // xs
+      row({ pr_number: 2, user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', task: 1 }),                 // xs
+      row({ pr_number: 3, user_key: 'alice@acme.com', occurred_at: '2026-05-03T12:00:00Z', leaf_story: 1, task: 4 }), // m
+    ];
+    const day = aggregatePrOverview(rows).byDay.find(d => d.day === '2026-05-03')!;
+    expect(day.devBySize.xs).toEqual([
+      { user_key: 'alice@acme.com', count: 1 },
+      { user_key: 'bob@acme.com', count: 1 },
+    ]);
+    expect(day.devBySize.m).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
+    expect(day.devBySize.s).toEqual([]);
+  });
+
+  it('per-size developer breakdown sorts by count desc', () => {
+    const rows = [
+      row({ pr_number: 1, user_key: 'alice@acme.com', task: 1 }),
+      row({ pr_number: 2, user_key: 'alice@acme.com', task: 1 }),
+      row({ pr_number: 3, user_key: 'bob@acme.com', task: 1 }),
+    ];
+    const day = aggregatePrOverview(rows).byDay[0];
+    expect(day.devBySize.xs).toEqual([
+      { user_key: 'alice@acme.com', count: 2 },
+      { user_key: 'bob@acme.com', count: 1 },
+    ]);
+  });
+
+  it('filters by developer on the opener (multi-select)', () => {
+    const rows = [
+      row({ pr_number: 1, user_key: 'alice@acme.com' }),
+      row({ pr_number: 2, user_key: 'bob@acme.com' }),
+      row({ pr_number: 3, user_key: 'carol@acme.com' }),
+      // opened by alice, re-sized by bob → filtering bob must NOT pull it in
+      row({ pr_number: 4, type: 'pr.opened', user_key: 'alice@acme.com', occurred_at: '2026-05-03T09:00:00Z' }),
+      row({ pr_number: 4, type: 'pr.updated', user_key: 'bob@acme.com', occurred_at: '2026-05-04T09:00:00Z', task: 2 }),
+    ];
+    const r = aggregatePrOverview(rows, { developers: ['alice@acme.com', 'bob@acme.com'] });
+    expect(r.totals.prs).toBe(3); // alice #1 #4, bob #2 — carol excluded
+    expect(r.byDeveloper.map(d => d.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
+    const alice = r.byDeveloper.find(d => d.user_key === 'alice@acme.com')!;
+    expect(alice.prs).toBe(2); // #4 attributed to its opener, not bob
+  });
+
   it('handles Postgres row shapes — Date occurred_at and string-typed numerics', () => {
     // On Postgres, occurred_at (TIMESTAMPTZ) comes back as a JS Date and
     // jsonb_extract_path_text numerics come back as strings. The aggregator must
@@ -190,7 +234,7 @@ describe('aggregatePrOverview', () => {
     ]);
     expect(r.totals.prs).toBe(1);
     expect(r.totals.sizePoints).toBe(2); // latest: leafStory 0 + task 1 → 2
-    expect(r.byDay).toEqual([
+    expect(r.byDay).toMatchObject([
       { day: '2026-05-03', sizes: { xs: 1, s: 0, m: 0, l: 0, xl: 0 }, total: 1 },
     ]);
     expect(r.resized).toEqual({ count: 1, grew: 0, shrank: 1 });
