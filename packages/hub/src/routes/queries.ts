@@ -221,8 +221,11 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // by its OPENER's model — pushing model into SQL would fetch only the matching
     // event and corrupt the opener. When `upTo` is null (open-ended), all events
     // are read so "latest sizing wins" reflects every re-size.
+    // users (developer) filter is opener-based, applied in the aggregator — not
+    // pushed to SQL, for the same reason as model: filtering events by user_key
+    // would hide the opener of a PR re-sized by someone else and misattribute it.
     const fetchRows = async (upTo: string | null): Promise<PrEventRow[]> => {
-      const base = applyEventFilters(orgId, { ...f, types: null, itemTypes: null, from: null, to: upTo });
+      const base = applyEventFilters(orgId, { ...f, types: null, itemTypes: null, users: null, from: null, to: upTo });
       const where = [...base.where, `type IN ('pr.opened', 'pr.updated')`];
       return ctx.db.all<PrEventRow>(
         `SELECT user_key, occurred_at, type,
@@ -239,7 +242,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       );
     };
 
-    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, model });
+    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, model, developers: f.users });
 
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened
@@ -252,7 +255,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
         const span = toMs - fromMs;
         const prevFrom = new Date(fromMs - span).toISOString();
         const prevTo = new Date(fromMs - 1).toISOString();
-        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, model });
+        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, model, developers: f.users });
         previous = { prs: prev.totals.prs, sizePoints: prev.totals.sizePoints };
       }
     }

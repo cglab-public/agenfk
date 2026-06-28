@@ -512,4 +512,31 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.totals.prs).toBe(1);
     expect(r.body.byDeveloper[0].user_key).toBe('bob@acme.com');
   });
+
+  it('filters by an explicit from/to date range', async () => {
+    // Window covers only 05-03 → alice's two PRs, bob's 05-04 PR excluded.
+    const r = await supertest(app)
+      .get('/v1/prs/overview?from=2026-05-03T00:00:00Z&to=2026-05-03T23:59:59Z')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(2);
+    expect(r.body.byDeveloper.every((d: any) => d.user_key === 'alice@acme.com')).toBe(true);
+  });
+
+  it('filters by developer (users param)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(1); // only bob's PR#3
+    expect(r.body.byDeveloper).toHaveLength(1);
+    expect(r.body.byDeveloper[0].user_key).toBe('bob@acme.com');
+  });
+
+  it('byDay slices carry a per-size developer breakdown', async () => {
+    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    const may3 = r.body.byDay.find((d: any) => d.day === '2026-05-03');
+    // alice opened PR#1 (xs) and PR#2 (m, latest) on 05-03
+    expect(may3.devBySize.xs).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
+    expect(may3.devBySize.m).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
+  });
 });

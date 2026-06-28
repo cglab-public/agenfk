@@ -65,7 +65,14 @@ export interface PrOverviewResult {
   buckets: readonly SizeBucket[];
   totals: { prs: number; sizePoints: number; developers: number; medianBucket: SizeBucket | null };
   resized: { count: number; grew: number; shrank: number };
-  byDay: Array<{ day: string; sizes: SizeDist; total: number }>;
+  byDay: Array<{
+    day: string;
+    sizes: SizeDist;
+    total: number;
+    // Per-size developer breakdown for slice tooltips: devBySize[size] = the
+    // developers who opened a PR of that size on that day, with their counts.
+    devBySize: Record<SizeBucket, Array<{ user_key: string; count: number }>>;
+  }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
 }
@@ -80,8 +87,15 @@ const pointsOf = (r: NormRow): number =>
  *  even if it was re-sized within the window (the update alone must not make it
  *  look new). Pass rows fetched WITHOUT a lower time bound so true openers are
  *  visible. The model filter likewise matches the OPENER's model, so a PR re-sized
- *  by a different runtime stays attributed to whoever opened it. */
-export interface PrWindow { from?: string | null; to?: string | null; model?: string | null }
+ *  by a different runtime stays attributed to whoever opened it. The developer
+ *  filter is likewise opener-based — a PR opened by X but re-sized by Y still
+ *  belongs to X, so filtering by Y must not pull it in. */
+export interface PrWindow {
+  from?: string | null;
+  to?: string | null;
+  model?: string | null;
+  developers?: string[] | null;
+}
 
 interface ResolvedPr {
   user_key: string;
@@ -134,13 +148,17 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   const from = window?.from ?? null;
   const to = window?.to ?? null;
   const model = window?.model ?? null;
+  const devFilter = window?.developers && window.developers.length ? new Set(window.developers) : null;
   const prs = resolvePrs(rows).filter(pr =>
     (!from || pr.openerAt >= from)
     && (!to || pr.openerAt <= to)
-    && (!model || pr.model === model),
+    && (!model || pr.model === model)
+    && (!devFilter || devFilter.has(pr.user_key)),
   );
 
   const byDayMap = new Map<string, SizeDist>();
+  // day → size bucket → (developer → count), for slice tooltips.
+  const dayDevMap = new Map<string, Record<SizeBucket, Map<string, number>>>();
   const devMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>();
   const modelMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; harnesses: Set<string> }>();
   const resized = { count: 0, grew: 0, shrank: 0 };
@@ -154,6 +172,11 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     const day = byDayMap.get(pr.day) ?? emptyDist();
     day[pr.bucket]++;
     byDayMap.set(pr.day, day);
+
+    let dayDev = dayDevMap.get(pr.day);
+    if (!dayDev) { dayDev = { xs: new Map(), s: new Map(), m: new Map(), l: new Map(), xl: new Map() }; dayDevMap.set(pr.day, dayDev); }
+    const devCounts = dayDev[pr.bucket];
+    devCounts.set(pr.user_key, (devCounts.get(pr.user_key) ?? 0) + 1);
 
     const dev = devMap.get(pr.user_key) ?? { prs: 0, sizePoints: 0, sizes: emptyDist(), daily: {} };
     dev.prs++; dev.sizePoints += pr.points; dev.sizes[pr.bucket]++;
@@ -182,7 +205,19 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   }
 
   const byDay = [...byDayMap.entries()]
-    .map(([day, sizes]) => ({ day, sizes, total: SIZE_BUCKETS.reduce((a, b) => a + sizes[b], 0) }))
+    .map(([day, sizes]) => {
+      const dayDev = dayDevMap.get(day);
+      const devBySize = {} as Record<SizeBucket, Array<{ user_key: string; count: number }>>;
+      for (const b of SIZE_BUCKETS) {
+        const m = dayDev?.[b];
+        devBySize[b] = m
+          ? [...m.entries()]
+            .map(([user_key, count]) => ({ user_key, count }))
+            .sort((x, y) => y.count - x.count || x.user_key.localeCompare(y.user_key))
+          : [];
+      }
+      return { day, sizes, total: SIZE_BUCKETS.reduce((a, b) => a + sizes[b], 0), devBySize };
+    })
     .sort((a, b) => a.day.localeCompare(b.day));
 
   const byDeveloper = [...devMap.entries()]
