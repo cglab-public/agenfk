@@ -189,9 +189,25 @@ const SCHEMA_SQLITE = `
     token TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- Per-user saved queries for the admin DB query console. Each row is owned by
+  -- the user who created it (user_id) within an org; the CRUD API only ever
+  -- exposes a user their own rows.
+  CREATE TABLE IF NOT EXISTS saved_queries (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sql_text TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_saved_queries_owner ON saved_queries(org_id, user_id, updated_at);
 `;
 
 class SqliteAdapter implements HubDb {
+  readonly backend = 'sqlite' as const;
   constructor(private raw: RawDb) {}
 
   async run(sql: string, params: Params = []): Promise<RunResult> {
@@ -211,6 +227,20 @@ class SqliteAdapter implements HubDb {
   async all<T = unknown>(sql: string, params: Params = []): Promise<T[]> {
     const stmt = this.raw.prepare(sql);
     return stmt.all(...(params as any[])) as T[];
+  }
+
+  async readonlyAll<T = unknown>(sql: string, _timeoutMs?: number): Promise<T[]> {
+    // PRAGMA query_only makes SQLite itself reject any write/DDL for the
+    // duration — an engine-level guarantee beyond the keyword denylist.
+    // (SQLite has no volatile side-effecting functions like PG's pg_sleep, so a
+    // per-statement timeout isn't needed here; node:sqlite also rejects
+    // multi-statement input at prepare time.)
+    this.raw.exec('PRAGMA query_only = ON');
+    try {
+      return this.raw.prepare(sql).all() as T[];
+    } finally {
+      this.raw.exec('PRAGMA query_only = OFF');
+    }
   }
 
   async exec(sql: string): Promise<void> {

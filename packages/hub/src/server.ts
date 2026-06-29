@@ -13,6 +13,8 @@ import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { queriesRouter } from './routes/queries.js';
+import { dbConsoleRouter } from './routes/db-console.js';
+import { savedQueriesRouter } from './routes/saved-queries.js';
 import { connectRouter } from './routes/connect.js';
 import { startRollupTimer } from './rollup.js';
 import * as fs from 'fs';
@@ -193,6 +195,8 @@ export async function createHubApp(
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1/admin', orgRenameRouter(ctx));
+  app.use('/v1/admin/db-console', dbConsoleRouter(ctx));
+  app.use('/v1/admin/saved-queries', savedQueriesRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
   startRollupTimer(db);

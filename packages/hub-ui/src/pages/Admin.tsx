@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, Database } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
@@ -40,6 +40,9 @@ export function AdminLayout() {
         </NavLink>
         <NavLink to="org" className={link}>
           <span className="inline-flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Organization</span>
+        </NavLink>
+        <NavLink to="database" className={link}>
+          <span className="inline-flex items-center gap-1.5"><Database className="w-3.5 h-3.5" /> Database</span>
         </NavLink>
       </nav>
 

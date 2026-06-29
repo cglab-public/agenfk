@@ -178,6 +178,20 @@ const SCHEMA_PG = `
     token TEXT PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  -- Per-user saved queries for the admin DB query console. Owned per (org_id,
+  -- user_id); the CRUD API only ever exposes a user their own rows.
+  CREATE TABLE IF NOT EXISTS saved_queries (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sql_text TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_saved_queries_owner ON saved_queries(org_id, user_id, updated_at);
 `;
 
 /**
@@ -192,6 +206,7 @@ interface PgState {
 }
 
 class PgAdapter implements HubDb {
+  readonly backend = 'postgres' as const;
   constructor(private state: PgState) {}
 
   private exec_(sql: string, params: Params): Promise<QueryResult<any>> {
@@ -215,6 +230,28 @@ class PgAdapter implements HubDb {
   async all<T = unknown>(sql: string, params: Params = []): Promise<T[]> {
     const r = await this.exec_(sql, params);
     return r.rows as T[];
+  }
+
+  async readonlyAll<T = unknown>(sql: string, timeoutMs = 15000): Promise<T[]> {
+    // Engine-level read-only: a READ ONLY transaction makes Postgres reject any
+    // write (including side-effecting SELECTs like setval() and data-modifying
+    // CTEs), and statement_timeout caps runaway/sleeping queries. The SQL runs
+    // VERBATIM — no dialect rewriting — so the placeholder renumberer can't
+    // mangle jsonb operators (?, ?|, ?&) in ad-hoc console SQL.
+    const client = await this.state.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // SET commands are best-effort: pg-mem (tests) doesn't support all of
+      // them, but real Postgres does — and the keyword guard is the first line
+      // regardless. Real PG gets a true READ ONLY boundary here.
+      try { await client.query('SET TRANSACTION READ ONLY'); } catch { /* pg-mem */ }
+      try { await client.query(`SET LOCAL statement_timeout = ${Number(timeoutMs) || 15000}`); } catch { /* pg-mem */ }
+      const r = await client.query(sql);
+      return r.rows as T[];
+    } finally {
+      try { await client.query('ROLLBACK'); } catch { /* already gone */ }
+      client.release();
+    }
   }
 
   async exec(sql: string): Promise<void> {
