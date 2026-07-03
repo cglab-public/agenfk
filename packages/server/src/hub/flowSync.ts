@@ -38,7 +38,34 @@ export type ReconcileOutcome =
   | { outcome: 'no-assignment'; etag: string | null }
   | { outcome: 'error'; etag: string | null; error: string };
 
-export async function reconcileProjectFlow(args: ReconcileProjectArgs): Promise<ReconcileOutcome> {
+// ── Per-project serialization ───────────────────────────────────────────────
+// The reconcile does a read-modify-write (listFlows → find by hubFlowId →
+// create/update → rebind project) with `await` gaps. Two callers now drive it:
+// the polling loop AND on-demand refreshes (GET .../flow?refresh=true). Without
+// serialization, two concurrent reconciles for the same project could both see
+// "no existing row", both createFlow with a fresh uuid, and leave duplicate rows
+// for the same hubFlowId. This lightweight chained-promise mutex, keyed by
+// project, guarantees the critical section runs one-at-a-time per project.
+const reconcileLocks = new Map<string, Promise<unknown>>();
+
+async function runExclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = reconcileLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn); // run after the previous holder settles, either way
+  const guard = run.then(() => undefined, () => undefined); // never rejects → chain survives throws
+  reconcileLocks.set(key, guard);
+  try {
+    return await run;
+  } finally {
+    if (reconcileLocks.get(key) === guard) reconcileLocks.delete(key);
+  }
+}
+
+export function reconcileProjectFlow(args: ReconcileProjectArgs): Promise<ReconcileOutcome> {
+  // One key per project; the org-fallback path (null projectId) shares a key.
+  return runExclusive(args.projectId ?? '__org__', () => reconcileProjectFlowInner(args));
+}
+
+async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<ReconcileOutcome> {
   const { storage, hubConfig, projectId, lastEtag, fetchImpl, emit } = args;
   const baseUrl = `${hubConfig.url.replace(/\/$/, '')}/v1/flows/active`;
   const url = projectId ? `${baseUrl}?projectId=${encodeURIComponent(projectId)}` : baseUrl;
@@ -197,6 +224,12 @@ export interface StartFlowSyncArgs {
   intervalMs?: number;
   fetchImpl?: FetchLike;
   emit: (event: string, payload: any) => void;
+  /**
+   * Optional shared per-project ETag cache. Pass the same Map used by on-demand
+   * refreshes so a poll and a refresh don't re-fetch the same unchanged flow.
+   * Defaults to a private cache when omitted.
+   */
+  etagCache?: Map<string, string>;
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -204,7 +237,7 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 export function startFlowSync(args: StartFlowSyncArgs): FlowSyncHandle {
   const baseInterval = args.intervalMs ?? DEFAULT_INTERVAL_MS;
   const fetchImpl = args.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
-  const etagCache = new Map<string, string>();
+  const etagCache = args.etagCache ?? new Map<string, string>();
   let stopped = false;
   let consecutiveErrors = 0;
   let timer: NodeJS.Timeout | null = null;

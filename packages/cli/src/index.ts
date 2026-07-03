@@ -3292,7 +3292,10 @@ flowCommand
           process.exit(1);
           return;
         }
-        ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow`));
+        // refresh=true → server attempts an on-demand Hub reconcile before
+        // reading, so `flow show` reflects a just-changed Hub assignment without
+        // waiting for the 5-minute poll (falls back to the local flow on error).
+        ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow?refresh=true`));
       }
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(flow));
