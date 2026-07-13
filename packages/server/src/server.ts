@@ -7,6 +7,7 @@ import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSourc
 import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
+import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
@@ -85,6 +86,10 @@ const telemetry = new TelemetryClient();
 const hubClient = new HubClient(getInstallationId(), loadHubConfig());
 let hubFlusher: Flusher | null = null;
 let flowSyncHandle: FlowSyncHandle | null = null;
+// Per-project ETag cache for hub flow reconciles. Shared between the polling
+// reconciler (startFlowSync) and on-demand refreshes (GET .../flow?refresh=true)
+// so the two never re-fetch the same unchanged flow.
+const flowSyncEtagCache = new Map<string, string>();
 let upgradeSyncHandle: UpgradeSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
@@ -469,6 +474,7 @@ const initStorage = async () => {
       storage: storage as SQLiteStorageProvider,
       hubConfig: hubClient.hubConfig,
       intervalMs,
+      etagCache: flowSyncEtagCache,
       emit: (event, payload) => io.emit(event, payload),
     });
     console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
@@ -818,8 +824,30 @@ app.post("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
-  const project = await storage.getProject(req.params.id);
+  let project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
+
+  // Opt-in on-demand refresh (used by `agenfk flow show`): pull the project's
+  // currently-assigned Hub flow now instead of waiting for the 5-minute poll.
+  // Never throws — on any Hub error we fall through to the local flow below.
+  const refreshRequested = (() => {
+    const q = req.query.refresh;
+    const v = Array.isArray(q) ? q[q.length - 1] : q; // last value wins on ?refresh=..&refresh=..
+    return v === "true" || v === "1";
+  })();
+  if (refreshRequested && hubClient.isEnabled && hubClient.hubConfig) {
+    await refreshProjectFlowFromHub({
+      storage: storage as SQLiteStorageProvider,
+      hubEnabled: hubClient.isEnabled,
+      hubConfig: hubClient.hubConfig,
+      projectId: req.params.id,
+      fetchImpl: globalThis.fetch as any,
+      emit: (event, payload) => io.emit(event, payload),
+      etagCache: flowSyncEtagCache,
+    });
+    // The reconcile may have rebound the project to a new flow id.
+    project = (await storage.getProject(req.params.id)) ?? project;
+  }
 
   if (!(project as any).flowId) {
     return res.json(DEFAULT_FLOW);
