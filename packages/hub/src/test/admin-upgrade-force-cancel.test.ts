@@ -279,11 +279,71 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     expect(r.status).toBe(200);
 
     const row = await ctx.db.get(
-      `SELECT state, result_version FROM upgrade_directive_targets WHERE directive_id = ? AND installation_id = 'inst-1'`,
+      `SELECT state, result_version, error_message FROM upgrade_directive_targets WHERE directive_id = ? AND installation_id = 'inst-1'`,
       [directiveId],
     );
     expect(row!.state).toBe('succeeded');
     expect(row!.result_version).toBe('0.3.1');
+    // The stale force-cancel message must not linger on a succeeded row.
+    expect(row!.error_message).toBeNull();
+  });
+
+  it('a late terminal failed report overwrites the force-cancel error_message with the real reason', async () => {
+    const directiveId = await issueDirectiveAll();
+    await markInProgress(directiveId, 'inst-1');
+    await supertest(app)
+      .post(`/v1/admin/upgrade/${directiveId}/cancel`)
+      .set('Cookie', cookieAdmin)
+      .send({ force: true });
+
+    const r = await supertest(app)
+      .post('/v1/events')
+      .set('Authorization', `Bearer ${fleetTokenInst1}`)
+      .send({ events: [upgradeEvent('fleet:upgrade:failed', 'inst-1', directiveId, { error: 'install.mjs exit 1' })] });
+    expect(r.status).toBe(200);
+
+    const row = await ctx.db.get(
+      `SELECT state, error_message FROM upgrade_directive_targets WHERE directive_id = ? AND installation_id = 'inst-1'`,
+      [directiveId],
+    );
+    expect(row!.state).toBe('failed');
+    expect(row!.error_message).toBe('install.mjs exit 1');
+  });
+
+  it('a late started is also blocked on plain-cancelled and terminal targets', async () => {
+    const directiveId = await issueDirectiveAll();
+    // inst-1: plain cancel while still pending.
+    await supertest(app)
+      .post(`/v1/admin/upgrade/${directiveId}/cancel`)
+      .set('Cookie', cookieAdmin)
+      .send({});
+
+    const r = await supertest(app)
+      .post('/v1/events')
+      .set('Authorization', `Bearer ${fleetTokenInst1}`)
+      .send({ events: [upgradeEvent('fleet:upgrade:started', 'inst-1', directiveId)] });
+    expect(r.status).toBe(200);
+    const cancelled = await ctx.db.get(
+      `SELECT state FROM upgrade_directive_targets WHERE directive_id = ? AND installation_id = 'inst-1'`,
+      [directiveId],
+    );
+    expect(cancelled!.state).toBe('cancelled');
+
+    // And on a terminal row: force a succeeded state, then replay started.
+    await ctx.db.run(
+      `UPDATE upgrade_directive_targets SET state = 'succeeded' WHERE directive_id = ? AND installation_id = 'inst-1'`,
+      [directiveId],
+    );
+    const r2 = await supertest(app)
+      .post('/v1/events')
+      .set('Authorization', `Bearer ${fleetTokenInst1}`)
+      .send({ events: [upgradeEvent('fleet:upgrade:started', 'inst-1', directiveId)] });
+    expect(r2.status).toBe(200);
+    const terminal = await ctx.db.get(
+      `SELECT state FROM upgrade_directive_targets WHERE directive_id = ? AND installation_id = 'inst-1'`,
+      [directiveId],
+    );
+    expect(terminal!.state).toBe('succeeded');
   });
 });
 
