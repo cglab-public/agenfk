@@ -845,6 +845,31 @@ program
   });
 
 program
+  .command('current-project')
+  .description('Print the current project id (resolved from the nearest .agenfk/project.json)')
+  .option('--json', 'Output as JSON (includes server-side project details when reachable)')
+  .action(async (options) => {
+    const projectId = findProjectId(process.cwd());
+    if (!projectId) {
+      console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    if (program.opts().toon || options.json) {
+      let details: any = { projectId };
+      try {
+        const { data } = await axios.get(`${API_URL}/projects/${projectId}`);
+        details = { projectId, name: data.name, description: data.description };
+      } catch {
+        // Server unreachable — the id alone is still useful offline.
+      }
+      console.log(structuredOutput(details));
+      return;
+    }
+    console.log(projectId);
+  });
+
+program
   .command('create-project <name>')
   .description('Create a new project')
   .option('-d, --description <desc>', 'Project description', '')
@@ -3708,7 +3733,7 @@ program.helpInformation = function () {
   const allCommands = program.commands;
   const groups: [string, string[]][] = [
     ['Services',              ['up', 'down', 'restart', 'kill', 'upgrade', 'health', 'ui']],
-    ['Project & Items',       ['init', 'create-project', 'list-projects', 'create', 'list', 'get', 'update', 'delete', 'move']],
+    ['Project & Items',       ['init', 'create-project', 'list-projects', 'current-project', 'create', 'list', 'get', 'update', 'delete', 'move']],
     ['Workflow',              ['verify', 'gatekeeper', 'comment', 'log-test', 'tokens']],
     ['Integrations & Rules',  ['integration', 'skills', 'configure-ide']],
     ['Git & Release',         ['branch', 'pr', 'pr-register', 'pr-resize']],

@@ -87,6 +87,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 |-----------|-------------|----------|
 | Authorize a pre-edit | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--json]` | `workflow_gatekeeper` |
 | List projects | `agenfk list-projects --json` | `list_projects` |
+| Get the current project id | `agenfk current-project [--json]` (resolves the nearest `.agenfk/project.json`; `--json` adds the project name/description from the server when reachable) | — |
 | Create a project | `agenfk create-project "<name>" [-d/--description <desc>]` | `create_project` |
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
 | List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` | `list_items` |
@@ -166,7 +167,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 
 ### Reading state — `--json`
 
-Read commands emit JSON. Append `--json` to `list`, `get`, `list-projects`, `flow show`,
+Read commands emit JSON. Append `--json` to `list`, `get`, `list-projects`, `current-project`, `flow show`,
 `flow list`, and `tokens` for machine-readable output you can parse into your context:
 
 ```bash
