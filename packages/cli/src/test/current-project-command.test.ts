@@ -96,6 +96,20 @@ describe('current-project command', () => {
     expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
+  it('resolves project.json from a parent directory (walk-up)', async () => {
+    const parentProjectJson = path.join(path.dirname(process.cwd()), '.agenfk', 'project.json');
+    mockExistsSync.mockImplementation((p: any) => String(p) === parentProjectJson);
+    mockReadFileSync.mockImplementation((p: any) =>
+      String(p) === parentProjectJson ? JSON.stringify({ projectId: PROJECT_ID }) : '{}'
+    );
+
+    await program.parseAsync(['node', 'agenfk', 'current-project']);
+
+    const output = logSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+    expect(output).toContain(PROJECT_ID);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
   it('errors and exits 1 when no .agenfk/project.json is found', async () => {
     mockExistsSync.mockReturnValue(false);
 
@@ -104,14 +118,30 @@ describe('current-project command', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
     expect(err.toLowerCase()).toContain('agenfk init');
+    // Errors go to stderr only — stdout stays clean for scripting.
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it('errors and exits 1 when project.json is malformed', async () => {
+  it('errors and exits 1 with a distinct message when project.json is malformed', async () => {
     mockProjectJson('not-json{');
 
     await program.parseAsync(['node', 'agenfk', 'current-project']);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
+    const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+    // Must not misreport the file as missing nor steer toward re-init.
+    expect(err).toContain('malformed');
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('errors with the malformed message when project.json lacks a projectId key', async () => {
+    mockProjectJson(JSON.stringify({ name: 'no-id-here' }));
+
+    await program.parseAsync(['node', 'agenfk', 'current-project']);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+    expect(err).toContain('projectId');
   });
 
   it('--json includes server-side project details when reachable', async () => {
@@ -139,5 +169,31 @@ describe('current-project command', () => {
     const parsed = JSON.parse(output);
     expect(parsed.projectId).toBe(PROJECT_ID);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('--json warns on stderr when the server does not know the project (404)', async () => {
+    mockProjectJson(JSON.stringify({ projectId: PROJECT_ID }));
+    mockedAxios.get.mockRejectedValue({ response: { status: 404 } });
+
+    await program.parseAsync(['node', 'agenfk', 'current-project', '--json']);
+
+    const err = errorSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+    expect(err).toContain('not known to the server');
+    // Still emits the local id and succeeds — stdout stays parseable.
+    const parsed = JSON.parse(logSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n'));
+    expect(parsed.projectId).toBe(PROJECT_ID);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('global --toon triggers structured output with server enrichment', async () => {
+    mockProjectJson(JSON.stringify({ projectId: PROJECT_ID }));
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT_ID, name: 'AgEnFK', description: 'd' } });
+
+    await program.parseAsync(['node', 'agenfk', '--toon', 'current-project']);
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining(`/projects/${PROJECT_ID}`));
+    const output = logSpy.mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+    expect(output).toContain(PROJECT_ID);
+    expect(output).toContain('AgEnFK');
   });
 });

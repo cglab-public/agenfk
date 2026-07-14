@@ -8,7 +8,7 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 
 **Step 1 — Identify Test Surface**
 - Read the item details using `agenfk get <id> --json`.
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (no `.agenfk/project.json` found), create the file with `{ "projectId": "<projectId>" }`.
 - Use `git diff` or compare against the parent branch to see the files modified.
 - Locate the corresponding test files (e.g., `*.test.ts`, `test_*.py`).
 

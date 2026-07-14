@@ -849,9 +849,18 @@ program
   .description('Print the current project id (resolved from the nearest .agenfk/project.json)')
   .option('--json', 'Output as JSON (includes server-side project details when reachable)')
   .action(async (options) => {
-    const projectId = findProjectId(process.cwd());
-    if (!projectId) {
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
       console.error(chalk.red('Error: No AgEnFK project found. No .agenfk/project.json exists in this directory or any parent — run agenfk init to initialize one, or cd into an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try {
+      projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null;
+    } catch {}
+    if (!projectId) {
+      console.error(chalk.red(`Error: ${projFile} exists but is malformed or missing a "projectId" key — fix the file (do NOT run agenfk init on an already-initialized project).`));
       process.exit(1);
       return;
     }
@@ -860,8 +869,11 @@ program
       try {
         const { data } = await axios.get(`${API_URL}/projects/${projectId}`);
         details = { projectId, name: data.name, description: data.description };
-      } catch {
-        // Server unreachable — the id alone is still useful offline.
+      } catch (error: any) {
+        if (error.response?.status === 404) {
+          console.error(chalk.yellow(`Warning: project ${projectId} is not known to the server — ${projFile} may point at a deleted project.`));
+        }
+        // Otherwise the server is unreachable — the id alone is still useful offline.
       }
       console.log(structuredOutput(details));
       return;
@@ -1306,23 +1318,30 @@ program
   });
 
 /**
- * Find project ID by searching upwards for .agenfk/project.json
+ * Find the nearest .agenfk/project.json by searching upwards from startDir.
  */
-function findProjectId(startDir: string): string | null {
+function findProjectJsonPath(startDir: string): string | null {
   let currentDir = startDir;
   while (currentDir !== path.parse(currentDir).root) {
     const projFile = path.join(currentDir, '.agenfk', 'project.json');
-    if (fs.existsSync(projFile)) {
-      try {
-        const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
-        return config.projectId || null;
-      } catch {
-        return null;
-      }
-    }
+    if (fs.existsSync(projFile)) return projFile;
     currentDir = path.dirname(currentDir);
   }
   return null;
+}
+
+/**
+ * Find project ID by searching upwards for .agenfk/project.json
+ */
+function findProjectId(startDir: string): string | null {
+  const projFile = findProjectJsonPath(startDir);
+  if (!projFile) return null;
+  try {
+    const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
+    return config.projectId || null;
+  } catch {
+    return null;
+  }
 }
 
 program
