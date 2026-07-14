@@ -806,9 +806,18 @@ export function adminRouter(ctx: HubServerContext): Router {
   // pending directive. Flips every target still in 'pending' to 'cancelled';
   // leaves in_progress/succeeded/failed alone (those flights have already
   // started or finished — we cannot recall them). Idempotent.
+  //
+  // Body { force: true } additionally flips 'in_progress' targets to
+  // 'cancelled' (BUG 5707f067): an agent that died mid-upgrade — or whose
+  // terminal fleet:upgrade:* event was lost — otherwise wedges its
+  // installation forever, since the single-pending guard on POST /upgrade
+  // treats in_progress as active. Force-cancelled rows get finished_at and
+  // an error_message so the admin view shows when and why they were closed.
+  // succeeded/failed targets are never touched, with or without force.
   router.post('/upgrade/:directiveId/cancel', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directiveId = req.params.directiveId;
+    const force = req.body?.force === true;
     const directive = await ctx.db.get<{ id: string }>(
       'SELECT id FROM upgrade_directives WHERE id = ? AND org_id = ?',
       [directiveId, orgId],
@@ -816,6 +825,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (!directive) return res.status(404).json({ error: 'Directive not found' });
 
     let cancelledCount = 0;
+    let forcedCount = 0;
     const leftAlone = { in_progress: 0, succeeded: 0, failed: 0 };
     await ctx.db.transaction(async () => {
       const result = await ctx.db.run(
@@ -824,6 +834,19 @@ export function adminRouter(ctx: HubServerContext): Router {
         [directiveId],
       );
       cancelledCount = Number(result.changes ?? 0);
+      if (force) {
+        const now = new Date().toISOString();
+        const forced = await ctx.db.run(
+          `UPDATE upgrade_directive_targets
+             SET state = 'cancelled',
+                 finished_at = ?,
+                 error_message = 'force-cancelled by admin while in_progress'
+           WHERE directive_id = ? AND state = 'in_progress'`,
+          [now, directiveId],
+        );
+        forcedCount = Number(forced.changes ?? 0);
+        cancelledCount += forcedCount;
+      }
       const remaining = await ctx.db.all<{ state: string }>(
         `SELECT state FROM upgrade_directive_targets WHERE directive_id = ?`,
         [directiveId],
@@ -833,7 +856,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       }
     });
 
-    res.json({ directiveId, cancelledCount, leftAlone });
+    res.json({ directiveId, cancelledCount, forcedCount, leftAlone });
   });
 
   return router;

@@ -165,6 +165,14 @@ export function eventsRouter(ctx: HubServerContext): Router {
               : 'failed';
             const resultVersion = (e.payload as any)?.resultVersion ?? null;
             const errorMessage = (e.payload as any)?.error ?? null;
+            // A late 'started' from a resurrected agent must not flip a
+            // cancelled (or otherwise terminal) target back to in_progress —
+            // that would re-wedge the installation the admin just force-
+            // cancelled. Terminal succeeded/failed reports stay authoritative:
+            // they are more truthful and cannot block future directives.
+            const stateGuard = nextState === 'in_progress'
+              ? `AND state IN ('pending', 'in_progress')`
+              : '';
             await ctx.db.run(
               `UPDATE upgrade_directive_targets
                  SET state = ?,
@@ -172,7 +180,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
                      finished_at = CASE WHEN ? IN ('succeeded', 'failed') THEN ? ELSE finished_at END,
                      result_version = COALESCE(?, result_version),
                      error_message = COALESCE(?, error_message)
-               WHERE directive_id = ? AND installation_id = ?`,
+               WHERE directive_id = ? AND installation_id = ? ${stateGuard}`,
               [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
             );
             // Note: do NOT stamp installations.agenfk_version from
