@@ -8,9 +8,9 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 1 — Collate History**
 - Read the item details using `agenfk get <id> --json`.
-- **Cross-project guard**: Read `.agenfk/project.json` in the current working directory. If it exists and its `projectId` does NOT match `item.projectId`, **STOP immediately** — do not commit, do not proceed. Warn the user:
+- **Cross-project guard**: Run `agenfk current-project` to get the working directory's project id (it resolves the nearest `.agenfk/project.json`). If it prints an id that does NOT match `item.projectId`, **STOP immediately** — do not commit, do not proceed. Warn the user:
   > "⚠️ Item [`<id>`] belongs to project `<item.projectId>`, but the current directory is linked to project `<local.projectId>`. Running `/agenfk-close` here would pollute this repo's git history with a foreign task. Please `cd` to the correct project directory and re-run."
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing, create it with `{ "projectId": "<projectId>" }`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `agenfk current-project` errors (no `.agenfk/project.json` found), create the file with `{ "projectId": "<projectId>" }`.
 - Extract all progress comments from `item.comments`.
 - Extract the final test coverage metrics from the `item.reviews`.
 

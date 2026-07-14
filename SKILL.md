@@ -65,6 +65,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 |------------------------|----------------------|
 | `workflow_gatekeeper(intent, itemId?)` | `agenfk gatekeeper --intent "<intent>" [--item-id <id>] [--role <planning\|coding\|review\|testing\|closing>] [--json]` |
 | `list_projects()` | `agenfk list-projects --json` |
+| *(get current project id)* | `agenfk current-project [--json]` — prints the current project id resolved from the nearest `.agenfk/project.json` (walking up from the cwd); `--json` adds the project name/description from the server when reachable. No MCP equivalent — CLI only. |
 | `create_project(name)` | `agenfk create-project "<name>" [-d/--description <desc>]` |
 | `update_project(id, {...})` | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` |
 | `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` |
@@ -84,7 +85,8 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | `analyze_request(req)` | `agenfk analyze "<request>"` |
 
 **Read output**: append `--json` to any read command (`list`, `get`, `list-projects`,
-`flow show`, `tokens`, …) for machine-readable output you can parse into your context.
+`current-project`, `flow show`, `tokens`, …) for machine-readable output you can parse
+into your context.
 
 **NEVER** use these bypass routes (the `agenfk-mcp-enforcer` hook blocks them where hooks are supported):
 
@@ -105,7 +107,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
         2. Run `git branch --show-current` — if NOT on `main` (or `master`) and the current branch does not belong to an item you're about to resume, run `git checkout main` (or `master`).
         3. Run `git pull` to ensure you have the latest upstream changes.
     *   **Action**:
-        1. Check for `.agenfk/project.json` in the project root.
+        1. Run `agenfk current-project` to resolve the current project id (it finds the nearest `.agenfk/project.json`, walking up from the cwd). If it prints an id, that is the active `projectId` — use it for every command that takes `--project <id>`.
         2. If missing, DO NOT assume an existing project should be reused based on name alone.
         3. Run `agenfk list-projects --json` to see existing projects.
         4. **MANDATORY**: Ask the user if they want to use an existing project (by name/ID) or create a new one (recommended).
@@ -210,6 +212,7 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 
 ## Available Commands (`agenfk` CLI)
 
+*   `agenfk current-project [--json]`: Print the current project id (resolved from the nearest `.agenfk/project.json`). Use this whenever a command needs `--project <id>` or the "active projectId".
 *   `agenfk list-projects --json`: List all existing projects.
 *   `agenfk create-project "<name>"`: Create a new project.
 *   `agenfk create <TYPE> "<title>" --project <id>`: Create a new workflow item.

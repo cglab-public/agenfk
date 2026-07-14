@@ -23,7 +23,7 @@ Follow these steps in order. Ask one section at a time.
 
 ### Step 1 — Identify the project
 
-1. Check for `.agenfk/project.json` in the working directory to get the `projectId`.
+1. Run `agenfk current-project` to get the `projectId` (it resolves the nearest `.agenfk/project.json`, walking up from the cwd).
 2. If not found, call `list_projects()` via MCP (agenfk MCP server) and ask the user which project.
 3. Confirm: "I'll create this flow for project **[name]** (`[projectId]`). Is that correct?"
 

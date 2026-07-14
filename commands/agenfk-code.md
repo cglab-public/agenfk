@@ -8,7 +8,7 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 
 **Step 1 — Prepare**
 - Read the item details using `agenfk get <id> --json`.
-- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. If `.agenfk/project.json` is missing or incorrect, create it with `{ "projectId": "<projectId>" }`.
+- **Project Link**: Use the `projectId` from the item to ensure you are associated with the correct project. Compare it against `agenfk current-project`; if that errors (no `.agenfk/project.json` found), create the file with `{ "projectId": "<projectId>" }`.
 - **Branch verification**: If the item has a `branchName`, run `git branch --show-current` and confirm you are on it. If not, run `git checkout <branchName>` before proceeding. **Never code on the wrong branch.**
 - Read the `implementationPlan` field.
 - If the plan is missing, PAUSE and ask the user to provide one.

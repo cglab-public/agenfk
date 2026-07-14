@@ -59,12 +59,13 @@ Before creating any item, evaluate the request against these signals:
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`).
    - Run `git pull` to ensure you have the latest upstream changes.
    - This prevents new feature branches from being based on stale/unrelated branches and avoids carrying uncommitted changes into new work.
-1. Identify the item to work on:
+1. Resolve the current project id by running `agenfk current-project` (it walks up from the cwd to the nearest `.agenfk/project.json`). Use the printed id as `<projectId>` in every command below. If it errors, the directory is not initialized — run `agenfk list-projects --json` and ask the user whether to link an existing project or create a new one (per the base agenfk skill's Initialization procedure) before continuing. Never auto-create a project without asking.
+2. Identify the item to work on:
    - **If the user named a specific item id** (e.g. "work on `dd9658a6-…`"), load it directly with `agenfk get <id> --json` and resume that item. Do **not** try to read a file named `<id>.json` — items live in the AgEnFK server, not on disk; `agenfk get <id> --json` is the only way to fetch one.
    - **Otherwise**, run `agenfk list --project <projectId> --json` to check for any `IN_PROGRESS` task. If one exists, resume it. If none exists, create a new item with `agenfk create <TYPE> "<title>" --project <id>` (using the type determined in Step 0), then run `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO to the coding step.
-2. Run `agenfk flow show --project <projectId> --json` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before running `agenfk verify` again.
-3. Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` before making any file changes.
-4. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
+3. Run `agenfk flow show --project <projectId> --json` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before running `agenfk verify` again.
+4. Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` before making any file changes.
+5. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
 
 ---
 
