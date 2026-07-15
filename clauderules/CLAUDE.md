@@ -86,7 +86,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Get the current project id | `agenfk current-project [--json]` (resolves the nearest `.agenfk/project.json`; `--json` adds the project name/description from the server when reachable) | — |
 | Create a project | `agenfk create-project "<name>" [-d/--description <desc>]` | `create_project` |
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
-| List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` | `list_items` |
+| List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step: excludes TODO/DONE anchors + PAUSED/BLOCKED/terminal; flow-aware — use it for the init resume-check to keep context small) | `list_items` |
 | Get an item | `agenfk get <id> --json` | `get_item` |
 | Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` | `create_item` |
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |

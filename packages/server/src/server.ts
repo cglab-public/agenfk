@@ -1439,7 +1439,7 @@ app.post("/projects/:id/flow/migrate", asyncHandler(async (req: any, res: any) =
 // Items API
 
 app.get("/items", asyncHandler(async (req: any, res: any) => {
-  const { type, status, parentId, includeArchived, projectId } = req.query;
+  const { type, status, parentId, includeArchived, projectId, active } = req.query;
   const query: any = {};
   if (type) query.type = type;
   if (status) query.status = status;
@@ -1450,6 +1450,36 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
 
   if (includeArchived !== 'true' && !status) {
     items = items.filter(i => i.status !== Status.ARCHIVED && i.status !== Status.TRASHED);
+  }
+
+  // active=true → only items in an active working step, i.e. NOT the flow's
+  // anchors (TODO/DONE) and NOT an inactive status (BLOCKED/PAUSED/ARCHIVED/
+  // TRASHED/IDEAS). Reuses core getActiveStepItems so this agrees exactly with
+  // the gatekeeper's "active working step" definition. Flow-aware: each item is
+  // judged against ITS OWN project's flow, so --all across mixed flows and any
+  // custom flow both work. Keeps init's resume-check payload small (no DONE
+  // pile-up). (TASK 2dd30da3.)
+  if (active === 'true') {
+    const flowByProject = new Map<string, Flow>();
+    const allFlows = await storage.listFlows();
+    const resolveFlow = async (pid: string | undefined): Promise<Flow> => {
+      const key = pid ?? '';
+      const cached = flowByProject.get(key);
+      if (cached) return cached;
+      let flow = DEFAULT_FLOW;
+      if (pid) {
+        const proj = await storage.getProject(pid);
+        flow = getActiveFlow((proj as any)?.flowId ?? undefined, allFlows);
+      }
+      flowByProject.set(key, flow);
+      return flow;
+    };
+    const kept: typeof items = [];
+    for (const it of items) {
+      const flow = await resolveFlow((it as any).projectId);
+      if (getActiveStepItems([it as any], flow as any).length > 0) kept.push(it);
+    }
+    items = kept;
   }
 
   res.json(items);

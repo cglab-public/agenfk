@@ -44,7 +44,7 @@ describe('MCP tool schemas no longer hardcode default-flow status enum', () => {
 
   it('list_items tool no longer requires status', () => {
     // Locate the list_items tool block and check its `required` array.
-    const block = src.match(/name:\s*["']list_items["'][\s\S]{0,800}?required:\s*(\[[^\]]*\])/);
+    const block = src.match(/name:\s*["']list_items["'][\s\S]{0,1600}?required:\s*(\[[^\]]*\])/);
     expect(block, 'list_items tool definition not found').toBeTruthy();
     const required = block![1];
     expect(required).toContain('projectId');

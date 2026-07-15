@@ -109,6 +109,7 @@ const ListItemsSchema = z.object({
   projectId: z.string(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
   status: z.string().optional(),
+  active: z.boolean().optional(), // Only items in an active working step (flow-aware)
   parentId: z.string().optional(),
   full: z.boolean().optional(), // Return full item objects if true
 });
@@ -234,13 +235,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "list_items",
-        description: "List items in a project, optionally filtered by status, type, or parent. Omit status to sweep all in-flight items regardless of step. Status values are flow step names — call get_flow(projectId) for the valid set.",
+        description: "List items in a project, optionally filtered by status, type, or parent. Omit status to sweep all in-flight items regardless of step. Pass active=true to return ONLY items in an active working step (excludes TODO/DONE and PAUSED/BLOCKED/terminal) — the small set to check when resuming work, without pulling every DONE item. Status values are flow step names — call get_flow(projectId) for the valid set.",
         inputSchema: {
           type: "object",
           properties: {
             projectId: { type: "string", description: "The ID of the project." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             status: { type: "string", description: "Step name from the project's active flow. Omit to return all items. Call get_flow(projectId) for valid step names." },
+            active: { type: "boolean", description: "If true, return only items in an active working step (flow-aware): excludes the flow's TODO/DONE anchors and PAUSED/BLOCKED/ARCHIVED/TRASHED/IDEAS. Ideal for a resume-check at init." },
             parentId: { type: "string" },
           },
           required: ["projectId"],

@@ -1381,6 +1381,7 @@ program
   .description('List items')
   .option('-t, --type <type>', 'Filter by type')
   .option('-s, --status <status>', 'Filter by status')
+  .option('--active', 'Only items in an active working step (excludes TODO/DONE and PAUSED/BLOCKED/terminal); flow-aware')
   .option('--project <id>', 'Filter by project ID')
   .option('--all', 'Show all projects (bypass local project filter)')
   .option('--json', 'Output as JSON')
@@ -1389,6 +1390,7 @@ program
       const query: any = {};
       if (options.type) query.type = options.type.toUpperCase();
       if (options.status) query.status = options.status.toUpperCase();
+      if (options.active) query.active = 'true';
 
       let projectId = options.project || (options.all ? undefined : findProjectId(process.cwd()));
       if (projectId) query.projectId = projectId;
