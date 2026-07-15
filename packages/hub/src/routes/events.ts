@@ -179,14 +179,31 @@ export function eventsRouter(ctx: HubServerContext): Router {
               : 'failed';
             const resultVersion = (e.payload as any)?.resultVersion ?? null;
             const errorMessage = (e.payload as any)?.error ?? null;
+            // A late 'started' from a resurrected agent must not flip a
+            // cancelled (or otherwise terminal) target back to in_progress —
+            // that would re-wedge the installation the admin just force-
+            // cancelled. Terminal succeeded/failed reports stay authoritative:
+            // they are more truthful and cannot block future directives.
+            // (Trade-off: an agent retrying after its own 'failed' report
+            // won't show in_progress during the retry; its eventual terminal
+            // report still lands.)
+            const stateGuard = nextState === 'in_progress'
+              ? `AND state IN ('pending', 'in_progress')`
+              : '';
+            // Terminal reports OVERWRITE error_message (null clears it):
+            // otherwise a force-cancel's stamped message would survive a
+            // genuine late failure reason, or linger on a succeeded row.
+            const errorMessageSql = nextState === 'in_progress'
+              ? 'COALESCE(?, error_message)'
+              : '?';
             await ctx.db.run(
               `UPDATE upgrade_directive_targets
                  SET state = ?,
                      attempted_at = COALESCE(attempted_at, ?),
                      finished_at = CASE WHEN ? IN ('succeeded', 'failed') THEN ? ELSE finished_at END,
                      result_version = COALESCE(?, result_version),
-                     error_message = COALESCE(?, error_message)
-               WHERE directive_id = ? AND installation_id = ?`,
+                     error_message = ${errorMessageSql}
+               WHERE directive_id = ? AND installation_id = ? ${stateGuard}`,
               [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
             );
             // Note: do NOT stamp installations.agenfk_version from
