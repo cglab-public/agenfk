@@ -170,9 +170,9 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
         headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
         timeout: 10000,
       });
-      const releases: Array<{ tag_name: string; published_at: string }> = resp.data ?? [];
+      const releases: Array<{ tag_name: string; published_at: string; prerelease: boolean }> = resp.data ?? [];
       const latest = releases
-        .filter((r) => r.tag_name && r.published_at)
+        .filter((r) => r.tag_name && r.published_at && r.prerelease)
         .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
       const tag = latest?.tag_name;
       if (tag) return tag;
