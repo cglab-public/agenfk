@@ -251,6 +251,28 @@ class PgAdapter implements HubDb {
   }
 }
 
+// Backfill: PR events ingested before the repo→remote_url fallback existed have
+// remote_url = NULL, stranding their repo inside the payload JSON and hiding
+// them from the projects filter. Derive remote_url from payload.repo the same
+// way the ingestion path now does. Parsed JS-side so this stays identical to the
+// SQLite backfill and avoids jsonb casting on TEXT payloads. Idempotent (only
+// touches null/empty PR rows) and exported so tests can exercise it against a
+// pg-mem adapter without re-running the (non-reentrant on pg-mem) full schema.
+export async function backfillPrEventRemoteUrls(adapter: HubDb): Promise<void> {
+  const prRows = await adapter.all<{ event_id: string; payload: string }>(
+    "SELECT event_id, payload FROM events WHERE (remote_url IS NULL OR remote_url = '') AND type IN ('pr.opened', 'pr.updated')"
+  );
+  for (const { event_id, payload } of prRows) {
+    let repo: unknown;
+    try { repo = JSON.parse(payload)?.payload?.repo; } catch { continue; }
+    if (typeof repo !== 'string') continue;
+    const derived = remoteUrlFromRepo(repo);
+    if (derived) {
+      await adapter.run("UPDATE events SET remote_url = ? WHERE event_id = ?", [sanitizeRemoteUrl(derived), event_id]);
+    }
+  }
+}
+
 async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec(SCHEMA_PG);
   await adapter.exec("DELETE FROM events WHERE type = 'tokens.logged'");
@@ -299,25 +321,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     }
   }
 
-  // Backfill: PR events ingested before the repo→remote_url fallback existed
-  // have remote_url = NULL, stranding their repo inside the payload JSON and
-  // hiding them from the projects filter. Derive remote_url from payload.repo
-  // the same way the ingestion path now does. Parsed JS-side so this stays
-  // identical to the SQLite backfill and avoids jsonb casting on TEXT payloads.
-  {
-    const prRows = await adapter.all<{ event_id: string; payload: string }>(
-      "SELECT event_id, payload FROM events WHERE (remote_url IS NULL OR remote_url = '') AND type IN ('pr.opened', 'pr.updated')"
-    );
-    for (const { event_id, payload } of prRows) {
-      let repo: unknown;
-      try { repo = JSON.parse(payload)?.payload?.repo; } catch { continue; }
-      if (typeof repo !== 'string') continue;
-      const derived = remoteUrlFromRepo(repo);
-      if (derived) {
-        await adapter.run("UPDATE events SET remote_url = ? WHERE event_id = ?", [sanitizeRemoteUrl(derived), event_id]);
-      }
-    }
-  }
+  // PR-event remote_url backfill (see backfillPrEventRemoteUrls).
+  await backfillPrEventRemoteUrls(adapter);
 
   // upgrade_directives audit columns — Story 5 of EPIC 541c12b3.
   const udCols = await adapter.all<{ column_name: string }>(
