@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { HubDb, Params, RunResult } from './types';
-import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -273,6 +273,24 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     for (const { remote_url } of distinct) {
       const canonical = sanitizeRemoteUrl(remote_url);
       if (canonical !== remote_url) update.run(canonical, remote_url);
+    }
+  }
+
+  // Backfill: PR events ingested before the repo→remote_url fallback existed
+  // have remote_url = NULL, stranding their repo inside the payload JSON and
+  // hiding them from the projects filter. Derive remote_url from payload.repo
+  // the same way the ingestion path now does. JS-side (SQLite has no regex).
+  {
+    const prRows = raw.prepare(
+      "SELECT event_id, payload FROM events WHERE (remote_url IS NULL OR remote_url = '') AND type IN ('pr.opened', 'pr.updated')"
+    ).all() as Array<{ event_id: string; payload: string }>;
+    const update = raw.prepare("UPDATE events SET remote_url = ? WHERE event_id = ?");
+    for (const { event_id, payload } of prRows) {
+      let repo: unknown;
+      try { repo = JSON.parse(payload)?.payload?.repo; } catch { continue; }
+      if (typeof repo !== 'string') continue;
+      const derived = remoteUrlFromRepo(repo);
+      if (derived) update.run(sanitizeRemoteUrl(derived), event_id);
     }
   }
 

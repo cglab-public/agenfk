@@ -85,8 +85,8 @@ export function AdminUpgrades() {
   );
 
   const cancelMut = useMutation({
-    mutationFn: async (directiveId: string) => {
-      const r = await api.post(`/v1/admin/upgrade/${directiveId}/cancel`, {});
+    mutationFn: async ({ directiveId, force }: { directiveId: string; force?: boolean }) => {
+      const r = await api.post(`/v1/admin/upgrade/${directiveId}/cancel`, force ? { force: true } : {});
       return r.data;
     },
     onSuccess: () => {
@@ -99,8 +99,24 @@ export function AdminUpgrades() {
   });
 
   const onCancel = (d: Directive) => {
-    if (!confirm(`Cancel ${d.progress.pending} pending upgrade${d.progress.pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
-    cancelMut.mutate(d.directiveId);
+    const { pending, in_progress } = d.progress;
+    if (pending > 0) {
+      if (!confirm(`Cancel ${pending} pending upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
+    }
+    let force = false;
+    if (in_progress > 0) {
+      // Distinct, explicit opt-in: a running target may be a genuinely live
+      // flight — but it may also be a dead agent wedging the installation
+      // (new directives are refused while it stays in_progress).
+      force = confirm(
+        `⚠️ ${in_progress} target${in_progress === 1 ? ' is' : 's are'} in_progress. ` +
+        `Force-cancel ${in_progress === 1 ? 'it' : 'them'} too?\n\n` +
+        `Only do this when the upgrade is stuck (agent died or never reported back). ` +
+        `A genuinely running upgrade cannot be recalled — force-cancelling just clears its status here.`
+      );
+      if (pending === 0 && !force) return; // nothing else to do
+    }
+    cancelMut.mutate({ directiveId: d.directiveId, force });
   };
 
   const issueMut = useMutation({
@@ -364,13 +380,13 @@ export function AdminUpgrades() {
                   {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">{d.progress.succeeded} ok</span>}
                   {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300">{d.progress.failed} failed</span>}
                   {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{d.progress.cancelled} cancelled</span>}
-                  {d.progress.pending > 0 && (
+                  {(d.progress.pending > 0 || d.progress.in_progress > 0) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onCancel(d); }}
                       disabled={cancelMut.isPending}
                       className="ml-1 px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-700 text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/30 disabled:opacity-50"
-                      title="Cancel pending targets on this directive"
-                    >Cancel pending</button>
+                      title="Cancel pending targets on this directive; offers to force-cancel stuck in_progress ones"
+                    >{d.progress.pending > 0 ? 'Cancel pending' : 'Force-cancel'}</button>
                   )}
                 </span>
               </div>

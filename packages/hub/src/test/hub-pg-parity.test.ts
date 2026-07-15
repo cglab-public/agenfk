@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
-import { openPgMemDb } from '../db/postgres';
+import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
@@ -266,5 +266,58 @@ describe('PG parity: queries + rollup', () => {
     const day4bob = rows.find((x) => x.day === '2026-05-04' && x.user_key === 'bob@acme.com');
     expect(Number(day4bob?.tokens_in)).toBe(0);
     expect(Number(day4bob?.tokens_out)).toBe(0);
+  });
+});
+
+// BUG 418ee7bd — the boot-time backfill that derives remote_url from a PR
+// event's payload.repo is hand-mirrored across the SQLite and Postgres
+// bootstraps. The SQLite copy is covered in pr-event-remote-url.test.ts; this
+// locks down the PG copy so the two can't silently diverge. We seed a legacy
+// row then invoke the exported backfill helper (the same one bootstrap() runs)
+// against the pg-mem adapter — re-running full bootstrap isn't reentrant on
+// pg-mem (its CREATE TABLE IF NOT EXISTS AST check rejects the second pass).
+describe('PG parity: PR-event remote_url backfill', () => {
+  let db: HubDb;
+  afterEach(async () => { try { await db.close(); } catch { /* */ } });
+
+  it('derives remote_url from payload.repo for historical null PR rows', async () => {
+    db = await openPgMemDb();
+    // payload column stores the WHOLE event, so repo lives at $.payload.repo.
+    const legacyPayload = JSON.stringify({
+      eventId: 'legacy-pr', type: 'pr.opened',
+      payload: { prNumber: 99, repo: 'carsales-PRIVATE/dataservice' },
+    });
+    await db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, remote_url, payload)
+       VALUES ('legacy-pr', 'org', 'inst-1', 'tester', ?, ?, 'pr.opened', NULL, ?)`,
+      ['2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', legacyPayload],
+    );
+
+    await backfillPrEventRemoteUrls(db);
+
+    const row = await db.get<{ remote_url: string }>(
+      "SELECT remote_url FROM events WHERE event_id = 'legacy-pr'",
+    );
+    expect(row?.remote_url).toBe('git@github.com:carsales-private/dataservice.git');
+  });
+
+  it('leaves a non-PR null-remote row untouched (backfill is type-scoped)', async () => {
+    db = await openPgMemDb();
+    const payload = JSON.stringify({
+      eventId: 'legacy-item', type: 'item.created',
+      payload: { repo: 'carsales-PRIVATE/dataservice' },
+    });
+    await db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, remote_url, payload)
+       VALUES ('legacy-item', 'org', 'inst-1', 'tester', ?, ?, 'item.created', NULL, ?)`,
+      ['2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z', payload],
+    );
+
+    await backfillPrEventRemoteUrls(db);
+
+    const row = await db.get<{ remote_url: string | null }>(
+      "SELECT remote_url FROM events WHERE event_id = 'legacy-item'",
+    );
+    expect(row?.remote_url ?? null).toBeNull();
   });
 });
