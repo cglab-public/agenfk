@@ -18,3 +18,22 @@ export function sanitizeRemoteUrl(input: string): string {
   const [, host, owner, repo] = m;
   return `git@${host}:${owner}/${repo}.git`;
 }
+
+// A bare `owner/repo` slug: exactly two non-empty, slash-free segments, with an
+// optional trailing `.git` on the repo. A host-qualified path (`host/owner/repo`)
+// or a full URL has more segments / a scheme and therefore does NOT match — we
+// leave those to the emitter-resolved remote rather than guessing.
+const REPO_SLUG_RE = /^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/;
+
+// Derive a canonical git remote from the `owner/repo` slug an agent declares in
+// a PR payload. PR events often arrive with remoteUrl=null because the emitter's
+// `git remote get-url origin` shell-out failed; without this the PR's repo would
+// live only in the JSON payload and never reach the remote_url filter dimension.
+// owner/repo carries no host, so we assume github.com — where AgEnFK PRs open.
+// Returns null for anything that isn't a bare owner/repo. Pass the result
+// through sanitizeRemoteUrl to collapse it onto the same chip as real remotes.
+export function remoteUrlFromRepo(repo: string): string | null {
+  const m = repo.trim().match(REPO_SLUG_RE);
+  if (!m) return null;
+  return `git@github.com:${m[1]}/${m[2]}.git`;
+}
