@@ -189,10 +189,20 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
   }
   // Fallback: gh CLI (requires gh auth login)
   if (beta) {
-    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    // Must mirror the REST path: only consider pre-releases, newest first.
+    // `gh release list` alone would return the most recent release of ANY
+    // kind, so a later stable (or an asset-less) release could be mis-resolved
+    // as the latest beta and 404 on download.
+    const out = execSync(
+      `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    const list: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(out || '[]');
+    const latest = list
+      .filter((r) => r.tagName && r.isPrerelease)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (latest?.tagName) return latest.tagName;
+    throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
   }
   return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
     encoding: 'utf8',

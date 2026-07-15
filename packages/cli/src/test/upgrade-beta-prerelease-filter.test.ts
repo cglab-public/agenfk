@@ -49,4 +49,12 @@ describe('BUG 8973cea3: --beta upgrade resolves only prereleases', () => {
     expect(fnBody).toMatch(/published_at/);
     expect(fnBody).toMatch(/\.sort\(/);
   });
+
+  it('gh CLI fallback also restricts --beta to pre-releases (not just the newest release of any kind)', () => {
+    // The fallback must request isPrerelease and filter on it, mirroring the
+    // REST path. A bare `gh release list --limit 1` would resolve a later
+    // stable/asset-less release as the "latest beta" and 404 on download.
+    expect(fnBody).toMatch(/gh release list[^`'"]*isPrerelease/);
+    expect(fnBody).toMatch(/r\.isPrerelease/);
+  });
 });
