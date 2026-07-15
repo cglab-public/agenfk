@@ -385,16 +385,22 @@ const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
-const autoGitCommit = (item: AgEnFKItem, projectRoot: string): void => {
+const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
-  exec(cmd, { cwd: projectRoot }, (err, stdout) => {
-    const timestamp = new Date().toISOString();
-    if (err) {
-      console.log(`[${timestamp}] [AUTO_GIT] Commit skipped: ${err.message.trim()}`);
-    } else {
-      console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
-    }
+  
+  return new Promise((resolve) => {
+    exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
+      const timestamp = new Date().toISOString();
+      if (err) {
+        const errMsg = err.message.trim();
+        console.log(`[${timestamp}] [AUTO_GIT] Commit failed: ${errMsg}`);
+        resolve({ success: false, output: stderr || stdout, error: errMsg });
+      } else {
+        console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
+        resolve({ success: true, output: stdout.trim() });
+      }
+    });
   });
 };
 
@@ -1439,7 +1445,7 @@ app.post("/projects/:id/flow/migrate", asyncHandler(async (req: any, res: any) =
 // Items API
 
 app.get("/items", asyncHandler(async (req: any, res: any) => {
-  const { type, status, parentId, includeArchived, projectId } = req.query;
+  const { type, status, parentId, includeArchived, projectId, active } = req.query;
   const query: any = {};
   if (type) query.type = type;
   if (status) query.status = status;
@@ -1450,6 +1456,36 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
 
   if (includeArchived !== 'true' && !status) {
     items = items.filter(i => i.status !== Status.ARCHIVED && i.status !== Status.TRASHED);
+  }
+
+  // active=true → only items in an active working step, i.e. NOT the flow's
+  // anchors (TODO/DONE) and NOT an inactive status (BLOCKED/PAUSED/ARCHIVED/
+  // TRASHED/IDEAS). Reuses core getActiveStepItems so this agrees exactly with
+  // the gatekeeper's "active working step" definition. Flow-aware: each item is
+  // judged against ITS OWN project's flow, so --all across mixed flows and any
+  // custom flow both work. Keeps init's resume-check payload small (no DONE
+  // pile-up). (TASK 2dd30da3.)
+  if (active === 'true') {
+    const flowByProject = new Map<string, Flow>();
+    const allFlows = await storage.listFlows();
+    const resolveFlow = async (pid: string | undefined): Promise<Flow> => {
+      const key = pid ?? '';
+      const cached = flowByProject.get(key);
+      if (cached) return cached;
+      let flow = DEFAULT_FLOW;
+      if (pid) {
+        const proj = await storage.getProject(pid);
+        flow = getActiveFlow((proj as any)?.flowId ?? undefined, allFlows);
+      }
+      flowByProject.set(key, flow);
+      return flow;
+    };
+    const kept: typeof items = [];
+    for (const it of items) {
+      const flow = await resolveFlow((it as any).projectId);
+      if (getActiveStepItems([it as any], flow as any).length > 0) kept.push(it);
+    }
+    items = kept;
   }
 
   res.json(items);
@@ -1584,7 +1620,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
           const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-          autoGitCommit(updated, projectRoot);
+          await autoGitCommit(updated, projectRoot);
         }
       }
     } catch (e) {
@@ -1723,21 +1759,21 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
       });
     }
 
-    if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
-      recordHubEvent({
-        type: 'item.closed',
-        projectId: updated.projectId,
-        itemId: updated.id,
-        payload: { fromStatus: currentItem.status, toStatus: Status.DONE, itemType: updated.type },
-      });
-      if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-        const proj = await storage.getProject(updated.projectId);
-        const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-        autoGitCommit(updated, projectRoot);
-      } else {
-        console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
+      if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
+        recordHubEvent({
+          type: 'item.closed',
+          projectId: updated.projectId,
+          itemId: updated.id,
+          payload: { fromStatus: currentItem.status, toStatus: Status.DONE, itemType: updated.type },
+        });
+        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+          const proj = await storage.getProject(updated.projectId);
+          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
+          await autoGitCommit(updated, projectRoot);
+        } else {
+          console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
+        }
       }
-    }
 
     res.json(updated);
   } catch (error) {
@@ -1961,16 +1997,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     timestamp: new Date(),
   }];
 
-  if (passed) {
-    const updates: any = { status: nextStatus, comments };
-    if (nextStatus === Status.DONE) {
-      updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
-    }
-    const updated = await storage.updateItem(itemId, updates);
-    io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
-    if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, projectRoot);
-    recordHubEvent({
+    if (passed) {
+      const updates: any = { status: nextStatus, comments };
+      if (nextStatus === Status.DONE) {
+        updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
+      }
+      const updated = await storage.updateItem(itemId, updates);
+      io.emit('items_updated');
+      if (updated.parentId) await syncParentStatus(updated.parentId);
+      if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        await autoGitCommit(updated, projectRoot);
+      }
+      recordHubEvent({
       type: 'validate.passed',
       projectId: item.projectId,
       itemId,

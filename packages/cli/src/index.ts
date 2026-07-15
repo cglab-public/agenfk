@@ -170,9 +170,9 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
         headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
         timeout: 10000,
       });
-      const releases: Array<{ tag_name: string; published_at: string }> = resp.data ?? [];
+      const releases: Array<{ tag_name: string; published_at: string; prerelease: boolean }> = resp.data ?? [];
       const latest = releases
-        .filter((r) => r.tag_name && r.published_at)
+        .filter((r) => r.tag_name && r.published_at && r.prerelease)
         .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
       const tag = latest?.tag_name;
       if (tag) return tag;
@@ -189,10 +189,20 @@ async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<strin
   }
   // Fallback: gh CLI (requires gh auth login)
   if (beta) {
-    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    // Must mirror the REST path: only consider pre-releases, newest first.
+    // `gh release list` alone would return the most recent release of ANY
+    // kind, so a later stable (or an asset-less) release could be mis-resolved
+    // as the latest beta and 404 on download.
+    const out = execSync(
+      `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    const list: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(out || '[]');
+    const latest = list
+      .filter((r) => r.tagName && r.isPrerelease)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (latest?.tagName) return latest.tagName;
+    throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
   }
   return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
     encoding: 'utf8',
@@ -1381,6 +1391,7 @@ program
   .description('List items')
   .option('-t, --type <type>', 'Filter by type')
   .option('-s, --status <status>', 'Filter by status')
+  .option('--active', 'Only items in an active working step (excludes TODO/DONE and PAUSED/BLOCKED/terminal); flow-aware')
   .option('--project <id>', 'Filter by project ID')
   .option('--all', 'Show all projects (bypass local project filter)')
   .option('--json', 'Output as JSON')
@@ -1389,6 +1400,7 @@ program
       const query: any = {};
       if (options.type) query.type = options.type.toUpperCase();
       if (options.status) query.status = options.status.toUpperCase();
+      if (options.active) query.active = 'true';
 
       let projectId = options.project || (options.all ? undefined : findProjectId(process.cwd()));
       if (projectId) query.projectId = projectId;

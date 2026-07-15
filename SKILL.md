@@ -68,7 +68,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | *(get current project id)* | `agenfk current-project [--json]` — prints the current project id resolved from the nearest `.agenfk/project.json` (walking up from the cwd); `--json` adds the project name/description from the server when reachable. No MCP equivalent — CLI only. |
 | `create_project(name)` | `agenfk create-project "<name>" [-d/--description <desc>]` |
 | `update_project(id, {...})` | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` |
-| `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--all] [--json]` |
+| `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step; flow-aware) |
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` |
 | `update_item(id, {status})` | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) |
