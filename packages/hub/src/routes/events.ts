@@ -8,7 +8,7 @@ function userKeyFor(actor: HubEvent['actor']): string {
 }
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
-import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
 
 function isValidEvent(e: any): e is HubEvent {
@@ -133,9 +133,23 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // different fleet machines store the URL with different casing or
         // accidental whitespace in their git config.
         const remoteUrlRaw = (e as any).remoteUrl ?? null;
-        const remoteUrl = typeof remoteUrlRaw === 'string'
+        let remoteUrl = typeof remoteUrlRaw === 'string'
           ? sanitizeRemoteUrl(remoteUrlRaw)
           : remoteUrlRaw;
+        // Prefer the emitter-resolved git remote; fall back to the repo the
+        // agent declared in the payload (PR events) when it's absent. The
+        // emitter resolves remoteUrl by shelling out `git remote get-url
+        // origin`, which yields null when the project has no origin / projectRoot
+        // — stranding the PR's repo inside the JSON blob and hiding it from the
+        // remote_url project filter. Deriving from payload.repo lands the PR
+        // event on the SAME chip as the repo's other events. (BUG 418ee7bd.)
+        if (!remoteUrl) {
+          const repo = e.payload && typeof (e.payload as any).repo === 'string'
+            ? (e.payload as any).repo
+            : null;
+          const derived = repo ? remoteUrlFromRepo(repo) : null;
+          if (derived) remoteUrl = sanitizeRemoteUrl(derived);
+        }
         const itemTitle = (e as any).itemTitle
           ?? (e.payload && typeof (e.payload as any).title === 'string' ? (e.payload as any).title : null);
         const externalId = (e as any).externalId

@@ -1,6 +1,6 @@
 import type { HubDb, Params, RunResult } from './types';
 import { toPostgres } from './dialect';
-import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
 // `pg` is loaded lazily so installations that only use SQLite don't pay the
 // require cost. The Pool / Client types are imported from `pg` directly.
@@ -295,6 +295,26 @@ async function bootstrap(adapter: HubDb): Promise<void> {
           "UPDATE events SET remote_url = ? WHERE remote_url = ?",
           [canonical, remote_url],
         );
+      }
+    }
+  }
+
+  // Backfill: PR events ingested before the repo→remote_url fallback existed
+  // have remote_url = NULL, stranding their repo inside the payload JSON and
+  // hiding them from the projects filter. Derive remote_url from payload.repo
+  // the same way the ingestion path now does. Parsed JS-side so this stays
+  // identical to the SQLite backfill and avoids jsonb casting on TEXT payloads.
+  {
+    const prRows = await adapter.all<{ event_id: string; payload: string }>(
+      "SELECT event_id, payload FROM events WHERE (remote_url IS NULL OR remote_url = '') AND type IN ('pr.opened', 'pr.updated')"
+    );
+    for (const { event_id, payload } of prRows) {
+      let repo: unknown;
+      try { repo = JSON.parse(payload)?.payload?.repo; } catch { continue; }
+      if (typeof repo !== 'string') continue;
+      const derived = remoteUrlFromRepo(repo);
+      if (derived) {
+        await adapter.run("UPDATE events SET remote_url = ? WHERE event_id = ?", [sanitizeRemoteUrl(derived), event_id]);
       }
     }
   }
