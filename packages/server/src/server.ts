@@ -108,7 +108,10 @@ let upgradeSyncHandle: UpgradeSyncHandle | null = null;
 // the return value remain correct because hubClient.recordEvent itself only
 // enqueues into the local outbox (the flusher delivers asynchronously).
 const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
-  if (!hubClient.isEnabled) return;
+  // No isEnabled gate (CGLAB-11): while the hub is disconnected, events are
+  // queued to the local outbox with a pending orgId and stamped at the first
+  // boot with a config — dropping them here made pre-login history (incl.
+  // pr.opened) unrecoverable.
   let payload: any = { ...(input.payload ?? {}) };
   if (input.projectId) {
     payload = {
@@ -469,6 +472,15 @@ const initStorage = async () => {
   upgradeSyncHandle?.stop();
   hubClient.attachStorage(storage as SQLiteStorageProvider);
   if (hubClient.isEnabled && hubClient.hubConfig) {
+    // Stamp events queued while disconnected (pending-org sentinel '') with
+    // the real orgId BEFORE the flusher starts, so pre-login history delivers
+    // instead of being rejected on orgId mismatch.
+    try {
+      const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId('', hubClient.hubConfig.orgId);
+      if (stamped > 0) console.log(`[HUB] Stamped ${stamped} pre-login outbox event(s) with org=${hubClient.hubConfig.orgId}`);
+    } catch (e: any) {
+      console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
+    }
     hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
     hubFlusher.start();
     console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);

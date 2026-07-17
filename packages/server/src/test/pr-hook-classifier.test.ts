@@ -92,3 +92,44 @@ describe('runtime command extraction', () => {
     expect(res.stdout).toContain('update_pr_sizing');
   });
 });
+
+// ── Segment-aware trigger detection (CGLAB-11) ───────────────────────────────
+// The original classifier anchored ^gh pr create / ^git push on the WHOLE
+// command, so compound and env-prefixed invocations never nudged the agent to
+// register the PR — and pr.opened silently never fired for those flows.
+describe('classifyTrigger — compound and env-prefixed commands', () => {
+  it('detects gh pr create after a cd', () => {
+    expect(classifyTrigger('cd /repo && gh pr create --fill')).toEqual({ kind: 'open' });
+  });
+
+  it('detects gh pr create behind env assignments', () => {
+    expect(classifyTrigger('GH_TOKEN=xyz gh pr create --title t')).toEqual({ kind: 'open' });
+    expect(classifyTrigger('A=1 B="two words" gh pr create')).toEqual({ kind: 'open' });
+  });
+
+  it('detects git push inside a chain and still extracts the branch', () => {
+    expect(classifyTrigger('git add -A && git commit -m "x" && git push -u origin feat/y'))
+      .toEqual({ kind: 'push', branch: 'feat/y' });
+  });
+
+  it('detects segments split by ; | and newlines', () => {
+    expect(classifyTrigger('echo hi; gh pr create')).toEqual({ kind: 'open' });
+    expect(classifyTrigger('gh pr create 2>&1 | tail -3')).toEqual({ kind: 'open' });
+    expect(classifyTrigger('git fetch\ngit push origin main')).toEqual({ kind: 'push', branch: 'main' });
+  });
+
+  it('prefers the open trigger when a chain contains both push and create', () => {
+    expect(classifyTrigger('git push -u origin feat/z && gh pr create --fill')).toEqual({ kind: 'open' });
+  });
+
+  it('does NOT fire on the words inside quoted strings', () => {
+    expect(classifyTrigger('git commit -m "gh pr create later"')).toBeNull();
+    expect(classifyTrigger("echo 'run git push when ready'")).toBeNull();
+    expect(classifyTrigger('git commit -m "a && gh pr create"')).toBeNull();
+  });
+
+  it('still returns null for unrelated compound commands', () => {
+    expect(classifyTrigger('cd /repo && npm test && ls')).toBeNull();
+    expect(classifyTrigger('gh pr view 12 && gh pr checks 12')).toBeNull();
+  });
+});

@@ -18,25 +18,68 @@ const API_URL = process.env.AGENFK_API_URL || 'http://127.0.0.1:3000';
 
 // ── Pure helpers (also exported for unit tests) ──────────────────────────────
 
+/**
+ * Split a shell command into simple-command segments on unquoted separators
+ * (&&, ||, ;, |, & and newlines). A heuristic, not a full shell parser — but
+ * quote-aware, so `git commit -m "a && gh pr create"` yields ONE segment and
+ * the words inside the quotes can't trigger anything.
+ */
+export function splitShellSegments(command) {
+  const segments = [];
+  let current = '';
+  let quote = null; // active quote char (' or ") or null
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && command[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; current += ch; continue; }
+    if (ch === '\n' || ch === ';') { segments.push(current); current = ''; continue; }
+    if ((ch === '&' || ch === '|')) {
+      // `&&` / `||` / `|` / trailing `&` all end the segment; skip the doubled char.
+      if (command[i + 1] === ch) i++;
+      segments.push(current); current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments.map(s => s.trim()).filter(Boolean);
+}
+
+/** Strip leading NAME=value environment assignments (values may be quoted). */
+export function stripEnvAssignments(segment) {
+  return segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)*/, '');
+}
+
 export function classifyTrigger(command) {
   if (typeof command !== 'string') return null;
-  const trimmed = command.trim();
-  if (/^gh\s+pr\s+create\b/.test(trimmed)) return { kind: 'open' };
-  const pushMatch = trimmed.match(/^git\s+push\b(.*)$/);
-  if (pushMatch) {
-    const rest = (pushMatch[1] || '').trim().split(/\s+/);
-    // crude branch extraction: last non-flag token, ignoring 'origin' / '-u'
-    let branch;
-    for (let i = rest.length - 1; i >= 0; i--) {
-      const tok = rest[i];
-      if (!tok || tok.startsWith('-')) continue;
-      if (tok === 'origin') continue;
-      branch = tok;
-      break;
+  // Segment-aware (CGLAB-11): the old ^-anchored match on the whole command
+  // missed `cd x && gh pr create` and `GH_TOKEN=x gh pr create`, so those PRs
+  // never got the register nudge. An `open` anywhere in the chain wins over a
+  // `push` (the same chain often pushes then opens).
+  let push = null;
+  for (const rawSegment of splitShellSegments(command)) {
+    const segment = stripEnvAssignments(rawSegment);
+    if (/^gh\s+pr\s+create\b/.test(segment)) return { kind: 'open' };
+    const pushMatch = segment.match(/^git\s+push\b(.*)$/);
+    if (pushMatch && !push) {
+      const rest = (pushMatch[1] || '').trim().split(/\s+/);
+      // crude branch extraction: last non-flag token, ignoring 'origin' / '-u'
+      let branch;
+      for (let i = rest.length - 1; i >= 0; i--) {
+        const tok = rest[i];
+        if (!tok || tok.startsWith('-')) continue;
+        if (tok === 'origin') continue;
+        branch = tok;
+        break;
+      }
+      push = { kind: 'push', branch };
     }
-    return { kind: 'push', branch };
   }
-  return null;
+  return push;
 }
 
 export function buildDirective(client, message) {
