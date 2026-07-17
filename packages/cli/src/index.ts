@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
+import { followValidateRun } from './verifyRun.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 
@@ -3019,14 +3020,42 @@ program
       }
     }
 
+    // Follow an async validate run to completion, streaming output. No overall
+    // deadline — the verifyCommand may legitimately run for a long time.
+    const follow = async (runId: string) => {
+      const final = await followValidateRun({
+        poll: async () => (await axios.get(`${API_URL}/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10000 })).data,
+        onOutput: (chunk: string) => process.stdout.write(chunk),
+      });
+      if (final.status === 'passed') {
+        console.log(chalk.green(final.message || `\n✅ Validation passed.`));
+      } else {
+        console.error(chalk.red(`\n❌ ${final.message || 'Validation failed.'}`));
+        process.exit(1);
+      }
+    };
+
     try {
-      const body: any = { evidence: options.evidence };
+      const body: any = { evidence: options.evidence, async: true };
       if (command) body.command = command;
-      const { data } = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
-      if (data.output) console.log(data.output);
-      console.log(chalk.green(data.message || `\n✅ Validation passed.`));
+      const res = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 30000 });
+      if (res.status === 202 && res.data?.runId) {
+        console.log(chalk.blue(res.data.message || `⏳ Validation running in background…`));
+        await follow(res.data.runId);
+        return;
+      }
+      // Synchronous fast-path (no command executed: anchor advance, sibling
+      // propagation, intermediate step without command).
+      if (res.data.output) console.log(res.data.output);
+      console.log(chalk.green(res.data.message || `\n✅ Validation passed.`));
     } catch (error: any) {
       const errData = error.response?.data;
+      // A run is already active for this item — follow it instead of failing.
+      if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
+        console.log(chalk.yellow(errData.message || 'A validation run is already active — following it.'));
+        await follow(errData.runId);
+        return;
+      }
       if (errData?.output) console.error(errData.output);
       console.error(chalk.red(`\n❌ ${errData?.message || errData?.error || error.message}`));
       process.exit(1);

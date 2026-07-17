@@ -185,7 +185,11 @@ describe('install.mjs — Windows tar --force-local', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MCP server + CLI — validate_progress 5-minute timeout (task 9c5d2fbe)
+// MCP server + CLI — validate paths follow ASYNC runs (CGLAB-10).
+// Historically these pinned a 5-minute single-request timeout (task 9c5d2fbe);
+// that cap was still too short for long verifyCommands and dropped the
+// connection while the server kept running. The contract is now: post with
+// async: true and follow the run — no bounded single request anywhere.
 // ---------------------------------------------------------------------------
 const mcpServerScript = readFileSync(
     path.resolve(__dirname, '../../../server/src/index.ts'),
@@ -197,37 +201,38 @@ const cliScript = readFileSync(
     'utf8'
 );
 
-describe('MCP server — validate_progress uses 5-minute timeout', () => {
-    it('validate_progress post call has a 300000ms timeout', () => {
-        // 30s is too short for npm run build && npm test; must be 5 minutes.
+describe('MCP server — validate paths follow async runs', () => {
+    it('validate_progress delegates to the async follow helper', () => {
         const validateIdx = mcpServerScript.indexOf('case "validate_progress"');
         expect(validateIdx).toBeGreaterThan(-1);
         const block = mcpServerScript.slice(validateIdx, validateIdx + 500);
-        expect(block).toMatch(/300000/);
+        expect(block).toMatch(/validateViaApi/);
+        expect(block).not.toMatch(/300000/);
     });
 
-    it('review_changes post call has a 300000ms timeout', () => {
+    it('review_changes delegates to the async follow helper', () => {
         const idx = mcpServerScript.indexOf('case "review_changes"');
         expect(idx).toBeGreaterThan(-1);
         const block = mcpServerScript.slice(idx, idx + 400);
-        expect(block).toMatch(/300000/);
+        expect(block).toMatch(/validateViaApi/);
     });
 
-    it('test_changes post call has a 300000ms timeout', () => {
+    it('test_changes delegates to the async follow helper', () => {
         const idx = mcpServerScript.indexOf('case "test_changes"');
         expect(idx).toBeGreaterThan(-1);
         const block = mcpServerScript.slice(idx, idx + 400);
-        expect(block).toMatch(/300000/);
+        expect(block).toMatch(/validateViaApi/);
     });
 });
 
-describe('CLI — agenfk verify uses 5-minute timeout', () => {
-    it('verify command axios.post has a 300000ms timeout', () => {
-        // The verify command calls /items/:id/validate — must not time out on long builds.
+describe('CLI — agenfk verify follows async runs', () => {
+    it('verify command posts async and follows the run without an overall deadline', () => {
         const verifyIdx = cliScript.indexOf(".command('verify");
         expect(verifyIdx).toBeGreaterThan(-1);
-        const block = cliScript.slice(verifyIdx, verifyIdx + 2000);
-        expect(block).toMatch(/300000/);
+        const block = cliScript.slice(verifyIdx, verifyIdx + 4000);
+        expect(block).toMatch(/async:\s*true/);
+        expect(block).toMatch(/followValidateRun/);
+        expect(block).not.toMatch(/300000/);
     });
 });
 

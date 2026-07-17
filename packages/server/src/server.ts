@@ -1853,10 +1853,43 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
 
 // ── Verify Endpoints ─────────────────────────────────────────────────────────
 
+// ── Async validate runs (CGLAB-10) ───────────────────────────────────────────
+// A verifyCommand can legitimately run for many minutes; holding the HTTP
+// response open for its whole lifetime meant clients timed out while the
+// server finished anyway (and agents misread slow success as failure). With
+// `async: true`, the validate endpoint answers 202 + runId as soon as a
+// command must execute, runs it in the background, and exposes live status
+// and output at GET /items/validate-runs/:runId. Outcomes are additionally
+// persisted through the normal comment/transition path, so a lost run record
+// (server restart) never loses the result itself.
+export interface ValidateRun {
+  runId: string;
+  itemId: string;
+  status: 'running' | 'passed' | 'failed';
+  output: string;
+  message?: string;
+  itemStatus?: string;
+  startedAt: Date;
+  finishedAt?: Date;
+}
+const validateRuns = new Map<string, ValidateRun>();
+const activeValidateRunByItem = new Map<string, string>();
+const VALIDATE_RUN_TTL_MS = 60 * 60 * 1000;
+// Prune on creation instead of timers — keeps tests deterministic and the map bounded.
+function pruneValidateRuns() {
+  const now = Date.now();
+  for (const [id, run] of validateRuns) {
+    if (run.finishedAt && now - run.finishedAt.getTime() > VALIDATE_RUN_TTL_MS) validateRuns.delete(id);
+  }
+}
+
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
 // Advances item to the next flow step. On failure, moves back to the coding step.
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string) {
+// asyncMode only changes behaviour when a command actually executes; every
+// other path (anchor advance, sibling propagation, no-command step, errors)
+// responds synchronously as before.
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncMode = false) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -1975,11 +2008,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
 
   const projectRoot = (project as any)?.projectRoot || findProjectRoot(process.cwd());
+
+  // Runs the command and applies the pass/fail side effects, reporting through
+  // `res2` — the real HTTP response on the sync path, or a recorder that
+  // captures the outcome into a ValidateRun on the async path.
+  const runCommandAndFinalize = async (res2: any, run?: ValidateRun) => {
   const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
-    child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-    child.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+    const onData = (d: Buffer) => { out += d.toString(); if (run) run.output = out; };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
     child.on('close', (c) => resolve({ output: out, code: c }));
     child.on('error', (err) => resolve({ output: err.message, code: 1 }));
   });
@@ -2036,7 +2075,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
@@ -2056,9 +2095,62 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'FAILED', testId },
     });
-    return res.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
+    return res2.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
   }
+  }; // end runCommandAndFinalize
+
+  if (asyncMode) {
+    pruneValidateRuns();
+    const runId = uuidv4();
+    const run: ValidateRun = { runId, itemId, status: 'running', output: '', startedAt: new Date() };
+    validateRuns.set(runId, run);
+    activeValidateRunByItem.set(itemId, runId);
+    // Answer immediately — the client follows the run instead of holding this
+    // request open for the command's whole lifetime.
+    res.status(202).json({
+      runId,
+      command: resolvedCommand,
+      message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
+    });
+    const recorder = {
+      _code: 200,
+      status(code: number) { this._code = code; return this; },
+      json(payload: any) {
+        run.status = this._code === 200 ? 'passed' : 'failed';
+        run.itemStatus = payload?.status;
+        run.message = payload?.message;
+        // Keep the live full output when we have it; fall back to the preview.
+        if (!run.output && payload?.output) run.output = payload.output;
+        run.finishedAt = new Date();
+        return this;
+      },
+    };
+    void runCommandAndFinalize(recorder, run)
+      .catch((err: any) => {
+        run.status = 'failed';
+        run.message = `Internal error during background validation: ${err?.message || err}`;
+        run.finishedAt = new Date();
+      })
+      .finally(() => {
+        if (activeValidateRunByItem.get(itemId) === runId) activeValidateRunByItem.delete(itemId);
+      });
+    return;
+  }
+
+  return runCommandAndFinalize(res);
 }
+
+// Live status/output of a background validate run. Registered before use in
+// the CLI follow loop; unknown ids 404 (a restarted server forgets runs — the
+// outcome itself is persisted on the item regardless).
+app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: "Forbidden: validate-runs endpoint requires internal token." });
+  }
+  const run = validateRuns.get(req.params.runId);
+  if (!run) return res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
+  return res.json(run);
+}));
 
 app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
@@ -2069,7 +2161,20 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
     const item = await storage.getItem(req.params.id);
     if (item) await storage.updateProject(item.projectId, { projectRoot: cwd });
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined);
+  const asyncMode = req.body.async === true || req.body.async === 'true';
+  if (asyncMode) {
+    // One active run per item — a second verify while one runs is almost
+    // always an agent misreading slowness as failure. Point it at the run.
+    const activeRunId = activeValidateRunByItem.get(req.params.id);
+    if (activeRunId && validateRuns.get(activeRunId)?.status === 'running') {
+      return res.status(409).json({
+        error: 'VALIDATE_RUN_ACTIVE',
+        runId: activeRunId,
+        message: `A validation run is already active for this item. Follow it with GET /items/validate-runs/${activeRunId} instead of starting another.`,
+      });
+    }
+  }
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, asyncMode);
 }));
 
 // ── review_changes: DEPRECATED — delegates to validate_progress ──────────────

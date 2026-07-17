@@ -37,6 +37,49 @@ const api = axios.create({
   timeout: 30000,
 });
 
+// ── Async verify follow (CGLAB-10) ───────────────────────────────────────────
+// validate requests run the project's verifyCommand, which can take far longer
+// than any sane single-request timeout. We post with async: true (202 + runId
+// when a command executes; sync response otherwise) and poll the run with
+// short per-request timeouts and NO overall deadline.
+async function followValidateRunViaApi(runId: string): Promise<any> {
+  let consecutiveErrors = 0;
+  for (;;) {
+    try {
+      const { data: run } = await api.get(`/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 10000 });
+      consecutiveErrors = 0;
+      if (run.status !== 'running') return run;
+    } catch (e: any) {
+      if (++consecutiveErrors >= 10) {
+        throw new Error(`Lost contact with the validation run (${e?.message || e}). The run may still be in progress — check the item's comments before re-running validate_progress.`);
+      }
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+
+/** POST a validate request in async mode and follow it to completion.
+ *  Returns { ok, text } ready for an MCP tool response. */
+async function validateViaApi(itemId: string, body: any): Promise<{ ok: boolean; text: string }> {
+  const headers = { 'x-agenfk-internal': VERIFY_TOKEN };
+  try {
+    const resp = await api.post(`/items/${itemId}/validate`, { ...body, async: true }, { headers });
+    if (resp.status === 202 && resp.data?.runId) {
+      const run = await followValidateRunViaApi(resp.data.runId);
+      return { ok: run.status === 'passed', text: run.message || (run.status === 'passed' ? '✅ Validation passed.' : '❌ Validation failed.') };
+    }
+    return { ok: true, text: resp.data.message };
+  } catch (error: any) {
+    const errData = error.response?.data;
+    // Someone already started a run for this item — follow it instead of failing.
+    if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
+      const run = await followValidateRunViaApi(errData.runId);
+      return { ok: run.status === 'passed', text: run.message || (run.status === 'passed' ? '✅ Validation passed.' : '❌ Validation failed.') };
+    }
+    return { ok: false, text: errData?.message || errData?.error || error.message };
+  }
+}
+
 const findProjectRoot = (startDir: string): string => {
   if (process.env.AGENFK_PROJECT_ROOT) {
     return process.env.AGENFK_PROJECT_ROOT;
@@ -647,33 +690,21 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
-        try {
-          const { data } = await api.post(`/items/${itemId}/validate`, { evidence, command, cwd: process.cwd() }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
-          return { content: [{ type: "text", text: data.message }] };
-        } catch (error: any) {
-          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
-          return { isError: true, content: [{ type: "text", text: msg }] };
-        }
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd() });
+        if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
+        return { content: [{ type: "text", text: result.text }] };
       }
       case "review_changes": {
         const { itemId, command } = z.object({ itemId: z.string(), command: z.string() }).parse(request.params.arguments);
-        try {
-          const { data } = await api.post(`/items/${itemId}/validate`, { command }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
-          return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
-        } catch (error: any) {
-          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
-          return { isError: true, content: [{ type: "text", text: msg }] };
-        }
+        const result = await validateViaApi(itemId, { command });
+        if (!result.ok) return { isError: true, content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${result.text}` }] };
+        return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${result.text}` }] };
       }
       case "test_changes": {
         const { itemId } = z.object({ itemId: z.string() }).parse(request.params.arguments);
-        try {
-          const { data } = await api.post(`/items/${itemId}/validate`, {}, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 300000 });
-          return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${data.message}` }] };
-        } catch (error: any) {
-          const msg = error.response?.data?.message || error.response?.data?.error || error.message;
-          return { isError: true, content: [{ type: "text", text: msg }] };
-        }
+        const result = await validateViaApi(itemId, {});
+        if (!result.ok) return { isError: true, content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${result.text}` }] };
+        return { content: [{ type: "text", text: `[DEPRECATED: use validate_progress] ${result.text}` }] };
       }
       case "workflow_gatekeeper": {
         const { intent, role, itemId } = z.object({
