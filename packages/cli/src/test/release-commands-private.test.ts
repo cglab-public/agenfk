@@ -48,10 +48,21 @@ describe('no user-facing bundle references the repo-private release commands', (
 });
 
 describe('installer cleans up release commands stale from previous versions', () => {
+  const src = readFileSync(path.join(ROOT, 'scripts', 'install.mjs'), 'utf8');
+
   it('install.mjs names each release command for stale removal on upgrade', () => {
-    const src = readFileSync(path.join(ROOT, 'scripts', 'install.mjs'), 'utf8');
     for (const cmd of RELEASE_COMMANDS) {
       expect(src).toContain(`'${cmd.replace(/\.md$/, '')}'`);
     }
+  });
+
+  it('the Gemini cleanup path matches what the installer actually writes (prefix-stripped agenfk/<name>.toml)', () => {
+    // Step 10c writes agenfk-release.md → ~/.gemini/commands/agenfk/release.toml.
+    // A cleanup that targets agenfk-release.toml/.md there deletes nothing and
+    // leaves upgrading Gemini users with a broken /agenfk:release command.
+    const cleanup = src.slice(src.indexOf('8f'), src.indexOf('// 9. Symlink CLI'));
+    expect(cleanup).toContain("replace(/^agenfk-/, '')");
+    expect(cleanup).toContain('.toml');
+    expect(cleanup).not.toContain('`${name}.toml`');
   });
 });

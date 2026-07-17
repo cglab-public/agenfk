@@ -89,6 +89,8 @@ cp packages/hub/.env.example packages/hub/.env
 docker compose -f packages/hub/docker-compose.yml up -d
 ```
 
+The compose file mounts a named `hub-data` volume at `/data`.
+
 ### 2.3 Releases — global vs hub-only
 
 The hub ships through two independent release paths:
@@ -108,9 +110,7 @@ Cut a hub-only release with the repo-private `/agenfk-release-hub` command
 only, tags `hub-v<version>`, and pushes; CI does the rest. The `hub-v*` and
 `v*` tag namespaces never collide.
 
-The compose file mounts a named `hub-data` volume at `/data`.
-
-### 2.3 Production posture
+### 2.4 Production posture
 
 - Run **behind TLS** (nginx, Caddy, an LB) and set `NODE_ENV=production` so
   session cookies are flagged `Secure`.
@@ -123,7 +123,7 @@ The compose file mounts a named `hub-data` volume at `/data`.
 - Back up the contents of `/data` (`hub.sqlite`, `-wal`, `-shm`) on the same
   cadence as any other system-of-record.
 
-### 2.4 Port autoselection
+### 2.5 Port autoselection
 
 The hub binds to `AGENFK_HUB_PORT` (default `4000`) and the local fleet
 server binds to `AGENFK_PORT` (default `3000`). The fleet server picks the
@@ -132,7 +132,7 @@ port to `~/.agenfk/server-port`. Any tooling that needs to reach the local
 server (the UI, CLI, install script) reads that file rather than assuming
 `3000`. This makes side-by-side installs and corp-hub-co-located dev safe.
 
-### 2.5 Configuration
+### 2.6 Configuration
 
 | Variable | Required | Purpose |
 |---|---|---|

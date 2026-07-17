@@ -29,7 +29,9 @@ jobs:
           if [ -n "$INPUT" ]; then
             echo "version=$INPUT" >> "$GITHUB_OUTPUT"
           else
-            LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            # --match 'v*' so hub-only tags (hub-v*) never feed the framework
+            # version math ("hub-v1" is not a major number).
+            LATEST=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "v0.0.0")
             LATEST=${LATEST#v}
             MAJOR=$(echo "$LATEST" | cut -d. -f1)
             MINOR=$(echo "$LATEST" | cut -d. -f2)
@@ -83,10 +85,14 @@ jobs:
       - name: Create tag and GitHub release
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          # Scope auto-notes to the previous framework v* tag so an intervening
+          # hub-v* release can't truncate the framework changelog.
+          PREV=$(git tag -l 'v*' --sort=-v:refname | grep -vx "v${VERSION}" | head -1 || true)
+          NOTES_ARGS=(--generate-notes)
+          if [ -n "$PREV" ]; then NOTES_ARGS+=(--notes-start-tag "$PREV"); fi
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
           gh release create "v${VERSION}" agenfk-dist.tar.gz \
-            --title "v${VERSION}" \
-            --generate-notes
+            --title "v${VERSION}" "${NOTES_ARGS[@]}"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

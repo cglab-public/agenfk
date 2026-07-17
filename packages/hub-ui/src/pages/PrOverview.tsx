@@ -192,6 +192,17 @@ export function PrOverviewPage() {
   const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
   // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
   const todayIso = new Date().toISOString().slice(0, 10);
+  // Per-column header info, computed once per axis instead of per cell.
+  const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
+  // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
+  // spans would add tens of thousands of DOM nodes on a 90d × many-devs grid,
+  // and anything absolutely positioned inside the overflow-x-auto scroller
+  // gets clipped at its edges. Fixed positioning escapes the scroller.
+  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setHeatTip({ text, x: Math.max(8, Math.min(r.left + r.width / 2, window.innerWidth - 8)), y: r.top - 6 });
+  };
   const maxDayTotal = Math.max(1, ...(d?.byDay.map(x => x.total) ?? [1]));
   const byDayMap = useMemo(() => new Map((d?.byDay ?? []).map(x => [x.day, x])), [d]);
 
@@ -449,10 +460,10 @@ export function PrOverviewPage() {
             <div className="overflow-x-auto">
               <div
                 className="grid gap-1 items-center min-w-[560px]"
-                style={{ gridTemplateColumns: `minmax(150px, 190px) repeat(${axis.length}, minmax(10px, 40px))` }}
+                style={{ gridTemplateColumns: `minmax(150px, 190px) repeat(${Math.max(axis.length, 1)}, minmax(10px, 40px))` }}
               >
                 {/* header row 1: month name spanning its day columns */}
-                <div />
+                <div className="sticky left-0 z-10 self-stretch bg-white dark:bg-slate-900" />
                 {buildMonthBands(axis).map((band, i) => (
                   <div
                     key={`${band.label}-${i}`}
@@ -464,9 +475,9 @@ export function PrOverviewPage() {
                 ))}
 
                 {/* header row 2: weekday abbreviation + day number per column */}
-                <div />
-                {axis.map(day => {
-                  const h = dayHeaderInfo(day, todayIso);
+                <div className="sticky left-0 z-10 self-stretch bg-white dark:bg-slate-900" />
+                {axis.map((day, i) => {
+                  const h = dayInfos[i];
                   return (
                     <div
                       key={day}
@@ -488,7 +499,8 @@ export function PrOverviewPage() {
                   const pct = contributionPcts(dev, d.totals);
                   return (
                     <Fragment key={dev.user_key}>
-                      <div className="flex items-center gap-2 pr-2 min-w-0">
+                      {/* sticky so names + pills stay visible when the day axis scrolls */}
+                      <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-white dark:bg-slate-900">
                         <span title={dev.user_key} className="font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">{dev.user_key}</span>
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
@@ -496,26 +508,22 @@ export function PrOverviewPage() {
                           <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-100 dark:border-violet-800">{pct.ptsPct}% pts</span>
                         </span>
                       </div>
-                      {axis.map(day => {
+                      {axis.map((day, i) => {
                         const c = dev.daily[day] ?? 0;
-                        const h = dayHeaderInfo(day, todayIso);
+                        const h = dayInfos[i];
                         const intensity = c === 0 ? 0 : 0.25 + (c / max) * 0.7;
-                        const tip = cellTooltip(dev.user_key, day, c);
                         return (
                           <div
                             key={day}
-                            title={tip}
-                            className={`relative group aspect-square rounded-[3px] ${c === 0
+                            onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
+                            onMouseLeave={() => setHeatTip(null)}
+                            className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
                                 ? 'bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700'
                                 : 'bg-slate-100 dark:bg-slate-800'
                               : ''}`}
                             style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
-                          >
-                            <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block whitespace-nowrap rounded-md bg-slate-900 dark:bg-slate-700 text-white font-mono text-[10px] px-2 py-1 z-20 shadow-lg">
-                              {tip}
-                            </span>
-                          </div>
+                          />
                         );
                       })}
                     </Fragment>
@@ -523,6 +531,14 @@ export function PrOverviewPage() {
                 })}
               </div>
             </div>
+            {heatTip && (
+              <div
+                className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-slate-900 dark:bg-slate-700 text-white font-mono text-[10px] px-2 py-1 shadow-lg"
+                style={{ left: heatTip.x, top: heatTip.y }}
+              >
+                {heatTip.text}
+              </div>
+            )}
           </section>
 
           {/* Size model explainer */}

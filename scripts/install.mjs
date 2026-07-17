@@ -1031,13 +1031,14 @@ process.exit(0);
         const stale = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
         const targets = [];
         for (const name of stale) {
+            // Gemini tomls are written prefix-stripped: agenfk-release.md → agenfk/release.toml (see step 10c).
+            const geminiName = name.replace(/^agenfk-/, '');
             targets.push(
                 path.join(os.homedir(), '.claude', 'commands', `${name}.md`),
                 path.join(os.homedir(), '.claude', 'skills', name),
                 path.join(os.homedir(), '.config', 'opencode', 'commands', `${name}.md`),
                 path.join(os.homedir(), '.config', 'opencode', 'skills', name),
-                path.join(os.homedir(), '.gemini', 'commands', 'agenfk', `${name}.md`),
-                path.join(os.homedir(), '.gemini', 'commands', 'agenfk', `${name}.toml`),
+                path.join(os.homedir(), '.gemini', 'commands', 'agenfk', `${geminiName}.toml`),
                 path.join(os.homedir(), '.agents', 'skills', name),
             );
         }

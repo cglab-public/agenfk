@@ -39,14 +39,21 @@ jobs:
             ghcr.io/${{ github.repository }}/agenfk-hub:latest
 
   release:
-    # Tag pushes only — a manual workflow_dispatch rebuilds the image but has no
-    # tag to hang a GitHub Release on.
+    # hub-v tag refs only (a workflow_dispatch from a non-tag ref has no tag to
+    # hang a GitHub Release on; dispatching from an existing hub-v tag re-runs
+    # the release idempotently — see the upload --clobber branch below).
+    # needs: build so we never publish a release announcing an image that
+    # failed to push.
     if: startsWith(github.ref, 'refs/tags/hub-v')
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -60,10 +67,22 @@ jobs:
       - name: Package hub distributable
         run: node scripts/package-hub-dist.mjs
 
+      # TAG comes in via env, not ${{ }} interpolation inside the script —
+      # refnames can contain shell metacharacters.
       - name: Create GitHub release
         run: |
-          gh release create "${{ github.ref_name }}" agenfk-hub-dist.tar.gz \
-            --title "${{ github.ref_name }}" \
-            --generate-notes
+          # Scope auto-notes to the previous hub-v* tag so hub release notes
+          # don't swallow framework commits (and vice versa).
+          PREV=$(git tag -l 'hub-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
+          NOTES_ARGS=(--generate-notes)
+          if [ -n "$PREV" ]; then NOTES_ARGS+=(--notes-start-tag "$PREV"); fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Re-run (e.g. dispatch from the tag): refresh the asset only.
+            gh release upload "$TAG" agenfk-hub-dist.tar.gz --clobber
+          else
+            gh release create "$TAG" agenfk-hub-dist.tar.gz \
+              --title "$TAG" "${NOTES_ARGS[@]}"
+          fi
         env:
+          TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
