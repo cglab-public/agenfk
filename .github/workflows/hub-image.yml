@@ -1,5 +1,9 @@
 name: Hub Docker image
 
+# Hub-only release pipeline (CGLAB-8): a `hub-v*` tag releases ONLY the hub —
+# the GHCR Docker image plus a GitHub Release carrying agenfk-hub-dist.tar.gz
+# for the non-Docker (npx / bare-node) path. Global `v*` tags are untouched:
+# release.yml keeps shipping the full framework tarball, hub included.
 on:
   push:
     tags:
@@ -33,3 +37,33 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/agenfk-hub:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}/agenfk-hub:latest
+
+  release:
+    # Tag pushes only — a manual workflow_dispatch rebuilds the image but has no
+    # tag to hang a GitHub Release on.
+    if: startsWith(github.ref, 'refs/tags/hub-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package hub distributable
+        run: node scripts/package-hub-dist.mjs
+
+      - name: Create GitHub release
+        run: |
+          gh release create "${{ github.ref_name }}" agenfk-hub-dist.tar.gz \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

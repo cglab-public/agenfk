@@ -124,6 +124,6 @@ Since there is no separate review agent in Standard Mode, perform the review you
 1. Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 2. Run `agenfk comment <itemId> "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>"`.
 3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
-    - **Release**: Run `/agenfk-release` to create a new release.
+    - **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
     - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).

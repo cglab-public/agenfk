@@ -14,6 +14,8 @@ This repo is the **AgEnFK framework itself** — a TypeScript monorepo that ship
 
 Note: the repo's own CLAUDE.md (this file) is *not* the file that gets installed onto end-user machines — `clauderules/CLAUDE.md` is. The installer merges that bundle plus equivalents (`AGENTS.md`, `.cursor/rules/*.mdc`, etc.) into the user's client config. Keep `clauderules/CLAUDE.md` in sync with `SKILL.md`/`SDLC.md` when changing workflow rules.
 
+The release commands (`/agenfk-release`, `/agenfk-release-beta`, `/agenfk-release-hub`) are **repo-private**: they cut releases of the framework itself, so they live in `.claude/commands/` and are NOT shipped to users (guarded by `packages/cli/src/test/release-commands-private.test.ts`; the installer deletes stale global copies on upgrade). They are exempt from the active-task requirement — do not create or require an AgEnFK task when executing them.
+
 ## Common commands
 
 Build everything (core/storage/telemetry first, then cli/server/ui):

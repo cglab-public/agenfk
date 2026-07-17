@@ -89,6 +89,25 @@ cp packages/hub/.env.example packages/hub/.env
 docker compose -f packages/hub/docker-compose.yml up -d
 ```
 
+### 2.3 Releases — global vs hub-only
+
+The hub ships through two independent release paths:
+
+- **Global releases** (`v*` tags, `release.yml`): the framework tarball
+  (`agenfk-dist.tar.gz`) includes the hub — every framework release is also a
+  hub release.
+- **Hub-only releases** (`hub-v*` tags, `hub-image.yml`): for shipping the hub
+  *between* framework releases. Pushing a `hub-v*` tag builds + pushes the
+  GHCR Docker image (`ghcr.io/<owner>/<repo>/agenfk-hub:<tag>` + `:latest`)
+  and creates a GitHub Release carrying `agenfk-hub-dist.tar.gz` (packaged by
+  `scripts/package-hub-dist.mjs`: hub + hub-ui + core dists and the root
+  manifests — no framework surfaces) for non-Docker deployments.
+
+Cut a hub-only release with the repo-private `/agenfk-release-hub` command
+(`.claude/commands/agenfk-release-hub.md`): it bumps `packages/hub/package.json`
+only, tags `hub-v<version>`, and pushes; CI does the rest. The `hub-v*` and
+`v*` tag namespaces never collide.
+
 The compose file mounts a named `hub-data` volume at `/data`.
 
 ### 2.3 Production posture
