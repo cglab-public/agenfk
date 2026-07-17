@@ -74,6 +74,16 @@ describe('followValidateRun', () => {
     ).rejects.toThrow(/still be in progress/i);
     expect(poll).toHaveBeenCalledTimes(3);
   });
+
+  it('rethrows fatal poll errors immediately (definitive 404, not a connection blip)', async () => {
+    const fatal: any = new Error('Unknown run — server restarted; check the item comments.');
+    fatal.fatal = true;
+    const poll = seq([{ status: 'running', output: '' }, fatal]);
+    await expect(
+      followValidateRun({ poll, onOutput: () => {}, intervalMs: 0, maxConsecutiveErrors: 10 }),
+    ).rejects.toThrow(/server restarted/i);
+    expect(poll).toHaveBeenCalledTimes(2); // no retry burn on a definitive answer
+  });
 });
 
 describe('async verify wiring — no more bounded single-POST verifies', () => {
@@ -83,14 +93,21 @@ describe('async verify wiring — no more bounded single-POST verifies', () => {
     expect(src).toContain('followValidateRun');
   });
 
-  it('the MCP validate path no longer relies on a 5-minute single request', () => {
+  it('the MCP validate path posts async and follows the run', () => {
     const src = readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
     expect(src).toMatch(/async:\s*true/);
-    expect(src).not.toContain('timeout: 300000');
+    expect(src).toContain('followValidateRunViaApi');
+    // The POST keeps a 5-minute ceiling ONLY as upgrade-window compat (an old
+    // server ignores async:true and blocks synchronously); the follow loop is
+    // what must be unbounded — assert it has no deadline knob.
+    expect(src).not.toMatch(/followValidateRunViaApi[^]*?overallTimeout/);
   });
 
-  it('the CLI verify path no longer carries the 5-minute cap', () => {
+  it('the CLI verify outcome is decided by the follow loop, not the POST', () => {
     const src = readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-    expect(src).not.toContain('timeout: 300000');
+    const verifyIdx = src.indexOf(".command('verify");
+    const block = src.slice(verifyIdx, verifyIdx + 5000);
+    expect(block).toMatch(/followValidateRun/);
+    expect(block).toMatch(/runId/);
   });
 });

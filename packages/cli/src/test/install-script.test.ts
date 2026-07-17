@@ -229,10 +229,13 @@ describe('CLI — agenfk verify follows async runs', () => {
     it('verify command posts async and follows the run without an overall deadline', () => {
         const verifyIdx = cliScript.indexOf(".command('verify");
         expect(verifyIdx).toBeGreaterThan(-1);
-        const block = cliScript.slice(verifyIdx, verifyIdx + 4000);
+        const block = cliScript.slice(verifyIdx, verifyIdx + 5000);
         expect(block).toMatch(/async:\s*true/);
         expect(block).toMatch(/followValidateRun/);
-        expect(block).not.toMatch(/300000/);
+        // The POST keeps the old 5-minute ceiling ONLY for the upgrade window
+        // (an old server ignores async:true and blocks synchronously); the
+        // follow loop itself has no overall deadline.
+        expect(block).toMatch(/timeout:\s*300000/);
     });
 });
 

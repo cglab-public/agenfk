@@ -50,6 +50,11 @@ async function followValidateRunViaApi(runId: string): Promise<any> {
       consecutiveErrors = 0;
       if (run.status !== 'running') return run;
     } catch (e: any) {
+      // 404 is definitive (run expired / server restarted mid-run) — surface
+      // the server's guidance immediately instead of burning retries.
+      if (e?.response?.status === 404) {
+        throw new Error(e.response.data?.message || 'The validation run is unknown to the server (it may have restarted). Check the item\'s comments for the persisted outcome before re-running validate_progress.');
+      }
       if (++consecutiveErrors >= 10) {
         throw new Error(`Lost contact with the validation run (${e?.message || e}). The run may still be in progress — check the item's comments before re-running validate_progress.`);
       }
@@ -63,7 +68,10 @@ async function followValidateRunViaApi(runId: string): Promise<any> {
 async function validateViaApi(itemId: string, body: any): Promise<{ ok: boolean; text: string }> {
   const headers = { 'x-agenfk-internal': VERIFY_TOKEN };
   try {
-    const resp = await api.post(`/items/${itemId}/validate`, { ...body, async: true }, { headers });
+    // 5-minute POST ceiling: a NEW server answers 202 in milliseconds, but an
+    // OLD server (upgrade window) ignores async:true and blocks synchronously
+    // for the whole command — keep the previous ceiling for that path.
+    const resp = await api.post(`/items/${itemId}/validate`, { ...body, async: true }, { headers, timeout: 300000 });
     if (resp.status === 202 && resp.data?.runId) {
       const run = await followValidateRunViaApi(resp.data.runId);
       return { ok: run.status === 'passed', text: run.message || (run.status === 'passed' ? '✅ Validation passed.' : '❌ Validation failed.') };

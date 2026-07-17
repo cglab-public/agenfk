@@ -37,6 +37,10 @@ export async function followValidateRun(opts: FollowOptions): Promise<RunSnapsho
       snapshot = await opts.poll();
       consecutiveErrors = 0;
     } catch (err) {
+      // A poll can mark its error as fatal (e.g. the server answered 404
+      // RUN_NOT_FOUND after a restart) — retrying won't change a definitive
+      // answer, so surface it immediately instead of burning the retry budget.
+      if ((err as any)?.fatal) throw err;
       lastError = err;
       consecutiveErrors++;
       if (consecutiveErrors >= maxConsecutiveErrors) {

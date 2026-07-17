@@ -75,7 +75,7 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('returns 202 + runId immediately when a command must run', async () => {
     if (!VERIFY_TOKEN) return;
-    const item = await itemOnFinalStep('AV1', 'sleep 1 && echo slow-ok');
+    const item = await itemOnFinalStep('AV1', 'sleep 2 && echo slow-ok');
 
     const t0 = Date.now();
     const res = await request(app)
@@ -85,13 +85,36 @@ describe('POST /items/:id/validate — async runs', () => {
 
     expect(res.status).toBe(202);
     expect(res.body.runId).toBeTruthy();
-    // Immediately = well under the command's own runtime.
-    expect(Date.now() - t0).toBeLessThan(900);
+    // Immediately = well under the command's own runtime (generous margin for loaded CI).
+    expect(Date.now() - t0).toBeLessThan(1900);
 
     // While the command sleeps, the run reports running and the item is unchanged.
     const mid = await request(app).get(`/items/validate-runs/${res.body.runId}`).set('x-agenfk-internal', VERIFY_TOKEN);
     expect(mid.status).toBe(200);
     expect(['running', 'passed']).toContain(mid.body.status);
+
+    // Don't leak the background run into the next test.
+    await waitForRun(res.body.runId);
+  });
+
+  it('blocks a SYNC validate while a background run is active (old-client race)', async () => {
+    if (!VERIFY_TOKEN) return;
+    const item = await itemOnFinalStep('AV1b', 'sleep 2 && echo guard-ok');
+
+    const first = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ async: true });
+    expect(first.status).toBe(202);
+
+    const sync = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({}); // no async flag — old client
+    expect(sync.status).toBe(409);
+    expect(sync.body.runId).toBe(first.body.runId);
+
+    await waitForRun(first.body.runId);
   });
 
   it('applies the pass side effects in the background (transition + comment + captured output)', async () => {

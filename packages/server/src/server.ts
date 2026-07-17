@@ -1886,10 +1886,12 @@ function pruneValidateRuns() {
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
 // Advances item to the next flow step. On failure, moves back to the coding step.
-// asyncMode only changes behaviour when a command actually executes; every
-// other path (anchor advance, sibling propagation, no-command step, errors)
-// responds synchronously as before.
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncMode = false) {
+// `asyncRun` (pre-reserved by the route so the concurrency guard has no
+// check-then-set window) only changes behaviour when a command actually
+// executes; every other path (anchor advance, sibling propagation, no-command
+// step, errors) responds synchronously as before — the route discards the
+// unused reservation in that case.
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -2013,21 +2015,51 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // `res2` — the real HTTP response on the sync path, or a recorder that
   // captures the outcome into a ValidateRun on the async path.
   const runCommandAndFinalize = async (res2: any, run?: ValidateRun) => {
-  const { output, code } = await new Promise<{ output: string; code: number | null }>((resolve) => {
+  const { output, code, timedOut } = await new Promise<{ output: string; code: number | null; timedOut?: boolean }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
-    const onData = (d: Buffer) => { out += d.toString(); if (run) run.output = out; };
+    let killed = false;
+    // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
+    // waiting on stdin) would leave an async run 'running' forever, and the
+    // 409 guard would lock the item's verify verb until a server restart.
+    const maxMs = Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
+    const killer = setTimeout(() => {
+      killed = true;
+      out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, maxMs);
+    if (typeof killer.unref === 'function') killer.unref();
+    // Live output for run followers, capped so a verbose command can't pin
+    // hundreds of MB in the run map; the full output still goes to the log file.
+    const LIVE_CAP = 1024 * 1024;
+    const onData = (d: Buffer) => { out += d.toString(); if (run && out.length <= LIVE_CAP) run.output = out; };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('close', (c) => resolve({ output: out, code: c }));
-    child.on('error', (err) => resolve({ output: err.message, code: 1 }));
+    child.on('close', (c) => { clearTimeout(killer); resolve({ output: out, code: killed ? 124 : c, timedOut: killed }); });
+    child.on('error', (err) => { clearTimeout(killer); resolve({ output: err.message, code: 1 }); });
   });
 
   const testId = uuidv4();
   const logPath = writeValidationLog(itemId, testId, output);
   const preview = buildOutputPreview(output, logPath);
-  const passed = code === 0;
+  const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
+
+  // The command may have run for a long time — re-read the item so we merge
+  // comments added meanwhile instead of clobbering them, and refuse to apply a
+  // transition computed from a flow position the item no longer occupies
+  // (e.g. someone rolled it back mid-run).
+  const freshItem = await storage.getItem(itemId);
+  if (!freshItem) {
+    return res2.status(404).json({ status: item.status, message: `❌ Item was deleted while the validation command ran.`, output: preview });
+  }
+  if (freshItem.status !== item.status) {
+    const staleComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation ${passed ? 'PASSED' : 'FAILED'} (not applied)\n\nItem moved ${item.status} → ${freshItem.status} while the command ran; the computed transition is stale and was NOT applied. Re-run verify from the current step.\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``, timestamp: new Date() };
+    await storage.updateItem(itemId, { comments: [...(freshItem.comments || []), staleComment] });
+    io.emit('items_updated');
+    return res2.status(409).json({ status: freshItem.status, message: `⚠️ Validation ${passed ? 'passed' : 'failed'}, but the item changed step (${item.status} → ${freshItem.status}) while the command ran — no transition applied. Re-run verify from the current step.`, output: preview });
+  }
+  Object.assign(item, freshItem);
 
   const comments = [...(item.comments || []), {
     id: uuidv4(),
@@ -2045,7 +2077,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
       if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-        await autoGitCommit(updated, projectRoot);
+        // Advisory: a git-commit failure must not report a PASSED validation
+        // (whose transition already landed) as failed to the run follower.
+        try { await autoGitCommit(updated, projectRoot); }
+        catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }
       recordHubEvent({
       type: 'validate.passed',
@@ -2099,12 +2134,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   }; // end runCommandAndFinalize
 
-  if (asyncMode) {
-    pruneValidateRuns();
-    const runId = uuidv4();
-    const run: ValidateRun = { runId, itemId, status: 'running', output: '', startedAt: new Date() };
-    validateRuns.set(runId, run);
-    activeValidateRunByItem.set(itemId, runId);
+  if (asyncRun) {
+    const run = asyncRun;
+    const runId = run.runId;
+    (run as any).started = true;
     // Answer immediately — the client follows the run instead of holding this
     // request open for the command's whole lifetime.
     res.status(202).json({
@@ -2161,21 +2194,46 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
     const item = await storage.getItem(req.params.id);
     if (item) await storage.updateProject(item.projectId, { projectRoot: cwd });
   }
+  // One active run per item — a second verify while one runs is almost always
+  // an agent misreading slowness as failure. Applies to sync requests too so
+  // an old client can't race a background run on the same item.
+  const activeGuard = rejectIfRunActive(req.params.id, res);
+  if (activeGuard) return;
   const asyncMode = req.body.async === true || req.body.async === 'true';
   if (asyncMode) {
-    // One active run per item — a second verify while one runs is almost
-    // always an agent misreading slowness as failure. Point it at the run.
-    const activeRunId = activeValidateRunByItem.get(req.params.id);
-    if (activeRunId && validateRuns.get(activeRunId)?.status === 'running') {
-      return res.status(409).json({
-        error: 'VALIDATE_RUN_ACTIVE',
-        runId: activeRunId,
-        message: `A validation run is already active for this item. Follow it with GET /items/validate-runs/${activeRunId} instead of starting another.`,
-      });
+    // Reserve the run in the SAME tick as the guard — a check-then-set gap
+    // spanning the handler's awaits would let a double-submit spawn twice.
+    pruneValidateRuns();
+    const run: ValidateRun = { runId: uuidv4(), itemId: req.params.id, status: 'running', output: '', startedAt: new Date() };
+    validateRuns.set(run.runId, run);
+    activeValidateRunByItem.set(req.params.id, run.runId);
+    try {
+      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run);
+    } finally {
+      // A sync fast-path (anchor, sibling propagation, no-command, error)
+      // responded without ever starting the command — discard the reservation.
+      if (!(run as any).started) {
+        validateRuns.delete(run.runId);
+        if (activeValidateRunByItem.get(req.params.id) === run.runId) activeValidateRunByItem.delete(req.params.id);
+      }
     }
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, asyncMode);
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined);
 }));
+
+/** 409 if the item already has a live background validate run. Returns true when it responded. */
+function rejectIfRunActive(itemId: string, res: any): boolean {
+  const activeRunId = activeValidateRunByItem.get(itemId);
+  if (activeRunId && validateRuns.get(activeRunId)?.status === 'running') {
+    res.status(409).json({
+      error: 'VALIDATE_RUN_ACTIVE',
+      runId: activeRunId,
+      message: `A validation run is already active for this item. Follow it with GET /items/validate-runs/${activeRunId} instead of starting another.`,
+    });
+    return true;
+  }
+  return false;
+}
 
 // ── review_changes: DEPRECATED — delegates to validate_progress ──────────────
 app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
@@ -2185,6 +2243,7 @@ app.post("/items/:id/review", asyncHandler(async (req: any, res: any) => {
   if (!req.body.command || typeof req.body.command !== 'string') {
     return res.status(400).json({ error: "Missing required field: command" });
   }
+  if (rejectIfRunActive(req.params.id, res)) return;
   return handleValidateProgress(req.params.id, req.body.command, res);
 }));
 
@@ -2193,6 +2252,7 @@ app.post("/items/:id/test", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: test endpoint requires internal token." });
   }
+  if (rejectIfRunActive(req.params.id, res)) return;
   return handleValidateProgress(req.params.id, undefined, res);
 }));
 
