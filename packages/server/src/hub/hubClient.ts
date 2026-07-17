@@ -91,15 +91,29 @@ export class HubClient {
     }
   }
 
-  /** While unconfigured, keep at most AGENFK_HUB_OUTBOX_CAP rows (oldest pruned). */
+  /** While unconfigured, keep at most AGENFK_HUB_OUTBOX_CAP rows (oldest pruned).
+   *  Only PENDING rows (orgId sentinel) are eligible — after a logout, stamped
+   *  real-org events awaiting delivery must never be pruned by the cap. */
   private enforceOutboxCap(): void {
     if (!this.storage) return;
-    const cap = Number(process.env.AGENFK_HUB_OUTBOX_CAP) > 0 ? Number(process.env.AGENFK_HUB_OUTBOX_CAP) : 10000;
+    const capRaw = Number(process.env.AGENFK_HUB_OUTBOX_CAP);
+    const cap = Number.isFinite(capRaw) && capRaw >= 1 ? Math.floor(capRaw) : 10000;
     const overflow = this.storage.hubOutboxCount() - cap;
     if (overflow <= 0) return;
-    // hubOutboxPeek returns oldest-first, so the first `overflow` rows are the prune set.
-    const oldest = this.storage.hubOutboxPeek(overflow);
-    this.storage.hubOutboxDelete(oldest.map(r => r.event_id));
+    // hubOutboxPeek returns oldest-first; scan a bounded window and prune only
+    // pending-org rows. If old rows belong to a real org (post-logout), the cap
+    // degrades to soft rather than deleting deliverable history.
+    const window = this.storage.hubOutboxPeek(Math.min(overflow * 2 + 10, 2000));
+    const pruneIds: string[] = [];
+    for (const row of window) {
+      if (pruneIds.length >= overflow) break;
+      try {
+        if (JSON.parse(row.payload).orgId === PENDING_ORG) pruneIds.push(row.event_id);
+      } catch {
+        pruneIds.push(row.event_id); // unparseable rows can never deliver
+      }
+    }
+    this.storage.hubOutboxDelete(pruneIds);
   }
 }
 

@@ -98,11 +98,71 @@ describe('server boot stamps pending outbox rows when hub is configured', () => 
     const src = fs.readFileSync(path.resolve(__dirname, '../server.ts'), 'utf8');
     // The boot path must stamp pre-login events so the flusher doesn't ship
     // (or the hub reject) events with an empty orgId.
-    expect(src).toMatch(/hubOutboxRewriteOrgId\(\s*['"]{2}\s*,/);
+    expect(src).toMatch(/hubOutboxRewriteOrgId\(\s*(PENDING_ORG|['"]{2})\s*,/);
   });
 
   it('recordHubEvent no longer early-returns on a disabled hub', () => {
     const src = fs.readFileSync(path.resolve(__dirname, '../server.ts'), 'utf8');
     expect(src).not.toMatch(/if\s*\(\s*!hubClient\.isEnabled\s*\)\s*return/);
+  });
+});
+
+describe('cap and flusher respect ownership of pending rows', () => {
+  let dbPath: string;
+  let storage: SQLiteStorageProvider;
+
+  beforeEach(async () => {
+    dbPath = path.join(os.tmpdir(), `hub-outbox-own-${process.pid}-${Math.random().toString(36).slice(2)}.sqlite`);
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: dbPath });
+  });
+
+  afterEach(() => {
+    delete process.env.AGENFK_HUB_OUTBOX_CAP;
+    for (const suffix of ['', '-shm', '-wal']) {
+      const f = `${dbPath}${suffix}`;
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  it('the cap never prunes stamped real-org rows (post-logout scenario)', () => {
+    process.env.AGENFK_HUB_OUTBOX_CAP = '3';
+    // Older, REAL-org events awaiting delivery (e.g. queued during a hub outage,
+    // then the user logged out).
+    for (let i = 0; i < 4; i++) {
+      storage.hubOutboxAppend(`real-${i}`, new Date(2026, 0, 1, 0, 0, i).toISOString(), JSON.stringify({ orgId: 'acme', type: 't', payload: {} }));
+    }
+    const client = new HubClient('inst', null); // now unconfigured
+    client.attachStorage(storage);
+    client.recordEvent({ type: 'item.closed', occurredAt: new Date(2026, 0, 2).toISOString(), payload: {} } as any);
+    client.recordEvent({ type: 'item.closed', occurredAt: new Date(2026, 0, 3).toISOString(), payload: {} } as any);
+
+    // 6 rows, cap 3 → overflow, but only PENDING rows are eligible: the 4 real
+    // rows survive; pending rows are pruned oldest-first.
+    const orgs = storage.hubOutboxPeek(10).map(r => JSON.parse(r.payload).orgId);
+    expect(orgs.filter(o => o === 'acme')).toHaveLength(4);
+  });
+
+  it('a fractional AGENFK_HUB_OUTBOX_CAP does not break pruning', () => {
+    process.env.AGENFK_HUB_OUTBOX_CAP = '2.7'; // floors to 2
+    const client = new HubClient('inst', null);
+    client.attachStorage(storage);
+    for (let i = 0; i < 4; i++) {
+      client.recordEvent({ type: 't', occurredAt: new Date(2026, 0, 1, 0, 0, i).toISOString(), payload: { seq: i } } as any);
+    }
+    expect(storage.hubOutboxCount()).toBe(2);
+  });
+
+  it('the flusher never ships pending-org rows (they would be rejected then deleted)', async () => {
+    const { Flusher } = await import('../hub/flusher');
+    const axios = (await import('axios')).default;
+    storage.hubOutboxAppend('pend-1', new Date().toISOString(), JSON.stringify({ orgId: '', type: 't', payload: {} }));
+    const http = (axios as any).create();
+    const posted: any[] = [];
+    http.post = async (_url: string, body: any) => { posted.push(body); return { status: 200, data: {} }; };
+    const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
+    await flusher.flush();
+    expect(posted).toHaveLength(0);                 // nothing shipped
+    expect(storage.hubOutboxCount()).toBe(1);       // nothing deleted
   });
 });

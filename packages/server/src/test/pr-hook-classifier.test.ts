@@ -133,3 +133,23 @@ describe('classifyTrigger — compound and env-prefixed commands', () => {
     expect(classifyTrigger('gh pr view 12 && gh pr checks 12')).toBeNull();
   });
 });
+
+describe('classifyTrigger — shell-semantics edge cases (adversarial review)', () => {
+  it("handles the '\\'' apostrophe idiom in commit messages", () => {
+    expect(classifyTrigger("git commit -m 'it'\\''s done' && git push origin main"))
+      .toEqual({ kind: 'push', branch: 'main' });
+  });
+
+  it('2>&1 stays inside its segment and never becomes the branch', () => {
+    expect(classifyTrigger('git push origin main 2>&1')).toEqual({ kind: 'push', branch: 'main' });
+    expect(classifyTrigger('git push -u origin feat/x 2>&1 | tail -3')).toEqual({ kind: 'push', branch: 'feat/x' });
+  });
+
+  it('heredoc bodies cannot trigger (swallowed into their segment)', () => {
+    expect(classifyTrigger('git commit -F- <<EOF\nsubject\ngit push origin main\nEOF')).toBeNull();
+  });
+
+  it('escaped backslash before a closing double quote does not desync quoting', () => {
+    expect(classifyTrigger('echo "a\\\\" && gh pr create')).toEqual({ kind: 'open' });
+  });
+});

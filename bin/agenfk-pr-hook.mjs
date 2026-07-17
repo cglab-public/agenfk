@@ -30,14 +30,34 @@ export function splitShellSegments(command) {
   let quote = null; // active quote char (' or ") or null
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    if (quote) {
+    if (quote === "'") {
+      // Shell semantics: NO escapes inside single quotes — a lone ' always closes.
+      // (This is what makes the common 'it'\''s done' idiom parse correctly.)
       current += ch;
-      if (ch === quote && command[i - 1] !== '\\') quote = null;
+      if (ch === "'") quote = null;
       continue;
     }
+    if (quote === '"') {
+      if (ch === '\\' && i + 1 < command.length) { current += ch + command[i + 1]; i++; continue; }
+      current += ch;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // Unquoted: backslash escapes the next char (so \' doesn't open a quote).
+    if (ch === '\\' && i + 1 < command.length) { current += ch + command[i + 1]; i++; continue; }
     if (ch === "'" || ch === '"') { quote = ch; current += ch; continue; }
+    if (ch === '<' && command[i + 1] === '<') {
+      // Heredoc: we don't parse heredoc bodies — swallow the remainder into
+      // this segment so body lines can't masquerade as commands. (A chained
+      // command AFTER the heredoc is missed: false negatives beat body lines
+      // triggering false nudges.)
+      current += command.slice(i);
+      break;
+    }
     if (ch === '\n' || ch === ';') { segments.push(current); current = ''; continue; }
-    if ((ch === '&' || ch === '|')) {
+    if (ch === '&' || ch === '|') {
+      // `>&` (2>&1) and `&>` are redirections, not separators.
+      if (ch === '&' && (command[i - 1] === '>' || command[i + 1] === '>')) { current += ch; continue; }
       // `&&` / `||` / `|` / trailing `&` all end the segment; skip the doubled char.
       if (command[i + 1] === ch) i++;
       segments.push(current); current = '';
@@ -68,11 +88,13 @@ export function classifyTrigger(command) {
     if (pushMatch && !push) {
       const rest = (pushMatch[1] || '').trim().split(/\s+/);
       // crude branch extraction: last non-flag token, ignoring 'origin' / '-u'
+      // and redirections (2>&1, >out) that survive segment splitting.
       let branch;
       for (let i = rest.length - 1; i >= 0; i--) {
         const tok = rest[i];
         if (!tok || tok.startsWith('-')) continue;
         if (tok === 'origin') continue;
+        if (/[<>]/.test(tok)) continue;
         branch = tok;
         break;
       }

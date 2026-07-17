@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
-import { HubClient, Flusher, loadHubConfig } from "./hub/index.js";
+import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
@@ -197,7 +197,10 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
     const { execSync } = await import('child_process');
     try {
-      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      // Timeout: this runs (awaited) on the request path for the first event of
+      // every project — and since events are recorded for ALL installs now, a
+      // git hang (network mount, credential prompt) must not block the event loop.
+      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500 }).toString().trim();
       projectRemoteCache.set(projectId, out || '');
     } catch {
       projectRemoteCache.set(projectId, '');
@@ -476,7 +479,7 @@ const initStorage = async () => {
     // the real orgId BEFORE the flusher starts, so pre-login history delivers
     // instead of being rejected on orgId mismatch.
     try {
-      const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId('', hubClient.hubConfig.orgId);
+      const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId(PENDING_ORG, hubClient.hubConfig.orgId);
       if (stamped > 0) console.log(`[HUB] Stamped ${stamped} pre-login outbox event(s) with org=${hubClient.hubConfig.orgId}`);
     } catch (e: any) {
       console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
@@ -2302,8 +2305,10 @@ app.post('/internal/hub/rewrite-outbox-org', asyncHandler(async (req: any, res: 
   }
   const from = req.body?.from;
   const to = req.body?.to;
-  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) {
-    return res.status(400).json({ error: 'Body must be { from: string, to: string } with non-empty values.' });
+  // `from` may be '' — the pending-org sentinel for events queued before
+  // `agenfk hub login` (stamped here and at boot). `to` must be a real org.
+  if (typeof from !== 'string' || typeof to !== 'string' || !to) {
+    return res.status(400).json({ error: 'Body must be { from: string, to: string } with a non-empty target.' });
   }
   const rewritten = (storage as any).hubOutboxRewriteOrgId(from, to);
   res.json({ ok: true, rewritten });
