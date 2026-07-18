@@ -54,6 +54,9 @@ async function run() {
         'packages/telemetry/package.json',
         'packages/telemetry/dist/',
         'packages/ui/package.json',
+        // vite preview loads this at runtime. It contains the same-origin API
+        // and WebSocket proxy used by installed dashboards.
+        'packages/ui/vite.config.ts',
         'packages/ui/dist/',
         // flow-editor is a source-only TS package consumed by ui + hub-ui at
         // build time; its src/ must travel in the tarball so workspace resolution
