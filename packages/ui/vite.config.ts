@@ -6,11 +6,9 @@ import { homedir } from 'os'
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8'))
 
-// If VITE_API_URL is not explicitly set, fall back to the API port persisted by
-// the server at ~/.agenfk/server-port (the API auto-selects the closest free
-// port and writes it there). Default to localhost:3000 if neither is present.
-function resolveApiUrl(): string {
-  if (process.env.VITE_API_URL) return process.env.VITE_API_URL
+// The browser uses same-origin API URLs by default. During local development
+// and preview, proxy those requests to the API port persisted by the server.
+function resolveApiProxyTarget(): string {
   try {
     const port = readFileSync(resolve(homedir(), '.agenfk', 'server-port'), 'utf8').trim()
     if (port) return `http://localhost:${port}`
@@ -18,8 +16,18 @@ function resolveApiUrl(): string {
   return 'http://localhost:3000'
 }
 
-const apiUrl = resolveApiUrl()
-process.env.VITE_API_URL = apiUrl
+const apiProxyTarget = resolveApiProxyTarget()
+const proxy = {
+  '^/(api|version|db|backup|projects|flows|prs|token-events|registry|items|internal|jira|github|releases)(/|\\?|$)': {
+    target: apiProxyTarget,
+    changeOrigin: true,
+  },
+  '/socket.io': {
+    target: apiProxyTarget,
+    changeOrigin: true,
+    ws: true,
+  },
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -29,8 +37,10 @@ export default defineConfig({
   },
   server: {
     port: parseInt(process.env.VITE_PORT || '5173'),
+    proxy,
   },
   preview: {
     port: parseInt(process.env.VITE_PORT || '5173'),
+    proxy,
   },
 })

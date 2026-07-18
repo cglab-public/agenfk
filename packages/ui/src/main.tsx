@@ -5,6 +5,7 @@ import App from './App.tsx'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from './ThemeContext'
 import { initPosthog, capture } from './posthog'
+import { API_URL } from './apiUrl'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -14,8 +15,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-
-const API_URL = (import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:3000';
 
 async function bootstrap() {
   // Non-blocking: fetch telemetry config and init Posthog if enabled.

@@ -1,9 +1,8 @@
 import axios from 'axios';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { API_URL } from './apiUrl';
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 export const api = {
   listProjects: async () => {
