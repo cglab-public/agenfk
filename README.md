@@ -143,6 +143,14 @@ After installation, complete the setup:
     preview server proxies those requests to the local API. Protect remote
     access with authentication; the dashboard can modify workflow data.
 
+    Allow the public hostname when starting or restarting the services:
+
+    ```bash
+    AGENFK_UI_ALLOWED_HOSTS=agenfk.example.com agenfk restart
+    ```
+
+    Multiple hostnames can be supplied as a comma-separated list.
+
     Set `VITE_API_URL` at build time only when the API is intentionally hosted
     on a separate origin.
 3.  **Service Lifecycle**: Manage your installation with the following commands:

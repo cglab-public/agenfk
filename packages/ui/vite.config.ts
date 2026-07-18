@@ -17,6 +17,10 @@ function resolveApiProxyTarget(): string {
 }
 
 const apiProxyTarget = resolveApiProxyTarget()
+const allowedHosts = (process.env.AGENFK_UI_ALLOWED_HOSTS || '')
+  .split(',')
+  .map(host => host.trim())
+  .filter(Boolean)
 const proxy = {
   '^/(api|version|db|backup|projects|flows|prs|token-events|registry|items|internal|jira|github|releases)(/|\\?|$)': {
     target: apiProxyTarget,
@@ -37,10 +41,12 @@ export default defineConfig({
   },
   server: {
     port: parseInt(process.env.VITE_PORT || '5173'),
+    ...(allowedHosts.length ? { allowedHosts } : {}),
     proxy,
   },
   preview: {
     port: parseInt(process.env.VITE_PORT || '5173'),
+    ...(allowedHosts.length ? { allowedHosts } : {}),
     proxy,
   },
 })
