@@ -27,14 +27,14 @@ Check for local changes using `git status`. If there are unstaged or uncommitted
 
 **Step 3 — Confirm and wait**
 - Show the user the PR URL and instruct them:
-  > "Your PR is open. Once it has been reviewed and merged, run `/agenfk-release` to create a release."
+  > "Your PR is open. Once it has been reviewed and merged, cut a release following your project's release process."
 - Do NOT poll or wait. The user will trigger the next step manually.
 
 **Step 4 — (Optional) Check PR status**
 If the user asks whether the PR is ready:
 - Re-read the item with `agenfk get <itemId> --json` (MCP: `get_item`) and check `prStatus`.
 - Alternatively, run `gh pr view <prNumber> --json state` for a live check.
-- If merged → tell the user to run `/agenfk-release`.
+- If merged → tell the user the PR landed and they can cut a release when ready.
 - If still open or in draft → tell the user to wait for approval.
 - If closed without merge → warn the user and ask how they want to proceed.
 
@@ -43,5 +43,5 @@ If the user asks whether the PR is ready:
 **Key rules:**
 - Branch and PR creation are the developer's responsibility. This command only guides the process.
 - Never poll in a loop. One check per user request.
-- `/agenfk-release` will proceed once on `main` — the user is responsible for merging before running it.
+- Releases are cut from `main` — the user is responsible for merging before releasing.
 - If `gh` CLI is not installed, inform the user and skip PR creation.

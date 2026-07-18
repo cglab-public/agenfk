@@ -58,7 +58,7 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 
 **Use `agenfk verify` (not `agenfk update --status`) for all FORWARD step transitions** — it enforces the exit-criteria gate and is the only way to reach the final step. `agenfk update <id> --status <name>` is for backward/rollback transitions only.
 
-**Exception**: The `agenfk-release` and `agenfk-release-beta` commands are exempt from the active task requirement. Do not create or require a task when executing these commands.
+**Exception**: Project-scoped release commands (defined in a repo's own commands directory) are exempt from the active task requirement. Do not create or require a task when executing them.
 
 ### Quality Guards — MANDATORY
 

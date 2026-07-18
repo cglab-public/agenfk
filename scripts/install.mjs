@@ -1021,6 +1021,35 @@ process.exit(0);
         }
     }
 
+    // 8f. Remove repo-private release commands stale from previous versions.
+    // agenfk-release / agenfk-release-beta / agenfk-release-hub cut releases of
+    // the agenfk framework itself and moved to the repo's own .claude/commands/;
+    // they used to ship globally, so upgrades must delete the old copies from
+    // every client target (uninstall already removes them via the agenfk* glob).
+    console.log(`${GREEN}[8f/14] Removing stale repo-private release commands...${NC}`);
+    {
+        const stale = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
+        const targets = [];
+        for (const name of stale) {
+            // Gemini tomls are written prefix-stripped: agenfk-release.md → agenfk/release.toml (see step 10c).
+            const geminiName = name.replace(/^agenfk-/, '');
+            targets.push(
+                path.join(os.homedir(), '.claude', 'commands', `${name}.md`),
+                path.join(os.homedir(), '.claude', 'skills', name),
+                path.join(os.homedir(), '.config', 'opencode', 'commands', `${name}.md`),
+                path.join(os.homedir(), '.config', 'opencode', 'skills', name),
+                path.join(os.homedir(), '.gemini', 'commands', 'agenfk', `${geminiName}.toml`),
+                path.join(os.homedir(), '.agents', 'skills', name),
+            );
+        }
+        for (const target of targets) {
+            if (existsSync(target)) {
+                await fs.rm(target, { recursive: true, force: true });
+                console.log(`  Removed stale: ${target}`);
+            }
+        }
+    }
+
     // 9. Symlink CLI to ~/.local/bin
     const cliSource = path.join(rootDir, 'packages', 'cli', 'bin', 'agenfk.js');
     const cliDestBase = path.join(localBinDir, 'agenfk');
@@ -1595,9 +1624,8 @@ process.exit(0);
         console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server; pi needs a restart to load its native extension).");
         console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
         console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
-        console.log("4. Use '/agenfk-release' or '/agenfk-release-beta' to push to remote and cut a release.");
-        console.log("5. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'.");
-        console.log("6. Run 'agenfk health' to verify your installation at any time.");
+        console.log("4. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'.");
+        console.log("5. Run 'agenfk health' to verify your installation at any time.");
     } else {
         console.log(`${GREEN}Integration '${onlyPlatform}' Installation Complete.${NC}`);
         console.log(`Restart ${onlyPlatform} to pick up the changes.`);

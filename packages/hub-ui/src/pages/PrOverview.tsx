@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
@@ -8,6 +8,7 @@ import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip } from '../prPerDay';
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -189,6 +190,19 @@ export function PrOverviewPage() {
   const d = overview.data;
   const to = d?.period.to ?? (toParam || new Date().toISOString());
   const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
+  // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
+  const todayIso = new Date().toISOString().slice(0, 10);
+  // Per-column header info, computed once per axis instead of per cell.
+  const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
+  // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
+  // spans would add tens of thousands of DOM nodes on a 90d × many-devs grid,
+  // and anything absolutely positioned inside the overflow-x-auto scroller
+  // gets clipped at its edges. Fixed positioning escapes the scroller.
+  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setHeatTip({ text, x: Math.max(8, Math.min(r.left + r.width / 2, window.innerWidth - 8)), y: r.top - 6 });
+  };
   const maxDayTotal = Math.max(1, ...(d?.byDay.map(x => x.total) ?? [1]));
   const byDayMap = useMemo(() => new Map((d?.byDay ?? []).map(x => [x.day, x])), [d]);
 
@@ -436,38 +450,95 @@ export function PrOverviewPage() {
             </div>
           </section>
 
-          {/* Per developer per day heatmap */}
+          {/* Per developer per day heatmap — calendar headers (month band +
+              weekday/day per column), contribution pills per dev, and a styled
+              tooltip on EVERY cell (the native title alone proved unreliable
+              here, and 0-count cells previously lost hover to a nested div). */}
           <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
             <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-1">Per developer, per day</h2>
-            <p className="text-[11px] text-slate-500 mb-4">Cell shade = PRs opened that day.</p>
+            <p className="text-[11px] text-slate-500 mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
             <div className="overflow-x-auto">
-              <div className="space-y-1 min-w-[560px]">
+              <div
+                className="grid gap-1 items-center min-w-[560px]"
+                style={{ gridTemplateColumns: `minmax(150px, 190px) repeat(${Math.max(axis.length, 1)}, minmax(10px, 40px))` }}
+              >
+                {/* header row 1: month name spanning its day columns */}
+                <div className="sticky left-0 z-10 self-stretch bg-white dark:bg-slate-900" />
+                {buildMonthBands(axis).map((band, i) => (
+                  <div
+                    key={`${band.label}-${i}`}
+                    style={{ gridColumn: `span ${band.span}` }}
+                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400 border-b-2 border-indigo-200 dark:border-indigo-800 pb-1"
+                  >
+                    {band.label}
+                  </div>
+                ))}
+
+                {/* header row 2: weekday abbreviation + day number per column */}
+                <div className="sticky left-0 z-10 self-stretch bg-white dark:bg-slate-900" />
+                {axis.map((day, i) => {
+                  const h = dayInfos[i];
+                  return (
+                    <div
+                      key={day}
+                      className={`text-center rounded-md py-0.5 ${h.isToday
+                        ? 'bg-indigo-50 dark:bg-indigo-900/30 outline outline-1 outline-indigo-200 dark:outline-indigo-700'
+                        : h.isWeekend ? 'bg-slate-100 dark:bg-slate-800/60' : ''}`}
+                    >
+                      <span className={`block font-mono text-[8px] uppercase leading-tight ${h.isWeekend ? 'text-slate-300 dark:text-slate-600' : 'text-slate-400 dark:text-slate-500'}`}>{h.weekday}</span>
+                      <span className={`block font-mono text-[11px] font-bold tabular-nums leading-tight ${h.isToday
+                        ? 'text-indigo-600 dark:text-indigo-400'
+                        : h.isWeekend ? 'text-slate-400 dark:text-slate-500' : 'text-slate-700 dark:text-slate-200'}`}>{h.dayNum}</span>
+                    </div>
+                  );
+                })}
+
+                {/* one row per developer: name + contribution pills | day cells */}
                 {d.byDeveloper.map(dev => {
                   const max = Math.max(1, ...axis.map(day => dev.daily[day] ?? 0));
+                  const pct = contributionPcts(dev, d.totals);
                   return (
-                    <div key={dev.user_key} className="grid items-center gap-2" style={{ gridTemplateColumns: '150px 1fr' }}>
-                      <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">{dev.user_key}</span>
-                      <div className="flex gap-1">
-                        {axis.map(day => {
-                          const c = dev.daily[day] ?? 0;
-                          const intensity = c === 0 ? 0 : 0.25 + (c / max) * 0.7;
-                          return (
-                            <div
-                              key={day}
-                              title={`${dev.user_key} · ${day}: ${c} PRs`}
-                              className="flex-1 aspect-square rounded-[3px] min-w-[10px] max-w-[40px]"
-                              style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
-                            >
-                              {c === 0 && <div className="w-full h-full rounded-[3px] bg-slate-100 dark:bg-slate-800" />}
-                            </div>
-                          );
-                        })}
+                    <Fragment key={dev.user_key}>
+                      {/* sticky so names + pills stay visible when the day axis scrolls */}
+                      <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-white dark:bg-slate-900">
+                        <span title={dev.user_key} className="font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">{dev.user_key}</span>
+                        {/* stacked vertically so long dev emails keep the width */}
+                        <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
+                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800">{pct.prPct}% PRs</span>
+                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-100 dark:border-violet-800">{pct.ptsPct}% pts</span>
+                        </span>
                       </div>
-                    </div>
+                      {axis.map((day, i) => {
+                        const c = dev.daily[day] ?? 0;
+                        const h = dayInfos[i];
+                        const intensity = c === 0 ? 0 : 0.25 + (c / max) * 0.7;
+                        return (
+                          <div
+                            key={day}
+                            onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
+                            onMouseLeave={() => setHeatTip(null)}
+                            className={`aspect-square rounded-[3px] ${c === 0
+                              ? h.isWeekend
+                                ? 'bg-slate-50 dark:bg-slate-800/40 border border-dashed border-slate-200 dark:border-slate-700'
+                                : 'bg-slate-100 dark:bg-slate-800'
+                              : ''}`}
+                            style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
+                          />
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </div>
             </div>
+            {heatTip && (
+              <div
+                className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-slate-900 dark:bg-slate-700 text-white font-mono text-[10px] px-2 py-1 shadow-lg"
+                style={{ left: heatTip.x, top: heatTip.y }}
+              >
+                {heatTip.text}
+              </div>
+            )}
           </section>
 
           {/* Size model explainer */}

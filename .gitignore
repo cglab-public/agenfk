@@ -11,6 +11,12 @@ coverage/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+# .claude dirs are local state (settings, worktrees) EXCEPT the root repo's
+# private slash commands, which are versioned (release commands live there —
+# see CLAUDE.md).
 .claude/
+!/.claude/
+/.claude/*
+!/.claude/commands/
 tmp.*.json
 *-test-db.json

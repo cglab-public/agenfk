@@ -1,5 +1,9 @@
 name: Hub Docker image
 
+# Hub-only release pipeline (CGLAB-8): a `hub-v*` tag releases ONLY the hub —
+# the GHCR Docker image plus a GitHub Release carrying agenfk-hub-dist.tar.gz
+# for the non-Docker (npx / bare-node) path. Global `v*` tags are untouched:
+# release.yml keeps shipping the full framework tarball, hub included.
 on:
   push:
     tags:
@@ -33,3 +37,52 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/agenfk-hub:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}/agenfk-hub:latest
+
+  release:
+    # hub-v tag refs only (a workflow_dispatch from a non-tag ref has no tag to
+    # hang a GitHub Release on; dispatching from an existing hub-v tag re-runs
+    # the release idempotently — see the upload --clobber branch below).
+    # needs: build so we never publish a release announcing an image that
+    # failed to push.
+    if: startsWith(github.ref, 'refs/tags/hub-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package hub distributable
+        run: node scripts/package-hub-dist.mjs
+
+      # TAG comes in via env, not ${{ }} interpolation inside the script —
+      # refnames can contain shell metacharacters.
+      - name: Create GitHub release
+        run: |
+          # Scope auto-notes to the previous hub-v* tag so hub release notes
+          # don't swallow framework commits (and vice versa).
+          PREV=$(git tag -l 'hub-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
+          NOTES_ARGS=(--generate-notes)
+          if [ -n "$PREV" ]; then NOTES_ARGS+=(--notes-start-tag "$PREV"); fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Re-run (e.g. dispatch from the tag): refresh the asset only.
+            gh release upload "$TAG" agenfk-hub-dist.tar.gz --clobber
+          else
+            gh release create "$TAG" agenfk-hub-dist.tar.gz \
+              --title "$TAG" "${NOTES_ARGS[@]}"
+          fi
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

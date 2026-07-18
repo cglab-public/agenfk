@@ -50,6 +50,29 @@ function readVerifyToken(): string | null {
   try { return fs.readFileSync(VERIFY_TOKEN_FILE, 'utf8').trim() || null; } catch { return null; }
 }
 
+/**
+ * Best-effort: stamp events queued while the hub was disconnected (pending-org
+ * sentinel '') with the just-configured orgId, via the running API server.
+ * Without this, stamping only happens at the NEXT server boot — and the
+ * still-running server would keep cap-pruning the very pre-login history the
+ * outbox-while-disconnected feature preserves. Failure is fine (server not
+ * running / old server): boot-time stamping remains the backstop.
+ */
+async function stampPendingOutbox(orgId: string): Promise<void> {
+  const token = readVerifyToken();
+  if (!token) return;
+  try {
+    const { data } = await axios.post(
+      `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
+      { from: '', to: orgId },
+      { headers: { 'x-agenfk-internal': token }, timeout: 5000 },
+    );
+    if (data?.rewritten > 0) {
+      console.log(chalk.gray(`  Stamped ${data.rewritten} event(s) queued before login with org=${orgId}.`));
+    }
+  } catch { /* best-effort — boot-time stamping covers this */ }
+}
+
 export function registerHubCommands(program: Command): void {
   const hub = program.command('hub').description('Corporate Hub: forward events to a self-hosted fleet metrics server');
 
@@ -81,6 +104,7 @@ export function registerHubCommands(program: Command): void {
           process.exit(1);
         }
         writeHubConfig(cfg);
+        await stampPendingOutbox(cfg.orgId);
         console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
         return;
       }
@@ -115,6 +139,7 @@ export function registerHubCommands(program: Command): void {
             console.log();
             const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
             writeHubConfig(cfg);
+            await stampPendingOutbox(cfg.orgId);
             console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
             return;
           }

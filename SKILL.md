@@ -190,7 +190,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
         NEVER leave cards stuck in intermediate steps. You are responsible for progressing each item all the way to DONE.
         NEVER use `agenfk update <id> --status DONE` — the server rejects direct DONE transitions. Always use `agenfk verify <id> --evidence "<evidence>"` to close an item.
     *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
-        1. **Release**: Run `/agenfk-release` to create a new release.
+        1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
         3. **Continue Current**: Keep working on the current item (the Agent MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
 

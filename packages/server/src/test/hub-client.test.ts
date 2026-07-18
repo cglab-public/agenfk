@@ -30,12 +30,16 @@ describe('HubClient', () => {
     process.env = { ...originalEnv };
   });
 
-  it('is disabled when no config is present', () => {
+  it('is disabled when no config is present — but still outboxes with the pending-org sentinel', () => {
+    // CGLAB-11: pre-login events used to be silently dropped; now they queue
+    // with orgId '' and get stamped at the first boot with a config
+    // (see hub-outbox-disconnected.test.ts for the full contract).
     const client = new HubClient('install-1', null);
     client.attachStorage(storage);
     expect(client.isEnabled).toBe(false);
     client.recordEvent({ type: 'item.created', payload: { id: 'x' } });
-    expect(storage.hubOutboxCount()).toBe(0);
+    expect(storage.hubOutboxCount()).toBe(1);
+    expect(JSON.parse(storage.hubOutboxPeek(1)[0].payload).orgId).toBe('');
   });
 
   it('records events into the outbox when enabled', () => {

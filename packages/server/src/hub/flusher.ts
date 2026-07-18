@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
+import { PENDING_ORG } from './hubClient.js';
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 500;
@@ -126,7 +127,14 @@ export class Flusher {
   }
 
   private async flushOnce(): Promise<void> {
-    const rows = this.storage.hubOutboxPeek(this.batchSize);
+    const allRows = this.storage.hubOutboxPeek(this.batchSize);
+    // Never ship pending-org sentinel rows (orgId '') — they were queued while
+    // the hub was disconnected and must be stamped with the real orgId first
+    // (boot / `hub login` does that). The hub would reject them per-event
+    // inside a 200 response and flushOnce would then DELETE them — silent loss.
+    const rows = allRows.filter(r => {
+      try { return JSON.parse(r.payload).orgId !== PENDING_ORG; } catch { return true; }
+    });
     if (rows.length === 0) {
       this.status.lastFlushAt = new Date().toISOString();
       return;

@@ -10,16 +10,16 @@
  * 0.3.0-beta.22 because the bump path edited package.json but never ran
  * `npm install --package-lock-only`.
  *
- * Both skill files ship to AgEnFK users on Node, Python, Rust, Go, .NET,
- * etc. — so the guidance must be stack-aware (detect the lockfile present
- * in the repo, run the matching tool), not Node-specific.
+ * The skills were written stack-aware (detect the lockfile present in the
+ * repo, run the matching tool), and keep that guidance even though they are
+ * now repo-private (.claude/commands/ — see release-commands-private.test.ts).
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
 
-const release = readFileSync(path.resolve(__dirname, '../../../../commands/agenfk-release.md'), 'utf8');
-const beta = readFileSync(path.resolve(__dirname, '../../../../commands/agenfk-release-beta.md'), 'utf8');
+const release = readFileSync(path.resolve(__dirname, '../../../../.claude/commands/agenfk-release.md'), 'utf8');
+const beta = readFileSync(path.resolve(__dirname, '../../../../.claude/commands/agenfk-release-beta.md'), 'utf8');
 
 const skills = [
   ['agenfk-release', release],
@@ -58,4 +58,19 @@ describe('release skills regenerate the lockfile after bumping the manifest', ()
       });
     });
   }
+});
+
+describe('agenfk-release-hub regenerates the lockfile after bumping the hub manifest', () => {
+  // Hub-only releases bump packages/hub/package.json — same lockfile-drift
+  // hazard. The hub command is npm-only (this repo), so no multi-stack table.
+  const hub = readFileSync(path.resolve(__dirname, '../../../../.claude/commands/agenfk-release-hub.md'), 'utf8');
+
+  it('pairs the manifest bump with npm lockfile regeneration', () => {
+    expect(hub.toLowerCase()).toMatch(/regenerate|update.+lockfile|lockfile.+regen/);
+    expect(hub).toMatch(/npm install --package-lock-only/);
+  });
+
+  it('commits the lockfile together with the bump', () => {
+    expect(hub).toMatch(/git add .*package-lock\.json/);
+  });
 });
