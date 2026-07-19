@@ -1,14 +1,17 @@
 /**
  * Content regression tests for the installed rule bundles.
  *
- * AgEnFK is now CLI-only by default (MCP is opt-in via --with-mcp). The rule
- * bundles that get installed into each client's config must therefore:
- *   - present the `agenfk` CLI as the primary workflow interface
- *   - NOT instruct agents to never use the CLI (the old MCP-first framing)
+ * AgEnFK is CLI-only by default (MCP is opt-in via --with-mcp) for every client
+ * EXCEPT Codex. Codex's sandbox often blocks localhost, so it is MCP-primary and
+ * gets the MCP server by default (see codex-mcp-default.test.ts). Regardless of
+ * which surface is primary, every installed bundle must still:
  *   - document the full CLI surface, including the commands that close the
  *     former MCP-only gaps (pause-work, resume-work, update-project,
  *     add-context, flow delete, analyze)
+ *   - NOT instruct agents to never use the CLI
  *   - reference the token-optimized --toon switch
+ * and each bundle must accurately state whether MCP is opt-in (default) or the
+ * primary surface (Codex).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -48,8 +51,14 @@ describe.each(BUNDLES)('rule bundle %s — CLI-primary', (bundle) => {
     expect(content).toMatch(/agenfk analyze/);
   });
 
-  it('notes that MCP is optional / opt-in (--with-mcp)', () => {
-    expect(content).toMatch(/--with-mcp/);
+  it('states its MCP posture — Codex is MCP-primary/default; others are opt-in (--with-mcp)', () => {
+    if (bundle === 'codexrules/AGENTS.md') {
+      // Codex: MCP is the primary surface, registered by default.
+      expect(content).toMatch(/mcp__agenfk__/);
+      expect(content.toLowerCase()).toMatch(/default for codex|default\b[\s\S]{0,40}codex|codex[\s\S]{0,40}default/);
+    } else {
+      expect(content).toMatch(/--with-mcp/);
+    }
   });
 
   it('documents --json as the read output format', () => {

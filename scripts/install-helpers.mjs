@@ -70,6 +70,33 @@ export function buildCodexHooksConfig(existingConfig, prHookCommand) {
   return config;
 }
 
+// Decide whether to register the agenfk MCP server with Codex (CGLAB-15).
+//
+// Codex runs tools in a sandbox that often blocks outbound localhost, so the
+// agenfk CLI cannot reach the local API server there. The MCP stdio server is not
+// subject to that restriction, so — unlike every other client, which stays
+// CLI-only unless --with-mcp — Codex gets MCP registered BY DEFAULT, overriding
+// AgEnFK's global CLI-only default.
+//
+// Precedence (highest first):
+//   --no-mcp            → false (explicit opt-out this run; persisted so it sticks)
+//   --with-mcp          → true  (explicit opt-in re-enables a prior opt-out)
+//   persistedCodexMcp   → a prior decision (so an opt-out survives flag-less upgrades)
+//   otherwise           → true  (default on for Codex)
+//
+// persistedCodexMcp is `config.codexMcp` from ~/.agenfk/config.json; without it an
+// opt-out would silently un-stick on the next flag-less `agenfk upgrade`.
+/**
+ * @param {{ noMcp?: boolean, withMcp?: boolean, persistedCodexMcp?: boolean }} [opts]
+ * @returns {boolean}
+ */
+export function shouldRegisterCodexMcp({ noMcp = false, withMcp = false, persistedCodexMcp } = {}) {
+  if (noMcp) return false;
+  if (withMcp) return true;
+  if (persistedCodexMcp === false) return false;
+  return true;
+}
+
 // Return the "source <rc>" hint string, or null when no rc file was modified (#4).
 // Showing the hint when nothing was changed is misleading — the export was correctly
 // skipped because ~/.local/bin was already on PATH.

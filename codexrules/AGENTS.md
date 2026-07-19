@@ -7,11 +7,16 @@
 > rules are enforced by instruction rather than mechanically. You MUST follow them
 > strictly — `agenfk gatekeeper` returning `✅ AUTHORIZED` is your green light to edit.
 
-> **AgEnFK is CLI-only by default.** All workflow operations below use the `agenfk`
-> CLI, which talks to the AgEnFK server (the single owner of state) and is fully
-> enforced server-side. If you installed with `--with-mcp` and `mcp__agenfk__*`
-> tools are present in your tool list, you may use the equivalent MCP tool for any
-> command — they are interchangeable. When in doubt, use the CLI.
+> **In Codex, PREFER the MCP tools (`mcp__agenfk__*`) over the `agenfk` CLI.**
+> Codex runs tools in a sandbox that often blocks outbound connections to
+> `localhost`, so the CLI — which talks to the local AgEnFK server over HTTP — may
+> fail to connect. The agenfk MCP server is registered **by default** for Codex and
+> is not subject to that restriction, so use the MCP tool for every workflow
+> operation whenever it is present in your tool list. The `agenfk` CLI commands
+> shown below are exactly equivalent (same server, same server-side enforcement)
+> and are the right choice only in **yolo / full-access mode** — where the sandbox
+> is disabled and `localhost` is reachable — or as a fallback when the MCP tools are
+> unavailable. Each command below lists its equivalent `mcp__agenfk__*` tool.
 
 ### Clean Start — MANDATORY at task start
 
@@ -77,9 +82,9 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 
 Codex does not support PreToolUse hooks, so the above is enforced by instruction — you MUST comply. Always run `agenfk gatekeeper` before editing any file.
 
-### Command Reference — the `agenfk` CLI
+### Command Reference — MCP tools (CLI equivalents shown)
 
-This is the full workflow surface. Each row notes the equivalent MCP tool (available only if you installed with `--with-mcp`; `—` means there is no MCP equivalent — use the CLI). Run `agenfk <command> --help` for the authoritative option list; only the flags that matter day-to-day are shown here.
+This is the full workflow surface. In Codex, call the **`mcp__agenfk__*` tool** in each row (registered by default); the `agenfk` CLI command is the exact equivalent for yolo/full-access mode or as a fallback. `—` means there is no MCP equivalent — use the CLI (only works in yolo/full-access mode, since the CLI needs `localhost`). Run `agenfk <command> --help` for the authoritative option list; only the flags that matter day-to-day are shown here.
 
 **Workflow & items**
 
@@ -179,10 +184,14 @@ agenfk list-projects --json
 
 A compact `--toon` format is also available on the same read commands if you want to save output tokens.
 
-### Optional: MCP mode
+### MCP mode (default for Codex)
 
-MCP is **opt-in**. To register the AgEnFK MCP server with your client, install with
-`--with-mcp` (e.g. `npx agenfk@latest --with-mcp`, or `agenfk integration install codex --with-mcp`).
-When MCP tools are present, prefer them for state changes; the CLI commands above remain
-available and equivalent. To turn MCP back off, re-run the installer with `--no-mcp`.
+Unlike other clients (where MCP is opt-in via `--with-mcp`), the AgEnFK MCP server
+is registered with Codex **by default**, because Codex's sandbox often blocks the
+`localhost` connection the CLI needs. Prefer the `mcp__agenfk__*` tools for all
+workflow operations. The CLI commands above remain equivalent and are the right
+choice in yolo/full-access mode or as a fallback. To opt out of MCP registration,
+install with `--no-mcp` (e.g. `npx agenfk@latest --no-mcp`, or
+`agenfk integration install codex --no-mcp`) — but then the workflow only works in
+yolo/full-access mode.
 <!-- agenfk:end -->
