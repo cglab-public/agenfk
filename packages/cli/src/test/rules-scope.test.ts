@@ -6,14 +6,15 @@
  * (and a throwaway project cwd for project scope) and assert on what they write /
  * remove, instead of grepping install.mjs / uninstall.mjs / cli/index.ts.
  *
- * NOTE: the AGENTS.md (Codex) and GEMINI.md (Gemini) rule writers only fire when
- * that client is detected, which needs the real client CLI — absent under the
- * sandbox's empty PATH — so only the always-written claude (CLAUDE.md) and cursor
- * (agenfk.mdc) rules are observable here. The `integration install` command has
- * no `--scope` flag (it forwards the persisted rulesScope from config.json); the
- * old `--scope` grep was a false match on `claude mcp add --scope user`. Those
- * non-observable branches were dropped in the behaviour-based conversion
- * (CGLAB-16).
+ * NOTE: the Cursor (agenfk.mdc), Codex (AGENTS.md) and Gemini (GEMINI.md) rule
+ * writers only fire when that client is DETECTED (its config dir exists or its
+ * CLI answers `--version`) — which is environment-dependent and false in CI's
+ * clean Linux HOME. Only the Claude rules (CLAUDE.md) are written
+ * unconditionally, so the assertions here use CLAUDE.md, not the client-gated
+ * rule files. The `integration install` command has no `--scope` flag (it
+ * forwards the persisted rulesScope from config.json); the old `--scope` grep was
+ * a false match on `claude mcp add --scope user`. Those non-observable branches
+ * were dropped in the behaviour-based conversion (CGLAB-16).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync } from 'fs';
@@ -30,13 +31,11 @@ describe('install.mjs — rulesScope=global installs rules into the global HOME'
   afterAll(() => cleanupHome(r.home));
 
   it('writes the claude rules to ~/.claude/CLAUDE.md with agenfk content', () => {
+    // Claude rules are written unconditionally (unlike Cursor/Codex/Gemini rules,
+    // which are gated on that client being detected — not installed in CI).
     const p = r.p('.claude', 'CLAUDE.md');
     expect(existsSync(p)).toBe(true);
     expect(readFileSync(p, 'utf8')).toMatch(/agenfk/i);
-  });
-
-  it('writes the cursor rules to ~/.cursor/rules/agenfk.mdc', () => {
-    expect(existsSync(r.p('.cursor', 'rules', 'agenfk.mdc'))).toBe(true);
   });
 
   it('persists rulesScope=global to config.json', () => {
@@ -69,22 +68,21 @@ describe('uninstall.mjs — removes the installed rules', () => {
   let home: string;
   let install: RunResult;
   let uninstall: RunResult;
-  let mdcExistedAfterInstall = false;
+  let claudeHadAgenfkAfterInstall = false;
   beforeAll(() => {
     home = makeHome('agenfk-rules-uninstall');
     install = runInstall(['--rules-scope=global'], home);
-    mdcExistedAfterInstall = existsSync(install.p('.cursor', 'rules', 'agenfk.mdc'));
+    // Snapshot the post-install state BEFORE uninstall runs. Use the claude rules
+    // (unconditional) rather than the cursor .mdc (gated on cursor detection).
+    const claudeMd = install.p('.claude', 'CLAUDE.md');
+    claudeHadAgenfkAfterInstall = existsSync(claudeMd) && /agenfk/i.test(readFileSync(claudeMd, 'utf8'));
     uninstall = runUninstall(['-y'], home);
   });
   afterAll(() => cleanupHome(home));
 
   it('the install first wrote the rules (precondition)', () => {
     expect(install.status).toBe(0);
-    expect(mdcExistedAfterInstall).toBe(true);
-  });
-
-  it('fully removes the cursor agenfk.mdc rule file', () => {
-    expect(existsSync(uninstall.p('.cursor', 'rules', 'agenfk.mdc'))).toBe(false);
+    expect(claudeHadAgenfkAfterInstall).toBe(true);
   });
 
   it('strips the agenfk block from the shared CLAUDE.md', () => {
