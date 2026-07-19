@@ -135,10 +135,12 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
         PostToolUse: [hookEntry('/h/agenfk-pr-hook --client claude-code'), UNRELATED],
       },
     }, null, 2));
-    // codex hooks.json
+    // codex hooks.json — new installs write the valid nested schema (CGLAB-12)
     mkdirSync(p('.codex'), { recursive: true });
     writeFileSync(p('.codex', 'hooks.json'), JSON.stringify({
-      PostToolUse: [{ matcher: 'shell', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }, UNRELATED],
+      hooks: {
+        PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }, UNRELATED],
+      },
     }, null, 2));
     // gemini settings.json — AfterTool
     mkdirSync(p('.gemini'), { recursive: true });
@@ -205,8 +207,8 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
   it('strips pr-hook from codex hooks.json, gemini AfterTool, and cursor afterShellExecution (Bug 3)', () => {
     runUninstall(['-y']);
     const codex = readJson('.codex', 'hooks.json');
-    expect(JSON.stringify(codex.PostToolUse)).not.toContain('agenfk-');
-    expect(JSON.stringify(codex.PostToolUse)).toContain('user-hook');
+    expect(JSON.stringify(codex.hooks.PostToolUse)).not.toContain('agenfk-');
+    expect(JSON.stringify(codex.hooks.PostToolUse)).toContain('user-hook');
 
     const gemini = readJson('.gemini', 'settings.json');
     expect(JSON.stringify(gemini.hooks.AfterTool)).not.toContain('agenfk-');
@@ -215,6 +217,30 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     const cursor = readJson('.cursor', 'hooks.json');
     expect(JSON.stringify(cursor.afterShellExecution)).not.toContain('agenfk-');
     expect(JSON.stringify(cursor.afterShellExecution)).toContain('user-hook');
+  });
+
+  it('strips pr-hook from a legacy top-level codex PostToolUse key (CGLAB-12 migration)', () => {
+    // A pre-CGLAB-12 install wrote the invalid top-level shape. Uninstall must
+    // still remove the agenfk entry from it (whichever schema is on disk).
+    writeFileSync(p('.codex', 'hooks.json'), JSON.stringify({
+      PostToolUse: [{ matcher: 'shell', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }, UNRELATED],
+    }, null, 2));
+    runUninstall(['-y']);
+    const codex = readJson('.codex', 'hooks.json');
+    expect(JSON.stringify(codex.PostToolUse)).not.toContain('agenfk-');
+    expect(JSON.stringify(codex.PostToolUse)).toContain('user-hook');
+  });
+
+  it('removes the emptied legacy top-level PostToolUse key so Codex can start again (CGLAB-12)', () => {
+    // The real affected population: our old installer was the only writer, so the
+    // legacy file holds ONLY the agenfk entry. Stripping it must not leave
+    // { PostToolUse: [] } behind — that empty top-level key still crashes Codex.
+    writeFileSync(p('.codex', 'hooks.json'), JSON.stringify({
+      PostToolUse: [{ matcher: 'shell', hooks: [{ type: 'command', command: '/h/agenfk-pr-hook --client codex' }] }],
+    }, null, 2));
+    runUninstall(['-y']);
+    const codex = readJson('.codex', 'hooks.json');
+    expect(codex).not.toHaveProperty('PostToolUse');
   });
 
   it('removes the entire ~/.agenfk data dir, not just verify-token (Bug 3)', () => {

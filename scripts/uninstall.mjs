@@ -521,7 +521,23 @@ async function run() {
     await step('Codex hooks.json pr-hook', shouldRun('codex'), async () => {
         console.log(`${GREEN}[10b] Removing PostToolUse hook from ~/.codex/hooks.json...${NC}`);
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
-        const changed = await stripHooksFromJsonFile(codexHooksPath, ['PostToolUse']);
+        // Strip both the valid nested location (CGLAB-12) and the legacy top-level
+        // key that pre-fix installs wrote, so either schema on disk is cleaned.
+        let changed = await stripHooksFromJsonFile(codexHooksPath, ['hooks.PostToolUse', 'PostToolUse']);
+        // The legacy top-level `PostToolUse` key is itself invalid Codex schema and
+        // crashes Codex on startup. If stripping the AgenFK entry emptied it (the
+        // common case — our old installer was the only writer), remove the key
+        // entirely; otherwise an uninstall would leave Codex still broken (CGLAB-12).
+        if (existsSync(codexHooksPath)) {
+            try {
+                const cfg = JSON.parse(await fs.readFile(codexHooksPath, 'utf8'));
+                if (Array.isArray(cfg.PostToolUse) && cfg.PostToolUse.length === 0) {
+                    delete cfg.PostToolUse;
+                    await fs.writeFile(codexHooksPath, JSON.stringify(cfg, null, 2), 'utf8');
+                    changed = true;
+                }
+            } catch { /* unreadable / not JSON — leave it alone */ }
+        }
         if (changed) console.log(`  Removed AgenFK hook from ${codexHooksPath}`);
         return changed;
     });

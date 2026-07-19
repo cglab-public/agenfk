@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -1505,7 +1505,10 @@ process.exit(0);
         console.log(`  Registered Pre/PostToolUse hooks in ${settingsPath}`);
     }
 
-    // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json)
+    // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json).
+    // Codex requires events nested under a top-level `hooks` object and matches the
+    // shell tool as `Bash`; buildCodexHooksConfig produces that shape and migrates
+    // away any legacy top-level `PostToolUse` key that would crash Codex (CGLAB-12).
     if (shouldRun('codex')) {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
         if (existsSync(path.dirname(codexHooksPath))) {
@@ -1513,12 +1516,7 @@ process.exit(0);
             if (existsSync(codexHooksPath)) {
                 try { config = JSON.parse(await fs.readFile(codexHooksPath, 'utf8')); } catch {}
             }
-            if (!Array.isArray(config.PostToolUse)) config.PostToolUse = [];
-            config.PostToolUse = config.PostToolUse.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
-            config.PostToolUse.push({
-                matcher: 'shell',
-                hooks: [{ type: 'command', command: `${prHookDest} --client codex` }]
-            });
+            config = buildCodexHooksConfig(config, `${prHookDest} --client codex`);
             await fs.writeFile(codexHooksPath, JSON.stringify(config, null, 2), 'utf8');
             console.log(`  Registered PostToolUse hook in ${codexHooksPath}`);
         }
