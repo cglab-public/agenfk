@@ -13,6 +13,7 @@ import {
   ChevronUp, ChevronDown, X, FolderInput, GitBranch
 } from 'lucide-react';
 import { io } from 'socket.io-client';
+import { API_URL } from '../apiUrl';
 import { CardDetailModal } from './CardDetailModal';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
@@ -562,7 +563,7 @@ export const KanbanBoard: React.FC = () => {
   // WebSocket setup
   /* v8 ignore start */
   useEffect(() => {
-    const socket = io((import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:3000');
+    const socket = io(API_URL || undefined);
 
     socket.on('connect', () => {
       console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
