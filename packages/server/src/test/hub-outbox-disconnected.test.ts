@@ -93,19 +93,12 @@ describe('HubClient.recordEvent while disconnected', () => {
   });
 });
 
-describe('server boot stamps pending outbox rows when hub is configured', () => {
-  it('server.ts rewrites the pending-org sentinel before starting the flusher', () => {
-    const src = fs.readFileSync(path.resolve(__dirname, '../server.ts'), 'utf8');
-    // The boot path must stamp pre-login events so the flusher doesn't ship
-    // (or the hub reject) events with an empty orgId.
-    expect(src).toMatch(/hubOutboxRewriteOrgId\(\s*(PENDING_ORG|['"]{2})\s*,/);
-  });
-
-  it('recordHubEvent no longer early-returns on a disabled hub', () => {
-    const src = fs.readFileSync(path.resolve(__dirname, '../server.ts'), 'utf8');
-    expect(src).not.toMatch(/if\s*\(\s*!hubClient\.isEnabled\s*\)\s*return/);
-  });
-});
+// NB: the boot-time behaviour these greps used to guard is covered elsewhere by
+// real tests — "appends to the outbox with the pending-org sentinel instead of
+// dropping" proves recordEvent no longer early-returns while disconnected, and
+// "pending rows are stampable to a real org via hubOutboxRewriteOrgId" proves the
+// stamping primitive the boot path calls. The source-string boot-wiring guards
+// were removed per the behaviour-based-testing conversion (CGLAB-16).
 
 describe('cap and flusher respect ownership of pending rows', () => {
   let dbPath: string;

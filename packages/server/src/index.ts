@@ -117,7 +117,7 @@ const findProjectId = (startDir: string): string | null => {
   return null;
 };
 
-const server = new Server(
+export const server = new Server(
   {
     name: "agenfk-mcp-server",
     version: "0.1.0",
@@ -1133,7 +1133,15 @@ async function run() {
   console.error("AgEnFK MCP Server running on stdio (Client Mode)");
 }
 
-run().catch((error) => {
-  console.error("Fatal error running server:", error);
-  process.exit(1);
-});
+// Auto-start the stdio transport only when this module is executed as the MCP
+// process (i.e. `node dist/index.js`). When imported (e.g. tests connecting an
+// in-memory client to `server`) `require.main` is the importer, not this module,
+// so the stdio transport must NOT run. This is env-independent — unlike a
+// NODE_ENV check, it can't be defeated by a client shell that exports NODE_ENV.
+// (compiles to CommonJS: server tsconfig module=NodeNext, no "type":"module".)
+if (require.main === module) {
+  run().catch((error) => {
+    console.error("Fatal error running server:", error);
+    process.exit(1);
+  });
+}
