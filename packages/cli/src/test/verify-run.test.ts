@@ -7,11 +7,7 @@
  * NO overall deadline — a verifyCommand may legitimately run for an hour.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'fs';
-import path from 'path';
 import { followValidateRun, type RunSnapshot } from '../verifyRun';
-
-const ROOT = path.resolve(__dirname, '../../../..');
 
 function seq(snapshots: Array<RunSnapshot | Error>) {
   let i = 0;
@@ -86,28 +82,11 @@ describe('followValidateRun', () => {
   });
 });
 
-describe('async verify wiring — no more bounded single-POST verifies', () => {
-  it('the CLI verify command requests an async run', () => {
-    const src = readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-    expect(src).toMatch(/async:\s*true/);
-    expect(src).toContain('followValidateRun');
-  });
-
-  it('the MCP validate path posts async and follows the run', () => {
-    const src = readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
-    expect(src).toMatch(/async:\s*true/);
-    expect(src).toContain('followValidateRunViaApi');
-    // The POST keeps a 5-minute ceiling ONLY as upgrade-window compat (an old
-    // server ignores async:true and blocks synchronously); the follow loop is
-    // what must be unbounded — assert it has no deadline knob.
-    expect(src).not.toMatch(/followValidateRunViaApi[^]*?overallTimeout/);
-  });
-
-  it('the CLI verify outcome is decided by the follow loop, not the POST', () => {
-    const src = readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-    const verifyIdx = src.indexOf(".command('verify");
-    const block = src.slice(verifyIdx, verifyIdx + 5000);
-    expect(block).toMatch(/followValidateRun/);
-    expect(block).toMatch(/runId/);
-  });
-});
+// NB: an "async verify wiring" describe block used to grep cli/index.ts and
+// server/index.ts for `async: true` / `followValidateRun` / the absence of an
+// overall timeout. Those were source-shape assertions of implementation details.
+// The substantive contract — the follow loop polls until the run finishes,
+// streams only new output, tolerates transient errors, and has NO overall
+// deadline — is fully exercised behaviourally by the followValidateRun tests
+// above (see "has no overall deadline — hundreds of polls are fine"). The greps
+// were removed in the behaviour-based-testing conversion (CGLAB-16).
