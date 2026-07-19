@@ -66,11 +66,17 @@ export function readServerPort(): number | null {
 }
 
 export function getApiUrl(): string {
+  // 1. An explicit full URL always wins (points at a specific, possibly remote server).
   const explicit = process.env.AGENFK_API_URL;
   if (explicit) return explicit;
-  const envPort = process.env.AGENFK_PORT || process.env.PORT;
-  if (envPort) return `http://localhost:${envPort}`;
+  // 2. The server-written port file is the source of truth for the ACTUAL bound
+  //    port: the server bumps off a busy requested port and records where it
+  //    really landed. It must beat the env hints below, which only carry the
+  //    REQUESTED port and go stale the moment the server bumps.
   const persisted = readServerPort();
   if (persisted) return `http://localhost:${persisted}`;
+  // 3. Env hints (requested port) — used when no server has written a file yet.
+  const envPort = process.env.AGENFK_PORT || process.env.PORT;
+  if (envPort) return `http://localhost:${envPort}`;
   return `http://localhost:${DEFAULT_API_PORT}`;
 }

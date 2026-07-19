@@ -9,13 +9,13 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
+import { createApiClient } from "./apiClient.js";
 import { execSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems } from "./gatekeeper-utils";
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
@@ -30,12 +30,10 @@ const VERIFY_TOKEN = (() => {
   }
 })();
 
-const API_URL = getApiUrl();
-
-const api = axios.create({
-  baseURL: API_URL,
-  timeout: 30000,
-});
+// The API server's port is discovered per request (see createApiClient): this
+// MCP process is long-lived, so caching the URL at startup would pin it to a
+// stale port if the API server (re)starts elsewhere.
+const api = createApiClient();
 
 // ── Async verify follow (CGLAB-10) ───────────────────────────────────────────
 // validate requests run the project's verifyCommand, which can take far longer
@@ -635,7 +633,7 @@ async function getUpgradeNotice(): Promise<string> {
     return mcpUpgradeNoticeCache.text;
   }
   try {
-    const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 2000 });
+    const resp = await api.get(`/releases/latest`, { timeout: 2000 });
     const text = buildUpgradeNotice({
       tier: resp.data?.upgradeTier ?? 'optional',
       version: resp.data?.version ?? '',
@@ -851,7 +849,7 @@ async function callToolHandler(request: any): Promise<any> {
             text: JSON.stringify({ 
               mcp: "agenfk-mcp-server", 
               api: data, 
-              api_url: API_URL,
+              api_url: getApiUrl(),
               env: {
                 AGENFK_DB_PATH: process.env.AGENFK_DB_PATH,
                 AGENFK_PROJECT_ROOT: process.env.AGENFK_PROJECT_ROOT
@@ -1103,7 +1101,7 @@ async function callToolHandler(request: any): Promise<any> {
   } catch (error: any) {
     let errorMessage = error.message;
     if (error.response) errorMessage = `API Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
-    else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgEnFK API at ${API_URL}.`;
+    else if (error.code === 'ECONNREFUSED') errorMessage = `Could not connect to AgEnFK API at ${getApiUrl()}.`;
     return { content: [{ type: "text", text: `❌ Error: ${errorMessage}` }], isError: true };
   }
 }
