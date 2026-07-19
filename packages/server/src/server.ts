@@ -2191,8 +2191,12 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
   }
   const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
   if (cwd) {
+    // Resolve the caller's cwd UP to the project root (nearest `.agenfk` ancestor)
+    // so the verifyCommand always runs at the repo root — even when `agenfk verify`
+    // was invoked from a subdirectory — and never in the daemon's own dir (CGLAB-13).
+    const resolvedRoot = findProjectRoot(cwd);
     const item = await storage.getItem(req.params.id);
-    if (item) await storage.updateProject(item.projectId, { projectRoot: cwd });
+    if (item) await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
   }
   // One active run per item — a second verify while one runs is almost always
   // an agent misreading slowness as failure. Applies to sync requests too so

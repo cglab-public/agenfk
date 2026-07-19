@@ -89,6 +89,20 @@ describe('verify command', () => {
     logSpy.mockRestore();
   });
 
+  it('should send the caller cwd to /validate so verifyCommand runs in the project dir (CGLAB-13)', async () => {
+    mockedAxios.post.mockResolvedValue({ data: { message: '✅ Validation Passed!' } });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'done']);
+
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect.stringContaining(`/items/${FULL_ID}/validate`),
+      expect.objectContaining({ cwd: process.cwd() }),
+      expect.any(Object)
+    );
+    logSpy.mockRestore();
+  });
+
   it('should pass optional command alongside evidence to /validate', async () => {
     mockedAxios.post.mockResolvedValue({ data: { message: '✅ Validation Passed!\n\nItem moved to DONE.' } });
 
