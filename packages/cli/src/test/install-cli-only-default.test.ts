@@ -83,8 +83,19 @@ describe('install.mjs — MCP is opt-in (CLI-only by default)', () => {
     expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]cursor['"]\)/);
   });
 
-  it('gates Codex MCP registration behind withMcp', () => {
-    expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
+  it('registers Codex MCP by DEFAULT (not gated behind withMcp) — Codex sandbox blocks the CLI', () => {
+    // Codex is the exception: MCP is on by default (only --no-mcp / persisted
+    // opt-out disables it), resolved via shouldRegisterCodexMcp into `codexMcp`.
+    // It must NOT use the plain withMcp gate.
+    expect(installScript).toMatch(/const\s+codexMcp\s*=\s*shouldRegisterCodexMcp\(/);
+    expect(installScript).toMatch(/codexMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
+    expect(installScript).not.toMatch(/withMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
+  });
+
+  it('resolves Codex MCP with the persisted preference so --no-mcp opt-out is sticky', () => {
+    expect(installScript).toMatch(/shouldRegisterCodexMcp\(\{[^}]*persistedCodexMcp:\s*existingConfig\.codexMcp/);
+    // and the resolved decision is persisted back into config.json
+    expect(installScript).toMatch(/codexMcp,/);
   });
 
   it('gates Gemini MCP registration behind withMcp', () => {
@@ -122,10 +133,15 @@ describe('install.mjs — CLI-only unregisters any existing MCP server', () => {
     expect(installScript).toMatch(/if\s*\(!withMcp\)/);
   });
 
-  it('removes the Claude/Codex/Gemini MCP registrations via the client CLIs', () => {
+  it('removes the Claude and Gemini MCP registrations via the client CLIs', () => {
     expect(cleanup).toMatch(/claudeCmd[\s\S]*['"]mcp['"],\s*['"]remove['"]/);
-    expect(cleanup).toMatch(/codexCmd[\s\S]*['"]mcp['"],\s*['"]remove['"]/);
     expect(cleanup).toMatch(/geminiCmd[\s\S]*['"]mcp['"],\s*['"]remove['"]/);
+  });
+
+  it('only unregisters Codex MCP when opted out (--no-mcp) — Codex defaults to MCP', () => {
+    // Codex removal is guarded, not unconditional: in default CLI-only mode Codex
+    // keeps its MCP server (the CLI is unusable in its sandbox).
+    expect(cleanup).toMatch(/!codexMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
   });
 
   it('deletes the agenfk entry from opencode and cursor MCP config files', () => {

@@ -127,6 +127,23 @@ describe('serverPort', () => {
       expect(getApiUrl()).toBe('http://localhost:5151');
     });
 
+    it('prefers the server-written port file over PORT/AGENFK_PORT env', () => {
+      // The env vars carry the REQUESTED port; the file carries the ACTUAL bound
+      // port (the server bumps off a busy requested port). The actual port must
+      // win so clients reach the running server, not a port nothing listens on.
+      delete process.env.AGENFK_API_URL;
+      process.env.AGENFK_PORT = '4242';
+      process.env.PORT = '1234';
+      writeServerPortFile(5151);
+      expect(getApiUrl()).toBe('http://localhost:5151');
+    });
+
+    it('still lets AGENFK_API_URL override the port file', () => {
+      process.env.AGENFK_API_URL = 'http://example.com:9999';
+      writeServerPortFile(5151);
+      expect(getApiUrl()).toBe('http://example.com:9999');
+    });
+
     it('falls back to default port last', () => {
       delete process.env.AGENFK_API_URL;
       delete process.env.AGENFK_PORT;

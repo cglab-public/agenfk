@@ -3049,7 +3049,10 @@ program
     };
 
     try {
-      const body: any = { evidence: options.evidence, async: true };
+      // Report the caller's cwd so the server can run the verifyCommand in this
+      // project's directory (resolved up to the repo root), not the daemon's own
+      // cwd — matching the MCP validate_progress path (CGLAB-13).
+      const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
       if (command) body.command = command;
       // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
       // OLD server (upgrade window) ignores async:true and blocks for the whole

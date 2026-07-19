@@ -33,6 +33,70 @@ export function resolveRulesScope({ rulesScopeArg, envScope, existingScope, isTT
   return { scope: 'global', shouldPrompt: Boolean(isTTY) };
 }
 
+// Build a valid Codex CLI hooks.json config that registers the AgEnFK PR-sizing
+// hook (CGLAB-12). Codex rejects a Claude-Code-style top-level `PostToolUse` key
+// ("unknown field `PostToolUse`, expected `description` or `hooks`") and refuses
+// to start — the installer used to write exactly that. Codex requires hook events
+// nested under a top-level `hooks` object, and it matches the shell tool as `Bash`
+// (not `shell`), so the old matcher never fired either.
+//
+// This is a pure merge over whatever is already on disk:
+//   - Any legacy top-level `PostToolUse` (only our old, broken installer ever wrote
+//     it) is migrated into `hooks.PostToolUse` and the top-level key removed, so an
+//     upgrade self-heals the crash. Unrelated legacy entries are preserved, not dropped.
+//   - A prior AgEnFK entry is replaced (idempotent — no duplication on re-install).
+//   - Unrelated user entries, other events, and `description` are left intact.
+export function buildCodexHooksConfig(existingConfig, prHookCommand) {
+  const src = (existingConfig && typeof existingConfig === 'object' && !Array.isArray(existingConfig))
+    ? existingConfig
+    : {};
+  const config = { ...src };
+
+  // Legacy top-level PostToolUse: invalid Codex schema. Salvage its entries, drop the key.
+  const legacy = Array.isArray(config.PostToolUse) ? config.PostToolUse : [];
+  delete config.PostToolUse;
+
+  const hooks = (config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks))
+    ? { ...config.hooks }
+    : {};
+  const nested = Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : [];
+
+  // Drop any prior AgEnFK entry (from either location) so re-install is idempotent.
+  const preserved = [...legacy, ...nested].filter((e) => !JSON.stringify(e).includes('agenfk-pr-hook'));
+  preserved.push({ matcher: 'Bash', hooks: [{ type: 'command', command: prHookCommand }] });
+
+  hooks.PostToolUse = preserved;
+  config.hooks = hooks;
+  return config;
+}
+
+// Decide whether to register the agenfk MCP server with Codex (CGLAB-15).
+//
+// Codex runs tools in a sandbox that often blocks outbound localhost, so the
+// agenfk CLI cannot reach the local API server there. The MCP stdio server is not
+// subject to that restriction, so — unlike every other client, which stays
+// CLI-only unless --with-mcp — Codex gets MCP registered BY DEFAULT, overriding
+// AgEnFK's global CLI-only default.
+//
+// Precedence (highest first):
+//   --no-mcp            → false (explicit opt-out this run; persisted so it sticks)
+//   --with-mcp          → true  (explicit opt-in re-enables a prior opt-out)
+//   persistedCodexMcp   → a prior decision (so an opt-out survives flag-less upgrades)
+//   otherwise           → true  (default on for Codex)
+//
+// persistedCodexMcp is `config.codexMcp` from ~/.agenfk/config.json; without it an
+// opt-out would silently un-stick on the next flag-less `agenfk upgrade`.
+/**
+ * @param {{ noMcp?: boolean, withMcp?: boolean, persistedCodexMcp?: boolean }} [opts]
+ * @returns {boolean}
+ */
+export function shouldRegisterCodexMcp({ noMcp = false, withMcp = false, persistedCodexMcp } = {}) {
+  if (noMcp) return false;
+  if (withMcp) return true;
+  if (persistedCodexMcp === false) return false;
+  return true;
+}
+
 // Return the "source <rc>" hint string, or null when no rc file was modified (#4).
 // Showing the hint when nothing was changed is misleading — the export was correctly
 // skipped because ~/.local/bin was already on PATH.

@@ -11,10 +11,7 @@
  *
  * Usage in client config: `agenfk-pr-hook --client <name>`
  */
-import http from 'http';
 import { execSync } from 'child_process';
-
-const API_URL = process.env.AGENFK_API_URL || 'http://127.0.0.1:3000';
 
 // ── Pure helpers (also exported for unit tests) ──────────────────────────────
 
@@ -163,17 +160,6 @@ function extractCommand(input) {
 function getCurrentBranch() {
   try { return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
   catch { return null; }
-}
-
-function fetchJson(url) {
-  return new Promise((resolve) => {
-    http.get(url, (res) => {
-      if (res.statusCode !== 200) { res.resume(); resolve(null); return; }
-      let body = '';
-      res.on('data', (c) => (body += c));
-      res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
-    }).on('error', () => resolve(null));
-  });
 }
 
 function emit(directive) {

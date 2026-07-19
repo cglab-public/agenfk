@@ -59,7 +59,7 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 | **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | `PreToolUse` — `agenfk-gatekeeper` + `agenfk-mcp-enforcer` | `PostToolUse` matcher `Bash` — `agenfk-pr-hook --client claude-code` |
 | **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) | `tool.execute.after` plugin (`agenfk-pr-hook-opencode.mjs`) |
 | **pi** (0.79+) | opt-in (pi MCP config; not auto-registered) | (not yet bundled — extension provides enforcement) | native extension `~/.pi/agent/extensions/agenfk.ts` — `tool_call(edit\|write)` → gatekeeper, `tool_call(bash)` → mcp-enforcer (delegates to `~/.agenfk/bin/*.mjs`) | same extension — `tool_result(bash)` → `agenfk-pr-hook --client pi`, with the live model from `ctx.getModel()` injected into the reminder |
-| **Codex CLI** | `codex mcp add` | `~/.codex/AGENTS.md` | (no equivalent — CLAUDE.md-style instructional) | `PostToolUse` matcher `shell` (hooks reliably fire only for shell) — `agenfk-pr-hook --client codex` |
+| **Codex CLI** | `codex mcp add` | `~/.codex/AGENTS.md` | (no equivalent — CLAUDE.md-style instructional) | `hooks.PostToolUse` matcher `Bash` (Codex matches the shell tool as `Bash`) — `agenfk-pr-hook --client codex` |
 | **Gemini CLI** (v0.26+) | `gemini mcp add` | `~/.gemini/GEMINI.md` | (no equivalent — instructional) | `AfterTool` matcher `run_shell_command` — `agenfk-pr-hook --client gemini` |
 | **Cursor** (1.7+) | `~/.cursor/mcp.json` | `~/.cursor/rules/agenfk.mdc` | (no equivalent — instructional + `alwaysApply: true` rule) | `afterShellExecution` — `agenfk-pr-hook --client cursor` |
 

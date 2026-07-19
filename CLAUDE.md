@@ -64,6 +64,14 @@ npm run start:services         # launches the API server + UI
 
 The CLI binary `bin/agenfk.js` is a thin shim that resolves to `packages/cli`. Build CLI before invoking it directly: `npm run build -w packages/cli`.
 
+Bump the monorepo version everywhere at once (root + all `packages/*/package.json`, including internal `@agenfk/*` dep references across dependencies/devDependencies/peerDependencies):
+```
+node scripts/bump-version.mjs <new-version>   # e.g. 1.1.8-beta.6
+npm install --package-lock-only               # regenerate the lockfile
+git add . && git commit -m "chore: bump version to <new-version>"
+```
+The old version is read from the root `package.json`; commit the manifest changes and the regenerated lockfile together so they never drift. The release commands (`/agenfk-release`, `/agenfk-release-beta`) use this flow.
+
 ## Architecture (big picture)
 
 **Single Owner**: the API server in `packages/server` is the only writer of state. CLI, MCP clients, and UI all go through its REST endpoints; updates fan out over Socket.io. Never read `.agenfk/db.sqlite` directly from other packages — go through the storage interface in `core`.

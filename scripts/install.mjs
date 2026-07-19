@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -439,6 +439,14 @@ async function run() {
             : `  MCP: disabled — CLI-only mode (pass --with-mcp to register the MCP server)`);
     }
 
+    // Codex is the exception: MCP is on by default (its sandbox blocks the CLI's
+    // localhost calls). Resolve it separately so a prior --no-mcp opt-out is sticky
+    // across flag-less upgrades instead of silently re-registering.
+    const codexMcp = shouldRegisterCodexMcp({ noMcp: noMcpArg, withMcp, persistedCodexMcp: existingConfig.codexMcp });
+    if (!onlyPlatform || onlyPlatform === 'codex') {
+        console.log(`  MCP (Codex): ${codexMcp ? 'enabled by default' : 'disabled (--no-mcp)'}`);
+    }
+
     // Resolve rulesScope: CLI flag → AGENFK_RULES_SCOPE env → config → prompt (TTY only).
     // Under npx / piped stdin there is no TTY: prompting there used to leave the readline
     // promise unresolved, so Node exited 0 and the rest of the install (incl. the CLI
@@ -480,9 +488,13 @@ async function run() {
         configDirty = true;
     }
 
+    if (existingConfig.codexMcp !== codexMcp) {
+        configDirty = true;
+    }
+
     if (configDirty) {
         // 3a. Write ~/.agenfk/config.json
-        const configData = { ...existingConfig, dbPath, rulesScope, withMcp, telemetry: existingConfig.telemetry ?? true };
+        const configData = { ...existingConfig, dbPath, rulesScope, withMcp, codexMcp, telemetry: existingConfig.telemetry ?? true };
         await fs.writeFile(agenfkConfigPath, JSON.stringify(configData, null, 2), 'utf8');
         console.log(`  Config written: ${agenfkConfigPath}`);
     }
@@ -772,9 +784,11 @@ process.exit(0);
         }
     }
 
-    // 6c. Configure Codex MCP
-    if (withMcp && shouldRun('codex')) {
-        console.log(`${GREEN}[6c/14] Configuring Codex MCP...${NC}`);
+    // 6c. Configure Codex MCP — on by DEFAULT (unless --no-mcp), unlike other
+    // clients. Codex's sandbox often blocks outbound localhost, so the CLI can't
+    // reach the local API server; the MCP stdio server is not sandbox-restricted.
+    if (codexMcp && shouldRun('codex')) {
+        console.log(`${GREEN}[6c/14] Configuring Codex MCP (default for Codex)...${NC}`);
         const codexCmd = getCliCommand('codex');
         const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
@@ -845,7 +859,10 @@ process.exit(0);
                 spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
             }
         }
-        if (shouldRun('codex')) {
+        // Codex is the exception: MCP is on by default there (§6c registered it),
+        // so only unregister it when Codex MCP is actually disabled (--no-mcp, or a
+        // persisted opt-out).
+        if (!codexMcp && shouldRun('codex')) {
             const codexCmd = getCliCommand('codex');
             if (spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
                 spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
@@ -1505,7 +1522,10 @@ process.exit(0);
         console.log(`  Registered Pre/PostToolUse hooks in ${settingsPath}`);
     }
 
-    // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json)
+    // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json).
+    // Codex requires events nested under a top-level `hooks` object and matches the
+    // shell tool as `Bash`; buildCodexHooksConfig produces that shape and migrates
+    // away any legacy top-level `PostToolUse` key that would crash Codex (CGLAB-12).
     if (shouldRun('codex')) {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json');
         if (existsSync(path.dirname(codexHooksPath))) {
@@ -1513,12 +1533,7 @@ process.exit(0);
             if (existsSync(codexHooksPath)) {
                 try { config = JSON.parse(await fs.readFile(codexHooksPath, 'utf8')); } catch {}
             }
-            if (!Array.isArray(config.PostToolUse)) config.PostToolUse = [];
-            config.PostToolUse = config.PostToolUse.filter(e => !JSON.stringify(e).includes('agenfk-pr-hook'));
-            config.PostToolUse.push({
-                matcher: 'shell',
-                hooks: [{ type: 'command', command: `${prHookDest} --client codex` }]
-            });
+            config = buildCodexHooksConfig(config, `${prHookDest} --client codex`);
             await fs.writeFile(codexHooksPath, JSON.stringify(config, null, 2), 'utf8');
             console.log(`  Registered PostToolUse hook in ${codexHooksPath}`);
         }
