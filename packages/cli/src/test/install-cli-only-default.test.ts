@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
 import { runInstall, runBootstrap, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
 
@@ -72,6 +73,17 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
     expect(r.stdout).toMatch(/Skipping stale-source cleanup/);
     expect(existsSync(path.join(REPO_ROOT, 'packages', 'cli', 'src'))).toBe(true);
     expect(existsSync(path.join(REPO_ROOT, 'packages', 'server', 'src'))).toBe(true);
+  });
+
+  it('does not dirty tracked repo files (installer writes only under the sandbox HOME)', () => {
+    // install.mjs (re)writes scripts/start-services.mjs at its rootDir (= this
+    // repo). It is byte-identical to the committed file today, so the tree stays
+    // clean — but assert it explicitly so any future drift in the template fails
+    // loudly here instead of silently mutating a tracked file during the suite.
+    const dirty = execFileSync('git', ['status', '--porcelain', '--', 'scripts/start-services.mjs'], {
+      cwd: REPO_ROOT, encoding: 'utf8',
+    }).trim();
+    expect(dirty).toBe('');
   });
 });
 
