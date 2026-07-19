@@ -274,6 +274,16 @@ async function run() {
         'packages/create/src',
     ];
     function cleanStaleSrc() {
+        // Safety guard: NEVER delete source directories when running from a dev
+        // checkout. A distributed tarball never contains a `.git` directory, so
+        // its presence means this is a working tree whose `src/` is the
+        // authoritative source, not a stale leftover from a source-based install.
+        // Without this guard, running install.mjs from a clone wipes
+        // packages/*/src (the cleanup assumes a dist-only tarball layout).
+        if (existsSync(path.join(rootDir, '.git'))) {
+            console.log('  Skipping stale-source cleanup (dev checkout detected: .git present).');
+            return;
+        }
         let cleaned = 0;
         for (const d of staleSrcDirs) {
             const fullPath = path.join(rootDir, d);
