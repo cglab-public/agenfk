@@ -28,11 +28,12 @@ export interface RunResult {
   p: (...segs: string[]) => string;
 }
 
-function run(script: string, args: string[], home: string, extraEnv: Record<string, string> = {}): RunResult {
+function run(script: string, args: string[], home: string, opts: { cwd?: string; extraEnv?: Record<string, string> } = {}): RunResult {
   const res = spawnSync(process.execPath, [script, ...args], {
     encoding: 'utf8',
     timeout: 120_000,
-    env: { HOME: home, USERPROFILE: home, PATH: '', NODE_ENV: 'production', ...extraEnv },
+    cwd: opts.cwd,
+    env: { HOME: home, USERPROFILE: home, PATH: '', NODE_ENV: 'production', ...(opts.extraEnv || {}) },
   });
   return {
     home,
@@ -53,13 +54,13 @@ export function cleanupHome(home: string): void {
 }
 
 /** Run scripts/install.mjs into a throwaway HOME (created if not supplied). */
-export function runInstall(args: string[] = [], home = makeHome('agenfk-install')): RunResult {
-  return run(INSTALL, args, home);
+export function runInstall(args: string[] = [], home = makeHome('agenfk-install'), cwd?: string): RunResult {
+  return run(INSTALL, args, home, { cwd });
 }
 
 /** Run scripts/uninstall.mjs against an existing throwaway HOME. */
-export function runUninstall(args: string[], home: string): RunResult {
-  return run(UNINSTALL, args, home);
+export function runUninstall(args: string[], home: string, cwd?: string): RunResult {
+  return run(UNINSTALL, args, home, { cwd });
 }
 
 /** Run bin/agenfk.js (the npx bootstrap) with a given cwd via extra env. */

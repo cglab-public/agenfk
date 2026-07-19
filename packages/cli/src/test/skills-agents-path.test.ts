@@ -1,143 +1,73 @@
 /**
- * TDD tests for skills fix:
- * - Add ~/.agents/skills/ as universal platform (covers Codex which only reads from there)
- * - Inject 'name' frontmatter field when copying commands to skills dirs
- * - install.mjs installs to ~/.agents/skills/
- * - Uninstall cleans up ~/.agents/skills/
+ * Skills installation:
+ *  - the universal ~/.agents/skills/ path (Codex reads skills only from there)
+ *  - name-frontmatter injection into installed SKILL.md files
+ *  - claude skills + opencode slash commands
+ *  - uninstall cleans up ~/.agents/skills/
+ *
+ * Behaviour-based: run the real installer/uninstaller against a throwaway $HOME
+ * and assert on the files they write/remove, instead of grepping cli/index.ts /
+ * install.mjs / uninstall.mjs.
+ *
+ * NOTE: the Gemini TOML slash-command generation only fires when the Gemini CLI
+ * is detected (needs the real binary, absent under the sandbox's empty PATH), so
+ * it isn't observable here; those greps, plus cli-internal-shape greps
+ * (LEGACY_COMMANDS_DIRS, syncCommandsToDir using writeFileSync), were dropped in
+ * the behaviour-based conversion (CGLAB-16) — the observable outcome (skills and
+ * commands land in the right dirs, with name frontmatter) is asserted instead.
  */
-import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'fs';
-import path from 'path';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { runInstall, runUninstall, makeHome, cleanupHome, type RunResult } from './helpers/runInstaller';
 
-const ROOT = path.resolve(__dirname, '../../../..');
-const cliSource = readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-const installScript = readFileSync(path.join(ROOT, 'scripts/install.mjs'), 'utf8');
-const uninstallScript = readFileSync(path.join(ROOT, 'scripts/uninstall.mjs'), 'utf8');
+describe('install.mjs — installs skills + commands to the expected dirs', () => {
+  let r: RunResult;
+  beforeAll(() => { r = runInstall(['--rules-scope=global']); });
+  afterAll(() => cleanupHome(r.home));
 
-// --- 1. COMMAND_SKILL_PLATFORMS includes ~/.agents/skills/ ---
-
-describe('CLI — COMMAND_SKILL_PLATFORMS includes universal .agents/skills path', () => {
-  it('should include ~/.agents/skills as a global skill destination', () => {
-    // path.join uses separate string args so match both args near each other
-    expect(cliSource).toMatch(/['"]\.agents['"].*['"]skills['"]/);
+  it('installs agenfk skills into the universal ~/.agents/skills/ path (Codex source)', () => {
+    const skills = readdirSync(r.p('.agents', 'skills')).filter((n) => n.startsWith('agenfk'));
+    expect(skills.length).toBeGreaterThan(5);
   });
 
-  it('should include .agents/skills as a project-level skill destination', () => {
-    // projectDir uses root + .agents/skills — check both args appear together
-    expect(cliSource).toMatch(/['"]\.agents['"].*['"]skills['"]/);
+  it('installs agenfk skills into ~/.claude/skills/', () => {
+    const skills = readdirSync(r.p('.claude', 'skills')).filter((n) => n.startsWith('agenfk'));
+    expect(skills.length).toBeGreaterThan(5);
   });
 
-  it('should have a platform entry named "Universal (.agents)"', () => {
-    expect(cliSource).toMatch(/Universal.*\.agents/);
-  });
-});
-
-// --- 2. syncCommandsToDir injects 'name' field ---
-
-describe('CLI — syncCommandsToDir injects name frontmatter field', () => {
-  it('should inject name field into SKILL.md when missing', () => {
-    // The syncCommandsToDir function must read file content and inject name
-    const syncSection = extractSection(cliSource, 'syncCommandsToDir');
-    expect(syncSection).toMatch(/name/i);
+  it('injects a `name:` frontmatter field into installed SKILL.md files', () => {
+    // agenfk.md ships without a name field; syncing must inject one derived from
+    // the filename so the skill is addressable.
+    const skillMd = readFileSync(r.p('.agents', 'skills', 'agenfk', 'SKILL.md'), 'utf8');
+    expect(skillMd).toMatch(/^name:\s*agenfk\s*$/m);
   });
 
-  it('should derive skill name from filename (strip .md extension)', () => {
-    // name = file.replace('.md', '') or similar
-    const syncSection = extractSection(cliSource, 'syncCommandsToDir');
-    expect(syncSection).toMatch(/replace.*\.md|\.md.*replace/);
-  });
-
-  it('should not duplicate name field if already present', () => {
-    // Must check if name: is already in frontmatter before injecting
-    const syncSection = extractSection(cliSource, 'syncCommandsToDir');
-    expect(syncSection).toMatch(/name:|already|existing|match|includes/i);
-  });
-
-  it('should write file content (not just copyFileSync) to allow name injection', () => {
-    // syncCommandsToDir must use writeFileSync (not just copyFileSync)
-    // Search the full source since the function body may extend past the extraction window
-    const syncIdx = cliSource.indexOf('function syncCommandsToDir');
-    const syncEnd = cliSource.indexOf('\n}', syncIdx) + 2;
-    const syncBody = cliSource.slice(syncIdx, syncEnd);
-    expect(syncBody).toMatch(/writeFileSync|writeFile/);
+  it('installs the opencode slash commands into ~/.config/opencode/commands/', () => {
+    expect(existsSync(r.p('.config', 'opencode', 'commands'))).toBe(true);
+    expect(readdirSync(r.p('.config', 'opencode', 'commands')).length).toBeGreaterThan(0);
   });
 });
 
-// --- 3. install.mjs installs to ~/.agents/skills/ ---
+describe('uninstall.mjs — removes ~/.agents/skills/agenfk*', () => {
+  let home: string;
+  let installedCount = 0;
+  let uninstall: RunResult;
+  beforeAll(() => {
+    home = makeHome('agenfk-skills-uninstall');
+    const install = runInstall(['--rules-scope=global'], home);
+    installedCount = readdirSync(install.p('.agents', 'skills')).filter((n) => n.startsWith('agenfk')).length;
+    uninstall = runUninstall(['-y'], home);
+  });
+  afterAll(() => cleanupHome(home));
 
-describe('install.mjs — installs skills to ~/.agents/skills/', () => {
-  it('should install commands to ~/.agents/skills/ directory', () => {
-    expect(installScript).toMatch(/\.agents[\/\\]skills/);
+  it('installed skills first (precondition)', () => {
+    expect(installedCount).toBeGreaterThan(5);
   });
 
-  it('should inject name field when creating SKILL.md files in install.mjs', () => {
-    const agentsSection = extractSection(installScript, '.agents');
-    expect(agentsSection).toMatch(/name/i);
-  });
-});
-
-// --- 4. Uninstall cleans up ~/.agents/skills/ ---
-
-describe('uninstall.mjs — cleans up ~/.agents/skills/', () => {
-  it('should remove ~/.agents/skills/agenfk* dirs on uninstall', () => {
-    // path.join uses separate string args
-    expect(uninstallScript).toMatch(/['"]\.agents['"].*['"]skills['"]/);
-  });
-});
-
-// --- 5. All command source files have name field OR injection handles it ---
-
-describe('commands/*.md — name field coverage', () => {
-  it('should have agenfk-flow.md with name field (already present)', () => {
-    const flowCmd = readFileSync(path.join(ROOT, 'commands', 'agenfk-flow.md'), 'utf8');
-    expect(flowCmd).toMatch(/^name:\s*agenfk-flow/m);
-  });
-
-  it('syncCommandsToDir should inject name for commands missing it (like agenfk.md)', () => {
-    // agenfk.md currently lacks name field - syncCommandsToDir must add it
-    const agenfkCmd = readFileSync(path.join(ROOT, 'commands', 'agenfk.md'), 'utf8');
-    // Source file doesn't need name - injection happens at install time
-    // Verify the injection logic exists in CLI
-    expect(cliSource).toMatch(/writeFileSync|inject.*name|name.*inject/i);
+  it('removes every agenfk skill from ~/.agents/skills/', () => {
+    const remaining = existsSync(uninstall.p('.agents', 'skills'))
+      ? readdirSync(uninstall.p('.agents', 'skills')).filter((n) => n.startsWith('agenfk'))
+      : [];
+    expect(remaining).toHaveLength(0);
   });
 });
-
-// --- 6. OpenCode slash commands (flat .md in commands/) ---
-
-describe('CLI — OpenCode slash commands installed to commands/', () => {
-  it('should install flat .md files to ~/.config/opencode/commands/', () => {
-    expect(cliSource).toMatch(/opencode.*commands|commands.*opencode/i);
-  });
-
-  it('should NOT include opencode commands/ in LEGACY_COMMANDS_DIRS', () => {
-    // opencode/commands/ must NOT be marked legacy — it's the active slash command path
-    const legacySection = extractSection(cliSource, 'LEGACY_COMMANDS_DIRS');
-    expect(legacySection).not.toMatch(/opencode.*commands/);
-  });
-});
-
-// --- 7. Gemini CLI slash commands (TOML in commands/) ---
-
-describe('CLI — Gemini CLI slash commands installed as TOML', () => {
-  it('should generate .toml files in ~/.gemini/commands/', () => {
-    expect(cliSource).toMatch(/gemini.*commands.*toml|toml.*gemini.*commands/i);
-  });
-
-  it('should NOT include gemini commands/ in LEGACY_COMMANDS_DIRS', () => {
-    // gemini/commands/ must NOT be marked legacy — it's the active slash command path
-    const legacySection = extractSection(cliSource, 'LEGACY_COMMANDS_DIRS');
-    expect(legacySection).not.toMatch(/gemini.*commands/);
-  });
-
-  it('install.mjs should NOT remove ~/.gemini/commands/ TOML files', () => {
-    // uninstall.mjs may clean up, but install.mjs must not delete existing TOML files
-    // The install step should regenerate/install them
-    expect(installScript).toMatch(/gemini.*commands.*toml|toml.*gemini/i);
-  });
-});
-
-function extractSection(source: string, keyword: string): string {
-  const idx = source.indexOf(keyword);
-  if (idx === -1) return '';
-  return source.slice(Math.max(0, idx - 200), idx + 2000);
-}

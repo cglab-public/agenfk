@@ -8,9 +8,10 @@
  * (which the installer copies to every client's global config), and no
  * user-facing bundle may reference them.
  */
-import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, existsSync } from 'fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
+import { runInstall, makeHome, cleanupHome, type RunResult } from './helpers/runInstaller';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const RELEASE_COMMANDS = ['agenfk-release.md', 'agenfk-release-beta.md', 'agenfk-release-hub.md'];
@@ -47,22 +48,37 @@ describe('no user-facing bundle references the repo-private release commands', (
   }
 });
 
-describe('installer cleans up release commands stale from previous versions', () => {
-  const src = readFileSync(path.join(ROOT, 'scripts', 'install.mjs'), 'utf8');
+describe('installer removes release commands stale from previous versions', () => {
+  // Behaviour-based: seed a throwaway $HOME as if a previous version had installed
+  // the repo-private release commands globally, run the installer, and assert they
+  // are actually removed — instead of grepping install.mjs for the cleanup names.
+  let r: RunResult;
+  beforeAll(() => {
+    r = runInstallWithSeededReleaseCommands();
+  });
+  afterAll(() => cleanupHome(r.home));
 
-  it('install.mjs names each release command for stale removal on upgrade', () => {
+  function runInstallWithSeededReleaseCommands(): RunResult {
+    const home = makeHome('agenfk-release-clean');
+    // Claude: ~/.claude/commands/agenfk-release.md
+    mkdirSync(path.join(home, '.claude', 'commands'), { recursive: true });
     for (const cmd of RELEASE_COMMANDS) {
-      expect(src).toContain(`'${cmd.replace(/\.md$/, '')}'`);
+      writeFileSync(path.join(home, '.claude', 'commands', cmd), 'stale\n');
+    }
+    // Gemini: the installer writes agenfk-release.md → ~/.gemini/commands/agenfk/release.toml
+    // (prefix-stripped). Seed that exact path so a mismatched cleanup would be caught.
+    mkdirSync(path.join(home, '.gemini', 'commands', 'agenfk'), { recursive: true });
+    writeFileSync(path.join(home, '.gemini', 'commands', 'agenfk', 'release.toml'), 'stale\n');
+    return runInstall(['--rules-scope=global'], home);
+  }
+
+  it('removes each stale release command from ~/.claude/commands/', () => {
+    for (const cmd of RELEASE_COMMANDS) {
+      expect(existsSync(r.p('.claude', 'commands', cmd))).toBe(false);
     }
   });
 
-  it('the Gemini cleanup path matches what the installer actually writes (prefix-stripped agenfk/<name>.toml)', () => {
-    // Step 10c writes agenfk-release.md → ~/.gemini/commands/agenfk/release.toml.
-    // A cleanup that targets agenfk-release.toml/.md there deletes nothing and
-    // leaves upgrading Gemini users with a broken /agenfk:release command.
-    const cleanup = src.slice(src.indexOf('8f'), src.indexOf('// 9. Symlink CLI'));
-    expect(cleanup).toContain("replace(/^agenfk-/, '')");
-    expect(cleanup).toContain('.toml');
-    expect(cleanup).not.toContain('`${name}.toml`');
+  it('removes the prefix-stripped Gemini release.toml (agenfk/<name>.toml, not agenfk-<name>.toml)', () => {
+    expect(existsSync(r.p('.gemini', 'commands', 'agenfk', 'release.toml'))).toBe(false);
   });
 });
