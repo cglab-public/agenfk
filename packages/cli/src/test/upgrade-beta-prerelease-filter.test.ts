@@ -1,60 +1,81 @@
 /**
- * BUG 8973cea3 — `agenfk upgrade --beta` resolved the "latest beta" by taking
- * the most-recently-published release of ANY kind, not just prereleases. When a
- * STABLE release (e.g. v1.1.6) was published after the newest beta, or when a
- * prerelease was created without a dist asset, the resolver could pick a tag
- * whose `agenfk-dist.tar.gz` asset did not exist, and the upgrade 404'd.
+ * BUG 8973cea3 — `agenfk upgrade --beta` must resolve the newest PRE-release, not
+ * the most-recently-published release of any kind. The old resolver hit
+ * /releases/latest (which excludes prereleases) or picked the newest release
+ * regardless of `prerelease`, so a later stable — or an asset-less prerelease —
+ * could be mis-resolved and 404 on download.
  *
- * Fix: the beta branch of `fetchLatestReleaseTag` must filter the releases list
- * down to `prerelease === true` before sorting by `published_at`, so `--beta`
- * only ever resolves to an actual pre-release tag.
- *
- * Source-introspection test (cheap, runs in the root suite) — asserts the
- * resolver reads and filters on the `prerelease` field.
+ * Behaviour-based: mock the GitHub REST call and drive the real
+ * `fetchLatestReleaseTag`, asserting it filters to prereleases and picks the
+ * newest — replacing the old test that grepped index.ts for the filter source.
  */
-import { describe, it, expect } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const CLI_SRC = fs.readFileSync(path.join(REPO_ROOT, 'packages/cli/src/index.ts'), 'utf8');
+vi.mock('@agenfk/telemetry', () => ({
+  TelemetryClient: vi.fn(function (this: any) {
+    this.capture = vi.fn();
+    this.shutdown = vi.fn().mockResolvedValue(undefined);
+    this.isEnabled = true;
+  }),
+  getInstallationId: vi.fn().mockReturnValue('test-install-id'),
+  isTelemetryEnabled: vi.fn().mockReturnValue(true),
+  getApiUrl: vi.fn().mockReturnValue('http://localhost:3000'),
+  readServerPort: vi.fn().mockReturnValue(null),
+  DEFAULT_API_PORT: 3000,
+}));
+vi.mock('axios');
+vi.mock('child_process', () => ({
+  execSync: vi.fn(),
+  spawn: vi.fn(),
+  spawnSync: vi.fn(),
+  default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
+}));
+vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
-describe('BUG 8973cea3: --beta upgrade resolves only prereleases', () => {
-  // Isolate the fetchLatestReleaseTag function body so assertions target the
-  // beta-resolution logic and not unrelated mentions of "prerelease".
-  const fnIdx = CLI_SRC.search(/async function fetchLatestReleaseTag\s*\(/);
-  const nextFnIdx = CLI_SRC.indexOf('\nfunction ', fnIdx + 10);
-  const nextAsyncFnIdx = CLI_SRC.indexOf('\nasync function ', fnIdx + 10);
-  const candidates = [nextFnIdx, nextAsyncFnIdx].filter((i) => i !== -1);
-  const endIdx = candidates.length ? Math.min(...candidates) : CLI_SRC.length;
-  const fnBody = CLI_SRC.slice(fnIdx, endIdx);
+import axios from 'axios';
+import { fetchLatestReleaseTag } from '../index';
 
-  it('fetchLatestReleaseTag exists', () => {
-    expect(fnIdx).toBeGreaterThan(-1);
+const mockedAxios = vi.mocked(axios, true);
+
+describe('fetchLatestReleaseTag --beta resolves the newest prerelease (BUG 8973cea3)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('picks the newest PRERELEASE, ignoring a newer stable release and older prereleases', async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: [
+        { tag_name: 'v2.0.0', published_at: '2026-07-10T00:00:00Z', prerelease: false }, // newest overall, but STABLE
+        { tag_name: 'v2.0.0-beta.3', published_at: '2026-07-08T00:00:00Z', prerelease: true }, // newest prerelease
+        { tag_name: 'v2.0.0-beta.2', published_at: '2026-07-01T00:00:00Z', prerelease: true }, // older prerelease
+        { tag_name: 'v1.9.0', published_at: '2026-06-01T00:00:00Z', prerelease: false },
+      ],
+    });
+
+    const tag = await fetchLatestReleaseTag('org/repo', true);
+
+    expect(tag).toBe('v2.0.0-beta.3'); // not the newer stable v2.0.0, not the older beta.2
+    // It must query ALL releases, not /releases/latest (which omits prereleases).
+    const url = mockedAxios.get.mock.calls[0][0] as string;
+    expect(url).toContain('/releases?per_page=');
+    expect(url).not.toContain('/releases/latest');
   });
 
-  it('types the releases list with a prerelease flag', () => {
-    // The parsed GitHub releases must carry `prerelease` so it can be filtered.
-    expect(fnBody).toMatch(/prerelease\s*:\s*boolean/);
+  it('skips prerelease entries missing a tag_name or published_at', async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: [
+        { tag_name: '', published_at: '2026-07-20T00:00:00Z', prerelease: true }, // no tag → ignored
+        { tag_name: 'v2.0.0-beta.1', published_at: '2026-07-08T00:00:00Z', prerelease: true },
+      ],
+    });
+
+    expect(await fetchLatestReleaseTag('org/repo', true)).toBe('v2.0.0-beta.1');
   });
 
-  it('filters the releases list on the prerelease flag before selecting the latest', () => {
-    // e.g. `.filter((r) => r.tag_name && r.published_at && r.prerelease)`
-    const filterMatch = fnBody.match(/\.filter\(\s*\(\s*r\s*\)\s*=>[^)]*\)/);
-    expect(filterMatch, 'expected a .filter((r) => ...) over the releases list').not.toBeNull();
-    expect(filterMatch![0]).toMatch(/r\.prerelease/);
-  });
+  it('non-beta resolves /releases/latest (stable channel)', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { tag_name: 'v2.0.0' } });
 
-  it('still sorts the filtered prereleases by published_at descending', () => {
-    expect(fnBody).toMatch(/published_at/);
-    expect(fnBody).toMatch(/\.sort\(/);
-  });
+    const tag = await fetchLatestReleaseTag('org/repo', false);
 
-  it('gh CLI fallback also restricts --beta to pre-releases (not just the newest release of any kind)', () => {
-    // The fallback must request isPrerelease and filter on it, mirroring the
-    // REST path. A bare `gh release list --limit 1` would resolve a later
-    // stable/asset-less release as the "latest beta" and 404 on download.
-    expect(fnBody).toMatch(/gh release list[^`'"]*isPrerelease/);
-    expect(fnBody).toMatch(/r\.isPrerelease/);
+    expect(tag).toBe('v2.0.0');
+    expect(mockedAxios.get.mock.calls[0][0]).toContain('/releases/latest');
   });
 });

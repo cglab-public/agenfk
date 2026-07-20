@@ -1,151 +1,108 @@
 /**
- * Tests for install.mjs CLI-only-default behavior.
+ * install.mjs — CLI-only-default behaviour (product decision: MCP registration
+ * is OPT-IN). A plain install installs the CLI, services, skills, commands, rules
+ * and the gatekeeper/enforcer/pr hooks, and persists withMcp=false. MCP is
+ * registered only with --with-mcp; Codex is the exception (codexMcp defaults on).
  *
- * Product decision: MCP server registration is OPT-IN. A plain
- * `node scripts/install.mjs` installs the CLI, services, skills, commands,
- * rules and the gatekeeper/enforcer/pr hooks — but does NOT register the
- * agenfk MCP server with any client. MCP is registered only with `--with-mcp`
- * (or a previously-persisted opt-in). A default install also unregisters any
- * pre-existing agenfk MCP server so upgrades flip cleanly to CLI-only.
+ * Behaviour-based: run the real installer / bootstrap against a throwaway $HOME
+ * and assert on what they actually write, instead of grepping install.mjs.
  *
- * Source-level assertions, matching the existing install-script test style.
+ * NOTE: the *client MCP registration* branches (opencode/cursor/codex/claude/
+ * gemini) can't be exercised hermetically — they invoke the real client CLIs,
+ * which aren't present under the sandbox's empty PATH, so those steps self-skip
+ * and write nothing observable. Those source-greps were dropped in the
+ * behaviour-based conversion (CGLAB-16); withMcp defaulting to false is asserted
+ * via the persisted config below, which is the observable contract.
  */
-
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
+import { runInstall, runBootstrap, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
 
-const installScript = readFileSync(
-  path.resolve(__dirname, '../../../../scripts/install.mjs'),
-  'utf8'
-);
+describe('install.mjs — default (CLI-only) install writes the expected artifacts', () => {
+  let r: RunResult;
+  const readJson = (...segs: string[]) => JSON.parse(readFileSync(r.p(...segs), 'utf8'));
 
-const bootstrapScript = readFileSync(
-  path.resolve(__dirname, '../../../../bin/agenfk.js'),
-  'utf8'
-);
-
-describe('bin/agenfk.js — forwards MCP opt-in flags to install.mjs', () => {
-  it('forwards --with-mcp', () => {
-    expect(bootstrapScript).toMatch(/--with-mcp/);
+  beforeAll(() => {
+    // A plain install (no --with-mcp / --no-mcp) is the CLI-only default: MCP is
+    // opt-in (withMcp stays false) but Codex keeps MCP on (codexMcp default).
+    r = runInstall(['--rules-scope=global']);
   });
-  it('forwards --no-mcp', () => {
-    expect(bootstrapScript).toMatch(/--no-mcp/);
-  });
-});
+  afterAll(() => cleanupHome(r.home));
 
-describe('bin/agenfk.js — refuses to run destructively from a source checkout', () => {
-  it('derives hasGit from a .git probe (same signal as isNpxCache)', () => {
-    expect(bootstrapScript).toMatch(/hasGit\s*=\s*fs\.existsSync\([^)]*['"]\.git['"]/);
+  it('completes successfully', () => {
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/Installation Complete/);
   });
 
-  it('guards on a git working tree and honors the --force-install override', () => {
-    // The actual blocking condition — would fail if && became ||, or if the
-    // override check were dropped.
-    expect(bootstrapScript).toMatch(/if\s*\(\s*hasGit\s*&&\s*!forceInstall\s*\)/);
-    expect(bootstrapScript).toMatch(/forceInstall\s*=\s*process\.argv\.includes\(['"]--force-install['"]\)/);
+  it('installs the workflow rules (global CLAUDE.md)', () => {
+    expect(existsSync(r.p('.claude', 'CLAUDE.md'))).toBe(true);
   });
 
-  it('the guard block itself terminates with process.exit(1)', () => {
-    const start = bootstrapScript.indexOf('if (hasGit && !forceInstall)');
-    expect(start).toBeGreaterThan(-1);
-    // The guard fires before either install branch, so its exit must precede the first runInstaller call.
-    const firstRunInstaller = bootstrapScript.indexOf('runInstaller(');
-    const guardBlock = bootstrapScript.slice(start, firstRunInstaller > start ? firstRunInstaller : undefined);
-    expect(guardBlock).toMatch(/process\.exit\(1\)/);
+  it('installs the gatekeeper / mcp-enforcer / pr hook bins', () => {
+    for (const bin of ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook']) {
+      expect(existsSync(r.p('.local', 'bin', bin))).toBe(true);
+    }
   });
 
-  it('points the user to a safe alternative (install:framework or the CLI)', () => {
-    expect(bootstrapScript).toMatch(/install:framework/);
-    expect(bootstrapScript).toMatch(/agenfk <command>/);
-  });
-});
-
-describe('install.mjs — MCP is opt-in (CLI-only by default)', () => {
-  it('parses a --with-mcp opt-in flag', () => {
-    expect(installScript).toMatch(/--with-mcp/);
-    expect(installScript).toMatch(/withMcp/);
+  it('wires the gatekeeper (Pre) and pr (Post) hooks into claude settings.json', () => {
+    const settings = JSON.stringify(readJson('.claude', 'settings.json'));
+    expect(settings).toContain('agenfk-gatekeeper');
+    expect(settings).toContain('agenfk-pr-hook');
   });
 
-  it('supports a --no-mcp flag to force-disable MCP', () => {
-    expect(installScript).toMatch(/--no-mcp/);
+  it('installs the agenfk skills and slash commands', () => {
+    const skills = readdirSync(r.p('.claude', 'skills')).filter((n) => n.startsWith('agenfk'));
+    const commands = readdirSync(r.p('.claude', 'commands')).filter((n) => n.startsWith('agenfk'));
+    expect(skills.length).toBeGreaterThan(5);
+    expect(commands.length).toBeGreaterThan(5);
   });
 
-  it('defaults withMcp to false (only enabled by flag, env, or persisted config)', () => {
-    expect(installScript).toMatch(/process\.argv\.includes\(['"]--with-mcp['"]\)/);
+  it('persists withMcp=false (CLI-only default) and codexMcp=true (Codex exception)', () => {
+    const cfg = readJson('.agenfk', 'config.json');
+    expect(cfg.withMcp).toBe(false);
+    expect(cfg.codexMcp).toBe(true);
+    expect(cfg.rulesScope).toBe('global');
   });
 
-  it('gates Opencode MCP registration behind withMcp', () => {
-    expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]opencode['"]\)/);
+  it('does NOT delete workspace source when run from a checkout (cleanStaleSrc .git guard)', () => {
+    // This install ran from the repo root (which has .git). The guard must skip
+    // the stale-source cleanup so packages/*/src survive — regression guard for
+    // the footgun where running install.mjs from a clone wiped the source tree.
+    expect(r.stdout).toMatch(/Skipping stale-source cleanup/);
+    expect(existsSync(path.join(REPO_ROOT, 'packages', 'cli', 'src'))).toBe(true);
+    expect(existsSync(path.join(REPO_ROOT, 'packages', 'server', 'src'))).toBe(true);
   });
 
-  it('gates Cursor MCP registration behind withMcp', () => {
-    expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]cursor['"]\)/);
-  });
-
-  it('registers Codex MCP by DEFAULT (not gated behind withMcp) — Codex sandbox blocks the CLI', () => {
-    // Codex is the exception: MCP is on by default (only --no-mcp / persisted
-    // opt-out disables it), resolved via shouldRegisterCodexMcp into `codexMcp`.
-    // It must NOT use the plain withMcp gate.
-    expect(installScript).toMatch(/const\s+codexMcp\s*=\s*shouldRegisterCodexMcp\(/);
-    expect(installScript).toMatch(/codexMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
-    expect(installScript).not.toMatch(/withMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
-  });
-
-  it('resolves Codex MCP with the persisted preference so --no-mcp opt-out is sticky', () => {
-    expect(installScript).toMatch(/shouldRegisterCodexMcp\(\{[^}]*persistedCodexMcp:\s*existingConfig\.codexMcp/);
-    // and the resolved decision is persisted back into config.json
-    expect(installScript).toMatch(/codexMcp,/);
-  });
-
-  it('gates Gemini MCP registration behind withMcp', () => {
-    expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]gemini['"]\)/);
-  });
-
-  it('gates Claude Code MCP registration behind withMcp', () => {
-    expect(installScript).toMatch(/withMcp\s*&&\s*shouldRun\(['"]claude['"]\)/);
-  });
-
-  it('persists the resolved withMcp preference into config.json', () => {
-    const configWrite = installScript.slice(installScript.indexOf('configData'));
-    expect(configWrite).toMatch(/withMcp/);
+  it('does not dirty tracked repo files (installer writes only under the sandbox HOME)', () => {
+    // install.mjs (re)writes scripts/start-services.mjs at its rootDir (= this
+    // repo). It is byte-identical to the committed file today, so the tree stays
+    // clean — but assert it explicitly so any future drift in the template fails
+    // loudly here instead of silently mutating a tracked file during the suite.
+    const dirty = execFileSync('git', ['status', '--porcelain', '--', 'scripts/start-services.mjs'], {
+      cwd: REPO_ROOT, encoding: 'utf8',
+    }).trim();
+    expect(dirty).toBe('');
   });
 });
 
-describe('install.mjs — hooks and assets stay installed in CLI-only mode', () => {
-  it('still installs the gatekeeper hook (not gated by withMcp)', () => {
-    expect(installScript).toMatch(/agenfk-gatekeeper/);
+describe('bin/agenfk.js refuses to run destructively from a source checkout', () => {
+  let r: RunResult;
+  beforeAll(() => {
+    // cwd is the repo root (has .git); the bootstrap must refuse and NOT install.
+    r = runBootstrap([]);
+  });
+  afterAll(() => cleanupHome(r.home));
+
+  it('exits non-zero and does not perform an install', () => {
+    expect(r.status).not.toBe(0);
+    expect(existsSync(r.p('.claude', 'CLAUDE.md'))).toBe(false); // nothing installed
   });
 
-  it('still installs the mcp-enforcer hook (it allows the CLI when MCP is absent)', () => {
-    expect(installScript).toMatch(/agenfk-mcp-enforcer/);
-  });
-
-  it('still installs skills/commands and rules regardless of MCP', () => {
-    expect(installScript).toMatch(/Installing agenfk skills|agenfk-flow skill|skills/i);
-  });
-});
-
-describe('install.mjs — CLI-only unregisters any existing MCP server', () => {
-  const cleanup = installScript.slice(installScript.indexOf('if (!withMcp)'));
-
-  it('has a cleanup branch gated by !withMcp', () => {
-    expect(installScript).toMatch(/if\s*\(!withMcp\)/);
-  });
-
-  it('removes the Claude and Gemini MCP registrations via the client CLIs', () => {
-    expect(cleanup).toMatch(/claudeCmd[\s\S]*['"]mcp['"],\s*['"]remove['"]/);
-    expect(cleanup).toMatch(/geminiCmd[\s\S]*['"]mcp['"],\s*['"]remove['"]/);
-  });
-
-  it('only unregisters Codex MCP when opted out (--no-mcp) — Codex defaults to MCP', () => {
-    // Codex removal is guarded, not unconditional: in default CLI-only mode Codex
-    // keeps its MCP server (the CLI is unusable in its sandbox).
-    expect(cleanup).toMatch(/!codexMcp\s*&&\s*shouldRun\(['"]codex['"]\)/);
-  });
-
-  it('deletes the agenfk entry from opencode and cursor MCP config files', () => {
-    expect(cleanup).toMatch(/delete cfg\.mcp\.agenfk/);
-    expect(cleanup).toMatch(/delete cursorMcp\.mcpServers\.agenfk/);
+  it('explains why and points at the safe alternative', () => {
+    const out = r.stdout + r.stderr;
+    expect(out).toMatch(/source checkout|refus/i);
+    expect(out).toMatch(/install:framework/);
   });
 });

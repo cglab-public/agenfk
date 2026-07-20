@@ -4,7 +4,7 @@
  * 2. The hub rollup/query token extraction handles the new flat payload format
  *    ($.input / $.output) as well as the legacy nested format as a fallback.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -211,33 +211,8 @@ describe('ingestOnce — Codex attribution', () => {
   });
 });
 
-// ── 2. Runtime removal ───────────────────────────────────────────────────────
-
-describe('hub runtime — token ingestion disabled', () => {
-  it('server.ts does not import/start the ingestion poller or emit tokens.logged', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '../server.ts'),
-      'utf8',
-    );
-    expect(src).not.toMatch(/startIngestionPoller/);
-    expect(src).not.toMatch(/tokens\.logged/);
-  });
-
-  it('rollup.ts no longer extracts token usage from hub events', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '../../../../packages/hub/src/rollup.ts'),
-      'utf8',
-    );
-    expect(src).not.toMatch(/tokens\.logged/);
-    expect(src).not.toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
-  });
-
-  it('queries.ts /metrics no longer extracts token usage from hub events', () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '../../../../packages/hub/src/routes/queries.ts'),
-      'utf8',
-    );
-    expect(src).not.toMatch(/tokens\.logged/);
-    expect(src).not.toMatch(/json_extract\(payload,\s*['"]\$\.payload\.input['"]\)/);
-  });
-});
+// NB: a "2. Runtime removal" describe block used to grep server.ts / rollup.ts /
+// queries.ts asserting the old token-ingestion code was gone. Those were
+// absence-of-dead-code guards with no behaviour to exercise, so they were removed
+// in the behaviour-based-testing conversion (CGLAB-16). The live token path is
+// covered behaviourally above and by token-events-api.test.ts.

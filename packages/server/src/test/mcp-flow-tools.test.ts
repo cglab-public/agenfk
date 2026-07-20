@@ -3,8 +3,8 @@
  *   list_flows, create_flow, update_flow, delete_flow, use_flow
  *
  * Two layers:
- *  1. Static registration checks — verify index.ts declares and handles each tool.
- *     These FAIL until the tools are added.
+ *  1. MCP registration — connect a real MCP client to the server and assert each
+ *     tool is actually exposed by the live ListTools handler.
  *  2. REST API functional tests — verify the endpoints the MCP tools delegate to
  *     behave correctly end-to-end.
  */
@@ -13,41 +13,45 @@ import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
+import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
   mockAxios.post = vi.fn();
+  mockAxios.interceptors = {
+    request: { use: vi.fn() },
+    response: { use: vi.fn() },
+  };
   mockAxios.create = vi.fn(() => mockAxios);
   return { default: mockAxios };
 });
 
-const ROOT = path.resolve(__dirname, '../../../..');
 const TEST_DB = path.resolve('./mcp-flow-tools-test-db.sqlite');
 
-// ── Static registration tests ──────────────────────────────────────────────────
-// These check that index.ts declares and handles each new MCP flow tool.
-// They FAIL before the tools are added, driving implementation.
+// ── MCP registration tests ─────────────────────────────────────────────────────
+// Connect a genuine MCP client to the server over an in-memory transport and
+// assert each flow tool is really advertised by the live ListTools handler —
+// a behaviour round-trip, not a grep of the source.
 
-describe('MCP flow tool registration in index.ts', () => {
-  let src: string;
+describe('MCP flow tools are exposed by the live MCP server', () => {
+  let mcp: ConnectedMcpClient;
+  let toolNames: string[];
 
-  beforeAll(() => {
-    const indexPath = path.join(ROOT, 'packages/server/src/index.ts');
-    src = fs.readFileSync(indexPath, 'utf8');
+  beforeAll(async () => {
+    mcp = await connectMcpClient();
+    toolNames = await listToolNames(mcp.client);
+  });
+
+  afterAll(async () => {
+    await mcp.close();
   });
 
   const TOOLS = ['list_flows', 'create_flow', 'update_flow', 'delete_flow', 'use_flow'];
 
   for (const tool of TOOLS) {
-    it(`declares "${tool}" in the tools list`, () => {
-      // Tool definition: name: "tool_name"
-      expect(src).toMatch(new RegExp(`name:\\s*["']${tool}["']`));
-    });
-
-    it(`handles "${tool}" in the call-tool switch`, () => {
-      // Case handler: case "tool_name":
-      expect(src).toMatch(new RegExp(`case\\s+["']${tool}["']`));
+    it(`exposes "${tool}" via listTools`, () => {
+      expect(toolNames).toContain(tool);
     });
   }
 });

@@ -14,17 +14,21 @@ vi.hoisted(() => {
 });
 
 import { app, initStorage } from '../server';
+import { connectMcpClient, type ConnectedMcpClient } from './helpers/mcpClient';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
   mockAxios.post = vi.fn();
   mockAxios.put = vi.fn();
+  mockAxios.interceptors = {
+    request: { use: vi.fn() },
+    response: { use: vi.fn() },
+  };
   mockAxios.create = vi.fn(() => mockAxios);
   return { default: mockAxios };
 });
 
-const ROOT = path.resolve(__dirname, '../../../..');
 const TEST_DB = path.resolve('./pr-registration-test-db.sqlite');
 
 // recordHubEvent enqueues into hub_outbox asynchronously: the POST/PUT handler
@@ -46,30 +50,33 @@ async function waitForOutboxPayload(
   }
 }
 
-describe('register_pr / update_pr_sizing — static registration', () => {
-  let src: string;
-  beforeAll(() => {
-    src = fs.readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
+// The register_pr / update_pr_sizing tools (and their required inputSchema) are
+// asserted against the LIVE MCP server via a real client round-trip. The
+// `pr-register` / `pr-resize` CLI commands are exercised behaviourally in the CLI
+// package's own suite (running the built CLI), not by grepping cli/src/index.ts.
+describe('register_pr / update_pr_sizing are exposed by the live MCP server', () => {
+  let mcp: ConnectedMcpClient;
+  let tools: Array<{ name: string; inputSchema?: any }>;
+  beforeAll(async () => {
+    mcp = await connectMcpClient();
+    tools = (await mcp.client.listTools()).tools as any;
   });
+  afterAll(async () => {
+    await mcp.close();
+  });
+
   for (const name of ['register_pr', 'update_pr_sizing']) {
-    it(`declares "${name}" in tools list`, () => {
-      expect(src).toMatch(new RegExp(`name:\\s*["']${name}["']`));
+    it(`exposes "${name}" via listTools`, () => {
+      expect(tools.map((t) => t.name)).toContain(name);
     });
-    it(`handles "${name}" in case switch`, () => {
-      expect(src).toMatch(new RegExp(`case\\s+["']${name}["']`));
+    it(`advertises model + harness as required on "${name}"`, () => {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool).toBeDefined();
+      expect(tool!.inputSchema?.required ?? []).toEqual(
+        expect.arrayContaining(['model', 'harness']),
+      );
     });
   }
-});
-
-describe('CLI: pr-register / pr-resize', () => {
-  let cli: string;
-  beforeAll(() => { cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8'); });
-  it('declares pr-register command', () => {
-    expect(cli).toMatch(/\.command\s*\(\s*['"]pr-register/);
-  });
-  it('declares pr-resize command', () => {
-    expect(cli).toMatch(/\.command\s*\(\s*['"]pr-resize/);
-  });
 });
 
 describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
@@ -196,36 +203,14 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
 });
 
 describe('agent-declared model + harness on PR events', () => {
-  // Static: CLI flags — must be REQUIRED on both commands.
-  it('CLI pr-register and pr-resize REQUIRE --model and --harness', () => {
-    const cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-    expect((cli.match(/\.requiredOption\(\s*['"]--model <id>/g) || []).length).toBeGreaterThanOrEqual(2);
-    expect((cli.match(/\.requiredOption\(\s*['"]--harness <name>/g) || []).length).toBeGreaterThanOrEqual(2);
-    // ...and must NOT be declared as plain (optional) .option()
-    expect(cli).not.toMatch(/\.option\(\s*['"]--model <id>/);
-    expect(cli).not.toMatch(/\.option\(\s*['"]--harness <name>/);
-  });
-
-  // `agenfk pr create` must ALSO require --model/--harness (it auto-registers the
-  // PR, so the pr.opened event carries the runtime). Three commands now require
-  // them: pr-register, pr-resize, pr create.
-  it('CLI "pr create" REQUIRES --model and --harness', () => {
-    const cli = fs.readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
-    expect((cli.match(/\.requiredOption\(\s*['"]--model <id>/g) || []).length).toBeGreaterThanOrEqual(3);
-    expect((cli.match(/\.requiredOption\(\s*['"]--harness <name>/g) || []).length).toBeGreaterThanOrEqual(3);
-  });
-
-  // Static: MCP tool schemas — model/harness must be REQUIRED (non-optional).
-  it('register_pr and update_pr_sizing MCP schemas REQUIRE model + harness', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'packages/server/src/index.ts'), 'utf8');
-    // Zod fields must be required (not .optional()).
-    expect(src).toMatch(/model:\s*z\.string\(\),/);
-    expect(src).toMatch(/harness:\s*z\.string\(\),/);
-    expect(src).not.toMatch(/model:\s*z\.string\(\)\.optional\(\)/);
-    expect(src).not.toMatch(/harness:\s*z\.string\(\)\.optional\(\)/);
-    // Both advertised inputSchema required[] arrays must list model & harness.
-    expect((src.match(/required:\s*\[[^\]]*"model"[^\]]*"harness"[^\]]*\]/g) || []).length).toBeGreaterThanOrEqual(2);
-  });
+  // Note: the requirement that model/harness are mandatory is asserted
+  // behaviourally rather than by grepping source —
+  //  • MCP contract: the advertised inputSchema.required is checked in the
+  //    "register_pr / update_pr_sizing are exposed by the live MCP server" suite.
+  //  • REST enforcement: POST/PUT /prs return 400 when model/harness are omitted
+  //    (see the "rejects (400) when model or harness is omitted" tests below).
+  //  • CLI enforcement: the CLI package's suite runs the built CLI and asserts the
+  //    commands fail without --model/--harness.
 
   // Behavioral: the fields ride into the hub event payloads
   it('POST /prs includes model + harness in the pr.opened payload', async () => {

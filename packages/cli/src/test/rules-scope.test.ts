@@ -1,125 +1,94 @@
 /**
- * TDD tests for the rulesScope feature.
- * Covers: install prompt + persistence, project-level paths, CLI integration, uninstall cleanup.
+ * rulesScope feature — where workflow rules are installed (global HOME vs the
+ * current project) and how uninstall cleans them up.
+ *
+ * Behaviour-based: run the real installer/uninstaller against a throwaway $HOME
+ * (and a throwaway project cwd for project scope) and assert on what they write /
+ * remove, instead of grepping install.mjs / uninstall.mjs / cli/index.ts.
+ *
+ * NOTE: the Cursor (agenfk.mdc), Codex (AGENTS.md) and Gemini (GEMINI.md) rule
+ * writers only fire when that client is DETECTED (its config dir exists or its
+ * CLI answers `--version`) — which is environment-dependent and false in CI's
+ * clean Linux HOME. Only the Claude rules (CLAUDE.md) are written
+ * unconditionally, so the assertions here use CLAUDE.md, not the client-gated
+ * rule files. The `integration install` command has no `--scope` flag (it
+ * forwards the persisted rulesScope from config.json); the old `--scope` grep was
+ * a false match on `claude mcp add --scope user`. Those non-observable branches
+ * were dropped in the behaviour-based conversion (CGLAB-16).
  */
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { existsSync, readFileSync } from 'fs';
+import { runInstall, runUninstall, makeHome, cleanupHome, type RunResult } from './helpers/runInstaller';
+import os from 'os';
 import path from 'path';
+import { mkdtempSync, rmSync } from 'fs';
 
-const ROOT = path.resolve(__dirname, '../../../..');
-const installScript = readFileSync(path.join(ROOT, 'scripts/install.mjs'), 'utf8');
-const uninstallScript = readFileSync(path.join(ROOT, 'scripts/uninstall.mjs'), 'utf8');
-const cliSource = readFileSync(path.join(ROOT, 'packages/cli/src/index.ts'), 'utf8');
+const readJson = (r: RunResult, ...segs: string[]) => JSON.parse(readFileSync(r.p(...segs), 'utf8'));
 
-// --- Task 1: Interactive rulesScope prompt + persistence ---
+describe('install.mjs — rulesScope=global installs rules into the global HOME', () => {
+  let r: RunResult;
+  beforeAll(() => { r = runInstall(['--rules-scope=global']); });
+  afterAll(() => cleanupHome(r.home));
 
-describe('install.mjs — rulesScope prompt and persistence', () => {
-  it('should prompt the user to choose rules scope (global/project)', () => {
-    // The install script must contain a prompt asking the user where to install rules
-    expect(installScript).toMatch(/rulesScope|rules.*scope|global.*project/i);
-    expect(installScript).toMatch(/ask|prompt|question|readline/i);
+  it('writes the claude rules to ~/.claude/CLAUDE.md with agenfk content', () => {
+    // Claude rules are written unconditionally (unlike Cursor/Codex/Gemini rules,
+    // which are gated on that client being detected — not installed in CI).
+    const p = r.p('.claude', 'CLAUDE.md');
+    expect(existsSync(p)).toBe(true);
+    expect(readFileSync(p, 'utf8')).toMatch(/agenfk/i);
   });
 
-  it('should read rulesScope from config.json if already set', () => {
-    // On upgrade/re-install, should read existing preference from config
-    expect(installScript).toMatch(/rulesScope/);
-  });
-
-  it('should persist rulesScope to ~/.agenfk/config.json', () => {
-    // After user chooses, the value must be written to config
-    // Look for rulesScope being included in the config write
-    expect(installScript).toMatch(/rulesScope/);
-    // The config write section should include rulesScope
-    const configWriteIdx = installScript.indexOf('Config written');
-    expect(configWriteIdx).toBeGreaterThan(-1);
-    const configSection = installScript.slice(Math.max(0, configWriteIdx - 500), configWriteIdx + 100);
-    expect(configSection).toMatch(/rulesScope/);
-  });
-
-  it('should accept --rules-scope CLI flag to skip the prompt', () => {
-    expect(installScript).toMatch(/--rules-scope/);
+  it('persists rulesScope=global to config.json', () => {
+    expect(readJson(r, '.agenfk', 'config.json').rulesScope).toBe('global');
   });
 });
 
-// --- Task 2: Rule writers support project-level paths ---
-
-describe('install.mjs — project-level rule paths', () => {
-  it('should resolve CLAUDE.md path based on rulesScope', () => {
-    // When rulesScope=project, CLAUDE.md goes to .claude/CLAUDE.md (project root)
-    // The script must contain logic branching on rulesScope for claude rules
-    const claudeSection = extractSection(installScript, 'CLAUDE.md');
-    expect(claudeSection).toMatch(/rulesScope|project/i);
+describe('install.mjs — rulesScope=project routes rules to the project, not the global HOME', () => {
+  let r: RunResult;
+  let project: string;
+  beforeAll(() => {
+    project = mkdtempSync(path.join(os.tmpdir(), 'agenfk-proj-'));
+    r = runInstall(['--rules-scope=project'], makeHome('agenfk-install'), project);
+  });
+  afterAll(() => {
+    cleanupHome(r.home);
+    rmSync(project, { recursive: true, force: true });
   });
 
-  it('should resolve AGENTS.md path based on rulesScope', () => {
-    const codexSection = extractSection(installScript, 'AGENTS.md');
-    expect(codexSection).toMatch(/rulesScope|project/i);
+  it('persists rulesScope=project to config.json', () => {
+    expect(readJson(r, '.agenfk', 'config.json').rulesScope).toBe('project');
   });
 
-  it('should resolve GEMINI.md path based on rulesScope', () => {
-    const geminiSection = extractSection(installScript, 'GEMINI.md');
-    expect(geminiSection).toMatch(/rulesScope|project/i);
-  });
-
-  it('should resolve agenfk.mdc path based on rulesScope', () => {
-    const cursorSection = extractSection(installScript, 'agenfk.mdc');
-    expect(cursorSection).toMatch(/rulesScope|project/i);
-  });
-
-  it('should clean up the opposite scope when installing rules', () => {
-    // When switching from global to project (or vice versa), agenfk blocks
-    // must be removed from the old location
-    expect(installScript).toMatch(/agenfk:start[\s\S]*?agenfk:end/);
-    // Must have cleanup logic for both global and project paths
-    expect(installScript).toMatch(/clean|remov|opposite|other.*scope/i);
+  it('does NOT write the global ~/.claude/CLAUDE.md (rules are scoped to the project)', () => {
+    expect(existsSync(r.p('.claude', 'CLAUDE.md'))).toBe(false);
   });
 });
 
-// --- Task 3: CLI integration install respects rulesScope ---
+describe('uninstall.mjs — removes the installed rules', () => {
+  let home: string;
+  let install: RunResult;
+  let uninstall: RunResult;
+  let claudeHadAgenfkAfterInstall = false;
+  beforeAll(() => {
+    home = makeHome('agenfk-rules-uninstall');
+    install = runInstall(['--rules-scope=global'], home);
+    // Snapshot the post-install state BEFORE uninstall runs. Use the claude rules
+    // (unconditional) rather than the cursor .mdc (gated on cursor detection).
+    const claudeMd = install.p('.claude', 'CLAUDE.md');
+    claudeHadAgenfkAfterInstall = existsSync(claudeMd) && /agenfk/i.test(readFileSync(claudeMd, 'utf8'));
+    uninstall = runUninstall(['-y'], home);
+  });
+  afterAll(() => cleanupHome(home));
 
-describe('CLI — integration install respects rulesScope', () => {
-  it('should accept --scope flag on integration install command', () => {
-    expect(cliSource).toMatch(/--scope/);
+  it('the install first wrote the rules (precondition)', () => {
+    expect(install.status).toBe(0);
+    expect(claudeHadAgenfkAfterInstall).toBe(true);
   });
 
-  it('should pass rulesScope to install.mjs', () => {
-    // The integration install action must forward the scope to the install script
-    expect(cliSource).toMatch(/rules-scope|rulesScope/);
-  });
-});
-
-// --- Task 4: Uninstall respects rulesScope ---
-
-describe('uninstall.mjs — respects rulesScope', () => {
-  it('should read rulesScope from config.json', () => {
-    expect(uninstallScript).toMatch(/rulesScope/);
-  });
-
-  it('should clean up CLAUDE.md from the active scope', () => {
-    // Must handle both global (~/.claude/CLAUDE.md) and project (.claude/CLAUDE.md)
-    expect(uninstallScript).toMatch(/CLAUDE\.md/);
-    expect(uninstallScript).toMatch(/rulesScope|project/i);
-  });
-
-  it('should clean up AGENTS.md from the active scope', () => {
-    expect(uninstallScript).toMatch(/AGENTS\.md/);
-  });
-
-  it('should clean up GEMINI.md from the active scope', () => {
-    expect(uninstallScript).toMatch(/GEMINI\.md/);
-  });
-
-  it('should clean up agenfk.mdc from the active scope', () => {
-    expect(uninstallScript).toMatch(/agenfk\.mdc/);
+  it('strips the agenfk block from the shared CLAUDE.md', () => {
+    const p = uninstall.p('.claude', 'CLAUDE.md');
+    // The shared file may remain (possibly empty) but must carry no agenfk content.
+    const content = existsSync(p) ? readFileSync(p, 'utf8') : '';
+    expect(content).not.toMatch(/agenfk/i);
   });
 });
-
-/**
- * Extract a section of the script around a keyword.
- * Returns ~1000 chars around the first occurrence.
- */
-function extractSection(script: string, keyword: string): string {
-  const idx = script.indexOf(keyword);
-  if (idx === -1) return '';
-  return script.slice(Math.max(0, idx - 500), idx + 500);
-}

@@ -1,44 +1,87 @@
 /**
- * Story 3a — Flusher.flushNow() synchronous-flush primitive.
+ * Flusher.flushNow() synchronous-flush primitive.
  *
- * Story 3b will call this after appending the `fleet:upgrade:started` event
- * but BEFORE spawning `agenfk upgrade` (which is going to kill this process).
- * Without flushNow, the started event sits in the local outbox and the hub
- * never sees the upgrade kicking off.
+ * upgradeSync calls this after appending the `fleet:upgrade:started` event but
+ * BEFORE spawning `agenfk upgrade` (which kills this process). Without flushNow,
+ * the started event sits in the local outbox and the hub never sees the upgrade.
  *
- * Source-string assertions matching the convention in upgrade-tier.test.ts.
+ * Behaviour-based: construct a real Flusher against a real SQLite outbox with an
+ * injected mock HTTP client and assert on the observable effect (outbox drained,
+ * transport invoked, resilient to transport failure).
  */
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import path from 'path';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
+import { Flusher } from '../hub/flusher';
 
-const SRC = readFileSync(
-  path.resolve(__dirname, '../hub/flusher.ts'),
-  'utf8'
-);
+const HUB_CONFIG = { url: 'http://hub.test', token: 't', orgId: 'acme' };
 
-describe('Story 3a — Flusher.flushNow() primitive', () => {
-  it('declares a flushNow method on the Flusher class', () => {
-    expect(SRC).toMatch(/\bflushNow\s*\(/);
+function makeHttp(impl?: (url: string, body: any) => Promise<any>) {
+  const posted: any[] = [];
+  const http: any = {
+    post: async (url: string, body: any) => {
+      posted.push({ url, body });
+      return impl ? impl(url, body) : { status: 200, data: {} };
+    },
+  };
+  return { http, posted };
+}
+
+describe('Flusher.flushNow()', () => {
+  let dbPath: string;
+  let storage: SQLiteStorageProvider;
+
+  beforeEach(async () => {
+    dbPath = path.join(os.tmpdir(), `flusher-flushnow-${process.pid}-${Math.random().toString(36).slice(2)}.sqlite`);
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: dbPath });
   });
 
-  it('accepts an optional timeout parameter (default ~5s)', () => {
-    expect(SRC).toMatch(/flushNow\s*\(\s*timeoutMs[^)]*\)/);
+  afterEach(() => {
+    for (const suffix of ['', '-shm', '-wal']) {
+      const f = `${dbPath}${suffix}`;
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
   });
 
-  it('does not throw on transport failure (caller-resilient)', () => {
-    // The implementation must wrap its inner flush calls in a try/catch — we
-    // assert by looking for a try block within or near the flushNow body.
-    const fnIdx = SRC.search(/\bflushNow\s*\(/);
-    expect(fnIdx).toBeGreaterThan(-1);
-    const after = SRC.slice(fnIdx, fnIdx + 1500);
-    expect(after).toMatch(/try\s*\{/);
+  function queue(orgId: string, n: number) {
+    for (let i = 0; i < n; i++) {
+      storage.hubOutboxAppend(`ev-${orgId}-${i}-${Math.random().toString(36).slice(2)}`,
+        new Date().toISOString(),
+        JSON.stringify({ orgId, type: 'fleet:upgrade:started', payload: { seq: i } }));
+    }
+  }
+
+  it('drains the outbox synchronously and posts the queued events', async () => {
+    queue('acme', 3);
+    const { http, posted } = makeHttp();
+    const flusher = new Flusher(storage, HUB_CONFIG, 'inst', 30_000, 500, http);
+
+    await flusher.flushNow();
+
+    expect(storage.hubOutboxCount()).toBe(0); // fully drained
+    expect(posted.length).toBeGreaterThan(0); // transport actually invoked
   });
 
-  it('drains until the outbox is empty OR timeout elapses', () => {
-    const fnIdx = SRC.search(/\bflushNow\s*\(/);
-    const after = SRC.slice(fnIdx, fnIdx + 1500);
-    // Either an explicit hubOutboxCount() loop check, or a Date.now() / deadline guard.
-    expect(after).toMatch(/hubOutboxCount\(|outboxDepth|outbox.*length|Date\.now\(\)/);
+  it('returns immediately when the outbox is already empty (no POST)', async () => {
+    const { http, posted } = makeHttp();
+    const flusher = new Flusher(storage, HUB_CONFIG, 'inst', 30_000, 500, http);
+
+    await flusher.flushNow();
+
+    expect(posted).toHaveLength(0);
+  });
+
+  it('does not throw on transport failure and leaves the events in the outbox', async () => {
+    queue('acme', 2);
+    const { http } = makeHttp(async () => { throw new Error('network down'); });
+    const flusher = new Flusher(storage, HUB_CONFIG, 'inst', 30_000, 500, http);
+
+    // Must resolve (not reject) even though every POST fails, and within the
+    // timeout budget (a small timeout keeps the resilience loop bounded).
+    await expect(flusher.flushNow(200)).resolves.toBeUndefined();
+    expect(storage.hubOutboxCount()).toBe(2); // nothing lost — replays next boot
   });
 });
