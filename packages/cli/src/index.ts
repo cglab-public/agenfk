@@ -163,7 +163,7 @@ async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: 
   return fetchLatestReleaseTag(repo, !!opts.beta);
 }
 
-async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
+export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
