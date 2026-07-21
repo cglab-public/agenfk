@@ -8,6 +8,7 @@ import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
+import { startRunTailer } from "./agent-runs/tailer.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
@@ -3329,6 +3330,8 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           console.log(`AgEnFK API Server: requested port ${REQUESTED_PORT} was in use, bound to ${port} instead`);
         }
         console.log(`AgEnFK API Server running on ${BIND_HOST}:${port} (with WebSockets)`);
+        // Live Agent Runs: tail registered worker sessions → stream run:event.
+        startRunTailer(storage, (b) => io.emit('run:event', b));
         telemetry.capture('server_started', {
           version: getCurrentVersion(),
           storageBackend: 'sqlite',
