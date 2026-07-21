@@ -68,8 +68,11 @@ export function parsePiSessionJsonl(text: string): ParsedRunEvent[] {
     const msg = obj.message;
 
     if (msg.role === 'assistant') {
-      const totalTokens =
-        msg.usage && Number.isFinite(msg.usage.totalTokens) ? msg.usage.totalTokens : undefined;
+      // Prefer the turn's incremental output tokens; pi's `totalTokens` is the
+      // cumulative context size and would massively overcount if summed.
+      const turnTokens =
+        msg.usage && Number.isFinite(msg.usage.output) ? msg.usage.output
+          : (msg.usage && Number.isFinite(msg.usage.totalTokens) ? msg.usage.totalTokens : undefined);
       let tokenAttached = false;
       const blocks = Array.isArray(msg.content) ? msg.content : [];
       for (const b of blocks) {
@@ -87,7 +90,7 @@ export function parsePiSessionJsonl(text: string): ParsedRunEvent[] {
           };
         }
         if (ev) {
-          if (totalTokens !== undefined && !tokenAttached) { ev.tokens = totalTokens; tokenAttached = true; }
+          if (turnTokens !== undefined && !tokenAttached) { ev.tokens = turnTokens; tokenAttached = true; }
           events.push(ev);
         }
       }

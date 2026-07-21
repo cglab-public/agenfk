@@ -41,13 +41,22 @@ export async function tailRunsOnce(
     let text: string;
     try { text = readFile(run.sourcePath); } catch { continue; } // file not there yet
     const parsed = parsePiSessionJsonl(text);
-    const known = (await storage.listRunEvents(run.id)).length;
-    for (let i = known; i < parsed.length; i++) {
+    // Track parser progress SEPARATELY from the run's total event count — the
+    // orchestrator also appends events (dispatch/verdict/note) to the same run
+    // via REST, so slicing by total count would drop/misalign parser events.
+    // Key the offset by run id (distinct from any token-ingestion offsets).
+    const offsetKey = `agentrun:${run.id}`;
+    const state = await storage.getIngestionState(offsetKey);
+    const consumed = state ? state.lastOffset : 0;
+    for (let i = consumed; i < parsed.length; i++) {
       const p = parsed[i];
+      // Append at end: seq = current total event count, so tailer and REST
+      // writers never collide on the (run_id, seq) dedup index.
+      const seq = (await storage.listRunEvents(run.id)).length;
       const event: RunEvent = {
         id: uuidv4(),
         runId: run.id,
-        seq: i,
+        seq,
         ts: now(),
         lane: p.lane,
         kind: p.kind,
@@ -59,6 +68,9 @@ export async function tailRunsOnce(
       await storage.appendRunEvent(event);
       emit({ itemId: run.itemId, runId: run.id, event });
       appended.push(event);
+    }
+    if (parsed.length > consumed) {
+      await storage.setIngestionState({ sourcePath: offsetKey, lastOffset: parsed.length, lastRunAt: now() });
     }
   }
   return appended;
