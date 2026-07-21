@@ -396,6 +396,7 @@ export const KanbanBoard: React.FC = () => {
   // Project State
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
   const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [projectSearch, setProjectSearch] = useState('');
   const [newProjectName, setNewProjectName] = useState('');
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
@@ -968,6 +969,10 @@ export const KanbanBoard: React.FC = () => {
 
   // Project Selection Screen
   if (!selectedProjectId || isCreatingProject) {
+    const sortedFilteredProjects = [...(projects ?? [])]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
+
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
         <Logo size={64} className="mb-8" />
@@ -979,8 +984,19 @@ export const KanbanBoard: React.FC = () => {
             {projects && projects.length > 0 && !isCreatingProject && (
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block text-left mb-2">Recent Projects</label>
-                <div className="grid gap-2">
-                  {projects.map(p => (
+                <input
+                  type="text"
+                  value={projectSearch}
+                  onChange={(e) => setProjectSearch(e.target.value)}
+                  placeholder="Search projects..."
+                  aria-label="Search projects"
+                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
+                />
+                <div className="grid gap-2 max-h-72 overflow-y-auto">
+                  {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
+                    <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
+                  ) : (
+                    sortedFilteredProjects.map(p => (
                     <div
                       key={p.id}
                       className="flex items-center gap-3 p-4 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all group"
@@ -1022,7 +1038,8 @@ export const KanbanBoard: React.FC = () => {
                         </>
                       )}
                     </div>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
             )}
