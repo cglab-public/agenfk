@@ -15,6 +15,9 @@ import {
   IngestionState,
   Pr,
   PrSizing,
+  AgentRun,
+  RunEvent,
+  AgentRunQuery,
 } from '@agenfk/core';
 
 // node:sqlite is a built-in module available from Node.js v22+.
@@ -133,6 +136,37 @@ export class SQLiteStorageProvider implements StorageProvider {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_prs_repo_number ON prs(repo, pr_number);
       CREATE INDEX IF NOT EXISTS idx_prs_item ON prs(item_id);
+      CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        step TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        harness TEXT NOT NULL,
+        model TEXT NOT NULL,
+        session_id TEXT,
+        source_path TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        verdict TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_item ON agent_runs(item_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id);
+      CREATE TABLE IF NOT EXISTS run_events (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        ts TEXT NOT NULL,
+        lane TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        tool TEXT,
+        text TEXT,
+        payload TEXT,
+        tokens INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
     `);
     this.migrateFlowsTable();
   }
@@ -473,6 +507,140 @@ export class SQLiteStorageProvider implements StorageProvider {
       projectId: r.project_id ?? undefined,
       sourcePath: r.source_path,
       sourceOffset: r.source_offset,
+    }));
+  }
+
+  // ── Observability: agent runs + transcript events ──────────────────────────
+
+  private mapAgentRunRow(r: any): AgentRun {
+    return {
+      id: r.id,
+      itemId: r.item_id,
+      projectId: r.project_id ?? undefined,
+      step: r.step,
+      actor: r.actor,
+      harness: r.harness,
+      model: r.model,
+      sessionId: r.session_id ?? undefined,
+      sourcePath: r.source_path ?? undefined,
+      status: r.status,
+      verdict: r.verdict ?? undefined,
+      startedAt: r.started_at,
+      endedAt: r.ended_at ?? undefined,
+    };
+  }
+
+  async createAgentRun(run: AgentRun): Promise<AgentRun> {
+    this.database.prepare(
+      `INSERT INTO agent_runs
+        (id, item_id, project_id, step, actor, harness, model,
+         session_id, source_path, status, verdict, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      run.id,
+      run.itemId,
+      run.projectId ?? null,
+      run.step,
+      run.actor,
+      run.harness,
+      run.model,
+      run.sessionId ?? null,
+      run.sourcePath ?? null,
+      run.status,
+      run.verdict ?? null,
+      run.startedAt,
+      run.endedAt ?? null,
+    );
+    return run;
+  }
+
+  async updateAgentRun(id: string, updates: Partial<AgentRun>): Promise<AgentRun> {
+    const existing = await this.getAgentRun(id);
+    if (!existing) throw new Error(`Agent run not found: ${id}`);
+    const merged = { ...existing, ...updates };
+    this.database.prepare(
+      `UPDATE agent_runs SET
+         item_id = ?, project_id = ?, step = ?, actor = ?, harness = ?, model = ?,
+         session_id = ?, source_path = ?, status = ?, verdict = ?, started_at = ?, ended_at = ?
+       WHERE id = ?`
+    ).run(
+      merged.itemId,
+      merged.projectId ?? null,
+      merged.step,
+      merged.actor,
+      merged.harness,
+      merged.model,
+      merged.sessionId ?? null,
+      merged.sourcePath ?? null,
+      merged.status,
+      merged.verdict ?? null,
+      merged.startedAt,
+      merged.endedAt ?? null,
+      id,
+    );
+    return merged;
+  }
+
+  async getAgentRun(id: string): Promise<AgentRun | null> {
+    const row = this.database.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id) as any;
+    return row ? this.mapAgentRunRow(row) : null;
+  }
+
+  async getAgentRunBySession(sessionId: string): Promise<AgentRun | null> {
+    const row = this.database.prepare(
+      'SELECT * FROM agent_runs WHERE session_id = ? ORDER BY started_at DESC LIMIT 1'
+    ).get(sessionId) as any;
+    return row ? this.mapAgentRunRow(row) : null;
+  }
+
+  async listAgentRuns(query: AgentRunQuery): Promise<AgentRun[]> {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (query.itemId !== undefined) { where.push('item_id = ?'); params.push(query.itemId); }
+    if (query.projectId !== undefined) { where.push('project_id = ?'); params.push(query.projectId); }
+    if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
+    let sql = 'SELECT * FROM agent_runs';
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
+    sql += ' ORDER BY started_at ASC';
+    if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
+    const rows = this.database.prepare(sql).all(...params) as any[];
+    return rows.map((r) => this.mapAgentRunRow(r));
+  }
+
+  async appendRunEvent(event: RunEvent): Promise<void> {
+    this.database.prepare(
+      `INSERT OR IGNORE INTO run_events
+        (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      event.id,
+      event.runId,
+      event.seq,
+      event.ts,
+      event.lane,
+      event.kind,
+      event.tool ?? null,
+      event.text ?? null,
+      event.payload ?? null,
+      event.tokens ?? null,
+    );
+  }
+
+  async listRunEvents(runId: string): Promise<RunEvent[]> {
+    const rows = this.database.prepare(
+      'SELECT * FROM run_events WHERE run_id = ? ORDER BY seq ASC'
+    ).all(runId) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      runId: r.run_id,
+      seq: r.seq,
+      ts: r.ts,
+      lane: r.lane,
+      kind: r.kind,
+      tool: r.tool ?? undefined,
+      text: r.text ?? undefined,
+      payload: r.payload ?? undefined,
+      tokens: r.tokens ?? undefined,
     }));
   }
 

@@ -1057,6 +1057,101 @@ app.get("/token-events", asyncHandler(async (req: any, res: any) => {
   res.json(events);
 }));
 
+// ── Agent runs (orchestrated worker transcripts per item) ──────────────────
+const RUN_ACTORS = new Set(['orchestrator', 'worker', 'reviewer']);
+const RUN_STATUSES = new Set(['running', 'done', 'failed']);
+const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 'verdict', 'note']);
+
+// Register a run when the orchestrator dispatches a worker (establishes the
+// session↔card link that heuristic attribution cannot).
+app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
+  const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
+  if (!itemId) return res.status(400).json({ error: "itemId is required" });
+  if (!step) return res.status(400).json({ error: "step is required" });
+  if (actor && !RUN_ACTORS.has(actor)) {
+    return res.status(400).json({ error: `Invalid actor '${actor}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
+  }
+  const run = await storage.createAgentRun({
+    id: uuidv4(),
+    itemId,
+    projectId: projectId || undefined,
+    step,
+    actor: actor || 'worker',
+    harness: harness || 'pi',
+    model: model || 'unknown',
+    sessionId: sessionId || undefined,
+    sourcePath: sourcePath || undefined,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+  });
+  io.emit('run:updated', { itemId: run.itemId, runId: run.id });
+  io.emit('items_updated');
+  res.status(201).json(run);
+}));
+
+app.patch("/agent-runs/:id", asyncHandler(async (req: any, res: any) => {
+  const existing = await storage.getAgentRun(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Agent run not found" });
+  const { status, verdict, endedAt, sourcePath } = req.body || {};
+  if (status && !RUN_STATUSES.has(status)) {
+    return res.status(400).json({ error: `Invalid status '${status}'. Must be one of: ${[...RUN_STATUSES].join(', ')}` });
+  }
+  const updated = await storage.updateAgentRun(req.params.id, {
+    ...(status !== undefined ? { status } : {}),
+    ...(verdict !== undefined ? { verdict } : {}),
+    ...(sourcePath !== undefined ? { sourcePath } : {}),
+    // stamp endedAt when a terminal status arrives without an explicit one
+    ...(endedAt !== undefined ? { endedAt }
+        : (status && status !== 'running' && !existing.endedAt ? { endedAt: new Date().toISOString() } : {})),
+  });
+  io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
+  res.json(updated);
+}));
+
+// Append a transcript event. Used both by the orchestrator (dispatch/verdict/note)
+// and by the session watcher (think/tool/result). Emits a payload-bearing socket
+// event so the UI can stream it live, keyed by itemId.
+app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
+  const run = await storage.getAgentRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "Agent run not found" });
+  const { lane, kind, tool, text, payload, tokens, seq } = req.body || {};
+  if (!kind || !RUN_EVENT_KINDS.has(kind)) {
+    return res.status(400).json({ error: `Invalid kind '${kind}'. Must be one of: ${[...RUN_EVENT_KINDS].join(', ')}` });
+  }
+  if (lane && !RUN_ACTORS.has(lane)) {
+    return res.status(400).json({ error: `Invalid lane '${lane}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
+  }
+  // Caller may supply a deterministic seq (watcher re-parse dedup); else append.
+  const nextSeq = Number.isInteger(seq) ? seq : (await storage.listRunEvents(run.id)).length;
+  const event = {
+    id: uuidv4(),
+    runId: run.id,
+    seq: nextSeq,
+    ts: new Date().toISOString(),
+    lane: (lane || run.actor) as any,
+    kind,
+    tool: tool || undefined,
+    text: text || undefined,
+    payload: payload !== undefined ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : undefined,
+    tokens: Number.isFinite(tokens) ? tokens : undefined,
+  };
+  await storage.appendRunEvent(event);
+  io.emit('run:event', { itemId: run.itemId, runId: run.id, event });
+  res.status(201).json(event);
+}));
+
+app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {
+  const runs = await storage.listAgentRuns({ itemId: req.params.id });
+  res.json(runs);
+}));
+
+app.get("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
+  const run = await storage.getAgentRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "Agent run not found" });
+  const events = await storage.listRunEvents(run.id);
+  res.json(events);
+}));
+
 const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
