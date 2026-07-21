@@ -1646,10 +1646,12 @@ export const KanbanBoard: React.FC = () => {
       </main>
 
       {selectedItem && (
-        <CardDetailModal 
-          item={selectedItem} 
+        <CardDetailModal
+          item={selectedItem}
           allItems={items || []}
           pricesData={pricesData}
+          projectName={activeProject?.name}
+          flowName={activeFlow?.name}
           onClose={() => setSelectedItem(null)} 
           onSelectItem={setSelectedItem}
           /* v8 ignore start */

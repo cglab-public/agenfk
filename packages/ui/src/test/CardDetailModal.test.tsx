@@ -34,6 +34,8 @@ vi.mock('../api', () => ({
     getItem: vi.fn(() => Promise.resolve({})),
     updateItem: vi.fn(() => Promise.resolve({})),
     listItems: vi.fn(() => Promise.resolve([])),
+    listAgentRuns: vi.fn(() => Promise.resolve([])),
+    listRunEvents: vi.fn(() => Promise.resolve([])),
   }
 }));
 

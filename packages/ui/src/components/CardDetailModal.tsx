@@ -9,7 +9,10 @@ import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { useQuery } from '@tanstack/react-query';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
+import { api } from '../api';
+import { RunsPanel, type AgentRun } from './RunsPanel';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -20,12 +23,21 @@ interface CardDetailModalProps {
   onAddItem: (title: string, type: ItemType, status?: Status, description?: string) => Promise<void>;
   onDeleteItem: (id: string) => Promise<void>;
   onUpdateItem?: (id: string, updates: Partial<AgEnFKItem>) => Promise<void>;
+  projectName?: string;
+  flowName?: string;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage' | 'runs';
 
-export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem }) => {
+export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
+  // Agent runs drive the conditional "Runs" tab — only shown when orchestration
+  // actually recorded runs for this item.
+  const { data: agentRuns = [] } = useQuery<AgentRun[]>({
+    queryKey: ['agent-runs', item.id],
+    queryFn: () => api.listAgentRuns(item.id),
+    enabled: !!item.id,
+  });
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -91,6 +103,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
+    { id: 'runs', label: 'Runs', icon: <Zap size={14} />, badge: agentRuns.length, hidden: isNew || !agentRuns.length },
   ].filter(t => !t.hidden);
 
   // Auto-switch tab if current is hidden (e.g. after item change)
@@ -193,9 +206,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50 relative z-20 shrink-0">
+        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 relative z-20 shrink-0">
+          <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {parentItem && (
               <button 
@@ -231,6 +245,16 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
+            )}
+            {!isNew && (
+              <span className={clsx(
+                "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider",
+                String(item.status).toUpperCase().includes('DONE')
+                  ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800"
+                  : "bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 border-indigo-100 dark:border-indigo-800"
+              )} title="Workflow status">
+                {item.status}
+              </span>
             )}
             {!isNew && (
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 group">
@@ -281,6 +305,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <X size={20} />
             </button>
           </div>
+          </div>
+          {!isNew && (
+            <div className="mt-2 font-mono text-[11px] text-slate-400 dark:text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span>{item.type}</span>
+              {projectName && <><span className="opacity-40">·</span><span>{projectName}</span></>}
+              {flowName && <><span className="opacity-40">·</span><span>{flowName}</span></>}
+              {item.branchName && <><span className="opacity-40">·</span><span className="truncate max-w-[280px]" title={item.branchName}>{item.branchName}</span></>}
+            </div>
+          )}
         </div>
 
         {/* Tab Navigation */}
@@ -291,12 +324,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               onClick={() => setActiveTab(tab.id as TabType)}
               className={clsx(
                 "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all whitespace-nowrap outline-none",
-                activeTab === tab.id 
-                  ? "border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400" 
+                activeTab === tab.id
+                  ? "border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400"
                   : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
               )}
             >
-              {tab.icon}
               {tab.label}
               {tab.badge !== undefined && (
                 <span className={clsx(
@@ -743,6 +775,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+          {activeTab === 'runs' && (
+            <div className="h-full min-h-0 animate-in slide-in-from-bottom-2 duration-300">
+              <RunsPanel itemId={item.id} />
             </div>
           )}
         </div>
