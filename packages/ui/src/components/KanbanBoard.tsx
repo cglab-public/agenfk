@@ -989,10 +989,14 @@ export const KanbanBoard: React.FC = () => {
                   value={projectSearch}
                   onChange={(e) => setProjectSearch(e.target.value)}
                   placeholder="Search projects..."
+                  aria-label="Search projects"
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
                 />
                 <div className="grid gap-2 max-h-72 overflow-y-auto">
-                  {sortedFilteredProjects.map(p => (
+                  {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
+                    <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
+                  ) : (
+                    sortedFilteredProjects.map(p => (
                     <div
                       key={p.id}
                       className="flex items-center gap-3 p-4 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all group"
@@ -1034,7 +1038,8 @@ export const KanbanBoard: React.FC = () => {
                         </>
                       )}
                     </div>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
             )}

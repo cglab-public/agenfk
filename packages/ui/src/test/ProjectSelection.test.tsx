@@ -121,15 +121,8 @@ describe('ProjectSelection', () => {
     // Wait for at least one project name to appear
     await waitFor(() => screen.getByText('apple'));
 
-    // Collect all project name spans in DOM order
-    const projectButtons = document.querySelectorAll(
-      'button.flex.flex-1.items-center.gap-3.text-left'
-    );
-    const renderedNames = Array.from(projectButtons).map(
-      btn => btn.querySelector('span.font-semibold')?.textContent ?? ''
-    );
-
-    expect(renderedNames).toEqual(['apple', 'Mango', 'Zebra']);
+    const names = screen.getAllByText(/^(apple|Mango|Zebra)$/).map(n => n.textContent);
+    expect(names).toEqual(['apple', 'Mango', 'Zebra']);
   });
 
   it('filters projects by search query', async () => {
@@ -199,5 +192,25 @@ describe('ProjectSelection', () => {
     // We should have found a scrollable ancestor (not document.body)
     expect(el).not.toBeNull();
     expect(el).not.toBe(document.body);
+  });
+
+  it('shows an empty state when no projects match the search', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([
+      makeProject('z', 'Zebra'),
+      makeProject('a', 'apple'),
+      makeProject('m', 'Mango'),
+    ]);
+
+    renderKanbanBoard();
+
+    await waitFor(() => screen.getByText('apple'));
+
+    const searchInput = screen.getByRole('textbox');
+    fireEvent.change(searchInput, { target: { value: 'zzz' } });
+
+    expect(screen.queryByText('Zebra')).toBeNull();
+    expect(screen.queryByText('apple')).toBeNull();
+    expect(screen.queryByText('Mango')).toBeNull();
+    expect(screen.getByText(/no projects match/i)).toBeDefined();
   });
 });
