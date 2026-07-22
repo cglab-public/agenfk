@@ -880,6 +880,67 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
   res.json(activeFlow);
 }));
 
+// ── Org-available flows (Hub-published set) + client self-selection ──────────
+app.get("/flows/org-available", asyncHandler(async (_req: any, res: any) => {
+  if (!hubClient.isEnabled || !hubClient.hubConfig) {
+    return res.json({ flows: [], defaultFlowId: null, hubEnabled: false });
+  }
+  const { url, token } = hubClient.hubConfig;
+  try {
+    const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/available`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}`, hubEnabled: true });
+    const body = await r.json();
+    return res.json({ flows: body.flows ?? [], defaultFlowId: body.defaultFlowId ?? null, hubEnabled: true });
+  } catch (e: any) {
+    return res.status(502).json({ error: `Hub unreachable: ${e?.message ?? "error"}`, hubEnabled: true });
+  }
+}));
+
+app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const flowId = req.body?.flowId;
+  if (flowId === undefined) return res.status(400).json({ error: "flowId is required" });
+  if (!hubClient.isEnabled || !hubClient.hubConfig) {
+    return res.status(400).json({ error: "Hub is not configured; cannot select an org flow" });
+  }
+  const { url, token } = hubClient.hubConfig;
+  let sel: any;
+  try {
+    sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ projectId: req.params.id, flowId: flowId || null }),
+    });
+  } catch (e: any) {
+    return res.status(502).json({ error: `Hub unreachable: ${e?.message ?? "error"}` });
+  }
+  if (!sel.ok) {
+    let msg = `Hub returned ${sel.status}`;
+    try { const b = await sel.json(); if (b?.error) msg = b.error; } catch { /* ignore */ }
+    const status = (sel.status === 400 || sel.status === 403 || sel.status === 404) ? sel.status : 502;
+    return res.status(status).json({ error: msg });
+  }
+  // Reconcile now so the local flow + project binding update immediately.
+  await refreshProjectFlowFromHub({
+    storage: storage as SQLiteStorageProvider,
+    hubEnabled: hubClient.isEnabled,
+    hubConfig: hubClient.hubConfig,
+    projectId: req.params.id,
+    fetchImpl: globalThis.fetch as any,
+    emit: (event: string, payload: any) => io.emit(event, payload),
+    etagCache: flowSyncEtagCache,
+  });
+  const updated = await storage.getProject(req.params.id);
+  const flows = await storage.listFlows();
+  const activeFlow = (updated as any)?.flowId ? getActiveFlow((updated as any).flowId, flows) : DEFAULT_FLOW;
+  io.emit("flow:updated", { projectId: req.params.id, flowId: (updated as any)?.flowId ?? null });
+  res.json(activeFlow);
+}));
+
 // ── Built-in default flow (always the hardcoded DEFAULT_FLOW, project-independent) ──
 app.get("/flows/default", asyncHandler(async (_req: any, res: any) => {
   res.json(DEFAULT_FLOW);

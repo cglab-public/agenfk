@@ -8,12 +8,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import request from 'supertest';
 
 const TEST_DB = path.resolve('./flow-org-avail-huboff-test-db.sqlite');
+const TMP_HOME = path.join(os.tmpdir(), 'agenfk-huboff-home');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
+  'HOME', 'USERPROFILE',
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',
   'AGENFK_HUB_FLOW_SYNC_FIRST_DELAY_MS', 'AGENFK_DB_PATH',
 ];
@@ -31,6 +34,10 @@ function stubBenignFetch() {
 describe('org-flow routes (hub disabled)', () => {
   beforeAll(async () => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+    // Redirect homedir so loadHubConfig() does NOT find ~/.agenfk/hub.json.
+    fs.mkdirSync(TMP_HOME, { recursive: true });
+    process.env.HOME = TMP_HOME;
+    process.env.USERPROFILE = TMP_HOME;
     // Explicitly remove hub config so loadHubConfig() returns null.
     delete process.env.AGENFK_HUB_URL;
     delete process.env.AGENFK_HUB_TOKEN;
@@ -50,6 +57,7 @@ describe('org-flow routes (hub disabled)', () => {
       else process.env[k] = savedEnv[k]!;
     }
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    fs.rmSync(TMP_HOME, { recursive: true, force: true });
   });
 
   beforeEach(async () => {
