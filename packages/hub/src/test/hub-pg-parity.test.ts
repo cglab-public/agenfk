@@ -321,3 +321,43 @@ describe('PG parity: PR-event remote_url backfill', () => {
     expect(row?.remote_url ?? null).toBeNull();
   });
 });
+
+describe('PG parity: flow availability', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const def = (name: string) => ({
+    name, description: '',
+    steps: [
+      { id: 's0', name: 'todo', label: 'Todo', order: 0, isAnchor: true },
+      { id: 's1', name: 'work', label: 'Work', order: 1 },
+      { id: 's2', name: 'done', label: 'Done', order: 2, isAnchor: true },
+    ],
+  });
+
+  it('PUT /flows/:id/availability toggles org_available on Postgres', async () => {
+    const f = (await supertest(fx.app).post('/v1/admin/flows').set('Cookie', fx.cookie).send({ definition: def('PgFlow') })).body;
+
+    let list = await supertest(fx.app).get('/v1/admin/flows').set('Cookie', fx.cookie);
+    expect(list.body.find((x: any) => x.id === f.id).orgAvailable).toBe(false);
+
+    const on = await supertest(fx.app).put(`/v1/admin/flows/${f.id}/availability`).set('Cookie', fx.cookie).send({ available: true });
+    expect(on.status).toBe(200);
+    list = await supertest(fx.app).get('/v1/admin/flows').set('Cookie', fx.cookie);
+    expect(list.body.find((x: any) => x.id === f.id).orgAvailable).toBe(true);
+
+    const off = await supertest(fx.app).put(`/v1/admin/flows/${f.id}/availability`).set('Cookie', fx.cookie).send({ available: false });
+    expect(off.status).toBe(200);
+    list = await supertest(fx.app).get('/v1/admin/flows').set('Cookie', fx.cookie);
+    expect(list.body.find((x: any) => x.id === f.id).orgAvailable).toBe(false);
+  });
+
+  it('setting a flow as org default cascades to org_available on Postgres', async () => {
+    const f = (await supertest(fx.app).post('/v1/admin/flows').set('Cookie', fx.cookie).send({ definition: def('PgDefault') })).body;
+    const assign = await supertest(fx.app).put('/v1/admin/flow-assignments').set('Cookie', fx.cookie).send({ scope: 'org', flowId: f.id });
+    expect(assign.status).toBe(200);
+    const list = await supertest(fx.app).get('/v1/admin/flows').set('Cookie', fx.cookie);
+    expect(list.body.find((x: any) => x.id === f.id).orgAvailable).toBe(true);
+  });
+});

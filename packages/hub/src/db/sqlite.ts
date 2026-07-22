@@ -352,9 +352,9 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const flowHave = new Set(flowCols.map(c => c.name));
   if (!flowHave.has('org_available')) {
     raw.exec("ALTER TABLE flows ADD COLUMN org_available INTEGER NOT NULL DEFAULT 0");
+    // One-time backfill: the flow currently set as org default is implicitly available.
+    raw.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
   }
-  // Backfill: the flow currently set as org default is implicitly available.
-  raw.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
 
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
