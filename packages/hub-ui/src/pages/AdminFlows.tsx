@@ -16,16 +16,17 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight } from 'lucide-react
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
+import { repoOverrideOptions } from './repoOverrideOptions';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
 interface Assignment {
-  scope: 'org' | 'project' | 'installation';
+  scope: 'org' | 'repo' | 'project' | 'installation';
   targetId: string;
   flowId: string;
   updatedAt: string;
-  // Populated server-side for project-scoped rows so the UI can render the
-  // git remote URL instead of the raw (unique-per-installation) project UUID.
+  // For repo-scoped rows this IS the remote URL; retained for the legacy
+  // project scope so the UI can render the git remote instead of a raw UUID.
   remoteUrl?: string | null;
 }
 
@@ -113,7 +114,7 @@ export function AdminFlows() {
         {flows.map((f) => {
           const isOrgDefault = orgAssignment?.flowId === f.id;
           const flowAssignments = assignments.filter(a => a.flowId === f.id);
-          const projectCount = flowAssignments.filter(a => a.scope === 'project').length;
+          const repoCount = flowAssignments.filter(a => a.scope === 'repo').length;
           const installCount = flowAssignments.filter(a => a.scope === 'installation').length;
           const expanded = expandedFlowId === f.id;
           return (
@@ -140,9 +141,9 @@ export function AdminFlows() {
                         Org default
                       </span>
                     )}
-                    {projectCount > 0 && (
+                    {repoCount > 0 && (
                       <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                        {projectCount} project{projectCount === 1 ? '' : 's'}
+                        {repoCount} repo{repoCount === 1 ? '' : 's'}
                       </span>
                     )}
                     {installCount > 0 && (
@@ -196,7 +197,7 @@ function AssignmentsPanel({
   onEdit: () => void;
 }) {
   const qc = useQueryClient();
-  const [adding, setAdding] = useState<'project' | 'installation' | null>(null);
+  const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
 
   const setOrgDefault = useMutation({
     mutationFn: () => api.put('/v1/admin/flow-assignments', { scope: 'org', flowId: flow.id }),
@@ -210,7 +211,7 @@ function AssignmentsPanel({
   });
 
   const addOverride = useMutation({
-    mutationFn: ({ scope, targetId }: { scope: 'project' | 'installation'; targetId: string }) =>
+    mutationFn: ({ scope, targetId }: { scope: 'repo' | 'installation'; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: flow.id }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
@@ -265,14 +266,16 @@ function AssignmentsPanel({
         )}
       </div>
 
-      {/* Project overrides */}
+      {/* Repo overrides (keyed on the git remote URL — shared across all
+          installations of a repo). Legacy per-project rows are migrated to
+          repo scope on the hub; the project axis is no longer surfaced here. */}
       <ScopeSection
-        scope="project"
-        label="Project overrides"
+        scope="repo"
+        label="Repo overrides"
         chipClass="bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
-        rows={assignments.filter(a => a.scope === 'project')}
-        onRemove={(targetId) => remove.mutate({ scope: 'project', targetId })}
-        onAdd={() => setAdding('project')}
+        rows={assignments.filter(a => a.scope === 'repo')}
+        onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
+        onAdd={() => setAdding('repo')}
       />
 
       {/* Installation overrides */}
@@ -300,7 +303,7 @@ function AssignmentsPanel({
 function ScopeSection({
   label, chipClass, rows, onRemove, onAdd,
 }: {
-  scope: 'project' | 'installation';
+  scope: 'repo' | 'installation';
   label: string;
   chipClass: string;
   rows: Assignment[];
@@ -342,7 +345,7 @@ function ScopeSection({
 function AddOverridePicker({
   scope, existingTargetIds, onCancel, onPick,
 }: {
-  scope: 'project' | 'installation';
+  scope: 'repo' | 'installation';
   existingTargetIds: Set<string>;
   onCancel: () => void;
   onPick: (targetId: string) => void;
@@ -350,7 +353,7 @@ function AddOverridePicker({
   const projectsQ = useQuery<ProjectInfo[]>({
     queryKey: ['admin-projects-discovery'],
     queryFn: async () => (await api.get('/v1/admin/projects')).data,
-    enabled: scope === 'project',
+    enabled: scope === 'repo',
   });
   const apiKeysQ = useQuery<ApiKeyRow[]>({
     queryKey: ['admin-api-keys'],
@@ -359,14 +362,9 @@ function AddOverridePicker({
   });
 
   const options = useMemo(() => {
-    if (scope === 'project') {
-      // The picker submits id=projectId (assignments key on installation-scoped IDs),
-      // but shows label=remoteUrl when known so admins can recognise the repo.
-      return (projectsQ.data ?? []).map(p => ({
-        id: p.projectId,
-        label: p.remoteUrl ?? p.projectId,
-        sub: p.remoteUrl ? `${p.projectId} · last seen ${p.lastSeen}` : `last seen ${p.lastSeen}`,
-      }));
+    if (scope === 'repo') {
+      // Discovery returns distinct repos (remote URLs). The pick id IS the repo.
+      return repoOverrideOptions(projectsQ.data ?? []);
     }
     return (apiKeysQ.data ?? [])
       .filter(k => k.installationId && !k.revokedAt)
