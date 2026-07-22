@@ -377,6 +377,31 @@ describe('flow command', () => {
     });
   });
 
+  describe('flow browse-org default marking', () => {
+    it('should mark only the org default flow with a star', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      const OTHER = { ...SAMPLE_FLOW, id: 'other-flow-9999', name: 'Other Flow' };
+      mockedAxios.get.mockResolvedValue({ data: { flows: [SAMPLE_FLOW, OTHER], defaultFlowId: 'flow-uuid-1234-5678', hubEnabled: true } });
+      const tableSpy = vi.spyOn(console, 'table').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      const rows = tableSpy.mock.calls[0][0] as any[];
+      expect(rows.find((r) => r.Name === 'Standard Flow').Default).toBe('★');
+      expect(rows.find((r) => r.Name === 'Other Flow').Default).toBe('');
+      tableSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should surface hub error messages from the local server', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockRejectedValue({ response: { data: { error: 'Hub unreachable' } } });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error browsing org flows'), 'Hub unreachable');
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
+
   describe('flow use-org', () => {
     it('should POST /projects/:id/flow/select-org with flowId', async () => {
       const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
