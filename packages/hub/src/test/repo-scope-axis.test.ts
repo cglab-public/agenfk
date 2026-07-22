@@ -46,7 +46,7 @@ async function assign(app: any, cookie: string, scope: string, targetId: string 
 
 async function markAvailable(app: any, cookie: string, flowId: string) {
   // Org-availability is required before a flow can be selected by a client.
-  return supertest(app).put(`/v1/admin/flows/${flowId}/availability`).set('Cookie', cookie).send({ orgAvailable: true });
+  return supertest(app).put(`/v1/admin/flows/${flowId}/availability`).set('Cookie', cookie).send({ available: true });
 }
 
 async function seedEvent(db: any, orgId: string, installationId: string, remoteUrl: string, projectId = 'p-x') {

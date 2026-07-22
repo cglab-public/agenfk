@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { resolveEffectiveFlow } from '../services/flowResolution.js';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 /**
  * Client-facing flow distribution: a connected agenfk installation calls
@@ -23,8 +24,9 @@ export function flowsRouter(ctx: HubServerContext): Router {
     const orgId = req.hubApiKey!.orgId;
     const installationId = req.hubApiKey!.installationId ?? null;
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : null;
+    const remoteUrl = typeof req.query.repo === 'string' ? req.query.repo : null;
 
-    const resolved = await resolveEffectiveFlow({ db: ctx.db, orgId, projectId, installationId });
+    const resolved = await resolveEffectiveFlow({ db: ctx.db, orgId, projectId, remoteUrl, installationId });
     if (!resolved) {
       return res.json({ flow: null });
     }
@@ -86,30 +88,60 @@ export function flowsRouter(ctx: HubServerContext): Router {
       return res.status(403).json({ error: 'selection requires an installation-bound api key' });
     }
     const body = req.body ?? {};
+    // Primary axis: repo (normalized remote URL). `projectId` is accepted only
+    // for back-compat with un-upgraded clients and maps to the legacy 'project'
+    // scope. The repo is the globally-shared identity; a local projectId is not.
+    const repoRaw: string = typeof body.repo === 'string' ? body.repo : '';
     const projectId: string = typeof body.projectId === 'string' ? body.projectId : '';
-    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
-    if (projectId.length > 256) return res.status(400).json({ error: 'projectId too long' });
 
-    // Ownership: refuse to write a selection for a project that ingested
-    // events attribute to a DIFFERENT installation in this org. Unknown
-    // projects (no events yet) are allowed.
-    const foreign = await ctx.db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM events
-       WHERE org_id = ? AND project_id = ? AND installation_id IS NOT NULL AND installation_id <> ?`,
-      [orgId, projectId, installationId],
-    );
-    if (foreign && Number(foreign.n) > 0) {
-      return res.status(403).json({ error: 'projectId belongs to a different installation' });
+    let scope: 'repo' | 'project';
+    let targetId: string;
+    if (repoRaw) {
+      if (repoRaw.length > 1024) return res.status(400).json({ error: 'repo too long' });
+      scope = 'repo';
+      targetId = sanitizeRemoteUrl(repoRaw);
+      // Ownership: a repo is legitimately shared across installations, so allow
+      // any installation that has itself touched the repo (has events for it),
+      // or trust-on-first-use when the repo is entirely unknown to the org.
+      // Refuse only when the repo is known to OTHER installations but not this one.
+      const seen = await ctx.db.get<{ own: number; other: number }>(
+        `SELECT
+           SUM(CASE WHEN installation_id = ? THEN 1 ELSE 0 END) AS own,
+           SUM(CASE WHEN installation_id IS NOT NULL AND installation_id <> ? THEN 1 ELSE 0 END) AS other
+         FROM events WHERE org_id = ? AND remote_url = ?`,
+        [installationId, installationId, orgId, targetId],
+      );
+      const own = Number(seen?.own ?? 0);
+      const other = Number(seen?.other ?? 0);
+      if (own === 0 && other > 0) {
+        return res.status(403).json({ error: 'repo belongs to a different installation' });
+      }
+    } else if (projectId) {
+      if (projectId.length > 256) return res.status(400).json({ error: 'projectId too long' });
+      scope = 'project';
+      targetId = projectId;
+      // Legacy ownership check: refuse a projectId attributed to another install.
+      const foreign = await ctx.db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM events
+         WHERE org_id = ? AND project_id = ? AND installation_id IS NOT NULL AND installation_id <> ?`,
+        [orgId, projectId, installationId],
+      );
+      if (foreign && Number(foreign.n) > 0) {
+        return res.status(403).json({ error: 'projectId belongs to a different installation' });
+      }
+    } else {
+      return res.status(400).json({ error: 'repo is required' });
     }
 
+    const respKey = scope === 'repo' ? { repo: targetId } : { projectId: targetId };
     const flowId = body.flowId;
     // Clear path.
     if (flowId === null) {
       await ctx.db.run(
-        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id = ?",
-        [orgId, projectId],
+        'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
+        [orgId, scope, targetId],
       );
-      return res.json({ projectId, flowId: null, scope: 'project' });
+      return res.json({ ...respKey, flowId: null, scope });
     }
     if (typeof flowId !== 'string' || !flowId) {
       return res.status(400).json({ error: 'flowId must be a string or null' });
@@ -124,16 +156,16 @@ export function flowsRouter(ctx: HubServerContext): Router {
     }
     await ctx.db.transaction(async () => {
       await ctx.db.run(
-        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id = ?",
-        [orgId, projectId],
+        'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
+        [orgId, scope, targetId],
       );
       await ctx.db.run(
         `INSERT INTO flow_assignments (org_id, scope, target_id, flow_id, updated_by_user_id)
-         VALUES (?, 'project', ?, ?, NULL)`,
-        [orgId, projectId, flowId],
+         VALUES (?, ?, ?, ?, NULL)`,
+        [orgId, scope, targetId, flowId],
       );
     });
-    res.json({ projectId, flowId, scope: 'project' });
+    res.json({ ...respKey, flowId, scope });
   });
 
   return router;

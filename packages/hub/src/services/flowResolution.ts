@@ -1,6 +1,7 @@
 import type { DB } from '../db.js';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
-export type ResolvedScope = 'installation' | 'project' | 'org';
+export type ResolvedScope = 'installation' | 'repo' | 'project' | 'org';
 
 export interface ResolvedFlow {
   scope: ResolvedScope;
@@ -19,6 +20,8 @@ interface ResolveArgs {
   db: DB;
   orgId: string;
   projectId?: string | null;
+  /** Raw or canonical git remote URL; sanitized here for the 'repo' scope. */
+  remoteUrl?: string | null;
   installationId?: string | null;
 }
 
@@ -38,15 +41,22 @@ interface AssignmentRow {
  * SQLite both round-trip cleanly through the dialect translator.
  */
 export async function resolveEffectiveFlow(args: ResolveArgs): Promise<ResolvedFlow | null> {
-  const { db, orgId, projectId, installationId } = args;
+  const { db, orgId, projectId, remoteUrl, installationId } = args;
 
   // Build the candidate list: each scope is included only when its target id
   // is known to the caller. We always probe org-default.
   const scopeFilters: string[] = ["scope = 'org' AND target_id = ''"];
   const params: unknown[] = [];
   if (projectId) {
+    // Legacy per-installation project axis — retained for back-compat with
+    // clients that still send ?projectId. Superseded by the repo scope.
     scopeFilters.push("(scope = 'project' AND target_id = ?)");
     params.push(projectId);
+  }
+  const repoKey = remoteUrl ? sanitizeRemoteUrl(remoteUrl) : null;
+  if (repoKey) {
+    scopeFilters.push("(scope = 'repo' AND target_id = ?)");
+    params.push(repoKey);
   }
   if (installationId) {
     scopeFilters.push("(scope = 'installation' AND target_id = ?)");
@@ -59,8 +69,9 @@ export async function resolveEffectiveFlow(args: ResolveArgs): Promise<ResolvedF
   const rows = await db.all<AssignmentRow>(sql, [orgId, ...params]);
   if (rows.length === 0) return null;
 
-  // Rank by precedence (installation > project > org).
-  const weight = (s: ResolvedScope) => (s === 'installation' ? 3 : s === 'project' ? 2 : 1);
+  // Rank by precedence (installation > repo > project-legacy > org).
+  const weight = (s: ResolvedScope) =>
+    s === 'installation' ? 4 : s === 'repo' ? 3 : s === 'project' ? 2 : 1;
   rows.sort((a, b) => weight(b.scope) - weight(a.scope));
   const winner = rows[0];
 

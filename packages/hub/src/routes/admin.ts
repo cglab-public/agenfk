@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
+import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 
 interface AuthConfigRow {
   org_id: string;
@@ -240,29 +241,24 @@ export function adminRouter(ctx: HubServerContext): Router {
   // Returns the distinct project ids ever ingested for this org, with the
   // most-recent occurrence timestamp. Used by the hub-ui Assignments panel.
   router.get('/projects', guard, async (req: Request, res: Response) => {
-    // remote_url enrichment (BUG b976a525): the hub admin sees these IDs in
-    // the Flow Assignments UI, but project IDs are unique-per-installation
-    // and meaningless across the fleet. Surface the latest known git remote
-    // URL alongside, so chips and pickers can render the recognizable name.
-    const rows = await ctx.db.all<{ project_id: string; last_seen: string; remote_url: string | null }>(
-      `SELECT
-         e.project_id,
-         MAX(e.occurred_at) AS last_seen,
-         (
-           SELECT remote_url FROM events e2
-           WHERE e2.org_id = e.org_id AND e2.project_id = e.project_id AND e2.remote_url IS NOT NULL
-           ORDER BY e2.occurred_at DESC LIMIT 1
-         ) AS remote_url
+    // Repo discovery for the assignment UI. The globally-shared identity is the
+    // git repo (remote URL), NOT the local per-installation projectId — two
+    // clones of the same repo have different projectIds. We therefore surface
+    // the distinct, already-sanitized remote URLs seen in this org's events.
+    // `projectId` mirrors `remoteUrl` so the existing picker shape still holds;
+    // the repo is the pick key.
+    const rows = await ctx.db.all<{ remote_url: string; last_seen: string }>(
+      `SELECT e.remote_url, MAX(e.occurred_at) AS last_seen
        FROM events e
-       WHERE e.org_id = ? AND e.project_id IS NOT NULL AND e.project_id != ''
-       GROUP BY e.project_id
+       WHERE e.org_id = ? AND e.remote_url IS NOT NULL AND e.remote_url != ''
+       GROUP BY e.remote_url
        ORDER BY last_seen DESC`,
       [req.session!.orgId],
     );
     res.json(rows.map(r => ({
-      projectId: r.project_id,
+      projectId: r.remote_url,
+      remoteUrl: r.remote_url,
       lastSeen: r.last_seen,
-      remoteUrl: r.remote_url ?? null,
     })));
   });
 
@@ -409,7 +405,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       targetId: r.target_id,
       flowId: r.flow_id,
       updatedAt: r.updated_at,
-      remoteUrl: r.scope === 'project' ? (remoteByProjectId.get(r.target_id) ?? null) : null,
+      remoteUrl: r.scope === 'repo'
+        ? r.target_id
+        : r.scope === 'project' ? (remoteByProjectId.get(r.target_id) ?? null) : null,
     })));
   });
 
@@ -523,11 +521,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     const orgId = req.session!.orgId;
     const body = req.body ?? {};
     // Default scope to 'org' for legacy callers that send only `{ flowId }`.
-    const scope: 'org' | 'project' | 'installation' = body.scope ?? 'org';
-    if (!['org', 'project', 'installation'].includes(scope)) {
-      return res.status(400).json({ error: "scope must be 'org', 'project', or 'installation'" });
+    const scope: 'org' | 'repo' | 'project' | 'installation' = body.scope ?? 'org';
+    if (!['org', 'repo', 'project', 'installation'].includes(scope)) {
+      return res.status(400).json({ error: "scope must be 'org', 'repo', 'project', or 'installation'" });
     }
-    const targetId: string = scope === 'org' ? '' : (body.targetId ?? '');
+    // Repo targets are normalized to the canonical remote-URL key so admin
+    // writes collide with the client's resolution path and event remote_urls.
+    const rawTarget: string = scope === 'org' ? '' : (body.targetId ?? '');
+    const targetId: string = scope === 'repo' ? sanitizeRemoteUrl(rawTarget) : rawTarget;
     if (scope !== 'org' && !targetId) {
       return res.status(400).json({ error: `targetId is required for scope='${scope}'` });
     }
