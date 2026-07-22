@@ -248,4 +248,21 @@ describe('ProjectPickerKeyboardNav', () => {
     fireEvent.keyDown(searchInput, { key: 'Enter' });
     expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
   });
+
+  it('keyboard navigation works without focusing the search input', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    // Fire ArrowDown on the panel (document listener catches it)
+    const panel = screen.getByTestId('project-picker-panel');
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+
+    const row = getProjectRow('apple');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+
+    // Enter on the panel selects the highlighted project
+    fireEvent.keyDown(panel, { key: 'Enter' });
+    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
+  });
 });

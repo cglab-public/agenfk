@@ -397,6 +397,7 @@ export const KanbanBoard: React.FC = () => {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
+  const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
   const [newProjectName, setNewProjectName] = useState('');
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
@@ -717,6 +718,34 @@ export const KanbanBoard: React.FC = () => {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [selectedProjectId, isPickerOpen, isCreatingProject]);
 
+  // Keyboard navigation in the project picker — works anywhere when the picker
+  // is open (first-load screen or overlay), so you don't need to focus the
+  // search box first. Skips when creating a new project so Enter stays free.
+  // Computes the sorted+filtered list inline to avoid depending on a variable
+  // that is defined after the early-return loading check.
+  useEffect(() => {
+    const pickerVisible = selectedProjectId === null || isPickerOpen;
+    if (!pickerVisible || isCreatingProject) return;
+    const filtered = [...(projects ?? [])]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => Math.min(prev + 1, filtered.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => prev > 0 ? prev - 1 : 0);
+      } else if (e.key === 'Enter') {
+        if (highlightedProjectIndex >= 0 && highlightedProjectIndex < filtered.length) {
+          handleSelectProject(filtered[highlightedProjectIndex].id);
+        }
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, projects, projectSearch, highlightedProjectIndex]);
+
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];
 
@@ -1018,7 +1047,10 @@ export const KanbanBoard: React.FC = () => {
                 <input
                   type="text"
                   value={projectSearch}
-                  onChange={(e) => setProjectSearch(e.target.value)}
+                  onChange={(e) => {
+                    setProjectSearch(e.target.value);
+                    setHighlightedProjectIndex(-1);
+                  }}
                   placeholder="Search projects..."
                   aria-label="Search projects"
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
@@ -1027,10 +1059,15 @@ export const KanbanBoard: React.FC = () => {
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
                     <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
-                    sortedFilteredProjects.map(p => (
+                    sortedFilteredProjects.map((p, index) => (
                     <div
                       key={p.id}
-                      className="flex items-center gap-3 p-4 rounded-xl border border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-all group"
+                      aria-selected={index === highlightedProjectIndex ? 'true' : 'false'}
+                      className={`flex items-center gap-3 p-4 rounded-xl border transition-all group ${
+                        index === highlightedProjectIndex
+                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
+                          : 'border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
+                      }`}
                     >
                       {confirmDeleteProjectId === p.id ? (
                         <>
