@@ -7,7 +7,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
-import { io } from 'socket.io-client';
 
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
@@ -264,5 +263,63 @@ describe('ProjectPickerKeyboardNav', () => {
     // Enter on the panel selects the highlighted project
     fireEvent.keyDown(panel, { key: 'Enter' });
     expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
+  });
+
+  it('Enter does not select a project while creating a new project', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    // Open the create-new-project form
+    fireEvent.click(screen.getByText('Create New Project'));
+    const nameInput = screen.getByPlaceholderText('e.g. My Awesome App');
+    fireEvent.change(nameInput, { target: { value: 'My New Project' } });
+
+    // Press Enter while the name input is focused — picker should NOT select
+    fireEvent.keyDown(nameInput, { key: 'Enter' });
+
+    // No project was selected via picker (the create mutation may fire, but
+    // localStorage must not have been written by handleSelectProject)
+    expect(localStorage.getItem('agenfk_project_id')).toBeNull();
+  });
+
+  it('shrink-then-Enter selects the correct filtered project', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    const searchInput = screen.getByLabelText('Search projects');
+
+    // ArrowDown x3: apple → Mango → Zebra (last, index 2)
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+
+    const zebraRow = getProjectRow('Zebra');
+    expect(zebraRow?.getAttribute('aria-selected')).toBe('true');
+
+    // Type a filter that narrows to only "Mango" — resets highlight to -1
+    fireEvent.change(searchInput, { target: { value: 'man' } });
+    await waitFor(() => {
+      expect(screen.queryByText('Zebra')).toBeNull();
+      expect(screen.queryByText('apple')).toBeNull();
+    });
+
+    // ArrowDown once: highlights Mango (only filtered result, index 0)
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+    const mangoRow = getProjectRow('Mango');
+    expect(mangoRow?.getAttribute('aria-selected')).toBe('true');
+
+    // Enter selects Mango
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+    expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
+  });
+
+  it('Enter with no highlight is a no-op', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    // Press Enter without any arrow key — no item highlighted
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBeNull();
   });
 });

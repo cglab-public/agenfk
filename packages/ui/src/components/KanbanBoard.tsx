@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence, LayoutGroup, useAnimation } from 'framer-motion';
 import { api } from '../api';
@@ -694,6 +694,7 @@ export const KanbanBoard: React.FC = () => {
     setNavPath([]);
     setIsPickerOpen(false);
     setIsCreatingProject(false);
+    setHighlightedProjectIndex(-1);
     capture('project_switched');
   };
 
@@ -701,6 +702,7 @@ export const KanbanBoard: React.FC = () => {
     setIsPickerOpen(false);
     setIsCreatingProject(false);
     setProjectSearch('');
+    setHighlightedProjectIndex(-1);
   };
 
   // Dismiss the picker overlay with Escape — only when a project is already
@@ -718,33 +720,37 @@ export const KanbanBoard: React.FC = () => {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [selectedProjectId, isPickerOpen, isCreatingProject]);
 
+  // Single source of truth for the sorted+filtered project list.
+  // Placed before the early-return so hook order is always stable.
+  const sortedFilteredProjects = useMemo(
+    () => [...(projects ?? [])]
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase())),
+    [projects, projectSearch]
+  );
+
   // Keyboard navigation in the project picker — works anywhere when the picker
   // is open (first-load screen or overlay), so you don't need to focus the
   // search box first. Skips when creating a new project so Enter stays free.
-  // Computes the sorted+filtered list inline to avoid depending on a variable
-  // that is defined after the early-return loading check.
   useEffect(() => {
     const pickerVisible = selectedProjectId === null || isPickerOpen;
     if (!pickerVisible || isCreatingProject) return;
-    const filtered = [...(projects ?? [])]
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-      .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => Math.min(prev + 1, filtered.length - 1));
+        setHighlightedProjectIndex(prev => Math.min(prev + 1, sortedFilteredProjects.length - 1));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setHighlightedProjectIndex(prev => prev > 0 ? prev - 1 : 0);
       } else if (e.key === 'Enter') {
-        if (highlightedProjectIndex >= 0 && highlightedProjectIndex < filtered.length) {
-          handleSelectProject(filtered[highlightedProjectIndex].id);
+        if (highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length) {
+          handleSelectProject(sortedFilteredProjects[highlightedProjectIndex].id);
         }
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject, projects, projectSearch, highlightedProjectIndex]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex]);
 
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];
@@ -1021,9 +1027,6 @@ export const KanbanBoard: React.FC = () => {
   }
 
   // Project Selection Screen
-  const sortedFilteredProjects = [...(projects ?? [])]
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-    .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
 
   const projectPickerCard = (
         <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
@@ -1053,15 +1056,18 @@ export const KanbanBoard: React.FC = () => {
                   }}
                   placeholder="Search projects..."
                   aria-label="Search projects"
+                  aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
                 />
-                <div className="grid gap-2 max-h-72 overflow-y-auto">
+                <div className="grid gap-2 max-h-72 overflow-y-auto" role="listbox" aria-label="Projects">
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
                     <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
                     sortedFilteredProjects.map((p, index) => (
                     <div
                       key={p.id}
+                      role="option"
+                      id={`project-option-${p.id}`}
                       aria-selected={index === highlightedProjectIndex ? 'true' : 'false'}
                       className={`flex items-center gap-3 p-4 rounded-xl border transition-all group ${
                         index === highlightedProjectIndex
