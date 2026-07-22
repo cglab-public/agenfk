@@ -375,6 +375,26 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE flow_assignments DROP CONSTRAINT IF EXISTS flow_assignments_pkey");
     await adapter.exec("ALTER TABLE flow_assignments ADD PRIMARY KEY (org_id, scope, target_id)");
   }
+
+  // Repo-axis migration (parity with SQLite): synthesize scope='repo'
+  // assignments from legacy scope='project' rows, mapping each local projectId
+  // to its latest event remote_url. Idempotent via ON CONFLICT DO NOTHING;
+  // legacy project rows are kept for back-compat.
+  const projRows = await adapter.all<{ org_id: string; target_id: string; flow_id: string }>(
+    "SELECT org_id, target_id, flow_id FROM flow_assignments WHERE scope = 'project'",
+  );
+  for (const p of projRows) {
+    const latest = await adapter.get<{ remote_url: string }>(
+      "SELECT remote_url FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url <> '' ORDER BY occurred_at DESC LIMIT 1",
+      [p.org_id, p.target_id],
+    );
+    if (latest?.remote_url) {
+      await adapter.run(
+        "INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES (?, 'repo', ?, ?) ON CONFLICT (org_id, scope, target_id) DO NOTHING",
+        [p.org_id, sanitizeRemoteUrl(latest.remote_url), p.flow_id],
+      );
+    }
+  }
 }
 
 export async function openPgDb(connectionString: string): Promise<HubDb> {

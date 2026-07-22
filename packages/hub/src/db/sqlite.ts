@@ -356,6 +356,29 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     raw.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
   }
 
+  // Repo-axis migration: synthesize scope='repo' assignments from legacy
+  // scope='project' rows, mapping each local projectId to its latest event
+  // remote_url (the globally-shared repo identity). Idempotent via INSERT OR
+  // IGNORE on the (org_id, scope, target_id) PK; legacy project rows are kept
+  // for back-compat with un-upgraded clients.
+  {
+    const projRows = raw.prepare(
+      "SELECT org_id, target_id, flow_id FROM flow_assignments WHERE scope = 'project'",
+    ).all() as Array<{ org_id: string; target_id: string; flow_id: string }>;
+    if (projRows.length > 0) {
+      const latestRemote = raw.prepare(
+        "SELECT remote_url FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url != '' ORDER BY occurred_at DESC LIMIT 1",
+      );
+      const insertRepo = raw.prepare(
+        "INSERT OR IGNORE INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES (?, 'repo', ?, ?)",
+      );
+      for (const p of projRows) {
+        const row = latestRemote.get(p.org_id, p.target_id) as { remote_url: string } | undefined;
+        if (row?.remote_url) insertRepo.run(p.org_id, sanitizeRemoteUrl(row.remote_url), p.flow_id);
+      }
+    }
+  }
+
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
