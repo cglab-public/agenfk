@@ -400,6 +400,7 @@ export const KanbanBoard: React.FC = () => {
   const [newProjectName, setNewProjectName] = useState('');
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
 
   const togglePin = () => {
     setIsPinned(prev => {
@@ -690,8 +691,31 @@ export const KanbanBoard: React.FC = () => {
     setSelectedProjectId(id);
     localStorage.setItem('agenfk_project_id', id);
     setNavPath([]);
+    setIsPickerOpen(false);
+    setIsCreatingProject(false);
     capture('project_switched');
   };
+
+  const closePicker = () => {
+    setIsPickerOpen(false);
+    setIsCreatingProject(false);
+    setProjectSearch('');
+  };
+
+  // Dismiss the picker overlay with Escape — only when a project is already
+  // selected (there is a board to return to). First load stays open.
+  useEffect(() => {
+    if (!selectedProjectId || (!isPickerOpen && !isCreatingProject)) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsPickerOpen(false);
+        setIsCreatingProject(false);
+        setProjectSearch('');
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject]);
 
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];
@@ -968,15 +992,21 @@ export const KanbanBoard: React.FC = () => {
   }
 
   // Project Selection Screen
-  if (!selectedProjectId || isCreatingProject) {
-    const sortedFilteredProjects = [...(projects ?? [])]
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
-      .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
+  const sortedFilteredProjects = [...(projects ?? [])]
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+    .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
 
-    return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
-        <Logo size={64} className="mb-8" />
-        <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+  const projectPickerCard = (
+        <div data-testid="project-picker-panel" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+          {selectedProjectId && (
+            <button
+              aria-label="Close project picker"
+              onClick={closePicker}
+              className="absolute right-4 top-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <X size={18} />
+            </button>
+          )}
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Welcome to AgEnFK</h2>
           <p className="text-slate-500 dark:text-slate-400 mb-8 text-sm">Select an existing project or create a new one to get started.</p>
           
@@ -1085,6 +1115,14 @@ export const KanbanBoard: React.FC = () => {
             )}
           </div>
         </div>
+  );
+
+  // First load / no project chosen yet: full-screen, not dismissable (no close button).
+  if (!selectedProjectId) {
+    return (
+      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
+        <Logo size={64} className="mb-8" />
+        {projectPickerCard}
       </div>
     );
   }
@@ -1132,7 +1170,7 @@ export const KanbanBoard: React.FC = () => {
                   Project: <span className="text-indigo-600 dark:text-indigo-400">{activeProject?.name || 'Loading...'}</span>
                 </p>
                 <button
-                  onClick={() => setSelectedProjectId(null)}
+                  onClick={() => setIsPickerOpen(true)}
                   className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-indigo-600 transition-colors"
                   title="Switch Project"
                 >
@@ -1676,6 +1714,15 @@ export const KanbanBoard: React.FC = () => {
       )}
 
       {/* v8 ignore start */}
+      {(isPickerOpen || isCreatingProject) && (
+        <div
+          data-testid="project-picker-backdrop"
+          onClick={(e) => { if (e.target === e.currentTarget) closePicker(); }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-6"
+        >
+          {projectPickerCard}
+        </div>
+      )}
       {isJiraImportOpen && selectedProjectId && (
         <JiraImportModal
           open={isJiraImportOpen}
