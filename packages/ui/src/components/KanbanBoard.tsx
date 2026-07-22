@@ -515,6 +515,7 @@ export const KanbanBoard: React.FC = () => {
   const [searchMatches, setSearchMatches] = useState<AgEnFKItem[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
   const [isBlockedCollapsed, setIsBlockedCollapsed] = useState(true);
@@ -751,6 +752,13 @@ export const KanbanBoard: React.FC = () => {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex]);
+
+  // Auto-focus the project-picker search input when the picker opens
+  useEffect(() => {
+    const pickerVisible = selectedProjectId === null || isPickerOpen;
+    if (!pickerVisible || isCreatingProject) return;
+    searchInputRef.current?.focus();
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, projects]);
 
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];
@@ -1033,7 +1041,6 @@ export const KanbanBoard: React.FC = () => {
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
-              autoFocus
               onClick={closePicker}
               className="absolute right-4 top-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
@@ -1054,6 +1061,7 @@ export const KanbanBoard: React.FC = () => {
                     setProjectSearch(e.target.value);
                     setHighlightedProjectIndex(-1);
                   }}
+                  ref={searchInputRef}
                   placeholder="Search projects..."
                   aria-label="Search projects"
                   aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
