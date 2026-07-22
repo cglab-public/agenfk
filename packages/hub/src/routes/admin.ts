@@ -206,6 +206,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     created_at: string;
     updated_at: string;
     created_by_user_id: string | null;
+    org_available?: number | boolean;
   }
 
   const presentFlow = (r: FlowRow) => ({
@@ -217,6 +218,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     definition: JSON.parse(r.definition_json),
+    orgAvailable: !!r.org_available,
   });
 
   // Validate that a flow definition body has the minimal shape we expect.
@@ -334,6 +336,20 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [req.params.id]);
     res.json(presentFlow(row!));
+  });
+
+  router.put('/flows/:id/availability', guard, async (req: Request, res: Response) => {
+    const existing = await ctx.db.get<FlowRow>(
+      'SELECT id FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (!existing) return res.status(404).json({ error: 'Flow not found' });
+    const available = req.body?.available === true;
+    await ctx.db.run(
+      'UPDATE flows SET org_available = ? WHERE id = ? AND org_id = ?',
+      [available ? 1 : 0, req.params.id, req.session!.orgId],
+    );
+    res.json({ id: req.params.id, orgAvailable: available });
   });
 
   router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
@@ -559,6 +575,9 @@ export function adminRouter(ctx: HubServerContext): Router {
          VALUES (?, ?, ?, ?, ?)`,
         [orgId, scope, targetId, flowId, req.session!.userId ?? null],
       );
+      if (scope === 'org') {
+        await ctx.db.run('UPDATE flows SET org_available = ? WHERE id = ? AND org_id = ?', [1, flowId, orgId]);
+      }
     });
     res.json({ scope, targetId: targetId || null, flowId });
   });
