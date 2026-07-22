@@ -76,4 +76,45 @@ describe('OrgFlowPicker', () => {
     fireEvent.click(await screen.findByTestId('select-org-flow-flow-tdd'));
     await waitFor(() => expect(api.selectOrgFlow).toHaveBeenCalledWith('p1', 'flow-tdd'));
   });
+
+  // FIX 5a — mutation error shows banner and does NOT close
+  it('shows mutation error banner and does not call onClose on select failure', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: FLOWS, defaultFlowId: 'flow-default', hubEnabled: true });
+    vi.mocked(api.selectOrgFlow).mockRejectedValue({ response: { data: { error: 'Hub unreachable' } } });
+    const onClose = vi.fn();
+    render(<OrgFlowPicker open onClose={onClose} projectId="p1" />, { wrapper: wrapper(makeQueryClient()) });
+    fireEvent.click(await screen.findByTestId('select-org-flow-flow-tdd'));
+    await waitFor(() => {
+      const banner = screen.getByTestId('org-flow-select-error');
+      expect(banner).toBeInTheDocument();
+      expect(banner).toHaveTextContent('Hub unreachable');
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // FIX 5b — successful select calls onClose
+  it('calls onClose on successful select', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: FLOWS, defaultFlowId: 'flow-default', hubEnabled: true });
+    vi.mocked(api.selectOrgFlow).mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(<OrgFlowPicker open onClose={onClose} projectId="p1" />, { wrapper: wrapper(makeQueryClient()) });
+    fireEvent.click(await screen.findByTestId('select-org-flow-flow-tdd'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  // FIX 5c — active flow button is disabled
+  it('disables the select button for the currently active flow', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: FLOWS, defaultFlowId: 'flow-default', hubEnabled: true });
+    render(<OrgFlowPicker open onClose={() => {}} projectId="p1" activeFlowId="flow-tdd" />, { wrapper: wrapper(makeQueryClient()) });
+    const btn = await screen.findByTestId('select-org-flow-flow-tdd');
+    expect(btn).toBeDisabled();
+  });
+
+  // FIX 5d — load error surfaces server message
+  it('surfaces server error detail on load failure', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockRejectedValue({ response: { data: { error: 'Hub returned 403' } } });
+    render(<OrgFlowPicker open onClose={() => {}} projectId="p1" />, { wrapper: wrapper(makeQueryClient()) });
+    const loadError = await screen.findByTestId('org-flow-load-error');
+    expect(loadError).toHaveTextContent('Hub returned 403');
+  });
 });
