@@ -51,6 +51,19 @@ async function markAvailable(app: any, cookie: string, flowId: string) {
     .send({ available: true });
 }
 
+async function seedProjectOwnership(app: any, ctx: any, orgId: string, installationId: string, projectId: string) {
+  const seedKey = await issueApiKey(ctx.db, orgId, 'seed-' + installationId);
+  return supertest(app).post('/v1/events').set('Authorization', `Bearer ${seedKey}`).send({
+    events: [{
+      eventId: 'e-' + Math.random().toString(36).slice(2),
+      installationId, orgId,
+      occurredAt: '2026-05-03T10:00:00Z',
+      actor: { osUser: 'x', gitName: 'X', gitEmail: 'x@x' },
+      type: 'item.created', projectId, itemId: 'i1', payload: {},
+    }],
+  });
+}
+
 describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   let app: any;
   let ctx: any;
@@ -86,9 +99,10 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await createPasswordUser(ctx.db, 'org-b', 'admin-b@x', 'longenough1', 'admin');
     cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
 
-    // api keys (no installation needed)
-    token = await issueApiKey(ctx.db, 'org-a', 'client');
-    tokenB = await issueApiKey(ctx.db, 'org-b', 'clientB');
+    await ctx.db.run("INSERT INTO installations (id, org_id, first_seen, last_seen) VALUES (?, ?, datetime('now'), datetime('now'))", ['inst-a', 'org-a']);
+    await ctx.db.run("INSERT INTO installations (id, org_id, first_seen, last_seen) VALUES (?, ?, datetime('now'), datetime('now'))", ['inst-b', 'org-b']);
+    token = await issueApiKey(ctx.db, 'org-a', 'client', { installationId: 'inst-a' });
+    tokenB = await issueApiKey(ctx.db, 'org-b', 'clientB', { installationId: 'inst-b' });
   });
 
   afterEach(async () => { await ctx.db.close(); cleanup(); });
@@ -219,6 +233,47 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ projectId: 'proj-1', flowId: flowA });
     expect(r.status).toBe(404);
+  });
+
+  it('selection requires an installation-bound api key', async () => {
+    const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
+    const noInst = await issueApiKey(ctx.db, 'org-a', 'noinst'); // no installation
+    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${noInst}`)
+      .send({ projectId: 'proj-x', flowId: A });
+    expect(r.status).toBe(403);
+  });
+
+  it('rejects selecting for a project owned by another installation', async () => {
+    const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
+    await seedProjectOwnership(app, ctx, 'org-a', 'inst-other', 'owned-elsewhere');
+    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+      .send({ projectId: 'owned-elsewhere', flowId: A });
+    expect(r.status).toBe(403);
+  });
+
+  it('allows selecting for a project owned by the caller installation', async () => {
+    const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
+    await seedProjectOwnership(app, ctx, 'org-a', 'inst-a', 'mine');
+    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+      .send({ projectId: 'mine', flowId: A });
+    expect(r.status).toBe(200);
+    const active = await supertest(app).get('/v1/flows/active?projectId=mine').set('Authorization', `Bearer ${token}`);
+    expect(active.body.flow.id).toBe(A);
+  });
+
+  it('rejects a non-string flowId', async () => {
+    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+      .send({ projectId: 'p1', flowId: 123 });
+    expect(r.status).toBe(400);
+  });
+
+  it('a second selection overwrites the first', async () => {
+    const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
+    const B = await seedFlow(app, cookie, 'B'); await markAvailable(app, cookie, B);
+    await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: A });
+    await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: B });
+    const active = await supertest(app).get('/v1/flows/active?projectId=p2').set('Authorization', `Bearer ${token}`);
+    expect(active.body.flow.id).toBe(B);
   });
 
   it('clearing selection with flowId:null removes the project assignment', async () => {

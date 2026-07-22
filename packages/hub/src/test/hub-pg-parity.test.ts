@@ -361,3 +361,38 @@ describe('PG parity: flow availability', () => {
     expect(list.body.find((x: any) => x.id === f.id).orgAvailable).toBe(true);
   });
 });
+
+describe('PG parity: flows available + selection', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const def = (name: string) => ({
+    name, description: '',
+    steps: [
+      { id: 's0', name: 'todo', label: 'Todo', order: 0, isAnchor: true },
+      { id: 's1', name: 'work', label: 'Work', order: 1 },
+      { id: 's2', name: 'done', label: 'Done', order: 2, isAnchor: true },
+    ],
+  });
+
+  it('available lists org-available flows and selection writes a project assignment on PG', async () => {
+    const f = (await supertest(fx.app).post('/v1/admin/flows').set('Cookie', fx.cookie).send({ definition: def('PgF') })).body;
+    await supertest(fx.app).put(`/v1/admin/flows/${f.id}/availability`).set('Cookie', fx.cookie).send({ available: true });
+
+    // installation-bound key for selection
+    await fx.db.run("INSERT INTO installations (id, org_id, first_seen, last_seen) VALUES ('inst-pg','org', now(), now())");
+    const instToken = await issueApiKey(fx.db, 'org', 'pg-client', { installationId: 'inst-pg' });
+
+    const avail = await supertest(fx.app).get('/v1/flows/available').set('Authorization', `Bearer ${instToken}`);
+    expect(avail.status).toBe(200);
+    expect(avail.body.flows.map((x: any) => x.id)).toContain(f.id);
+
+    const sel = await supertest(fx.app).put('/v1/flows/selection').set('Authorization', `Bearer ${instToken}`)
+      .send({ projectId: 'pg-proj', flowId: f.id });
+    expect(sel.status).toBe(200);
+    const active = await supertest(fx.app).get('/v1/flows/active?projectId=pg-proj').set('Authorization', `Bearer ${instToken}`);
+    expect(active.body.flow.id).toBe(f.id);
+    expect(active.body.scope).toBe('project');
+  });
+});
