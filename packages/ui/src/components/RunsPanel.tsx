@@ -66,10 +66,13 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
   // index.html (a string), which would blow up runs.map / runs.find below.
   const runs = Array.isArray(runsData) ? runsData : [];
 
-  // Default selection: the most recent run (list is ordered oldest→newest).
+  // Follow the newest run: select it initially and auto-advance whenever a new
+  // run appears (e.g. when the next phase like IN_PROGRESS starts), so the panel
+  // tracks the live phase instead of staying pinned to the first run.
+  const newestRunId = runs.length ? runs[runs.length - 1].id : null;
   React.useEffect(() => {
-    if (!selectedRunId && runs.length) setSelectedRunId(runs[runs.length - 1].id);
-  }, [runs, selectedRunId]);
+    if (newestRunId) setSelectedRunId(newestRunId);
+  }, [newestRunId]);
 
   const { data: eventsData } = useQuery<RunEvent[]>({
     queryKey: ['run-events', selectedRunId],
@@ -148,7 +151,7 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
             <span className={
               'font-mono text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ' +
               (selected.status === 'running'
-                ? 'text-indigo-600 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-900/30'
+                ? 'text-indigo-600 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-900/30 animate-pulse'
                 : 'text-emerald-600 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/30')
             }>
               {selected.status === 'running' ? '● LIVE' : ('● ' + (selected.verdict || selected.status.toUpperCase()))}
@@ -158,11 +161,13 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
         <div ref={logRef} className="flex-1 overflow-y-auto p-3" data-testid="runs-transcript">
           {events.map((ev, i) => {
             const lane = LANE[ev.lane] || LANE.worker;
-            // Identity caption: worker shows "<harness> · <model>" from the run
-            // (omitting the separator when the model is unknown); other lanes
-            // show their role label.
-            const who = ev.lane === 'worker'
-              ? [selected?.harness ?? 'pi', prettyModel(selected?.model)].filter(Boolean).join(' · ')
+            // Identity caption: for the lane that matches this run's own actor
+            // (the agent that ran it — pi worker, or the reviewer/orchestrator),
+            // show "<harness> · <model>" from the run (omitting the separator
+            // when the model is unknown). Cross-lane events (e.g. the
+            // orchestrator's dispatch inside a worker run) show their role label.
+            const who = ev.lane === selected?.actor
+              ? [selected?.harness, prettyModel(selected?.model)].filter(Boolean).join(' · ')
               : lane.label;
             const isLast = i === events.length - 1;
             return (

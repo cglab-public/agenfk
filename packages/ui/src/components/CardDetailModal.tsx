@@ -9,9 +9,11 @@ import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { io } from 'socket.io-client';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
+import { API_URL } from '../apiUrl';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 
 interface CardDetailModalProps {
@@ -33,12 +35,28 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const isNew = !item.id;
   // Agent runs drive the conditional "Runs" tab — only shown when orchestration
   // actually recorded runs for this item.
+  const queryClient = useQueryClient();
   const { data: agentRunsData } = useQuery<AgentRun[]>({
     queryKey: ['agent-runs', item.id],
     queryFn: () => api.listAgentRuns(item.id),
     enabled: !!item.id,
   });
   const agentRuns = Array.isArray(agentRunsData) ? agentRunsData : [];
+
+  // Live: the "Runs" tab is conditional on runs existing, so refresh the run
+  // list when the server pushes run events — the tab then appears without a
+  // manual dashboard refresh. (RunsPanel does its own streaming once mounted;
+  // this only needs to flip the tab into existence.)
+  React.useEffect(() => {
+    if (!item.id) return;
+    const socket = io(API_URL || undefined);
+    const refresh = (b: { itemId: string }) => {
+      if (b?.itemId === item.id) queryClient.invalidateQueries({ queryKey: ['agent-runs', item.id] });
+    };
+    socket.on('run:event', refresh);
+    socket.on('run:updated', refresh);
+    return () => { socket.disconnect(); };
+  }, [item.id, queryClient]);
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -376,10 +394,6 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 )}
                 {!isNew && !isEditing && (
                   <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
-                    <div className="flex items-center gap-1.5">
-                      <Clock size={14} />
-                      <span>Status: <span className="font-semibold text-indigo-600 dark:text-indigo-400">{item.status}</span></span>
-                    </div>
                     <div className="flex items-center gap-1.5">
                       <Calendar size={14} />
                       <span>Created: {new Date(item.createdAt).toLocaleString()}</span>

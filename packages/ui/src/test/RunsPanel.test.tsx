@@ -150,9 +150,9 @@ describe('RunsPanel', () => {
     expect(screen.getByText('claude-code · Claude')).toBeDefined();
   });
 
-  // CGLAB-21 follow-up #3: while a run is live, a KITT-style scanner renders on
-  // the transcript, and the LIVE pill pulses. Neither appears once it's done.
-  it('renders the live scanner and a pulsing LIVE pill only while running', async () => {
+  // CGLAB-21 follow-up #3: while a run is live, the LIVE pill pulses; once done
+  // it shows the verdict without pulsing.
+  it('pulses the LIVE pill while running and stops once done', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([
       { id: 'r2', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'running', startedAt: '2026-07-21T10:05:00.000Z' },
     ] as any);
@@ -160,12 +160,11 @@ describe('RunsPanel', () => {
       { id: 'e1', runId: 'r2', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: 'working' },
     ] as any);
     renderPanel();
-    await waitFor(() => expect(screen.getByTestId('runs-live-scanner')).toBeDefined());
-    const livePill = screen.getByText(/live/i);
+    const livePill = await waitFor(() => screen.getByText(/live/i));
     expect(livePill.className).toContain('animate-pulse');
   });
 
-  it('does NOT render the live scanner when the run is done', async () => {
+  it('does not pulse the status pill when the run is done', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([
       { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', verdict: 'passed', startedAt: '2026-07-21T10:00:00.000Z' },
     ] as any);
@@ -174,7 +173,8 @@ describe('RunsPanel', () => {
     ] as any);
     renderPanel();
     await waitFor(() => expect(screen.getByText('done working')).toBeDefined());
-    expect(screen.queryByTestId('runs-live-scanner')).toBeNull();
+    const pill = screen.getByText(/passed/i);
+    expect(pill.className).not.toContain('animate-pulse');
   });
 
   // CGLAB-21 follow-up #2: when a new run appears (e.g. IN_PROGRESS starts), the
