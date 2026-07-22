@@ -60,11 +60,18 @@ export function resolveSourcePath(pattern: string, opts: ResolveOpts = {}): stri
     candidates = next;
   }
 
-  const files = candidates.filter((c) => {
-    try { return fs.statSync(c).isFile(); } catch { return false; }
-  });
-  if (files.length === 0) return undefined;
+  const stated = candidates
+    .map((c) => {
+      try {
+        const st = fs.statSync(c);
+        return st.isFile() ? { path: c, mtimeMs: st.mtimeMs } : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { path: string; mtimeMs: number } => x !== null);
+  if (stated.length === 0) return undefined;
 
-  files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return files[0];
+  stated.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return stated[0].path;
 }
