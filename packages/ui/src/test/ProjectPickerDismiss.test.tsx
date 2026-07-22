@@ -96,7 +96,7 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
   </QueryClientProvider>
 );
 
-function makeProject(id, name) { return { id, name, createdAt: new Date(), updatedAt: new Date() }; }
+function makeProject(id: string, name: string) { return { id, name, createdAt: new Date(), updatedAt: new Date() }; }
 
 describe('ProjectPickerDismiss', () => {
   beforeEach(() => {
