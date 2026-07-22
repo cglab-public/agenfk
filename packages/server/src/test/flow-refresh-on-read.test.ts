@@ -127,9 +127,10 @@ describe('refreshProjectFlowFromHub', () => {
     await storage.createProject({ id: 'p1', name: 'p1', description: '', flowId: 'local-existing', createdAt: new Date(), updatedAt: new Date() } as any);
 
     const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    // Resolves (never throws) with an 'error' reconcile outcome; local state below stays intact.
     await expect(refreshProjectFlowFromHub({
       storage, hubEnabled: true, hubConfig, projectId: 'p1', fetchImpl, emit, etagCache,
-    })).resolves.toBeUndefined();
+    })).resolves.toMatchObject({ outcome: 'error' });
 
     // Local flow and binding untouched — the read will fall back to this.
     const proj = await storage.getProject('p1');
@@ -140,9 +141,10 @@ describe('refreshProjectFlowFromHub', () => {
   it('falls back silently on an HTTP error status (401)', async () => {
     await storage.createProject({ id: 'p1', name: 'p1', description: '', createdAt: new Date(), updatedAt: new Date() } as any);
     const fetchImpl = makeFetchSequence([{ status: 401, body: { error: 'revoked' } }]);
+    // Resolves (never throws) with an 'error' reconcile outcome; no flow is created.
     await expect(refreshProjectFlowFromHub({
       storage, hubEnabled: true, hubConfig, projectId: 'p1', fetchImpl, emit, etagCache,
-    })).resolves.toBeUndefined();
+    })).resolves.toMatchObject({ outcome: 'error' });
     expect((await storage.listFlows())).toHaveLength(0);
   });
 

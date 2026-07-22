@@ -29,6 +29,10 @@ const hubSteps = [
   { id: 'h3', name: 'SHIPPED', label: 'Shipped', order: 2, isAnchor: true },
 ];
 
+// Mutable per-test controls for the stub responses
+let selectionStatus = 200;
+let activeMode: 'ok' | 'error' = 'ok';
+
 // Fake hub: respond correctly to /v1/flows/available, /v1/flows/selection,
 // /v1/flows/active, and return a benign 204 for everything else.
 function stubHubFetch() {
@@ -56,17 +60,19 @@ function stubHubFetch() {
 
     if (urlString.includes('/v1/flows/selection')) {
       return {
-        status: 200, ok: true,
+        status: selectionStatus, ok: selectionStatus < 400,
         headers: { get: () => null },
-        json: async () => ({
-          projectId: 'ignored',
-          flowId: 'hub-remote-1',
-          scope: 'project',
-        }),
+        json: async () =>
+          selectionStatus < 400
+            ? { projectId: 'x', flowId: 'hub-remote-1', scope: 'project' }
+            : { error: 'nope' },
       } as any;
     }
 
     if (urlString.includes('/v1/flows/active')) {
+      if (activeMode === 'error') {
+        return { status: 500, ok: false, headers: { get: () => null }, json: async () => ({}) } as any;
+      }
       return {
         status: 200, ok: true,
         headers: { get: (k: string) => (k.toLowerCase() === 'etag' ? 'W/"hub-1"' : null) },
@@ -105,6 +111,8 @@ describe('org-flow routes (hub enabled)', () => {
   });
 
   beforeEach(async () => {
+    selectionStatus = 200;
+    activeMode = 'ok';
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
     stubHubFetch(); // resetMocks clears the impl between tests; re-stub
@@ -147,5 +155,55 @@ describe('org-flow routes (hub enabled)', () => {
       .post(`/projects/${project.id}/flow/select-org`)
       .send({});
     expect(r.status).toBe(400);
+  });
+
+  it('migrates in-flight cards when the selected flow changes step names', async () => {
+    // project on a LOCAL flow whose steps differ from the hub flow (BACKLOG/DOING/SHIPPED)
+    const local = (await request(app).post('/flows').send({ name: 'LocalFlow', steps: [
+      { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
+      { id: 'l2', name: 'DOING', label: 'Doing', order: 1 },
+      { id: 'l3', name: 'DONE', label: 'Done', order: 2, isAnchor: true },
+    ] })).body;
+    const project = (await request(app).post('/projects').send({ name: 'pm' })).body;
+    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    // seed an item on a status that does NOT exist in the hub flow's steps
+    await request(app).post('/items').send({ type: 'TASK', title: 't', projectId: project.id });
+
+    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    expect(r.status).toBe(200);
+    expect(r.body.name).toBe('Hub Managed Flow');
+    // every item must now be on a status that exists in the hub flow's steps
+    const items = (await request(app).get(`/items?projectId=${project.id}`)).body;
+    const validStatuses = ['BACKLOG', 'DOING', 'SHIPPED'];
+    for (const it of items) expect(validStatuses).toContain(it.status);
+  });
+
+  it('clearing the selection (flowId null) unbinds the project locally', async () => {
+    const local = (await request(app).post('/flows').send({ name: 'LocalOnly', steps: [
+      { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
+      { id: 'l2', name: 'DONE', label: 'Done', order: 1, isAnchor: true },
+    ] })).body;
+    const project = (await request(app).post('/projects').send({ name: 'pc' })).body;
+    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
+    expect(r.status).toBe(200);
+    // project no longer bound to the local flow -> plain flow read returns the built-in default
+    const flow = (await request(app).get(`/projects/${project.id}/flow`)).body;
+    expect(flow.name).not.toBe('LocalOnly');
+  });
+
+  it('returns 502 when the hub selection succeeds but the local reconcile fails', async () => {
+    activeMode = 'error'; // /v1/flows/active returns 500 during reconcile
+    const project = (await request(app).post('/projects').send({ name: 'pf' })).body;
+    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    expect(r.status).toBe(502);
+    expect(r.body.reconciled).toBe(false);
+  });
+
+  it('passes through a hub 401 as 401 (re-auth needed, not 502)', async () => {
+    selectionStatus = 401;
+    const project = (await request(app).post('/projects').send({ name: 'p401' })).body;
+    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    expect(r.status).toBe(401);
   });
 });

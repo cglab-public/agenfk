@@ -908,6 +908,9 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     return res.status(400).json({ error: "Hub is not configured; cannot select an org flow" });
   }
   const { url, token } = hubClient.hubConfig;
+  const oldFlowId = (project as any).flowId ?? null;
+
+  // 1) Write the selection to the hub.
   let sel: any;
   try {
     sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
@@ -921,11 +924,23 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
   if (!sel.ok) {
     let msg = `Hub returned ${sel.status}`;
     try { const b = await sel.json(); if (b?.error) msg = b.error; } catch { /* ignore */ }
-    const status = (sel.status === 400 || sel.status === 403 || sel.status === 404) ? sel.status : 502;
+    const status = (sel.status === 400 || sel.status === 401 || sel.status === 403 || sel.status === 404) ? sel.status : 502;
     return res.status(status).json({ error: msg });
   }
-  // Reconcile now so the local flow + project binding update immediately.
-  await refreshProjectFlowFromHub({
+
+  // 2) Clear path: unbind locally (reconcile never unbinds).
+  if (!flowId) {
+    if (oldFlowId) await storage.updateProject(req.params.id, { flowId: undefined });
+    io.emit("flow:updated", { projectId: req.params.id, flowId: null });
+    io.emit("items_updated");
+    return res.json(DEFAULT_FLOW);
+  }
+
+  // 3) Reconcile the selected flow into local storage. Bust the per-project
+  // ETag first so we always get a fresh 200 (not a stale 304) right after a
+  // selection change.
+  flowSyncEtagCache.delete(req.params.id);
+  const outcome = await refreshProjectFlowFromHub({
     storage: storage as SQLiteStorageProvider,
     hubEnabled: hubClient.isEnabled,
     hubConfig: hubClient.hubConfig,
@@ -934,10 +949,31 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     emit: (event: string, payload: any) => io.emit(event, payload),
     etagCache: flowSyncEtagCache,
   });
+  if (!outcome || (outcome.outcome !== "updated" && outcome.outcome !== "not-modified")) {
+    return res.status(502).json({
+      error: "Selection saved on the hub but the local flow reconcile failed; try again.",
+      reconciled: false,
+    });
+  }
+
+  // 4) Migrate in-flight cards off now-invalid statuses (same as POST /projects/:id/flow).
   const updated = await storage.getProject(req.params.id);
+  const newFlowId = (updated as any)?.flowId ?? null;
   const flows = await storage.listFlows();
-  const activeFlow = (updated as any)?.flowId ? getActiveFlow((updated as any).flowId, flows) : DEFAULT_FLOW;
-  io.emit("flow:updated", { projectId: req.params.id, flowId: (updated as any)?.flowId ?? null });
+  if (newFlowId && newFlowId !== oldFlowId) {
+    const items = await storage.listItems({ projectId: req.params.id });
+    const newFlow = getActiveFlow(newFlowId, flows);
+    const oldFlow = oldFlowId ? (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW : DEFAULT_FLOW;
+    const migrationPlan = migrateCardsToFlow(items, oldFlow, newFlow);
+    for (const plan of migrationPlan) {
+      if (plan.oldStatus !== plan.newStatus) {
+        await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
+      }
+    }
+  }
+  const activeFlow = newFlowId ? getActiveFlow(newFlowId, flows) : DEFAULT_FLOW;
+  io.emit("flow:updated", { projectId: req.params.id, flowId: newFlowId });
+  io.emit("items_updated");
   res.json(activeFlow);
 }));
 
