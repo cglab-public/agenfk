@@ -32,9 +32,9 @@ export interface RunEvent {
 }
 
 const LANE = {
-  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-indigo-500/80', tag: 'text-indigo-600 dark:text-indigo-300' },
-  worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/80', tag: 'text-amber-600 dark:text-amber-300' },
-  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/80', tag: 'text-teal-600 dark:text-teal-300' },
+  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-indigo-500/60', tag: 'text-indigo-600 dark:text-indigo-300' },
+  worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
+  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/60', tag: 'text-teal-600 dark:text-teal-300' },
 } as const;
 
 function fmtTokens(n?: number): string {
