@@ -25,6 +25,7 @@ import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
+import { OrgFlowPicker } from './OrgFlowPicker';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
@@ -419,6 +420,7 @@ export const KanbanBoard: React.FC = () => {
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
+  const [isOrgFlowPickerOpen, setIsOrgFlowPickerOpen] = useState(false);
 
   const { data: versionData } = useQuery({
     queryKey: ['version'],
@@ -1337,6 +1339,18 @@ export const KanbanBoard: React.FC = () => {
                 </button>
               )}
 
+              {selectedProjectId && (
+                <button
+                  data-testid="org-flows-btn"
+                  onClick={() => setIsOrgFlowPickerOpen(true)}
+                  title="Org Flows"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                >
+                  <Briefcase size={14} />
+                  <span className="hidden xl:inline">Org Flows</span>
+                </button>
+              )}
+
               <button
                 onClick={toggleTheme}
                 className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-indigo-500 transition-all"
@@ -1799,6 +1813,15 @@ export const KanbanBoard: React.FC = () => {
         <FlowEditorModal
           isOpen={isFlowEditorOpen}
           onClose={() => setIsFlowEditorOpen(false)}
+          projectId={selectedProjectId}
+          activeFlowId={activeFlow?.id}
+        />
+      )}
+
+      {isOrgFlowPickerOpen && selectedProjectId && (
+        <OrgFlowPicker
+          open={isOrgFlowPickerOpen}
+          onClose={() => setIsOrgFlowPickerOpen(false)}
           projectId={selectedProjectId}
           activeFlowId={activeFlow?.id}
         />
