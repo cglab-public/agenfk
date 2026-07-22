@@ -122,7 +122,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
-    { id: 'runs', label: 'Runs', icon: <Zap size={14} />, badge: agentRuns.length, hidden: isNew || !agentRuns.length },
+    { id: 'runs', label: 'Agent Runs', icon: <Zap size={14} />, badge: agentRuns.length, hidden: isNew || !agentRuns.length },
   ].filter(t => !t.hidden);
 
   // Auto-switch tab if current is hidden (e.g. after item change)
