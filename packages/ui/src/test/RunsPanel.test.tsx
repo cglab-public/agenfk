@@ -66,6 +66,27 @@ describe('RunsPanel', () => {
     expect(api.listRunEvents).toHaveBeenCalledWith('r2');
   });
 
+  // CGLAB-21: each transcript event shows an identity caption — worker events
+  // show "<harness> · <pretty model>" (e.g. "pi · Qwen"), orchestrator events
+  // show "orchestrator".
+  it('renders per-event identity captions (harness · model for worker, role for orchestrator)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r2', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'running', startedAt: '2026-07-21T10:05:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r2', seq: 0, ts: 't', lane: 'orchestrator', kind: 'dispatch', text: 'implement it' },
+      { id: 'e2', runId: 'r2', seq: 1, ts: 't', lane: 'worker', kind: 'tool', tool: 'bash', text: 'npx vitest' },
+    ] as any);
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('npx vitest')).toBeDefined());
+    // Worker caption: harness + prettified model (qwen3.6:27b -> Qwen)
+    expect(screen.getByText('pi · Qwen')).toBeDefined();
+    // Orchestrator caption
+    expect(screen.getByText('orchestrator')).toBeDefined();
+  });
+
   // CGLAB-20: the un-proxied /agent-runs route served the SPA index.html, so
   // axios handed back an HTML string. RunsPanel must degrade to an empty state
   // rather than throw "a.map is not a function" and white-screen the whole app.
