@@ -3717,6 +3717,55 @@ flowCommand
   });
 
 flowCommand
+  .command('browse-org')
+  .description('List org-available flows published from the hub')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/flows/org-available`);
+      if (program.opts().toon || options.json) {
+        console.log(structuredOutput(data));
+        return;
+      }
+      if (data.hubEnabled === false) {
+        console.log(chalk.yellow('Hub is not configured; no org-available flows.'));
+        return;
+      }
+      const flows = data.flows || [];
+      if (flows.length === 0) {
+        console.log(chalk.yellow('No org-available flows.'));
+        return;
+      }
+      console.table(flows.map((f: any) => ({
+        ID: f.id.substring(0, 8),
+        Name: f.name,
+        Default: f.id === data.defaultFlowId ? '★' : '',
+      })));
+    } catch (error: any) {
+      console.error(chalk.red('Error browsing org flows:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
+  .command('use-org <flowId>')
+  .description('Select an org-available flow for the current project (writes the selection to the hub)')
+  .option('--project <projectId>', 'Project ID (defaults to current project)')
+  .action(async (flowId, options) => {
+    try {
+      const projectId = options.project || findProjectId(process.cwd());
+      if (!projectId) {
+        console.error(chalk.red('Error: Project ID is required. Use --project <id> or initialize with agenfk init.'));
+        process.exit(1);
+        return;
+      }
+      await axios.post(`${API_URL}/projects/${projectId}/flow/select-org`, { flowId });
+      console.log(chalk.green(`Org flow ${flowId} selected for project ${projectId}.`));
+    } catch (error: any) {
+      console.error(chalk.red('Error selecting org flow:'), error.response?.data?.error || error.message);
+    }
+  });
+
+flowCommand
   .command('delete <id>')
   .description('Delete a flow (MCP fallback: delete_flow)')
   .option('-y, --yes', 'Skip the confirmation prompt')
