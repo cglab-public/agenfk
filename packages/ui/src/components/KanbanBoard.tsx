@@ -754,11 +754,12 @@ export const KanbanBoard: React.FC = () => {
   }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex]);
 
   // Auto-focus the project-picker search input when the picker opens
+  const pickerHasProjects = projects != null && projects.length > 0;
   useEffect(() => {
     const pickerVisible = selectedProjectId === null || isPickerOpen;
     if (!pickerVisible || isCreatingProject) return;
     searchInputRef.current?.focus();
-  }, [selectedProjectId, isPickerOpen, isCreatingProject, projects]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, pickerHasProjects]);
 
   const getItemsByStatus = (status: Status) => {
     if (!items) return [];

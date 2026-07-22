@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -121,5 +121,15 @@ describe('ProjectPickerAutoFocus', () => {
 
     const searchInput = screen.getByLabelText('Search projects');
     expect(searchInput).toHaveFocus();
+  });
+
+  it('auto-focuses the search input when re-opening the picker for an already-selected project', async () => {
+    const projects = [makeProject('p1','One'), makeProject('p2','Two')];
+    vi.mocked(api.listProjects).mockResolvedValue(projects);
+    localStorage.setItem('agenfk_project_id','p1');
+    renderKanbanBoard();
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => expect(screen.getByLabelText('Search projects')).toHaveFocus());
   });
 });
