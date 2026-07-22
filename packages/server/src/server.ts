@@ -211,6 +211,17 @@ async function warmProjectRemote(projectId: string): Promise<void> {
   }
 }
 
+// Resolve a project's raw git remote URL for the repo-keyed hub queries,
+// warming the cache on a miss. Returns null when the project has no remote
+// (empty cache sentinel) so callers fall back to the legacy projectId key.
+async function resolveProjectRepo(projectId: string): Promise<string | null> {
+  if (!projectRemoteCache.has(projectId)) {
+    await warmProjectRemote(projectId);
+  }
+  const cached = projectRemoteCache.get(projectId);
+  return cached && cached.length > 0 ? cached : null;
+}
+
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
 // <dbDir>/logs/<itemId>/<testId>.log. The HTTP response, comment, and tests[]
@@ -498,6 +509,7 @@ const initStorage = async () => {
       intervalMs,
       etagCache: flowSyncEtagCache,
       emit: (event, payload) => io.emit(event, payload),
+      resolveRepo: resolveProjectRepo,
     });
     console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
 
@@ -863,6 +875,7 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
       hubEnabled: hubClient.isEnabled,
       hubConfig: hubClient.hubConfig,
       projectId: req.params.id,
+      remoteUrl: await resolveProjectRepo(req.params.id),
       fetchImpl: globalThis.fetch as any,
       emit: (event, payload) => io.emit(event, payload),
       etagCache: flowSyncEtagCache,
@@ -910,13 +923,21 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
   const { url, token } = hubClient.hubConfig;
   const oldFlowId = (project as any).flowId ?? null;
 
+  // The hub keys selections on the global repo (remote URL). Resolve this
+  // project's git remote; fall back to the legacy projectId key only when the
+  // project has no remote.
+  const repo = await resolveProjectRepo(req.params.id);
+  const selectionBody = repo
+    ? { repo, flowId: flowId || null }
+    : { projectId: req.params.id, flowId: flowId || null };
+
   // 1) Write the selection to the hub.
   let sel: any;
   try {
     sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ projectId: req.params.id, flowId: flowId || null }),
+      body: JSON.stringify(selectionBody),
     });
   } catch (e: any) {
     return res.status(502).json({ error: `Hub unreachable: ${e?.message ?? "error"}` });
@@ -945,6 +966,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     hubEnabled: hubClient.isEnabled,
     hubConfig: hubClient.hubConfig,
     projectId: req.params.id,
+    remoteUrl: repo,
     fetchImpl: globalThis.fetch as any,
     emit: (event: string, payload: any) => io.emit(event, payload),
     etagCache: flowSyncEtagCache,

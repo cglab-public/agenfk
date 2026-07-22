@@ -20,6 +20,8 @@ export interface RefreshProjectFlowArgs {
   hubEnabled: boolean;
   hubConfig: HubConfig | null | undefined;
   projectId: string;
+  /** Raw git remote URL for the project; when present the hub is queried by repo. */
+  remoteUrl?: string | null;
   fetchImpl: FetchLike;
   emit: (event: string, payload: any) => void;
   /** Shared with the polling reconciler so ETags aren't fetched twice. */
@@ -39,6 +41,7 @@ export async function refreshProjectFlowFromHub(args: RefreshProjectFlowArgs): P
       storage: args.storage,
       hubConfig: args.hubConfig,
       projectId: args.projectId,
+      remoteUrl: args.remoteUrl ?? null,
       lastEtag,
       fetchImpl: args.fetchImpl,
       emit: args.emit,
