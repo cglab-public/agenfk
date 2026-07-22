@@ -14,6 +14,24 @@ export const api = {
       throw e;
     }
   },
+  listAgentRuns: async (itemId: string) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);
+      return data;
+    } catch (e) {
+      console.error(`API Error listing agent runs for ${itemId}:`, e);
+      throw e;
+    }
+  },
+  listRunEvents: async (runId: string) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/agent-runs/${runId}/events`);
+      return data;
+    } catch (e) {
+      console.error(`API Error listing run events for ${runId}:`, e);
+      throw e;
+    }
+  },
   createProject: async (project: { name: string; description?: string }) => {
     try {
       const { data } = await axios.post(`${API_URL}/projects`, project);

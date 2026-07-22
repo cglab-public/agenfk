@@ -64,6 +64,49 @@ export interface IngestionState {
   lastRunAt: string;
 }
 
+// ── Agent Runs: orchestrated worker transcripts per item ────────────────────
+
+export type RunActor = 'orchestrator' | 'worker' | 'reviewer';
+export type RunStatus = 'running' | 'done' | 'failed';
+
+export interface AgentRun {
+  id: string;
+  itemId: string;
+  projectId?: string;
+  step: string;                 // flow step the run served (e.g. CREATE_UNIT_TESTS)
+  actor: RunActor;              // primary lane for the run
+  harness: string;              // e.g. "pi", "claude-code"
+  model: string;                // e.g. "qwen3.6:27b"
+  sessionId?: string;           // worker session id (pi --session-id)
+  sourcePath?: string;          // absolute path of the worker session JSONL (for tailing)
+  status: RunStatus;
+  verdict?: string;             // orchestrator verdict on the hand-off
+  startedAt: string;            // ISO
+  endedAt?: string;             // ISO
+}
+
+export type RunEventKind = 'dispatch' | 'think' | 'tool' | 'result' | 'diff' | 'verdict' | 'note';
+
+export interface RunEvent {
+  id: string;
+  runId: string;
+  seq: number;                  // monotonic order within the run
+  ts: string;                   // ISO
+  lane: RunActor;
+  kind: RunEventKind;
+  tool?: string;                // for kind==='tool': read|bash|write|edit…
+  text?: string;                // human-readable text
+  payload?: string;             // JSON blob for structured extras (args, diff, etc.)
+  tokens?: number;              // optional per-event token count
+}
+
+export interface AgentRunQuery {
+  itemId?: string;
+  projectId?: string;
+  status?: RunStatus;
+  limit?: number;
+}
+
 // ── Observability: PR sizing (agent-declared, server-shadowed) ──────────────
 
 export interface PrSizing {

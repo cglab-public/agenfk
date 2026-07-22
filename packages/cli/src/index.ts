@@ -2891,6 +2891,105 @@ program
     }
   });
 
+const run = program
+  .command('run')
+  .description('Record orchestrated agent-run transcripts (the live "Runs" panel source)');
+
+run
+  .command('start')
+  .description('Register a run when dispatching a worker; prints the run (capture its id)')
+  .requiredOption('--item <id>', 'AgEnFK item the run serves')
+  .requiredOption('--step <name>', 'Flow step the run serves (e.g. CREATE_UNIT_TESTS)')
+  .option('--project <id>', 'Project id')
+  .option('--actor <a>', 'orchestrator | worker | reviewer (default worker)')
+  .option('--harness <h>', 'Worker harness (default pi)')
+  .option('--model <m>', 'Worker model id (e.g. qwen3.6:27b)')
+  .option('--session <id>', 'Worker session id (pi --session-id)')
+  .option('--source <path>', 'Absolute path of the worker session JSONL (for live tailing)')
+  .action(async (o) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/agent-runs`, {
+        itemId: o.item, step: o.step, projectId: o.project, actor: o.actor,
+        harness: o.harness, model: o.model, sessionId: o.session, sourcePath: o.source,
+      });
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error starting run:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+run
+  .command('event')
+  .description('Append a transcript event to a run (streamed live to the UI)')
+  .requiredOption('--run <id>', 'Run id from `run start`')
+  .requiredOption('--kind <k>', 'dispatch | think | tool | result | diff | verdict | note')
+  .option('--lane <a>', 'orchestrator | worker | reviewer')
+  .option('--tool <t>', 'Tool name (for kind=tool): read | bash | write | edit')
+  .option('--text <t>', 'Human-readable event text')
+  .option('--payload <json>', 'JSON string with structured extras')
+  .option('--tokens <n>', 'Token count for this event', (v) => parseInt(v, 10))
+  .action(async (o) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/agent-runs/${o.run}/events`, {
+        kind: o.kind, lane: o.lane, tool: o.tool, text: o.text, payload: o.payload, tokens: o.tokens,
+      });
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error appending run event:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+run
+  .command('end')
+  .description('Mark a run finished with a verdict')
+  .requiredOption('--run <id>', 'Run id')
+  .option('--status <s>', 'done | failed (default done)', 'done')
+  .option('--verdict <v>', 'Orchestrator verdict, e.g. APPROVED')
+  .action(async (o) => {
+    try {
+      const { data } = await axios.patch(`${API_URL}/agent-runs/${o.run}`, {
+        status: o.status, verdict: o.verdict,
+      });
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error ending run:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+run
+  .command('source')
+  .description("Attach or correct a run's worker session source path (accepts an absolute path or a ~/glob keyed on the session id)")
+  .requiredOption('--run <id>', 'Run id')
+  .requiredOption('--source <path>', 'Absolute path or ~/glob pattern of the worker session JSONL')
+  .action(async (o) => {
+    try {
+      const { data } = await axios.patch(`${API_URL}/agent-runs/${o.run}`, {
+        sourcePath: o.source,
+      });
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error updating run source:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+run
+  .command('list')
+  .description('List agent runs for an item')
+  .requiredOption('--item <id>', 'AgEnFK item id')
+  .action(async (o) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${o.item}/agent-runs`);
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error listing runs:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
 program
   .command('log-test <id>')
   .description('Log a test result for an item (MCP fallback: log_test_result)')

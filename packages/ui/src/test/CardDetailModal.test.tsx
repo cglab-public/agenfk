@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -34,7 +34,20 @@ vi.mock('../api', () => ({
     getItem: vi.fn(() => Promise.resolve({})),
     updateItem: vi.fn(() => Promise.resolve({})),
     listItems: vi.fn(() => Promise.resolve([])),
+    listAgentRuns: vi.fn(() => Promise.resolve([])),
+    listRunEvents: vi.fn(() => Promise.resolve([])),
   }
+}));
+
+// Capturing socket mock so tests can drive server-push events.
+const socketHandlers: Record<string, (...args: any[]) => void> = {};
+vi.mock('socket.io-client', () => ({
+  io: vi.fn(() => ({
+    on: (ev: string, cb: (...args: any[]) => void) => { socketHandlers[ev] = cb; },
+    off: vi.fn(),
+    emit: vi.fn(),
+    disconnect: vi.fn(),
+  })),
 }));
 
 const queryClient = new QueryClient({
@@ -69,6 +82,7 @@ describe('CardDetailModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queryClient.clear();
+    for (const k of Object.keys(socketHandlers)) delete socketHandlers[k];
   });
 
   afterEach(() => {
@@ -554,5 +568,62 @@ describe('CardDetailModal', () => {
     fireEvent.click(copyButton);
 
     expect(writeText).toHaveBeenCalledWith(mockItem.id);
+  });
+
+  // CGLAB-21 follow-up #1: the Runs tab is conditional on agent runs existing.
+  // A server-pushed run:event must make it appear live, without a manual refresh.
+  it('reveals the Runs tab live when a run:event socket arrives', async () => {
+    (api.getItem as any).mockResolvedValue(mockItem);
+    vi.mocked(api.listAgentRuns).mockResolvedValue([] as any);
+
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    );
+
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    // No runs yet → no Runs tab.
+    expect(screen.queryByRole('button', { name: /Runs/i })).toBeNull();
+
+    // A run gets recorded; the server pushes a run:event for this item.
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'running', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    await act(async () => {
+      socketHandlers['run:event']?.({ itemId: 'i1', runId: 'r1', event: {} });
+    });
+
+    // Tab appears without any manual refetch.
+    await waitFor(() => expect(screen.getByRole('button', { name: /Runs/i })).toBeDefined());
+  });
+
+  // CGLAB-21 follow-up #5: status is shown once (the header chip). The old
+  // "Status: …" line under the title in Overview must be gone.
+  it('shows the workflow status only once (header chip, not under the title)', async () => {
+    (api.getItem as any).mockResolvedValue(mockItem);
+    render(
+      <CardDetailModal
+        item={mockItem as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    );
+
+    await waitFor(() => expect(screen.getByText('Test Story')).toBeDefined());
+    // The status value (TODO) appears exactly once — the header chip.
+    expect(screen.getAllByText('TODO')).toHaveLength(1);
+    // The old under-title "Status:" line is gone.
+    expect(screen.queryByText(/^Status:/)).toBeNull();
   });
 });

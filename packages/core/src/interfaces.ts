@@ -10,6 +10,9 @@ import {
   IngestionState,
   Pr,
   PrSizing,
+  AgentRun,
+  RunEvent,
+  AgentRunQuery,
 } from './types';
 
 export interface PluginConfig {
@@ -66,6 +69,15 @@ export interface StorageProvider extends AgEnFKPlugin {
   queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]>;
   getIngestionState(sourcePath: string): Promise<IngestionState | null>;
   setIngestionState(state: IngestionState): Promise<void>;
+
+  // Observability — agent runs (orchestrated worker transcripts per item)
+  createAgentRun(run: AgentRun): Promise<AgentRun>;
+  updateAgentRun(id: string, updates: Partial<AgentRun>): Promise<AgentRun>;
+  getAgentRun(id: string): Promise<AgentRun | null>;
+  listAgentRuns(query: AgentRunQuery): Promise<AgentRun[]>;
+  getAgentRunBySession(sessionId: string): Promise<AgentRun | null>;
+  appendRunEvent(event: RunEvent): Promise<void>;
+  listRunEvents(runId: string): Promise<RunEvent[]>;
 
   // Observability — PR sizing (agent-declared)
   insertPr(pr: Pr): Promise<Pr>;
