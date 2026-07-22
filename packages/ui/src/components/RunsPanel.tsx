@@ -41,13 +41,15 @@ function fmtTokens(n?: number): string {
   return typeof n === 'number' ? n.toLocaleString('en-US') : '';
 }
 
-// Short, human display name for a model id: strip any provider path, take the
-// leading alphabetic family and title-case it. "qwen3.6:27b" -> "Qwen",
-// "claude-opus-4-8" -> "Claude".
+// Short, human display name for a model id: the first meaningful alphabetic
+// family token (>=3 letters, so version bits like "v1"/"27b" are skipped),
+// title-cased. "qwen3.6:27b" -> "Qwen", "claude-opus-4-8" -> "Claude",
+// "3.5-sonnet" -> "Sonnet". Falls back to the raw id if no such token exists,
+// so it never emits a meaningless single letter.
 function prettyModel(model?: string): string {
   if (!model) return '';
-  const afterProvider = model.includes('/') ? model.split('/').pop()! : model;
-  const family = afterProvider.match(/^[a-zA-Z]+/)?.[0] ?? afterProvider;
+  const family = model.match(/[a-zA-Z]{3,}/)?.[0];
+  if (!family) return model;
   return family.charAt(0).toUpperCase() + family.slice(1);
 }
 
@@ -154,22 +156,25 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
           )}
         </div>
         <div ref={logRef} className="flex-1 overflow-y-auto p-3" data-testid="runs-transcript">
-          {events.map(ev => {
+          {events.map((ev, i) => {
             const lane = LANE[ev.lane] || LANE.worker;
-            // Identity caption: worker shows "<harness> · <model>" from the run;
-            // other lanes show their role label.
+            // Identity caption: worker shows "<harness> · <model>" from the run
+            // (omitting the separator when the model is unknown); other lanes
+            // show their role label.
             const who = ev.lane === 'worker'
-              ? `${selected?.harness ?? 'pi'} · ${prettyModel(selected?.model)}`
+              ? [selected?.harness ?? 'pi', prettyModel(selected?.model)].filter(Boolean).join(' · ')
               : lane.label;
+            const isLast = i === events.length - 1;
             return (
               // The left gutter's border-r forms a faint, continuous timeline
-              // rail; each row stretches so the rail connects across events.
+              // rail; each row stretches so the rail connects across events. The
+              // last row omits the bottom padding so the rail ends at the event.
               <div key={ev.id} className="flex gap-3">
-                <div className="flex flex-col items-start shrink-0 w-20 pr-3 border-r border-slate-200/70 dark:border-slate-700/50">
+                <div className="flex flex-col items-start shrink-0 w-24 pr-3 border-r border-slate-200/70 dark:border-slate-700/50">
                   <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold text-white ' + lane.avatar}>{lane.ini}</span>
-                  <span className={'mt-1 font-mono text-[10px] leading-tight break-all ' + lane.tag}>{who}</span>
+                  <span className={'mt-1 font-mono text-[10px] leading-tight break-words ' + lane.tag}>{who}</span>
                 </div>
-                <div className="min-w-0 flex-1 pb-4">
+                <div className={'min-w-0 flex-1 ' + (isLast ? '' : 'pb-4')}>
                   <span className={
                     'font-mono text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ' +
                     'bg-slate-100 dark:bg-slate-800 ' + lane.tag

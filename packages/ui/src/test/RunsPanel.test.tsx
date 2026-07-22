@@ -87,6 +87,20 @@ describe('RunsPanel', () => {
     expect(screen.getByText('orchestrator')).toBeDefined();
   });
 
+  it('omits the separator in the worker caption when the model is unknown', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r3', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: '', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r3', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: 'no model set' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => screen.getByText('no model set'));
+    // Caption is just the harness, with no trailing "· "
+    expect(screen.getByText('pi')).toBeDefined();
+    expect(screen.queryByText(/pi ·\s*$/)).toBeNull();
+  });
+
   // CGLAB-20: the un-proxied /agent-runs route served the SPA index.html, so
   // axios handed back an HTML string. RunsPanel must degrade to an empty state
   // rather than throw "a.map is not a function" and white-screen the whole app.
