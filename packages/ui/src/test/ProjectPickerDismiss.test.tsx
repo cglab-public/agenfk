@@ -179,4 +179,30 @@ describe('ProjectPickerDismiss', () => {
     fireEvent.click(screen.getByTestId('project-picker-panel'));
     expect(screen.getByText(/Welcome to AgEnFK/i)).toBeDefined();
   });
+
+  it('dismiss restores the SAME previously-opened project', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('p1','Alpha'), makeProject('p2','Beta')]);
+    localStorage.setItem('agenfk_project_id','p1');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => screen.getByText(/Welcome to AgEnFK/i));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByText(/Welcome to AgEnFK/i)).toBeNull());
+    // The board header must show the restored project's name.
+    expect(screen.getByText('Alpha')).toBeDefined();
+  });
+
+  it('can open the create-project form from the overlay', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('p1','Alpha')]);
+    localStorage.setItem('agenfk_project_id','p1');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => screen.getByText(/Create New Project/i));
+    fireEvent.click(screen.getByText(/Create New Project/i));
+    // Create form appears inside the still-open overlay.
+    expect(screen.getByPlaceholderText(/My Awesome App/i)).toBeDefined();
+    expect(screen.getByText(/Project Name/i)).toBeDefined();
+  });
 });

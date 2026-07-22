@@ -997,10 +997,11 @@ export const KanbanBoard: React.FC = () => {
     .filter(p => p.name.toLowerCase().includes(projectSearch.toLowerCase()));
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
+              autoFocus
               onClick={closePicker}
               className="absolute right-4 top-4 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
