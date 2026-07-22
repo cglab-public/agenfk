@@ -65,4 +65,27 @@ describe('RunsPanel', () => {
     // listRunEvents was queried for the latest run
     expect(api.listRunEvents).toHaveBeenCalledWith('r2');
   });
+
+  // CGLAB-20: the un-proxied /agent-runs route served the SPA index.html, so
+  // axios handed back an HTML string. RunsPanel must degrade to an empty state
+  // rather than throw "a.map is not a function" and white-screen the whole app.
+  const HTML_STRING = '<!doctype html><html><body><div id="root"></div></body></html>';
+
+  it('does not throw when the runs endpoint returns a non-array (renders empty state)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue(HTML_STRING as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(/no agent runs recorded/i)).toBeDefined());
+  });
+
+  it('does not throw when the events endpoint returns a non-array (renders "No events yet.")', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'CREATE_UNIT_TESTS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue(HTML_STRING as any);
+    renderPanel();
+    // Run list renders (we got past the runs array)...
+    await waitFor(() => expect(screen.getByText('CREATE_UNIT_TESTS')).toBeDefined());
+    // ...and the transcript degrades gracefully instead of crashing on events.map
+    await waitFor(() => expect(screen.getByText(/no events yet/i)).toBeDefined());
+  });
 });

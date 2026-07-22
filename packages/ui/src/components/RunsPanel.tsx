@@ -46,30 +46,35 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null);
   const logRef = React.useRef<HTMLDivElement>(null);
 
-  const { data: runs = [] } = useQuery<AgentRun[]>({
+  const { data: runsData } = useQuery<AgentRun[]>({
     queryKey: ['agent-runs', itemId],
     queryFn: () => api.listAgentRuns(itemId),
   });
+  // Never trust the response shape: a mis-proxied route can return the SPA
+  // index.html (a string), which would blow up runs.map / runs.find below.
+  const runs = Array.isArray(runsData) ? runsData : [];
 
   // Default selection: the most recent run (list is ordered oldest→newest).
   React.useEffect(() => {
     if (!selectedRunId && runs.length) setSelectedRunId(runs[runs.length - 1].id);
   }, [runs, selectedRunId]);
 
-  const { data: events = [] } = useQuery<RunEvent[]>({
+  const { data: eventsData } = useQuery<RunEvent[]>({
     queryKey: ['run-events', selectedRunId],
     queryFn: () => api.listRunEvents(selectedRunId as string),
     enabled: !!selectedRunId,
   });
+  const events = Array.isArray(eventsData) ? eventsData : [];
 
   // Live: append streamed events into the cache; refresh the run list on updates.
   React.useEffect(() => {
     const socket = io(API_URL || undefined);
     socket.on('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
       if (b.itemId !== itemId) return;
-      queryClient.setQueryData<RunEvent[]>(['run-events', b.runId], (old = []) =>
-        old.some(e => e.seq === b.event.seq) ? old : [...old, b.event].sort((a, z) => a.seq - z.seq),
-      );
+      queryClient.setQueryData<RunEvent[]>(['run-events', b.runId], (old) => {
+        const prev = Array.isArray(old) ? old : [];
+        return prev.some(e => e.seq === b.event.seq) ? prev : [...prev, b.event].sort((a, z) => a.seq - z.seq);
+      });
       queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
     });
     socket.on('run:updated', (b: { itemId: string }) => {

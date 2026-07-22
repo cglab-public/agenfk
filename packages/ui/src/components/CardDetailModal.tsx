@@ -33,11 +33,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const isNew = !item.id;
   // Agent runs drive the conditional "Runs" tab — only shown when orchestration
   // actually recorded runs for this item.
-  const { data: agentRuns = [] } = useQuery<AgentRun[]>({
+  const { data: agentRunsData } = useQuery<AgentRun[]>({
     queryKey: ['agent-runs', item.id],
     queryFn: () => api.listAgentRuns(item.id),
     enabled: !!item.id,
   });
+  const agentRuns = Array.isArray(agentRunsData) ? agentRunsData : [];
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);

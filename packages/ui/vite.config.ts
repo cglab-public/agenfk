@@ -22,7 +22,7 @@ const allowedHosts = (process.env.AGENFK_UI_ALLOWED_HOSTS || '')
   .map(host => host.trim())
   .filter(Boolean)
 const proxy = {
-  '^/(api|version|db|backup|projects|flows|prs|token-events|registry|items|internal|jira|github|releases)(/|\\?|$)': {
+  '^/(api|version|db|backup|projects|flows|prs|token-events|registry|items|internal|jira|github|releases|agent-runs)(/|\\?|$)': {
     target: apiProxyTarget,
     changeOrigin: true,
   },
