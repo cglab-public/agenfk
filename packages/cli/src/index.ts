@@ -2960,6 +2960,23 @@ run
   });
 
 run
+  .command('source')
+  .description("Attach or correct a run's worker session source path (accepts an absolute path or a ~/glob keyed on the session id)")
+  .requiredOption('--run <id>', 'Run id')
+  .requiredOption('--source <path>', 'Absolute path or ~/glob pattern of the worker session JSONL')
+  .action(async (o) => {
+    try {
+      const { data } = await axios.patch(`${API_URL}/agent-runs/${o.run}`, {
+        sourcePath: o.source,
+      });
+      console.log(structuredOutput(data));
+    } catch (error: any) {
+      console.error(chalk.red('Error updating run source:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+run
   .command('list')
   .description('List agent runs for an item')
   .requiredOption('--item <id>', 'AgEnFK item id')

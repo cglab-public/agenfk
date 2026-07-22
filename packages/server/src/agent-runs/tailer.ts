@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import type { StorageProvider, RunEvent } from '@agenfk/core';
 import { parsePiSessionJsonl } from './pi-parser';
+import { resolveSourcePath } from './resolveSource';
 
 export interface RunEventBroadcast {
   itemId: string;
@@ -18,8 +19,9 @@ export interface RunEventBroadcast {
 }
 
 export interface TailDeps {
-  readFile?: (path: string) => string;   // injectable for tests
-  now?: () => string;                     // injectable for tests
+  readFile?: (path: string) => string;                    // injectable for tests
+  now?: () => string;                                     // injectable for tests
+  resolveSource?: (pattern: string) => string | undefined; // injectable for tests
 }
 
 /**
@@ -33,13 +35,16 @@ export async function tailRunsOnce(
 ): Promise<RunEvent[]> {
   const readFile = deps.readFile ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const now = deps.now ?? (() => new Date().toISOString());
+  const resolveSource = deps.resolveSource ?? ((p: string) => resolveSourcePath(p));
   const appended: RunEvent[] = [];
 
   const runs = await storage.listAgentRuns({ status: 'running' });
   for (const run of runs) {
     if (!run.sourcePath) continue;
+    const resolved = resolveSource(run.sourcePath);
+    if (!resolved) continue; // pattern matches nothing yet
     let text: string;
-    try { text = readFile(run.sourcePath); } catch { continue; } // file not there yet
+    try { text = readFile(resolved); } catch { continue; } // file not there yet
     const parsed = parsePiSessionJsonl(text);
     // Track parser progress SEPARATELY from the run's total event count — the
     // orchestrator also appends events (dispatch/verdict/note) to the same run
