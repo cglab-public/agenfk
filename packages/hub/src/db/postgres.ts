@@ -2,13 +2,6 @@ import type { HubDb, Params, RunResult } from './types';
 import { toPostgres } from './dialect';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
-// Normalize an occurred_at (SQLite string / PG Date) to comparable millis.
-function tsMillis(v: unknown): number {
-  if (v instanceof Date) return v.getTime();
-  const n = Date.parse(String(v));
-  return Number.isFinite(n) ? n : 0;
-}
-
 // `pg` is loaded lazily so installations that only use SQLite don't pay the
 // require cost. The Pool / Client types are imported from `pg` directly.
 import type { Pool, PoolClient, QueryResult } from 'pg';
@@ -381,40 +374,6 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE flow_assignments ADD COLUMN target_id TEXT NOT NULL DEFAULT ''");
     await adapter.exec("ALTER TABLE flow_assignments DROP CONSTRAINT IF EXISTS flow_assignments_pkey");
     await adapter.exec("ALTER TABLE flow_assignments ADD PRIMARY KEY (org_id, scope, target_id)");
-  }
-
-  // Repo-axis migration (parity with SQLite): synthesize scope='repo'
-  // assignments from legacy scope='project' rows, mapping each local projectId
-  // to its latest event remote_url. Idempotent via ON CONFLICT DO NOTHING;
-  // legacy project rows are kept for back-compat.
-  const projRows = await adapter.all<{ org_id: string; target_id: string; flow_id: string }>(
-    "SELECT org_id, target_id, flow_id FROM flow_assignments WHERE scope = 'project'",
-  );
-  // Collect (repo, flow) candidates and sort by each project's most-recent
-  // event DESC in JS (not a correlated ORDER-BY subquery — pg-mem can't run
-  // that), so a repo collision resolves deterministically to the most-recently-
-  // active clone's flow. ON CONFLICT DO NOTHING keeps the first-inserted row.
-  const candidates: Array<{ orgId: string; projectId: string; repo: string; flowId: string; ts: number }> = [];
-  for (const p of projRows) {
-    const latest = await adapter.get<{ remote_url: string; occurred_at: unknown }>(
-      "SELECT remote_url, occurred_at FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url <> '' ORDER BY occurred_at DESC LIMIT 1",
-      [p.org_id, p.target_id],
-    );
-    if (latest?.remote_url) {
-      candidates.push({ orgId: p.org_id, projectId: p.target_id, repo: sanitizeRemoteUrl(latest.remote_url), flowId: p.flow_id, ts: tsMillis(latest.occurred_at) });
-    }
-  }
-  candidates.sort((a, b) => b.ts - a.ts);
-  for (const c of candidates) {
-    await adapter.run(
-      "INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES (?, 'repo', ?, ?) ON CONFLICT (org_id, scope, target_id) DO NOTHING",
-      [c.orgId, c.repo, c.flowId],
-    );
-    // Sunset the mirrored legacy project row now that the repo row supersedes it.
-    await adapter.run(
-      "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id = ?",
-      [c.orgId, c.projectId],
-    );
   }
 }
 

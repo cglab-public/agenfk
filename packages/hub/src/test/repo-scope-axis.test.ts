@@ -220,23 +220,6 @@ describe('repo-keyed flow axis', () => {
       expect(repoRow.remoteUrl).toBe(CANON);
     });
 
-    it('sunsets a mapped legacy project assignment when a repo assignment is written', async () => {
-      const repoFlow = await seedFlow(app, cookie, 'Repo');
-      // A legacy project row whose projectId maps (via events) to CANON.
-      await ctx.db.run(
-        "INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES ('org-a','project','p-legacy',?)",
-        [repoFlow],
-      );
-      await seedEvent(ctx.db, 'org-a', 'install-1', CANON, 'p-legacy');
-
-      await assign(app, cookie, 'repo', CANON, repoFlow);
-
-      const still = await ctx.db.get(
-        "SELECT 1 AS ok FROM flow_assignments WHERE org_id='org-a' AND scope='project' AND target_id='p-legacy'",
-      );
-      expect(still).toBeFalsy();
-    });
-
     it('GET /v1/admin/projects returns distinct repos seen in events', async () => {
       await seedEvent(ctx.db, 'org-a', 'install-1', CANON, 'p-1');
       await seedEvent(ctx.db, 'org-a', 'install-2', CANON, 'p-2'); // same repo, different local projectId

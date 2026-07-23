@@ -144,19 +144,6 @@ export function flowsRouter(ctx: HubServerContext): Router {
     }
 
     const respKey = scope === 'repo' ? { repo: targetId } : { projectId: targetId };
-    // When writing/clearing a repo assignment, sunset any legacy project rows
-    // that map to the same repo (via events), so a stale per-project row can't
-    // resurrect an old flow after the repo assignment is cleared.
-    const sunsetLegacyProjects = async () => {
-      if (scope !== 'repo') return;
-      await ctx.db.run(
-        `DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id IN (
-           SELECT DISTINCT project_id FROM events
-           WHERE org_id = ? AND remote_url = ? AND project_id IS NOT NULL AND project_id != ''
-         )`,
-        [orgId, orgId, targetId],
-      );
-    };
     const flowId = body.flowId;
     // Clear path.
     if (flowId === null) {
@@ -164,7 +151,6 @@ export function flowsRouter(ctx: HubServerContext): Router {
         'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
         [orgId, scope, targetId],
       );
-      await sunsetLegacyProjects();
       return res.json({ ...respKey, flowId: null, scope });
     }
     if (typeof flowId !== 'string' || !flowId) {
@@ -188,7 +174,6 @@ export function flowsRouter(ctx: HubServerContext): Router {
          VALUES (?, ?, ?, ?, NULL)`,
         [orgId, scope, targetId, flowId],
       );
-      await sunsetLegacyProjects();
     });
     res.json({ ...respKey, flowId, scope });
   });
