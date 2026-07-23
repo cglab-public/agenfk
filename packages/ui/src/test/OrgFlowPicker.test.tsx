@@ -23,7 +23,10 @@ const wrapper =
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
 
-const FLOWS = [
+// Partial flow fixtures — the picker only reads id/name/steps; typed loosely so
+// the mocked getOrgAvailableFlows return (Flow[]) accepts them without the full
+// Flow shape (createdAt/updatedAt).
+const FLOWS: any[] = [
   { id: 'flow-default', name: 'Default Flow', steps: [] },
   { id: 'flow-tdd', name: 'TDD Flow', steps: [] },
 ];
