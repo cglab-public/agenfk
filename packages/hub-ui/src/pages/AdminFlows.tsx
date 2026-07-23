@@ -205,15 +205,23 @@ function AssignmentsPanel({
   const qc = useQueryClient();
   const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
 
+  // Assignment changes can move org_available server-side (setting the org
+  // default forces the flow available), so refresh the flows list too — that's
+  // where orgAvailable lives and what the picker-availability row reads.
+  const invalidateFlowState = () => {
+    qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
+    qc.invalidateQueries({ queryKey: ['admin-flows'] });
+  };
+
   const setOrgDefault = useMutation({
     mutationFn: () => api.put('/v1/admin/flow-assignments', { scope: 'org', flowId: flow.id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] }),
+    onSuccess: invalidateFlowState,
   });
 
   const remove = useMutation({
     mutationFn: ({ scope, targetId }: { scope: string; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: null }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] }),
+    onSuccess: invalidateFlowState,
   });
 
   const addOverride = useMutation({
