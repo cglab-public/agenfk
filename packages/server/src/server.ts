@@ -196,16 +196,17 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
-    const { execSync } = await import('child_process');
-    try {
-      // Timeout: this runs (awaited) on the request path for the first event of
-      // every project — and since events are recorded for ALL installs now, a
-      // git hang (network mount, credential prompt) must not block the event loop.
-      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500 }).toString().trim();
-      projectRemoteCache.set(projectId, out || '');
-    } catch {
-      projectRemoteCache.set(projectId, '');
-    }
+    const { execFile } = await import('child_process');
+    // Async execFile (not execSync): this runs on the request path AND per
+    // project in the flow-sync poller loop; a synchronous git hang (network
+    // mount, credential prompt) would block the whole Node event loop. execFile
+    // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
+    const out = await new Promise<string>((resolve) => {
+      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500 }, (err, stdout) => {
+        resolve(err ? '' : (stdout || '').toString().trim());
+      });
+    });
+    projectRemoteCache.set(projectId, out || '');
   } catch {
     projectRemoteCache.set(projectId, '');
   }
@@ -949,9 +950,22 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     return res.status(status).json({ error: msg });
   }
 
-  // 2) Clear path: unbind locally (reconcile never unbinds).
+  // 2) Clear path: unbind locally (reconcile never unbinds). Migrate in-flight
+  // cards off the old flow's custom statuses to DEFAULT_FLOW first, so items
+  // aren't orphaned on statuses the default flow doesn't have (same as the
+  // bind path below and POST /projects/:id/flow).
   if (!flowId) {
-    if (oldFlowId) await storage.updateProject(req.params.id, { flowId: undefined });
+    if (oldFlowId) {
+      const oldFlow = (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW;
+      const items = await storage.listItems({ projectId: req.params.id });
+      const migrationPlan = migrateCardsToFlow(items, oldFlow, DEFAULT_FLOW);
+      for (const plan of migrationPlan) {
+        if (plan.oldStatus !== plan.newStatus) {
+          await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
+        }
+      }
+      await storage.updateProject(req.params.id, { flowId: undefined });
+    }
     io.emit("flow:updated", { projectId: req.params.id, flowId: null });
     io.emit("items_updated");
     return res.json(DEFAULT_FLOW);

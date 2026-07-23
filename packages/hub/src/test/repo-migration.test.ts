@@ -68,6 +68,30 @@ describe('boot migration: legacy scope=project → scope=repo', () => {
     await out.ctx.db.close();
   });
 
+  it('resolves a repo collision deterministically to the most-recently-active clone flow', async () => {
+    cleanup();
+    let out = await createHubApp({ dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org-a' });
+    // Two local projectIds → same repo, different legacy flows.
+    await out.ctx.db.run("INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES ('org-a','project','p-old','flow-old')");
+    await out.ctx.db.run("INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES ('org-a','project','p-new','flow-new')");
+    // p-new is more recently active.
+    await out.ctx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, remote_url, payload)
+       VALUES ('e-old','org-a','i','u','2026-05-01T10:00:00Z', datetime('now'),'item.created','p-old','git@github.com:acme/web.git','{}')`,
+    );
+    await out.ctx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, project_id, remote_url, payload)
+       VALUES ('e-new','org-a','i','u','2026-06-01T10:00:00Z', datetime('now'),'item.created','p-new','git@github.com:acme/web.git','{}')`,
+    );
+    await out.ctx.db.close();
+    out = await createHubApp({ dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org-a' });
+    const repoRow = await out.ctx.db.get<{ flow_id: string }>(
+      "SELECT flow_id FROM flow_assignments WHERE org_id='org-a' AND scope='repo' AND target_id='git@github.com:acme/web.git'",
+    );
+    expect(repoRow!.flow_id).toBe('flow-new');
+    await out.ctx.db.close();
+  });
+
   it('leaves a legacy project row with no known remote alone', async () => {
     cleanup();
     let out = await createHubApp({ dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org-a' });

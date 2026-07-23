@@ -3,6 +3,13 @@ import * as path from 'path';
 import type { HubDb, Params, RunResult } from './types';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
+// Normalize an occurred_at (SQLite string / PG Date) to comparable millis.
+function tsMillis(v: unknown): number {
+  if (v instanceof Date) return v.getTime();
+  const n = Date.parse(String(v));
+  return Number.isFinite(n) ? n : 0;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 type RawDb = InstanceType<typeof DatabaseSync>;
@@ -367,15 +374,26 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     ).all() as Array<{ org_id: string; target_id: string; flow_id: string }>;
     if (projRows.length > 0) {
       const latestRemote = raw.prepare(
-        "SELECT remote_url FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url != '' ORDER BY occurred_at DESC LIMIT 1",
+        "SELECT remote_url, occurred_at FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url != '' ORDER BY occurred_at DESC LIMIT 1",
       );
       const insertRepo = raw.prepare(
         "INSERT OR IGNORE INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES (?, 'repo', ?, ?)",
       );
-      for (const p of projRows) {
-        const row = latestRemote.get(p.org_id, p.target_id) as { remote_url: string } | undefined;
-        if (row?.remote_url) insertRepo.run(p.org_id, sanitizeRemoteUrl(row.remote_url), p.flow_id);
-      }
+      // Collect (repo, flow) candidates, then sort by the project's most-recent
+      // event DESC in JS so that when several local projectIds collapse onto one
+      // repo, the most-recently-active clone's flow wins deterministically
+      // (INSERT OR IGNORE keeps the first-inserted row). Done in JS rather than a
+      // correlated ORDER-BY subquery for SQLite + pg-mem portability.
+      const candidates = projRows
+        .map((p) => {
+          const row = latestRemote.get(p.org_id, p.target_id) as { remote_url: string; occurred_at: string } | undefined;
+          return row?.remote_url
+            ? { orgId: p.org_id, repo: sanitizeRemoteUrl(row.remote_url), flowId: p.flow_id, ts: tsMillis(row.occurred_at) }
+            : null;
+        })
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .sort((a, b) => b.ts - a.ts);
+      for (const c of candidates) insertRepo.run(c.orgId, c.repo, c.flowId);
     }
   }
 

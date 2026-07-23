@@ -192,6 +192,27 @@ describe('org-flow routes (hub enabled)', () => {
     expect(flow.name).not.toBe('LocalOnly');
   });
 
+  it('clearing the selection migrates in-flight cards off the old flow to the default flow', async () => {
+    // Local flow with a custom status that the built-in DEFAULT_FLOW lacks.
+    const local = (await request(app).post('/flows').send({ name: 'CustomClear', steps: [
+      { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
+      { id: 'l2', name: 'CUSTOMSTAGE', label: 'Custom', order: 1 },
+      { id: 'l3', name: 'DONE', label: 'Done', order: 2, isAnchor: true },
+    ] })).body;
+    const project = (await request(app).post('/projects').send({ name: 'pcmig' })).body;
+    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    // Park an item on the custom status that won't exist after clearing to default.
+    const item = (await request(app).post('/items').send({ type: 'TASK', title: 't', projectId: project.id })).body;
+    await request(app).put(`/items/${item.id}`).send({ status: 'CUSTOMSTAGE' });
+
+    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
+    expect(r.status).toBe(200);
+    // No item may be left orphaned on a status the default flow doesn't define.
+    const defaultStatuses = (r.body.steps as any[]).map((s) => s.name);
+    const items = (await request(app).get(`/items?projectId=${project.id}`)).body;
+    for (const it of items) expect(defaultStatuses).toContain(it.status);
+  });
+
   it('returns 502 when the hub selection succeeds but the local reconcile fails', async () => {
     activeMode = 'error'; // /v1/flows/active returns 500 during reconcile
     const project = (await request(app).post('/projects').send({ name: 'pf' })).body;
