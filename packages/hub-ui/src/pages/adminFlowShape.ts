@@ -18,5 +18,6 @@ export function flattenAdminFlow(row: any): Flow {
     updatedAt: row.updatedAt,
     source: row.source,
     hubVersion: typeof row.version === 'number' ? row.version : undefined,
+    orgAvailable: row.orgAvailable === true,
   };
 }

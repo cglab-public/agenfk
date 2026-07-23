@@ -57,4 +57,21 @@ describe('flattenAdminFlow', () => {
     expect(flat.source).toBe('community');
     expect(flat.steps).toHaveLength(1);
   });
+
+  it('carries orgAvailable through so the picker-availability toggle can render', () => {
+    const base = {
+      id: 'f5', name: 'Avail', source: 'hub', version: 1,
+      definition: { name: 'Avail', steps: [{ id: 's', name: 'x', label: 'X', order: 0 }] },
+    };
+    expect(flattenAdminFlow({ ...base, orgAvailable: true }).orgAvailable).toBe(true);
+    expect(flattenAdminFlow({ ...base, orgAvailable: false }).orgAvailable).toBe(false);
+  });
+
+  it('defaults orgAvailable to false when the field is absent', () => {
+    const flat = flattenAdminFlow({
+      id: 'f6', name: 'NoAvail', source: 'hub', version: 1,
+      definition: { name: 'NoAvail', steps: [{ id: 's', name: 'x', label: 'X', order: 0 }] },
+    });
+    expect(flat.orgAvailable).toBe(false);
+  });
 });

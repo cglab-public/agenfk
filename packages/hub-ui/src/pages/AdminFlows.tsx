@@ -17,6 +17,7 @@ import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
+import { availabilityRowState } from './availabilityRowState';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
@@ -141,6 +142,11 @@ export function AdminFlows() {
                         Org default
                       </span>
                     )}
+                    {f.orgAvailable && !isOrgDefault && (
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+                        Available
+                      </span>
+                    )}
                     {repoCount > 0 && (
                       <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
                         {repoCount} repo{repoCount === 1 ? '' : 's'}
@@ -219,7 +225,15 @@ function AssignmentsPanel({
     },
   });
 
+  const setAvailability = useMutation({
+    mutationFn: (available: boolean) =>
+      api.put(`/v1/admin/flows/${flow.id}/availability`, { available }),
+    // The org-available flag lives on the flows list, not the assignments list.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flows'] }),
+  });
+
   const orgRow = assignments.find(a => a.scope === 'org');
+  const availability = availabilityRowState(flow.orgAvailable === true, !!orgRow);
 
   return (
     <div className="px-4 pb-4 pt-1 bg-slate-50 dark:bg-slate-900/40 border-t border-slate-200 dark:border-slate-800 space-y-3">
@@ -262,6 +276,35 @@ function AssignmentsPanel({
             data-testid="admin-flow-set-org-default"
           >
             Set as org default
+          </button>
+        )}
+      </div>
+
+      {/* Org-availability toggle — controls whether the flow appears in the
+          org-wide flow picker (flows.org_available). Separate from the org
+          default, but the default is always available and locked on here. */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+            Picker
+          </span>
+          <span className="text-xs text-slate-700 dark:text-slate-200">{availability.hint}</span>
+        </div>
+        {availability.locked ? (
+          <span className="text-[11px] text-slate-400 dark:text-slate-500">Locked on</span>
+        ) : (
+          <button
+            onClick={() => setAvailability.mutate(availability.nextAvailable)}
+            disabled={setAvailability.isPending}
+            className={
+              'text-[11px] font-semibold hover:underline ' +
+              (availability.nextAvailable
+                ? 'text-teal-700 dark:text-teal-400'
+                : 'text-rose-600 dark:text-rose-400')
+            }
+            data-testid="admin-flow-toggle-availability"
+          >
+            {availability.actionLabel}
           </button>
         )}
       </div>
