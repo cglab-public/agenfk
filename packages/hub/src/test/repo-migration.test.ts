@@ -39,11 +39,12 @@ describe('boot migration: legacy scope=project → scope=repo', () => {
     expect(repoRow).toBeTruthy();
     expect(repoRow!.target_id).toBe('git@github.com:acme/web.git');
     expect(repoRow!.flow_id).toBe('flow-x');
-    // Legacy project row is retained for back-compat.
+    // The mirrored legacy project row is sunset (deleted) once the repo row
+    // supersedes it, so a stale project row can't resurrect the old flow.
     const projRow = await out.ctx.db.get(
       "SELECT 1 AS ok FROM flow_assignments WHERE org_id='org-a' AND scope='project' AND target_id='p-1'",
     );
-    expect(projRow).toBeTruthy();
+    expect(projRow).toBeFalsy();
     await out.ctx.db.close();
   });
 

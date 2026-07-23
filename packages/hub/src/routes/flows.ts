@@ -100,6 +100,16 @@ export function flowsRouter(ctx: HubServerContext): Router {
       if (repoRaw.length > 1024) return res.status(400).json({ error: 'repo too long' });
       scope = 'repo';
       targetId = sanitizeRemoteUrl(repoRaw);
+      // TRUST MODEL (intentional): repo flow selection is COLLABORATIVE and
+      // org-scoped. A repo assignment fans out to every installation of that
+      // repo, and the ownership gate below is based on self-reported event
+      // remote_url — so any org member who works on a repo can set its flow for
+      // the whole org. This is acceptable because: (a) flows are workflow
+      // definitions, not code execution; (b) the blast radius is bounded to the
+      // org (a valid installation-bound api key is required); and (c) a hub
+      // admin can always override via an installation-scoped assignment (higher
+      // precedence) or the org default. Admin-managed repo assignments go
+      // through the admin-guarded PUT /v1/admin/flow-assignments instead.
       // Ownership: a repo is legitimately shared across installations, so allow
       // any installation that has itself touched the repo (has events for it),
       // or trust-on-first-use when the repo is entirely unknown to the org.
@@ -134,6 +144,19 @@ export function flowsRouter(ctx: HubServerContext): Router {
     }
 
     const respKey = scope === 'repo' ? { repo: targetId } : { projectId: targetId };
+    // When writing/clearing a repo assignment, sunset any legacy project rows
+    // that map to the same repo (via events), so a stale per-project row can't
+    // resurrect an old flow after the repo assignment is cleared.
+    const sunsetLegacyProjects = async () => {
+      if (scope !== 'repo') return;
+      await ctx.db.run(
+        `DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id IN (
+           SELECT DISTINCT project_id FROM events
+           WHERE org_id = ? AND remote_url = ? AND project_id IS NOT NULL AND project_id != ''
+         )`,
+        [orgId, orgId, targetId],
+      );
+    };
     const flowId = body.flowId;
     // Clear path.
     if (flowId === null) {
@@ -141,6 +164,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
         'DELETE FROM flow_assignments WHERE org_id = ? AND scope = ? AND target_id = ?',
         [orgId, scope, targetId],
       );
+      await sunsetLegacyProjects();
       return res.json({ ...respKey, flowId: null, scope });
     }
     if (typeof flowId !== 'string' || !flowId) {
@@ -164,6 +188,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
          VALUES (?, ?, ?, ?, NULL)`,
         [orgId, scope, targetId, flowId],
       );
+      await sunsetLegacyProjects();
     });
     res.json({ ...respKey, flowId, scope });
   });

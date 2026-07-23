@@ -394,14 +394,14 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // event DESC in JS (not a correlated ORDER-BY subquery — pg-mem can't run
   // that), so a repo collision resolves deterministically to the most-recently-
   // active clone's flow. ON CONFLICT DO NOTHING keeps the first-inserted row.
-  const candidates: Array<{ orgId: string; repo: string; flowId: string; ts: number }> = [];
+  const candidates: Array<{ orgId: string; projectId: string; repo: string; flowId: string; ts: number }> = [];
   for (const p of projRows) {
     const latest = await adapter.get<{ remote_url: string; occurred_at: unknown }>(
       "SELECT remote_url, occurred_at FROM events WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL AND remote_url <> '' ORDER BY occurred_at DESC LIMIT 1",
       [p.org_id, p.target_id],
     );
     if (latest?.remote_url) {
-      candidates.push({ orgId: p.org_id, repo: sanitizeRemoteUrl(latest.remote_url), flowId: p.flow_id, ts: tsMillis(latest.occurred_at) });
+      candidates.push({ orgId: p.org_id, projectId: p.target_id, repo: sanitizeRemoteUrl(latest.remote_url), flowId: p.flow_id, ts: tsMillis(latest.occurred_at) });
     }
   }
   candidates.sort((a, b) => b.ts - a.ts);
@@ -409,6 +409,11 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.run(
       "INSERT INTO flow_assignments (org_id, scope, target_id, flow_id) VALUES (?, 'repo', ?, ?) ON CONFLICT (org_id, scope, target_id) DO NOTHING",
       [c.orgId, c.repo, c.flowId],
+    );
+    // Sunset the mirrored legacy project row now that the repo row supersedes it.
+    await adapter.run(
+      "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id = ?",
+      [c.orgId, c.projectId],
     );
   }
 }

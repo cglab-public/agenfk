@@ -388,12 +388,19 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
         .map((p) => {
           const row = latestRemote.get(p.org_id, p.target_id) as { remote_url: string; occurred_at: string } | undefined;
           return row?.remote_url
-            ? { orgId: p.org_id, repo: sanitizeRemoteUrl(row.remote_url), flowId: p.flow_id, ts: tsMillis(row.occurred_at) }
+            ? { orgId: p.org_id, projectId: p.target_id, repo: sanitizeRemoteUrl(row.remote_url), flowId: p.flow_id, ts: tsMillis(row.occurred_at) }
             : null;
         })
         .filter((c): c is NonNullable<typeof c> => c !== null)
         .sort((a, b) => b.ts - a.ts);
-      for (const c of candidates) insertRepo.run(c.orgId, c.repo, c.flowId);
+      const deleteProj = raw.prepare(
+        "DELETE FROM flow_assignments WHERE org_id = ? AND scope = 'project' AND target_id = ?",
+      );
+      for (const c of candidates) {
+        insertRepo.run(c.orgId, c.repo, c.flowId);
+        // Sunset the mirrored legacy project row now that the repo row supersedes it.
+        deleteProj.run(c.orgId, c.projectId);
+      }
     }
   }
 
