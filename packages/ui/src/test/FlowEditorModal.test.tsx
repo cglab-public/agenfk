@@ -20,6 +20,8 @@ vi.mock('../api', () => ({
     getDefaultFlow: vi.fn(),
     browseRegistry: vi.fn(),
     installFromRegistry: vi.fn(),
+    publishToRegistry: vi.fn(),
+    getOrgAvailableFlows: vi.fn(),
   },
 }));
 
@@ -80,6 +82,8 @@ describe('FlowEditorModal', () => {
     vi.clearAllMocks();
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
     vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    // Default: not part of an org (standalone install) — selection allowed.
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
   });
 
   afterEach(() => {
@@ -862,6 +866,57 @@ describe('FlowEditorModal', () => {
     expect(middle).toHaveLength(1);
     expect(middle[0].name).toBe('in_review');
   });
+
+  // ── Hub-owned selection: "Use this Flow" gating ──────────────────────────
+  // On a hub-connected installation, team-flow selection is centralized at the
+  // hub (Org Flows picker). The local editor must NOT offer selection — it may
+  // only author (save) and publish to the community registry.
+
+  it('standalone install (hubEnabled=false): shows "Use this Flow" on an editable flow', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    expect(await screen.findByTestId('use-flow-btn')).toBeDefined();
+  });
+
+  it('hub-connected install (hubEnabled=true): hides "Use this Flow" but keeps Publish', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: true });
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    // Publish stays available (author → publish to community).
+    expect(await screen.findByTestId('publish-flow-btn')).toBeDefined();
+    // Selection is hub-owned: no local "Use this Flow".
+    await waitFor(() => expect(screen.queryByTestId('use-flow-btn')).toBeNull());
+  });
+
+  it('hub-connected install: builtin default flow offers no "Use this Flow" either', async () => {
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: true });
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    // Select the read-only builtin default row; its only action was "Use this Flow".
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => expect(screen.queryByTestId('use-default-flow-btn')).toBeNull());
+  });
+
+  it('standalone install: builtin default flow still offers "Use this Flow"', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    expect(await screen.findByTestId('use-default-flow-btn')).toBeDefined();
+  });
 });
 
 // ── Community tab ─────────────────────────────────────────────────────────────
@@ -916,6 +971,7 @@ describe('FlowEditorModal — Community tab', () => {
     vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
     vi.mocked(api.browseRegistry).mockResolvedValue([REGISTRY_FLOW_1, REGISTRY_FLOW_2]);
     vi.mocked(api.installFromRegistry).mockResolvedValue(INSTALLED_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
   });
 
   afterEach(() => {
@@ -1092,6 +1148,8 @@ describe('FlowEditorModal — version badge', () => {
     vi.clearAllMocks();
     vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
     vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    // Default: not part of an org (standalone install) — selection allowed.
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
   });
 
   afterEach(() => { cleanup(); });
