@@ -137,6 +137,23 @@ describe('PG parity: admin endpoints', () => {
     const after = await supertest(fx.app).get('/v1/admin/hidden-users').set('Cookie', fx.cookie);
     expect(after.body).toHaveLength(0);
   });
+
+  it('events ingest drops hidden people before the installations upsert on PG (CGLAB-31)', async () => {
+    await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'alice@acme.com']);
+    const r = await supertest(fx.app).post('/v1/events')
+      .set('Authorization', `Bearer ${fx.token}`)
+      .send({ events: [
+        sample({ eventId: 'h1', actor: { osUser: 'alice', gitName: 'A', gitEmail: 'Alice@Acme.com' } }),
+        sample({ eventId: 'v1', installationId: 'inst-2', actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' } }),
+      ] });
+    expect(r.status).toBe(200);
+    expect(r.body.ingested).toBe(1);
+    expect(r.body.hiddenDropped).toBe(1);
+    const evts = await fx.db.all<{ event_id: string }>('SELECT event_id FROM events');
+    expect(evts.map(e => e.event_id)).toEqual(['v1']);
+    expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-1'])).toBeUndefined();
+    expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-2'])).toBeTruthy();
+  });
 });
 
 describe('PG parity: connect (device + invite)', () => {
