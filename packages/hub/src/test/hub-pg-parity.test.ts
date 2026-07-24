@@ -154,6 +154,23 @@ describe('PG parity: admin endpoints', () => {
     expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-1'])).toBeUndefined();
     expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-2'])).toBeTruthy();
   });
+
+  it('fleet exclusions: installations list hides + scope=all skips hidden on PG (CGLAB-31)', async () => {
+    for (const [id, email] of [['inst-vis', 'active@acme.com'], ['inst-hid', 'departed@acme.com']] as const) {
+      await fx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email, agenfk_version)
+         VALUES (?, ?, now(), now(), 'u', ?, '0.3.0')`,
+        [id, 'org', email],
+      );
+    }
+    await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'departed@acme.com']);
+
+    const def = await supertest(fx.app).get('/v1/admin/installations').set('Cookie', fx.cookie);
+    expect(def.body.map((i: any) => i.id)).toEqual(['inst-vis']);
+    const incl = await supertest(fx.app).get('/v1/admin/installations?includeHidden=1').set('Cookie', fx.cookie);
+    expect(incl.body).toHaveLength(2);
+    expect(incl.body.find((i: any) => i.id === 'inst-hid').hidden).toBe(true);
+  });
 });
 
 describe('PG parity: connect (device + invite)', () => {

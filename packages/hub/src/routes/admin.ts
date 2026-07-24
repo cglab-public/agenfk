@@ -185,24 +185,37 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   // ── Users ────────────────────────────────────────────────────────────────
   router.get('/installations', guard, async (req: Request, res: Response) => {
+    // CGLAB-31: installations belonging to hidden people are excluded by
+    // default (this endpoint feeds the Admin installations list, the upgrade
+    // picker and the flow-assignment installation picker). ?includeHidden=1
+    // returns them flagged with hidden:true so the UI can render a
+    // show-hidden toggle.
+    const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
     const rows = await ctx.db.all<Record<string, unknown>>(
-      `SELECT id, agenfk_version, agenfk_version_updated_at, first_seen, last_seen, os_user, git_name, git_email
-         FROM installations
-         WHERE org_id = ?
-         ORDER BY last_seen DESC`,
+      `SELECT i.id, i.agenfk_version, i.agenfk_version_updated_at, i.first_seen, i.last_seen,
+              i.os_user, i.git_name, i.git_email,
+              CASE WHEN h.user_key IS NULL THEN 0 ELSE 1 END AS hidden
+         FROM installations i
+         LEFT JOIN hidden_users h
+           ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+        WHERE i.org_id = ?
+        ORDER BY i.last_seen DESC`,
       [req.session!.orgId],
     );
     res.json(
-      rows.map((r: any) => ({
-        id: r.id,
-        agenfkVersion: r.agenfk_version ?? null,
-        agenfkVersionUpdatedAt: r.agenfk_version_updated_at ?? null,
-        firstSeen: r.first_seen ?? null,
-        lastSeen: r.last_seen ?? null,
-        osUser: r.os_user ?? null,
-        gitName: r.git_name ?? null,
-        gitEmail: r.git_email ?? null,
-      })),
+      rows
+        .filter((r: any) => includeHidden || !r.hidden)
+        .map((r: any) => ({
+          id: r.id,
+          agenfkVersion: r.agenfk_version ?? null,
+          agenfkVersionUpdatedAt: r.agenfk_version_updated_at ?? null,
+          firstSeen: r.first_seen ?? null,
+          lastSeen: r.last_seen ?? null,
+          osUser: r.os_user ?? null,
+          gitName: r.git_name ?? null,
+          gitEmail: r.git_email ?? null,
+          hidden: !!r.hidden,
+        })),
     );
   });
 
@@ -726,8 +739,15 @@ export function adminRouter(ctx: HubServerContext): Router {
     type Inst = { id: string; agenfk_version: string | null };
     let installations: Inst[];
     if (scope.type === 'all') {
+      // CGLAB-31: fleet-wide directives skip hidden people's installations —
+      // a departed user's machine must not receive upgrade pushes.
       installations = await ctx.db.all<Inst>(
-        'SELECT id, agenfk_version FROM installations WHERE org_id = ?',
+        `SELECT i.id, i.agenfk_version FROM installations i
+          WHERE i.org_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM hidden_users h
+               WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+            )`,
         [orgId],
       );
     } else if (scope.type === 'installation') {
@@ -750,6 +770,26 @@ export function adminRouter(ctx: HubServerContext): Router {
         const found = new Set(installations.map(i => i.id));
         const missing = ids.filter(id => !found.has(id));
         return res.status(404).json({ error: 'One or more installations not found in this org', missing });
+      }
+    }
+
+    // CGLAB-31: explicitly targeting a hidden person's installation is
+    // rejected — the admin must unhide the person first. (scope=all silently
+    // skips them above; an explicit name is a deliberate act we refuse.)
+    if (installations.length > 0) {
+      const ids = installations.map(i => i.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const hiddenTargets = await ctx.db.all<{ id: string }>(
+        `SELECT i.id FROM installations i
+          JOIN hidden_users h ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+          WHERE i.org_id = ? AND i.id IN (${placeholders})`,
+        [orgId, ...ids],
+      );
+      if (hiddenTargets.length > 0) {
+        return res.status(409).json({
+          error: 'One or more installations belong to a hidden person. Unhide them first to target their installations.',
+          hidden: hiddenTargets.map(t => t.id),
+        });
       }
     }
 
