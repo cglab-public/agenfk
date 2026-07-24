@@ -111,6 +111,78 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ revoked: result.changes });
   });
 
+  // ── Hidden people (CGLAB-31) ─────────────────────────────────────────────
+  // Person-level hide keyed on events.user_key (lowercased git email).
+  // Selection surfaces only — historical data (events, rollups, dashboards)
+  // is deliberately untouched. Fully reversible via DELETE.
+  router.get('/hidden-users', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT user_key, hidden_by_user_id, hidden_by_email, created_at
+         FROM hidden_users
+         WHERE org_id = ?
+         ORDER BY created_at DESC`,
+      [req.session!.orgId],
+    );
+    res.json(rows.map((r: any) => ({
+      userKey: r.user_key,
+      hiddenByUserId: r.hidden_by_user_id ?? null,
+      hiddenByEmail: r.hidden_by_email ?? null,
+      createdAt: r.created_at,
+    })));
+  });
+
+  router.post('/hidden-users', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const raw = req.body?.userKey;
+    const userKey = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (!userKey) {
+      return res.status(400).json({ error: 'Body must be { userKey: string } (non-empty).' });
+    }
+
+    // Hide + revoke the person's installation api_keys atomically: if the
+    // revocation fails the hide must not persist (and vice versa), so a
+    // hidden install can never keep a live token.
+    let hiddenByEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?',
+        [req.session.userId],
+      );
+      hiddenByEmail = u?.email ?? null;
+    }
+    let revokedApiKeys = 0;
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        `INSERT OR IGNORE INTO hidden_users (org_id, user_key, hidden_by_user_id, hidden_by_email)
+         VALUES (?, ?, ?, ?)`,
+        [orgId, userKey, req.session!.userId, hiddenByEmail],
+      );
+      const r = await ctx.db.run(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+          WHERE org_id = ? AND revoked_at IS NULL
+            AND installation_id IN (
+              SELECT id FROM installations
+               WHERE org_id = ? AND lower(git_email) = ?
+            )`,
+        [orgId, orgId, userKey],
+      );
+      revokedApiKeys = r.changes;
+    });
+
+    res.status(201).json({ userKey, revokedApiKeys });
+  });
+
+  router.delete('/hidden-users/:userKey', guard, async (req: Request, res: Response) => {
+    const userKey = decodeURIComponent(req.params.userKey).trim().toLowerCase();
+    const r = await ctx.db.run(
+      'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
+      [req.session!.orgId, userKey],
+    );
+    // Note: api_key revocation is permanent — unhiding does NOT restore
+    // revoked tokens (the person must re-register their installation).
+    res.json({ userKey, unhidden: r.changes > 0 });
+  });
+
   // ── Users ────────────────────────────────────────────────────────────────
   router.get('/installations', guard, async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(

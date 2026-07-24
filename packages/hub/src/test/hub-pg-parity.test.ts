@@ -106,6 +106,37 @@ describe('PG parity: admin endpoints', () => {
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
   });
+
+  it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES (?, ?, now(), now(), ?, ?)`,
+      ['inst-gone', 'org', 'gone', 'departed@acme.com'],
+    );
+    await fx.db.run(
+      `INSERT INTO api_keys (token_hash, org_id, label, installation_id) VALUES (?, ?, ?, ?)`,
+      ['hash-gone', 'org', 'k', 'inst-gone'],
+    );
+
+    const hide = await supertest(fx.app).post('/v1/admin/hidden-users').set('Cookie', fx.cookie)
+      .send({ userKey: 'Departed@Acme.com' });
+    expect(hide.status).toBe(201);
+    expect(hide.body.userKey).toBe('departed@acme.com');
+    expect(hide.body.revokedApiKeys).toBe(1);
+
+    const list = await supertest(fx.app).get('/v1/admin/hidden-users').set('Cookie', fx.cookie);
+    expect(list.body.map((u: any) => u.userKey)).toEqual(['departed@acme.com']);
+
+    const key = await fx.db.get<{ revoked_at: string | null }>(
+      'SELECT revoked_at FROM api_keys WHERE token_hash = ?', ['hash-gone'],
+    );
+    expect(key?.revoked_at).toBeTruthy();
+
+    const unhide = await supertest(fx.app).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', fx.cookie);
+    expect(unhide.body.unhidden).toBe(true);
+    const after = await supertest(fx.app).get('/v1/admin/hidden-users').set('Cookie', fx.cookie);
+    expect(after.body).toHaveLength(0);
+  });
 });
 
 describe('PG parity: connect (device + invite)', () => {
