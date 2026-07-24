@@ -28,6 +28,8 @@ export interface Flow {
   source?: 'local' | 'hub' | 'community';
   hubFlowId?: string;
   hubVersion?: number;
+  /** Hub-only: whether the flow is offered in the org-wide flow picker. */
+  orgAvailable?: boolean;
 }
 
 export interface RegistryFlow {

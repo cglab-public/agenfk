@@ -127,7 +127,8 @@ const SCHEMA_SQLITE = `
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    created_by_user_id TEXT
+    created_by_user_id TEXT,
+    org_available INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_flows_org ON flows(org_id);
 
@@ -345,6 +346,15 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const rdCols = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
   const rdHave = new Set(rdCols.map(c => c.name));
   if (!rdHave.has('prs_opened')) raw.exec("ALTER TABLE rollups_daily ADD COLUMN prs_opened INTEGER NOT NULL DEFAULT 0");
+
+  // flows.org_available — org-available flag.
+  const flowCols = raw.prepare("PRAGMA table_info(flows)").all() as Array<{ name: string }>;
+  const flowHave = new Set(flowCols.map(c => c.name));
+  if (!flowHave.has('org_available')) {
+    raw.exec("ALTER TABLE flows ADD COLUMN org_available INTEGER NOT NULL DEFAULT 0");
+    // One-time backfill: the flow currently set as org default is implicitly available.
+    raw.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
+  }
 
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_remote_time ON events(org_id, remote_url, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");

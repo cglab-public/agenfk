@@ -10,7 +10,7 @@
  * already had, so a down/slow/unauthorized Hub degrades to the last-known flow
  * rather than an error.
  */
-import { reconcileProjectFlow, type FetchLike } from './flowSync.js';
+import { reconcileProjectFlow, type FetchLike, type ReconcileOutcome } from './flowSync.js';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { HubConfig } from './types.js';
 
@@ -20,6 +20,8 @@ export interface RefreshProjectFlowArgs {
   hubEnabled: boolean;
   hubConfig: HubConfig | null | undefined;
   projectId: string;
+  /** Raw git remote URL for the project; when present the hub is queried by repo. */
+  remoteUrl?: string | null;
   fetchImpl: FetchLike;
   emit: (event: string, payload: any) => void;
   /** Shared with the polling reconciler so ETags aren't fetched twice. */
@@ -31,19 +33,21 @@ export interface RefreshProjectFlowArgs {
  * Never throws — on any error it returns having left local state untouched, so
  * the caller falls back to the local flow.
  */
-export async function refreshProjectFlowFromHub(args: RefreshProjectFlowArgs): Promise<void> {
-  if (!args.hubEnabled || !args.hubConfig) return;
+export async function refreshProjectFlowFromHub(args: RefreshProjectFlowArgs): Promise<ReconcileOutcome | null> {
+  if (!args.hubEnabled || !args.hubConfig) return null;
   try {
     const lastEtag = args.etagCache.get(args.projectId) ?? null;
     const result = await reconcileProjectFlow({
       storage: args.storage,
       hubConfig: args.hubConfig,
       projectId: args.projectId,
+      remoteUrl: args.remoteUrl ?? null,
       lastEtag,
       fetchImpl: args.fetchImpl,
       emit: args.emit,
     });
     if (result.etag) args.etagCache.set(args.projectId, result.etag);
+    return result;
   } catch (e) {
     // reconcileProjectFlow already contains transport/HTTP errors as an 'error'
     // outcome; this guards any unexpected storage throw. Either way: fall back.
@@ -51,5 +55,6 @@ export async function refreshProjectFlowFromHub(args: RefreshProjectFlowArgs): P
       `[HUB_FLOW_SYNC] on-demand refresh failed for project ${args.projectId}:`,
       (e as Error).message,
     );
+    return null;
   }
 }

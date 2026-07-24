@@ -23,8 +23,12 @@ export type FetchLike = (url: string, opts: any) => Promise<{
 export interface ReconcileProjectArgs {
   storage: SQLiteStorageProvider;
   hubConfig: HubConfig;
-  /** Project to fetch the effective flow for. Pass null/undefined for org-fallback. */
+  /** Project to fetch the effective flow for. Pass null/undefined for org-fallback.
+   *  Used only for the LOCAL rebind + mutex key; the hub is keyed on the repo. */
   projectId: string | null;
+  /** Raw git remote URL for the project. When present, the hub is queried by
+   *  repo (?repo=); otherwise it falls back to the legacy ?projectId= key. */
+  remoteUrl?: string | null;
   /** ETag from the last successful pull for this project. */
   lastEtag: string | null;
   fetchImpl: FetchLike;
@@ -66,9 +70,15 @@ export function reconcileProjectFlow(args: ReconcileProjectArgs): Promise<Reconc
 }
 
 async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<ReconcileOutcome> {
-  const { storage, hubConfig, projectId, lastEtag, fetchImpl, emit } = args;
+  const { storage, hubConfig, projectId, remoteUrl, lastEtag, fetchImpl, emit } = args;
   const baseUrl = `${hubConfig.url.replace(/\/$/, '')}/v1/flows/active`;
-  const url = projectId ? `${baseUrl}?projectId=${encodeURIComponent(projectId)}` : baseUrl;
+  // Prefer the global repo key; fall back to the legacy projectId key for
+  // projects with no git remote / un-migrated callers.
+  const url = remoteUrl
+    ? `${baseUrl}?repo=${encodeURIComponent(remoteUrl)}`
+    : projectId
+      ? `${baseUrl}?projectId=${encodeURIComponent(projectId)}`
+      : baseUrl;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${hubConfig.token}`,
     Accept: 'application/json',
@@ -185,6 +195,9 @@ export interface RunTickArgs {
   emit: (event: string, payload: any) => void;
   /** Per-project ETag cache. Mutated in place. */
   etagCache: Map<string, string>;
+  /** Resolve a project's raw git remote URL for the repo-keyed hub query.
+   *  Returns null when the project has no remote (falls back to projectId). */
+  resolveRepo?: (projectId: string) => Promise<string | null>;
 }
 
 export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
@@ -193,12 +206,17 @@ export async function runFlowSyncTick(args: RunTickArgs): Promise<void> {
 
   for (const project of projects) {
     const lastEtag = args.etagCache.get(project.id) ?? null;
+    let remoteUrl: string | null = null;
+    if (args.resolveRepo) {
+      try { remoteUrl = await args.resolveRepo(project.id); } catch { remoteUrl = null; }
+    }
     let result: ReconcileOutcome;
     try {
       result = await reconcileProjectFlow({
         storage: args.storage,
         hubConfig: args.hubConfig,
         projectId: project.id,
+        remoteUrl,
         lastEtag,
         fetchImpl: args.fetchImpl,
         emit: args.emit,
@@ -230,6 +248,8 @@ export interface StartFlowSyncArgs {
    * Defaults to a private cache when omitted.
    */
   etagCache?: Map<string, string>;
+  /** Resolve a project's raw git remote URL for the repo-keyed hub query. */
+  resolveRepo?: (projectId: string) => Promise<string | null>;
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -251,6 +271,7 @@ export function startFlowSync(args: StartFlowSyncArgs): FlowSyncHandle {
         fetchImpl,
         emit: args.emit,
         etagCache,
+        resolveRepo: args.resolveRepo,
       });
       consecutiveErrors = 0;
     } catch (e) {

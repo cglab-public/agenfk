@@ -240,6 +240,23 @@ export const api = {
       throw e;
     }
   },
+  getOrgAvailableFlows: async (): Promise<{ flows: Flow[]; defaultFlowId: string | null; hubEnabled: boolean }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/flows/org-available`);
+      return data;
+    } catch (e) {
+      console.error('API Error listing org-available flows:', e);
+      throw e;
+    }
+  },
+  selectOrgFlow: async (projectId: string, flowId: string | null): Promise<void> => {
+    try {
+      await axios.post(`${API_URL}/projects/${projectId}/flow/select-org`, { flowId });
+    } catch (e) {
+      console.error(`API Error selecting org flow for project ${projectId}:`, e);
+      throw e;
+    }
+  },
   getDefaultFlow: async (): Promise<Flow> => {
     try {
       const { data } = await axios.get(`${API_URL}/flows/default`);

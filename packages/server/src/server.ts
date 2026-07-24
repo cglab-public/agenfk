@@ -196,19 +196,31 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     const proj = await storage.getProject(projectId);
     const root = (proj as any)?.projectRoot;
     if (!root) { projectRemoteCache.set(projectId, ''); return; }
-    const { execSync } = await import('child_process');
-    try {
-      // Timeout: this runs (awaited) on the request path for the first event of
-      // every project — and since events are recorded for ALL installs now, a
-      // git hang (network mount, credential prompt) must not block the event loop.
-      const out = execSync('git remote get-url origin', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500 }).toString().trim();
-      projectRemoteCache.set(projectId, out || '');
-    } catch {
-      projectRemoteCache.set(projectId, '');
-    }
+    const { execFile } = await import('child_process');
+    // Async execFile (not execSync): this runs on the request path AND per
+    // project in the flow-sync poller loop; a synchronous git hang (network
+    // mount, credential prompt) would block the whole Node event loop. execFile
+    // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
+    const out = await new Promise<string>((resolve) => {
+      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500 }, (err, stdout) => {
+        resolve(err ? '' : (stdout || '').toString().trim());
+      });
+    });
+    projectRemoteCache.set(projectId, out || '');
   } catch {
     projectRemoteCache.set(projectId, '');
   }
+}
+
+// Resolve a project's raw git remote URL for the repo-keyed hub queries,
+// warming the cache on a miss. Returns null when the project has no remote
+// (empty cache sentinel) so callers fall back to the legacy projectId key.
+async function resolveProjectRepo(projectId: string): Promise<string | null> {
+  if (!projectRemoteCache.has(projectId)) {
+    await warmProjectRemote(projectId);
+  }
+  const cached = projectRemoteCache.get(projectId);
+  return cached && cached.length > 0 ? cached : null;
 }
 
 // ── Validation log persistence ───────────────────────────────────────────────
@@ -498,6 +510,7 @@ const initStorage = async () => {
       intervalMs,
       etagCache: flowSyncEtagCache,
       emit: (event, payload) => io.emit(event, payload),
+      resolveRepo: resolveProjectRepo,
     });
     console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
 
@@ -863,6 +876,7 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
       hubEnabled: hubClient.isEnabled,
       hubConfig: hubClient.hubConfig,
       projectId: req.params.id,
+      remoteUrl: await resolveProjectRepo(req.params.id),
       fetchImpl: globalThis.fetch as any,
       emit: (event, payload) => io.emit(event, payload),
       etagCache: flowSyncEtagCache,
@@ -877,6 +891,125 @@ app.get("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
 
   const flows = await storage.listFlows();
   const activeFlow = getActiveFlow((project as any).flowId, flows);
+  res.json(activeFlow);
+}));
+
+// ── Org-available flows (Hub-published set) + client self-selection ──────────
+app.get("/flows/org-available", asyncHandler(async (_req: any, res: any) => {
+  if (!hubClient.isEnabled || !hubClient.hubConfig) {
+    return res.json({ flows: [], defaultFlowId: null, hubEnabled: false });
+  }
+  const { url, token } = hubClient.hubConfig;
+  try {
+    const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/available`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    if (!r.ok) return res.status(502).json({ error: `Hub returned ${r.status}`, hubEnabled: true });
+    const body = await r.json();
+    return res.json({ flows: body.flows ?? [], defaultFlowId: body.defaultFlowId ?? null, hubEnabled: true });
+  } catch (e: any) {
+    return res.status(502).json({ error: `Hub unreachable: ${e?.message ?? "error"}`, hubEnabled: true });
+  }
+}));
+
+app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const flowId = req.body?.flowId;
+  if (flowId === undefined) return res.status(400).json({ error: "flowId is required" });
+  if (!hubClient.isEnabled || !hubClient.hubConfig) {
+    return res.status(400).json({ error: "Hub is not configured; cannot select an org flow" });
+  }
+  const { url, token } = hubClient.hubConfig;
+  const oldFlowId = (project as any).flowId ?? null;
+
+  // The hub keys selections on the global repo (remote URL). Resolve this
+  // project's git remote; fall back to the legacy projectId key only when the
+  // project has no remote.
+  const repo = await resolveProjectRepo(req.params.id);
+  const selectionBody = repo
+    ? { repo, flowId: flowId || null }
+    : { projectId: req.params.id, flowId: flowId || null };
+
+  // 1) Write the selection to the hub.
+  let sel: any;
+  try {
+    sel = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/flows/selection`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(selectionBody),
+    });
+  } catch (e: any) {
+    return res.status(502).json({ error: `Hub unreachable: ${e?.message ?? "error"}` });
+  }
+  if (!sel.ok) {
+    let msg = `Hub returned ${sel.status}`;
+    try { const b = await sel.json(); if (b?.error) msg = b.error; } catch { /* ignore */ }
+    const status = (sel.status === 400 || sel.status === 401 || sel.status === 403 || sel.status === 404) ? sel.status : 502;
+    return res.status(status).json({ error: msg });
+  }
+
+  // 2) Clear path: unbind locally (reconcile never unbinds). Migrate in-flight
+  // cards off the old flow's custom statuses to DEFAULT_FLOW first, so items
+  // aren't orphaned on statuses the default flow doesn't have (same as the
+  // bind path below and POST /projects/:id/flow).
+  if (!flowId) {
+    if (oldFlowId) {
+      const oldFlow = (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW;
+      const items = await storage.listItems({ projectId: req.params.id });
+      const migrationPlan = migrateCardsToFlow(items, oldFlow, DEFAULT_FLOW);
+      for (const plan of migrationPlan) {
+        if (plan.oldStatus !== plan.newStatus) {
+          await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
+        }
+      }
+      await storage.updateProject(req.params.id, { flowId: undefined });
+    }
+    io.emit("flow:updated", { projectId: req.params.id, flowId: null });
+    io.emit("items_updated");
+    return res.json(DEFAULT_FLOW);
+  }
+
+  // 3) Reconcile the selected flow into local storage. Bust the per-project
+  // ETag first so we always get a fresh 200 (not a stale 304) right after a
+  // selection change.
+  flowSyncEtagCache.delete(req.params.id);
+  const outcome = await refreshProjectFlowFromHub({
+    storage: storage as SQLiteStorageProvider,
+    hubEnabled: hubClient.isEnabled,
+    hubConfig: hubClient.hubConfig,
+    projectId: req.params.id,
+    remoteUrl: repo,
+    fetchImpl: globalThis.fetch as any,
+    emit: (event: string, payload: any) => io.emit(event, payload),
+    etagCache: flowSyncEtagCache,
+  });
+  if (!outcome || (outcome.outcome !== "updated" && outcome.outcome !== "not-modified")) {
+    return res.status(502).json({
+      error: "Selection saved on the hub but the local flow reconcile failed; try again.",
+      reconciled: false,
+    });
+  }
+
+  // 4) Migrate in-flight cards off now-invalid statuses (same as POST /projects/:id/flow).
+  const updated = await storage.getProject(req.params.id);
+  const newFlowId = (updated as any)?.flowId ?? null;
+  const flows = await storage.listFlows();
+  if (newFlowId && newFlowId !== oldFlowId) {
+    const items = await storage.listItems({ projectId: req.params.id });
+    const newFlow = getActiveFlow(newFlowId, flows);
+    const oldFlow = oldFlowId ? (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW : DEFAULT_FLOW;
+    const migrationPlan = migrateCardsToFlow(items, oldFlow, newFlow);
+    for (const plan of migrationPlan) {
+      if (plan.oldStatus !== plan.newStatus) {
+        await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
+      }
+    }
+  }
+  const activeFlow = newFlowId ? getActiveFlow(newFlowId, flows) : DEFAULT_FLOW;
+  io.emit("flow:updated", { projectId: req.params.id, flowId: newFlowId });
+  io.emit("items_updated");
   res.json(activeFlow);
 }));
 

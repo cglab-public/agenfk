@@ -127,7 +127,8 @@ const SCHEMA_PG = `
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by_user_id TEXT
+    created_by_user_id TEXT,
+    org_available INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS idx_flows_org ON flows(org_id);
 
@@ -351,6 +352,17 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
   if (!akHave.has('git_email'))       await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_email TEXT");
+
+  // flows.org_available — org-available flag.
+  const flowCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='flows'"
+  );
+  const flowHave = new Set(flowCols.map(c => c.column_name));
+  if (!flowHave.has('org_available')) {
+    await adapter.exec("ALTER TABLE flows ADD COLUMN org_available INTEGER NOT NULL DEFAULT 0");
+    // One-time backfill: the flow currently set as org default is implicitly available.
+    await adapter.exec("UPDATE flows SET org_available = 1 WHERE id IN (SELECT flow_id FROM flow_assignments WHERE scope = 'org')");
+  }
 
   // flow_assignments multi-scope migration. PG can DROP / ADD CONSTRAINT in
   // place — simpler than the SQLite recreate dance.

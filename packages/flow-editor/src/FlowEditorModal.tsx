@@ -94,6 +94,11 @@ interface FlowEditorModalProps {
   projectId: string;
   activeFlowId?: string;   // currently active flow id (undefined = default/builtin flow)
   initialFlowId?: string;  // pre-select this flow on open
+  // When false, the editor hides its flow-*selection* actions ("Use this Flow").
+  // Used by hub-connected installations, where team-flow selection is owned by
+  // the hub (Org Flows picker) — the client may only author + publish. Defaults
+  // to true (standalone installs and the hub admin, where it means set-default).
+  canSelectFlow?: boolean;
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -135,6 +140,7 @@ interface EditorPanelProps {
   onClose: () => void;
   onClone?: () => void;
   onUseDefault?: () => void;    // only provided for the builtin default flow row
+  canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -146,6 +152,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onClose,
   onClone,
   onUseDefault,
+  canSelectFlow,
 }) => {
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -627,7 +634,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       {/* Footer — sticky bottom */}
       {isReadOnly ? (
         <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3 flex-wrap">
-          {onUseDefault && (
+          {onUseDefault && canSelectFlow && (
             <button
               data-testid="use-default-flow-btn"
               type="button"
@@ -685,16 +692,18 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   {publishMutation.isPending ? 'Publishing…' : 'Publish'}
                 </button>
               )}
-              <button
-                data-testid="use-flow-btn"
-                type="button"
-                disabled={isSaveDisabled}
-                onClick={() => useFlowMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-              >
-                <GitBranch size={15} />
-                Use this Flow
-              </button>
+              {canSelectFlow && (
+                <button
+                  data-testid="use-flow-btn"
+                  type="button"
+                  disabled={isSaveDisabled}
+                  onClick={() => useFlowMutation.mutate()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  <GitBranch size={15} />
+                  Use this Flow
+                </button>
+              )}
             </div>
           </div>
 
@@ -895,6 +904,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   const initialFlowId = isLegacy
     ? (props as LegacyProps).flow?.id ?? undefined
     : (props as FlowEditorModalProps).initialFlowId;
+  // Selection actions default on; hosts opt out (hub-connected clients).
+  const canSelectFlow = isLegacy ? true : ((props as FlowEditorModalProps).canSelectFlow ?? true);
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -1335,6 +1346,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   ? () => useDefaultFlowMutation.mutate()
                   : undefined
               }
+              canSelectFlow={canSelectFlow}
             />
           ) : (
             <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">

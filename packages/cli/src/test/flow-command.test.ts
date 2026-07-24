@@ -323,4 +323,115 @@ describe('flow command', () => {
       errSpy.mockRestore();
     });
   });
+
+  describe('flow browse-org', () => {
+    it('should GET /flows/org-available and display flows in a table', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockResolvedValue({ data: { flows: [SAMPLE_FLOW], defaultFlowId: 'flow-uuid-1234-5678', hubEnabled: true } });
+      const tableSpy = vi.spyOn(console, 'table').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(mockedAxios.get).toHaveBeenCalledWith(expect.stringContaining('/flows/org-available'));
+      expect(tableSpy).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ Name: 'Standard Flow' })]));
+      tableSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should output raw JSON with --json', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockResolvedValue({ data: { flows: [SAMPLE_FLOW], defaultFlowId: 'flow-uuid-1234-5678', hubEnabled: true } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org', '--json']);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('flow-uuid-1234-5678'));
+      logSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should show a message when the hub is not configured', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockResolvedValue({ data: { flows: [], defaultFlowId: null, hubEnabled: false } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Hub is not configured'));
+      logSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should show a message when there are no org-available flows', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockResolvedValue({ data: { flows: [], defaultFlowId: null, hubEnabled: true } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('No org-available flows'));
+      logSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should handle errors gracefully', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockRejectedValue(new Error('Network error'));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error'), expect.any(String));
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
+
+  describe('flow browse-org default marking', () => {
+    it('should mark only the org default flow with a star', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      const OTHER = { ...SAMPLE_FLOW, id: 'other-flow-9999', name: 'Other Flow' };
+      mockedAxios.get.mockResolvedValue({ data: { flows: [SAMPLE_FLOW, OTHER], defaultFlowId: 'flow-uuid-1234-5678', hubEnabled: true } });
+      const tableSpy = vi.spyOn(console, 'table').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      const rows = tableSpy.mock.calls[0][0] as any[];
+      expect(rows.find((r) => r.Name === 'Standard Flow').Default).toBe('★');
+      expect(rows.find((r) => r.Name === 'Other Flow').Default).toBe('');
+      tableSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should surface hub error messages from the local server', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.get.mockRejectedValue({ response: { data: { error: 'Hub unreachable' } } });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'browse-org']);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error browsing org flows'), 'Hub unreachable');
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
+
+  describe('flow use-org', () => {
+    it('should POST /projects/:id/flow/select-org with flowId', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.post.mockResolvedValue({ data: {} });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'use-org', 'flow-uuid-1234-5678', '--project', 'proj-abc']);
+      expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/projects/proj-abc/flow/select-org'), { flowId: 'flow-uuid-1234-5678' });
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('selected'));
+      logSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('should error when no project id available', async () => {
+      mockExistsSync.mockReturnValue(false);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      await program.parseAsync(['node', 'agenfk', 'flow', 'use-org', 'flow-uuid-1234-5678']);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Project ID is required'));
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+    });
+
+    it('should handle API errors gracefully', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): any => {}) as any);
+      mockedAxios.post.mockRejectedValue({ response: { data: { error: 'Flow not available' } } });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'use-org', 'bad-flow', '--project', 'proj-abc']);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Error selecting'), 'Flow not available');
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+  });
 });

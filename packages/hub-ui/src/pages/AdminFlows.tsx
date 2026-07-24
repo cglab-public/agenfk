@@ -16,16 +16,18 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight } from 'lucide-react
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
+import { repoOverrideOptions } from './repoOverrideOptions';
+import { availabilityRowState } from './availabilityRowState';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
 interface Assignment {
-  scope: 'org' | 'project' | 'installation';
+  scope: 'org' | 'repo' | 'project' | 'installation';
   targetId: string;
   flowId: string;
   updatedAt: string;
-  // Populated server-side for project-scoped rows so the UI can render the
-  // git remote URL instead of the raw (unique-per-installation) project UUID.
+  // For repo-scoped rows this IS the remote URL; retained for the legacy
+  // project scope so the UI can render the git remote instead of a raw UUID.
   remoteUrl?: string | null;
 }
 
@@ -113,7 +115,7 @@ export function AdminFlows() {
         {flows.map((f) => {
           const isOrgDefault = orgAssignment?.flowId === f.id;
           const flowAssignments = assignments.filter(a => a.flowId === f.id);
-          const projectCount = flowAssignments.filter(a => a.scope === 'project').length;
+          const repoCount = flowAssignments.filter(a => a.scope === 'repo').length;
           const installCount = flowAssignments.filter(a => a.scope === 'installation').length;
           const expanded = expandedFlowId === f.id;
           return (
@@ -140,9 +142,14 @@ export function AdminFlows() {
                         Org default
                       </span>
                     )}
-                    {projectCount > 0 && (
+                    {f.orgAvailable && !isOrgDefault && (
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+                        Available
+                      </span>
+                    )}
+                    {repoCount > 0 && (
                       <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                        {projectCount} project{projectCount === 1 ? '' : 's'}
+                        {repoCount} repo{repoCount === 1 ? '' : 's'}
                       </span>
                     )}
                     {installCount > 0 && (
@@ -196,21 +203,29 @@ function AssignmentsPanel({
   onEdit: () => void;
 }) {
   const qc = useQueryClient();
-  const [adding, setAdding] = useState<'project' | 'installation' | null>(null);
+  const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
+
+  // Assignment changes can move org_available server-side (setting the org
+  // default forces the flow available), so refresh the flows list too — that's
+  // where orgAvailable lives and what the picker-availability row reads.
+  const invalidateFlowState = () => {
+    qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
+    qc.invalidateQueries({ queryKey: ['admin-flows'] });
+  };
 
   const setOrgDefault = useMutation({
     mutationFn: () => api.put('/v1/admin/flow-assignments', { scope: 'org', flowId: flow.id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] }),
+    onSuccess: invalidateFlowState,
   });
 
   const remove = useMutation({
     mutationFn: ({ scope, targetId }: { scope: string; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: null }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] }),
+    onSuccess: invalidateFlowState,
   });
 
   const addOverride = useMutation({
-    mutationFn: ({ scope, targetId }: { scope: 'project' | 'installation'; targetId: string }) =>
+    mutationFn: ({ scope, targetId }: { scope: 'repo' | 'installation'; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: flow.id }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
@@ -218,7 +233,15 @@ function AssignmentsPanel({
     },
   });
 
+  const setAvailability = useMutation({
+    mutationFn: (available: boolean) =>
+      api.put(`/v1/admin/flows/${flow.id}/availability`, { available }),
+    // The org-available flag lives on the flows list, not the assignments list.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flows'] }),
+  });
+
   const orgRow = assignments.find(a => a.scope === 'org');
+  const availability = availabilityRowState(flow.orgAvailable === true, !!orgRow);
 
   return (
     <div className="px-4 pb-4 pt-1 bg-slate-50 dark:bg-slate-900/40 border-t border-slate-200 dark:border-slate-800 space-y-3">
@@ -265,14 +288,45 @@ function AssignmentsPanel({
         )}
       </div>
 
-      {/* Project overrides */}
+      {/* Org-availability toggle — controls whether the flow appears in the
+          org-wide flow picker (flows.org_available). Separate from the org
+          default, but the default is always available and locked on here. */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+            Picker
+          </span>
+          <span className="text-xs text-slate-700 dark:text-slate-200">{availability.hint}</span>
+        </div>
+        {availability.locked ? (
+          <span className="text-[11px] text-slate-400 dark:text-slate-500">Locked on</span>
+        ) : (
+          <button
+            onClick={() => setAvailability.mutate(availability.nextAvailable)}
+            disabled={setAvailability.isPending}
+            className={
+              'text-[11px] font-semibold hover:underline ' +
+              (availability.nextAvailable
+                ? 'text-teal-700 dark:text-teal-400'
+                : 'text-rose-600 dark:text-rose-400')
+            }
+            data-testid="admin-flow-toggle-availability"
+          >
+            {availability.actionLabel}
+          </button>
+        )}
+      </div>
+
+      {/* Repo overrides (keyed on the git remote URL — shared across all
+          installations of a repo). Legacy per-project rows are migrated to
+          repo scope on the hub; the project axis is no longer surfaced here. */}
       <ScopeSection
-        scope="project"
-        label="Project overrides"
+        scope="repo"
+        label="Repo overrides"
         chipClass="bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
-        rows={assignments.filter(a => a.scope === 'project')}
-        onRemove={(targetId) => remove.mutate({ scope: 'project', targetId })}
-        onAdd={() => setAdding('project')}
+        rows={assignments.filter(a => a.scope === 'repo')}
+        onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
+        onAdd={() => setAdding('repo')}
       />
 
       {/* Installation overrides */}
@@ -300,7 +354,7 @@ function AssignmentsPanel({
 function ScopeSection({
   label, chipClass, rows, onRemove, onAdd,
 }: {
-  scope: 'project' | 'installation';
+  scope: 'repo' | 'installation';
   label: string;
   chipClass: string;
   rows: Assignment[];
@@ -342,7 +396,7 @@ function ScopeSection({
 function AddOverridePicker({
   scope, existingTargetIds, onCancel, onPick,
 }: {
-  scope: 'project' | 'installation';
+  scope: 'repo' | 'installation';
   existingTargetIds: Set<string>;
   onCancel: () => void;
   onPick: (targetId: string) => void;
@@ -350,7 +404,7 @@ function AddOverridePicker({
   const projectsQ = useQuery<ProjectInfo[]>({
     queryKey: ['admin-projects-discovery'],
     queryFn: async () => (await api.get('/v1/admin/projects')).data,
-    enabled: scope === 'project',
+    enabled: scope === 'repo',
   });
   const apiKeysQ = useQuery<ApiKeyRow[]>({
     queryKey: ['admin-api-keys'],
@@ -359,14 +413,9 @@ function AddOverridePicker({
   });
 
   const options = useMemo(() => {
-    if (scope === 'project') {
-      // The picker submits id=projectId (assignments key on installation-scoped IDs),
-      // but shows label=remoteUrl when known so admins can recognise the repo.
-      return (projectsQ.data ?? []).map(p => ({
-        id: p.projectId,
-        label: p.remoteUrl ?? p.projectId,
-        sub: p.remoteUrl ? `${p.projectId} · last seen ${p.lastSeen}` : `last seen ${p.lastSeen}`,
-      }));
+    if (scope === 'repo') {
+      // Discovery returns distinct repos (remote URLs). The pick id IS the repo.
+      return repoOverrideOptions(projectsQ.data ?? []);
     }
     return (apiKeysQ.data ?? [])
       .filter(k => k.installationId && !k.revokedAt)
