@@ -179,6 +179,18 @@ const SCHEMA_PG = `
     token TEXT PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  -- People hidden by an admin (CGLAB-31). See the SQLite schema for the
+  -- full rationale — selection surfaces only, historical data untouched,
+  -- reversible by row delete.
+  CREATE TABLE IF NOT EXISTS hidden_users (
+    org_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    hidden_by_user_id TEXT,
+    hidden_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_key)
+  );
 `;
 
 /**
