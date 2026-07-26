@@ -337,4 +337,83 @@ describe('RunsPanel', () => {
       expect(gutter.querySelectorAll('span')).toHaveLength(2);
     }
   });
+
+  // Fix 5a: stripAnsi must be applied to non-tool event text.
+  // Mutation: changing stripAnsi(ev.text) back to ev.text would let escapes survive.
+  it('strips ANSI escapes from non-tool event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '\x1b[31mred error\x1b[0m' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('red error')).toBeDefined());
+    // The raw escape sequence must not appear in the rendered output
+    expect(screen.queryByText(/\x1b\[31m/)).toBeNull();
+  });
+
+  // Fix 5b: stripAnsi must be applied to tool event text.
+  // Mutation: omitting stripAnsi on the tool <pre> would let escapes render as garbage glyphs.
+  it('strips ANSI escapes from tool event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'tool', tool: 'bash', text: '\x1b[31mred error\x1b[0m' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('red error')).toBeDefined());
+    // The raw escape sequence must not appear in the rendered output
+    expect(screen.queryByText(/\x1b\[31m/)).toBeNull();
+  });
+
+  // Fix 5c: the prose classes must be present on the markdown wrapper.
+  // Mutation: deleting the class string would not break any semantic test.
+  it('wraps markdown output in an element with prose and dark:prose-invert classes', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: 'hello world' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('hello world')).toBeDefined());
+    const prose = document.querySelector('.prose');
+    expect(prose).not.toBeNull();
+    expect(prose?.className).toContain('prose');
+    expect(prose?.className).toContain('dark:prose-invert');
+  });
+
+  // Fix 5d: markdown images must not produce real <img> elements that fetch remote URLs.
+  it('does not render <img> elements for markdown image syntax in event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '![tracking pixel](https://evil.example/track.png)' },
+    ] as any);
+    renderPanel();
+    // Wait for the alt text to appear (rendered as plain text instead of <img>)
+    await waitFor(() => expect(screen.getByText('tracking pixel')).toBeDefined());
+    // No <img> element should exist in the DOM
+    expect(document.querySelector('img')).toBeNull();
+  });
+
+  // Fix 5e: links must open in a new tab with noopener/noreferrer for safety.
+  it('renders markdown links with target="_blank" and rel containing noopener', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '[click me](https://example.com)' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('click me')).toBeDefined());
+    const link = document.querySelector('a');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noopener');
+    expect(link?.getAttribute('rel')).toContain('noreferrer');
+  });
 });
