@@ -41,6 +41,16 @@ function fmtTokens(n?: number): string {
   return typeof n === 'number' ? n.toLocaleString('en-US') : '';
 }
 
+function fmtTimestamp(ts?: string): { date?: string; time?: string } {
+  if (!ts) return {};
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return {};
+  return {
+    date: d.toLocaleDateString(),
+    time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  };
+}
+
 // Short, human display name for a model id: the first meaningful alphabetic
 // family token (>=3 letters, so version bits like "v1"/"27b" are skipped),
 // title-cased. "qwen3.6:27b" -> "Qwen", "claude-opus-4-8" -> "Claude",
@@ -178,6 +188,17 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
                 <div className="flex flex-col items-start shrink-0 w-24 pr-3 border-r border-slate-200/70 dark:border-slate-700/50">
                   <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold text-white ' + lane.avatar}>{lane.ini}</span>
                   <span className={'mt-1 font-mono text-[10px] leading-tight break-words ' + lane.tag}>{who}</span>
+                  {(() => {
+                    const { date, time } = fmtTimestamp(ev.ts);
+                    if (!date) return null;
+                    return (
+                      <span className="mt-0.5 font-mono text-[9px] leading-tight text-slate-400 dark:text-slate-500 break-words">
+                        {date}
+                        <br />
+                        {time}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className={'min-w-0 flex-1 ' + (isLast ? '' : 'pb-4')}>
                   <span className={

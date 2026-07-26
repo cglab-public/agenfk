@@ -200,4 +200,39 @@ describe('RunsPanel', () => {
     // Selection auto-advances to the newest run → its transcript renders.
     await waitFor(() => expect(screen.getByText('impl phase')).toBeDefined());
   });
+
+  it('renders the event timestamp (date + time) under the identity caption when ts is valid', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: '2026-07-21T10:00:00.000Z', lane: 'worker', kind: 'note', text: 'hello' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('hello')).toBeDefined());
+    // The formatted date and time appear somewhere in the DOM (they are inside the gutter)
+    // toLocaleDateString / toLocaleTimeString output is locale-dependent, so just assert
+    // that the caption is present and the gutter content is richer than just the caption.
+    const who = screen.getByText('pi · Qwen');
+    // The timestamp is rendered as a sibling span inside the same gutter div
+    const gutterDiv = (who.parentElement as HTMLElement);
+    const timestampSpans = gutterDiv.querySelectorAll('span');
+    // There should be more than just the avatar + who caption (the timestamp span is extra)
+    // The timestamp span contains two lines (date \n time)
+    expect(timestampSpans.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('renders nothing for the timestamp when ts is missing or unparseable', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 'not-a-date', lane: 'worker', kind: 'note', text: 'bad ts' },
+      { id: 'e2', runId: 'r1', seq: 1, lane: 'worker', kind: 'note', text: 'missing ts' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('bad ts')).toBeDefined());
+    // No "Invalid Date" anywhere
+    expect(screen.queryByText('Invalid Date')).toBeNull();
+  });
 });
