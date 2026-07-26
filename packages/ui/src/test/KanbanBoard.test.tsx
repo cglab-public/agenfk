@@ -294,14 +294,14 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should correctly reorder items even when a type filter is active', async () => {
+  it('should correctly reorder items when drilled into a parent', async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
       const items = [
-        { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, sortOrder: 0, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] },
-        { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Story 1', status: Status.TODO, sortOrder: 1, createdAt: new Date('2026-01-02'), updatedAt: new Date('2026-01-02'), history: [] },
-        { id: 'i2', projectId: 'p1', type: ItemType.TASK, title: 'Task 2', status: Status.TODO, sortOrder: 2, createdAt: new Date('2026-01-03'), updatedAt: new Date('2026-01-03'), history: [] },
+        { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Parent Story', status: Status.TODO, sortOrder: 0, createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] },
+        { id: 'c1', projectId: 'p1', type: ItemType.TASK, title: 'Child One', status: Status.TODO, sortOrder: 10, parentId: 's1', createdAt: new Date('2026-01-02'), updatedAt: new Date('2026-01-02'), history: [] },
+        { id: 'c2', projectId: 'p1', type: ItemType.TASK, title: 'Child Two', status: Status.TODO, sortOrder: 20, parentId: 's1', createdAt: new Date('2026-01-03'), updatedAt: new Date('2026-01-03'), history: [] },
       ];
-      
+
       vi.mocked(api.listProjects).mockResolvedValue([project as any]);
       vi.mocked(api.listItems).mockResolvedValue(items as any);
       vi.mocked(api.updateItem).mockImplementation((id, updates) => Promise.resolve({ id, ...updates } as any));
@@ -309,36 +309,56 @@ describe('KanbanBoard', () => {
 
       render(<KanbanBoard />, { wrapper });
 
-      // Set filter to TASK
-      const select = await screen.findByRole('combobox');
-      fireEvent.change(select, { target: { value: ItemType.TASK } });
+      // Wait for all items to render, then drill into the parent story
+      await screen.findByText('Parent Story');
 
-      const task1Card = (await screen.findByText('Task 1')).closest('[draggable="true"]')!;
+      // Find the drill-down button inside the parent story's card.
+      // The drill button has the child count as its text.
+      const parentCard = screen.getByText('Parent Story').closest('[draggable="true"]')!;
+      const buttons = Array.from(parentCard.querySelectorAll('button'));
+      const drillBtn = buttons.find(b => b.textContent?.trim() === '2');
+      expect(drillBtn).toBeDefined();
+      fireEvent.click(drillBtn!);
+
+      // After drilling, only the children of the parent should be visible in columns.
+      // The parent title appears in the breadcrumb but NOT as a card.
+      await waitFor(() => {
+        expect(screen.getByText('Child One')).toBeDefined();
+        expect(screen.getByText('Child Two')).toBeDefined();
+        // Parent card should not be in any column
+        expect(document.querySelectorAll('#card-s1').length).toBe(0);
+      }, { timeout: 3000 });
+
+      const child1Card = (await screen.findByText('Child One')).closest('[draggable="true"]')!;
       const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
 
+      // Drag Child Two onto Child One (top half → above)
       const dataTransfer = {
         setData: vi.fn(),
-        getData: vi.fn((key) => key === 'itemId' ? 'i2' : ''),
+        getData: vi.fn((key) => key === 'itemId' ? 'c2' : ''),
       };
-      fireEvent.dragStart(screen.getByText('Task 2').closest('[draggable="true"]')!, { dataTransfer });
+      fireEvent.dragStart(screen.getByText('Child Two').closest('[draggable="true"]')!, { dataTransfer });
 
-      task1Card.getBoundingClientRect = vi.fn(() => ({
+      child1Card.getBoundingClientRect = vi.fn(() => ({
         top: 100, height: 100, bottom: 200, left: 0, right: 200, width: 200, x: 0, y: 100, toJSON: () => {}
       } as DOMRect));
 
       const dragOverEvent = new CustomEvent('dragover', { bubbles: true, cancelable: true }) as any;
-      dragOverEvent.clientY = 120; 
-      fireEvent(task1Card, dragOverEvent);
+      dragOverEvent.clientY = 120;
+      fireEvent(child1Card, dragOverEvent);
 
       fireEvent.drop(todoColumn, { dataTransfer });
 
       await waitFor(() => {
-        expect(api.bulkUpdateItems).toHaveBeenCalledWith(expect.arrayContaining([
-          expect.objectContaining({ id: 'i2', updates: expect.objectContaining({ sortOrder: 0 }) }),
-          expect.objectContaining({ id: 'i1', updates: expect.objectContaining({ sortOrder: 1 }) }),
-          expect.objectContaining({ id: 's1', updates: expect.objectContaining({ sortOrder: 2 }) })
-        ]));
+        expect(api.bulkUpdateItems).toHaveBeenCalled();
       });
+
+      const callArgs = (api.bulkUpdateItems as any).mock.calls[0][0];
+
+      expect(callArgs).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'c2', updates: expect.objectContaining({ sortOrder: 0 }) }),
+        expect.objectContaining({ id: 'c1', updates: expect.objectContaining({ sortOrder: 1 }) }),
+      ]));
     });
   });
 
@@ -718,6 +738,10 @@ describe('KanbanBoard', () => {
   });
 
   describe('Dynamic Flow Columns', () => {
+    beforeEach(() => {
+      vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    });
+
     it('should render columns from the active flow steps in order', async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
       const customFlow = {

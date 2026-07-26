@@ -126,8 +126,13 @@ export const api = {
     }
   },
   getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string; reason?: string }> => {
-    const { data } = await axios.get(`${API_URL}/jira/status`);
-    return data;
+    try {
+      const { data } = await axios.get(`${API_URL}/jira/status`);
+      return data;
+    } catch (e) {
+      console.error('API Error getting JIRA status:', e);
+      return { configured: false, connected: false };
+    }
   },
   disconnectJira: async (): Promise<void> => {
     try {
