@@ -473,6 +473,44 @@ describe('RunsPanel', () => {
     expect(transcript.querySelector('strong')?.textContent).toBe('prose markdown');
   });
 
+  // CGLAB-33: 'verdict' and 'dispatch' are orchestrator-authored prose, not
+  // machine output, so they must keep rendering as markdown. Without these the
+  // suite stays green when both are misclassified into the machine-output set —
+  // the prose side was otherwise pinned only by 'note' and 'think'.
+  it('renders a verdict event as markdown (prose kind)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'rv', itemId: 'i1', step: 'REVIEW', actor: 'reviewer', harness: 'claude-code', model: 'claude-opus-4-8', status: 'done', verdict: 'APPROVE', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'rv', seq: 0, ts: 't', lane: 'reviewer', kind: 'verdict', text: '**APPROVED** — changes look solid' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')?.textContent).toBe('APPROVED');
+    expect(transcript.textContent).not.toContain('**');
+  });
+
+  it('renders a dispatch event as markdown (prose kind)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'running', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'orchestrator', kind: 'dispatch', text: 'Please **implement** the `calculateTotal` function' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')?.textContent).toBe('implement');
+    expect(transcript.querySelector('code')?.textContent).toBe('calculateTotal');
+  });
+
   // Fix 5e: links must open in a new tab with noopener/noreferrer for safety.
   it('renders markdown links with target="_blank" and rel containing noopener', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([

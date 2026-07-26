@@ -34,10 +34,19 @@ export interface RunEvent {
   tokens?: number;
 }
 
-// Kinds whose text is machine output (command output, test results, diffs).
-// Rendering these through ReactMarkdown corrupts them: __init__ becomes bold,
-// pipe-aligned tables get reinterpreted, and diffs lose whitespace alignment.
-const MACHINE_OUTPUT_KINDS = new Set(['tool', 'result', 'diff'] as const);
+// Which kinds carry machine output (command output, test results, diffs) and so
+// must render literally, versus prose the agent wrote, which renders as markdown.
+// Keyed on the full kind union on purpose: adding a kind to RunEvent without
+// classifying it here is a compile error, not a silent default to markdown.
+const IS_MACHINE_OUTPUT: Record<RunEvent['kind'], boolean> = {
+  tool: true,
+  result: true,
+  diff: true,
+  dispatch: false,
+  think: false,
+  note: false,
+  verdict: false,
+};
 
 const LANE = {
   orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-indigo-500/60', tag: 'text-indigo-600 dark:text-indigo-300' },
@@ -135,10 +144,10 @@ const TranscriptRow = React.memo(function TranscriptRow({
           'font-mono text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ' +
           'bg-slate-100 dark:bg-slate-800 ' + lane.tag
         }>{ev.kind}{ev.tool ? ' · ' + ev.tool : ''}</span>
-        {MACHINE_OUTPUT_KINDS.has(ev.kind as 'tool' | 'result' | 'diff') && ev.text && (
+        {IS_MACHINE_OUTPUT[ev.kind] && ev.text && (
           <pre className="mt-1 font-mono text-[11px] bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">{stripAnsi(ev.text)}</pre>
         )}
-        {!MACHINE_OUTPUT_KINDS.has(ev.kind as 'tool' | 'result' | 'diff') && ev.text && (
+        {!IS_MACHINE_OUTPUT[ev.kind] && ev.text && (
           <div className={'mt-1 text-[13px] break-words ' + (ev.kind === 'think' ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200')}>
             <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
