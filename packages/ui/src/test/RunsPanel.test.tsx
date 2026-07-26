@@ -200,4 +200,48 @@ describe('RunsPanel', () => {
     // Selection auto-advances to the newest run → its transcript renders.
     await waitFor(() => expect(screen.getByText('impl phase')).toBeDefined());
   });
+
+  it('renders the event timestamp (date + time) under the identity caption when ts is valid', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    const ts = '2026-07-21T10:00:00.000Z';
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts, lane: 'worker', kind: 'note', text: 'hello' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('hello')).toBeDefined());
+    // Assert the rendered date and time themselves, not just that an extra span
+    // exists — a span-count check passes on any garbage the formatter emits.
+    // The exact strings are locale- and timezone-dependent, so derive the
+    // expectation the same way the component does rather than hardcoding it.
+    const d = new Date(ts);
+    const gutter = (screen.getByText('pi · Qwen').parentElement as HTMLElement);
+    expect(gutter.textContent).toContain(d.toLocaleDateString());
+    expect(gutter.textContent).toContain(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  });
+
+  it('renders nothing for the timestamp when ts is missing or unparseable', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 'not-a-date', lane: 'worker', kind: 'note', text: 'bad ts' },
+      { id: 'e2', runId: 'r1', seq: 1, lane: 'worker', kind: 'note', text: 'missing ts' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('bad ts')).toBeDefined());
+    // queryByText('Invalid Date') is NOT enough: with the guard removed the span
+    // renders "Invalid Date" twice (date + <br> + time), whose normalised
+    // textContent never equals the exact string — so that assertion passes on
+    // the very bug it exists to catch. Match the substring, and assert the
+    // timestamp span is genuinely absent rather than merely not-that-string.
+    for (const text of ['bad ts', 'missing ts']) {
+      const gutter = (screen.getByText(text).closest('.flex.gap-3') as HTMLElement)
+        .firstElementChild as HTMLElement;
+      expect(gutter.textContent).not.toMatch(/Invalid/);
+      // avatar tile + who caption only — no third (timestamp) span.
+      expect(gutter.querySelectorAll('span')).toHaveLength(2);
+    }
+  });
 });

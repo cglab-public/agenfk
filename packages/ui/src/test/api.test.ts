@@ -90,11 +90,9 @@ describe('UI API Client', () => {
     expect(result.connected).toBe(true);
   });
 
-  it('should return disconnected jira status on error', async () => {
+  it('should propagate errors from jira status so the caller can show a loading state', async () => {
     mockedAxios.get.mockRejectedValue(new Error('network'));
-    const result = await api.getJiraStatus();
-    expect(result.configured).toBe(false);
-    expect(result.connected).toBe(false);
+    await expect(api.getJiraStatus()).rejects.toThrow('network');
   });
 
   it('should disconnect jira', async () => {

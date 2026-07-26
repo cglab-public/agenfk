@@ -246,7 +246,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             {item.type}
           </span>
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors">
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
           )}
@@ -403,6 +403,26 @@ export const KanbanBoard: React.FC = () => {
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
+
+  // Responsive column count for the project-picker grid
+  const [columnCount, setColumnCount] = useState(1);
+  useEffect(() => {
+    if (typeof window.matchMedia === 'undefined') return;
+    const mq3 = window.matchMedia('(min-width: 1024px)');
+    const mq2 = window.matchMedia('(min-width: 640px)');
+    const update = () => {
+      if (mq3.matches) setColumnCount(3);
+      else if (mq2.matches) setColumnCount(2);
+      else setColumnCount(1);
+    };
+    update();
+    mq3.addEventListener('change', update);
+    mq2.addEventListener('change', update);
+    return () => {
+      mq3.removeEventListener('change', update);
+      mq2.removeEventListener('change', update);
+    };
+  }, []);
 
   const togglePin = () => {
     setIsPinned(prev => {
@@ -714,14 +734,22 @@ export const KanbanBoard: React.FC = () => {
     if (!selectedProjectId || (!isPickerOpen && !isCreatingProject)) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Escape answers the innermost question first: an armed delete confirm
+        // is cancelled, and the picker stays open. Closing the whole picker
+        // would dismiss the prompt without the user ever answering it.
+        if (confirmDeleteProjectId !== null) {
+          setConfirmDeleteProjectId(null);
+          return;
+        }
         setIsPickerOpen(false);
         setIsCreatingProject(false);
         setProjectSearch('');
+        setHighlightedProjectIndex(-1);
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, confirmDeleteProjectId]);
 
   // Single source of truth for the sorted+filtered project list.
   // Placed before the early-return so hook order is always stable.
@@ -732,19 +760,82 @@ export const KanbanBoard: React.FC = () => {
     [projects, projectSearch]
   );
 
+  // Clamp an index into [0, n-1]; returns -1 when the list is empty.
+  const clampIndex = (next: number, n: number): number =>
+    n === 0 ? -1 : Math.min(Math.max(next, 0), n - 1);
+
   // Keyboard navigation in the project picker — works anywhere when the picker
   // is open (first-load screen or overlay), so you don't need to focus the
   // search box first. Skips when creating a new project so Enter stays free.
   useEffect(() => {
     const pickerVisible = selectedProjectId === null || isPickerOpen;
     if (!pickerVisible || isCreatingProject) return;
+    const cols = columnCount;
+    const n = sortedFilteredProjects.length;
+
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.shiftKey || e.metaKey || e.altKey || e.ctrlKey || e.isComposing) {
+        return;
+      }
+
+      // A delete confirmation is a modal question about one specific project.
+      // Enter must not fall through to "open the highlighted project" while it
+      // is armed — the keystroke was aimed at the confirm, and answering it by
+      // navigating elsewhere is the wrong action for a destructive prompt.
+      // Enter is deliberately inert here rather than confirming: Enter must
+      // never be the key that deletes something. Arrow keys disarm instead,
+      // since moving the highlight away abandons the question.
+      // Escape is handled here rather than in the picker-dismiss effect below,
+      // because that effect is only mounted once a project is selected — on the
+      // first-load picker there is no board to return to, so it never attaches.
+      // The confirm can be armed on that screen too, and must be cancellable.
+      if (confirmDeleteProjectId !== null) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setConfirmDeleteProjectId(null);
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          setConfirmDeleteProjectId(null);
+        }
+      }
+
+      const caretTarget =
+        e.target instanceof HTMLInputElement &&
+        e.target.getAttribute('aria-label') === 'Search projects'
+          ? e.target
+          : null;
+
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => Math.min(prev + 1, sortedFilteredProjects.length - 1));
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev + cols, n));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev > 0 ? prev - 1 : 0);
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - cols, n));
+      } else if (e.key === 'ArrowRight') {
+        // Boundary-aware: let the browser move the caret when it can.
+        if (caretTarget && (caretTarget.selectionEnd ?? 0) < caretTarget.value.length) {
+          return; // caret can move right — do nothing
+        }
+        if (caretTarget && caretTarget.selectionStart !== caretTarget.selectionEnd) {
+          return; // selection exists — let browser handle it
+        }
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev + 1, n));
+      } else if (e.key === 'ArrowLeft') {
+        // Boundary-aware: let the browser move the caret when it can.
+        if (caretTarget && (caretTarget.selectionStart ?? 0) > 0) {
+          return; // caret can move left — do nothing
+        }
+        if (caretTarget && caretTarget.selectionStart !== caretTarget.selectionEnd) {
+          return; // selection exists — let browser handle it
+        }
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - 1, n));
       } else if (e.key === 'Enter') {
         if (highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length) {
           handleSelectProject(sortedFilteredProjects[highlightedProjectIndex].id);
@@ -753,7 +844,16 @@ export const KanbanBoard: React.FC = () => {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex, columnCount, confirmDeleteProjectId]);
+
+  // Scroll the highlighted option into view when the index changes
+  useEffect(() => {
+    if (highlightedProjectIndex < 0) return;
+    const project = sortedFilteredProjects[highlightedProjectIndex];
+    if (!project) return;
+    const el = document.getElementById(`project-option-${project.id}`);
+    el?.scrollIntoView?.({ block: 'nearest' });
+  }, [highlightedProjectIndex, sortedFilteredProjects]);
 
   // Auto-focus the project-picker search input when the picker opens
   const pickerHasProjects = projects != null && projects.length > 0;
@@ -1040,7 +1140,7 @@ export const KanbanBoard: React.FC = () => {
   // Project Selection Screen
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full my-auto bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
@@ -1070,9 +1170,9 @@ export const KanbanBoard: React.FC = () => {
                   aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
                 />
-                <div className="grid gap-2 max-h-72 overflow-y-auto" role="listbox" aria-label="Projects">
+                <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-h-[60vh] overflow-y-auto" role="listbox" aria-label="Projects" data-columns={columnCount}>
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
-                    <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
+                    <p className="col-span-full text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
                     sortedFilteredProjects.map((p, index) => (
                     <div
@@ -1117,6 +1217,7 @@ export const KanbanBoard: React.FC = () => {
                             onClick={(e) => { e.stopPropagation(); setConfirmDeleteProjectId(p.id); }}
                             className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
                             title="Delete project"
+                            aria-label={`Delete project ${p.name}`}
                           >
                             <Trash2 size={16} />
                           </button>
@@ -1175,7 +1276,7 @@ export const KanbanBoard: React.FC = () => {
   // First load / no project chosen yet: full-screen, not dismissable (no close button).
   if (!selectedProjectId) {
     return (
-      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
+      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6">
         <Logo size={64} className="mb-8" />
         {projectPickerCard}
       </div>
@@ -1785,7 +1886,7 @@ export const KanbanBoard: React.FC = () => {
         <div
           data-testid="project-picker-backdrop"
           onClick={(e) => { if (e.target === e.currentTarget) closePicker(); }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-6"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm p-6"
         >
           {projectPickerCard}
         </div>
