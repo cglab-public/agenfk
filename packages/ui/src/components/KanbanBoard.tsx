@@ -766,6 +766,10 @@ export const KanbanBoard: React.FC = () => {
     const n = sortedFilteredProjects.length;
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.shiftKey || e.metaKey || e.altKey || e.ctrlKey || e.isComposing) {
+        return;
+      }
+
       const caretTarget =
         e.target instanceof HTMLInputElement &&
         e.target.getAttribute('aria-label') === 'Search projects'
@@ -783,12 +787,18 @@ export const KanbanBoard: React.FC = () => {
         if (caretTarget && (caretTarget.selectionEnd ?? 0) < caretTarget.value.length) {
           return; // caret can move right — do nothing
         }
+        if (caretTarget && caretTarget.selectionStart !== caretTarget.selectionEnd) {
+          return; // selection exists — let browser handle it
+        }
         e.preventDefault();
         setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev + 1, n));
       } else if (e.key === 'ArrowLeft') {
         // Boundary-aware: let the browser move the caret when it can.
         if (caretTarget && (caretTarget.selectionStart ?? 0) > 0) {
           return; // caret can move left — do nothing
+        }
+        if (caretTarget && caretTarget.selectionStart !== caretTarget.selectionEnd) {
+          return; // selection exists — let browser handle it
         }
         e.preventDefault();
         setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - 1, n));

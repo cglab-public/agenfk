@@ -358,7 +358,7 @@ describe('ProjectPickerGrid', () => {
     setup();
     await waitFor(() => screen.getByText('a1'));
 
-    const input = screen.getByLabelText('Search projects');
+    const input = screen.getByLabelText('Search projects') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'a' } });
     input.setSelectionRange(1, 1);
 
@@ -373,7 +373,7 @@ describe('ProjectPickerGrid', () => {
     setup();
     await waitFor(() => screen.getByText('a1'));
 
-    const input = screen.getByLabelText('Search projects');
+    const input = screen.getByLabelText('Search projects') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'a' } });
     input.setSelectionRange(0, 0);
 
@@ -387,7 +387,7 @@ describe('ProjectPickerGrid', () => {
     setup();
     await waitFor(() => screen.getByText('a1'));
 
-    const input = screen.getByLabelText('Search projects');
+    const input = screen.getByLabelText('Search projects') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'a' } });
     // highlight a1 (index 0), then ArrowRight to index 1 (a2), then ArrowLeft at caret 0
     fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1 (idx 0)
@@ -407,7 +407,7 @@ describe('ProjectPickerGrid', () => {
     setup();
     await waitFor(() => screen.getByText('a1'));
 
-    const input = screen.getByLabelText('Search projects');
+    const input = screen.getByLabelText('Search projects') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'a' } });
     input.setSelectionRange(1, 1);
 
