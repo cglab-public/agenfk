@@ -34,6 +34,11 @@ export interface RunEvent {
   tokens?: number;
 }
 
+// Kinds whose text is machine output (command output, test results, diffs).
+// Rendering these through ReactMarkdown corrupts them: __init__ becomes bold,
+// pipe-aligned tables get reinterpreted, and diffs lose whitespace alignment.
+const MACHINE_OUTPUT_KINDS = new Set(['tool', 'result', 'diff'] as const);
+
 const LANE = {
   orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-indigo-500/60', tag: 'text-indigo-600 dark:text-indigo-300' },
   worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
@@ -130,10 +135,10 @@ const TranscriptRow = React.memo(function TranscriptRow({
           'font-mono text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ' +
           'bg-slate-100 dark:bg-slate-800 ' + lane.tag
         }>{ev.kind}{ev.tool ? ' · ' + ev.tool : ''}</span>
-        {ev.kind === 'tool' && ev.text && (
+        {MACHINE_OUTPUT_KINDS.has(ev.kind as 'tool' | 'result' | 'diff') && ev.text && (
           <pre className="mt-1 font-mono text-[11px] bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">{stripAnsi(ev.text)}</pre>
         )}
-        {ev.kind !== 'tool' && ev.text && (
+        {!MACHINE_OUTPUT_KINDS.has(ev.kind as 'tool' | 'result' | 'diff') && ev.text && (
           <div className={'mt-1 text-[13px] break-words ' + (ev.kind === 'think' ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200')}>
             <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>

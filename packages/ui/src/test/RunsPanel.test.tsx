@@ -400,6 +400,79 @@ describe('RunsPanel', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 
+  // CGLAB-33: machine-output kinds (result, diff) must render literally, not as markdown.
+
+  it('renders a diff event inside <pre> and preserves leading spaces on context lines', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'diff', text: '--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n- old line\n+ new line\n unchanged line' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    // Leading space on context line must survive (diff alignment)
+    expect(pre?.textContent).toContain(' unchanged line');
+    // Must NOT produce markdown artefacts like <hr> or <ul>
+    expect(screen.queryByRole('separator')).toBeNull();
+    expect(screen.getByTestId('runs-transcript').querySelector('ul')).toBeNull();
+  });
+
+  it('renders __init__ verbatim in a result event (no <strong> from double underscores)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'result', text: "AttributeError: '__init__' missing" },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('__init__');
+    // Double underscores must NOT produce a <strong>
+    expect(screen.getByTestId('runs-transcript').querySelector('strong')).toBeNull();
+  });
+
+  it('does not produce a <table> from pipe-aligned lines in a result event', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'result', text: 'a | b | c\n--|--|--\n1 | 2 | 3' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('a | b | c');
+    expect(pre?.textContent).toContain('1 | 2 | 3');
+    // Must NOT produce a GFM table
+    expect(screen.getByTestId('runs-transcript').querySelector('table')).toBeNull();
+  });
+
+  it('still renders markdown in a note event (prose path regression guard)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '**prose markdown** is still rendered' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')).not.toBeNull();
+    expect(transcript.querySelector('strong')?.textContent).toBe('prose markdown');
+  });
+
   // Fix 5e: links must open in a new tab with noopener/noreferrer for safety.
   it('renders markdown links with target="_blank" and rel containing noopener', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([
