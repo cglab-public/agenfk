@@ -246,7 +246,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             {item.type}
           </span>
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors">
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
           )}
@@ -737,6 +737,7 @@ export const KanbanBoard: React.FC = () => {
         setIsPickerOpen(false);
         setIsCreatingProject(false);
         setProjectSearch('');
+        setHighlightedProjectIndex(-1);
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -1106,7 +1107,7 @@ export const KanbanBoard: React.FC = () => {
   // Project Selection Screen
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full my-auto bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
           {selectedProjectId && (
             <button
               aria-label="Close project picker"

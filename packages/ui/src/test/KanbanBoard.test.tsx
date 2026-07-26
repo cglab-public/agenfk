@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -38,6 +38,7 @@ Object.defineProperty(window, 'matchMedia', {
 // Mock scrollTo
 if (typeof window !== 'undefined') {
   window.HTMLElement.prototype.scrollTo = vi.fn();
+  window.HTMLElement.prototype.scrollIntoView = vi.fn();
 }
 
 // Default flow used in tests — uses Status names as labels to keep column header assertions stable
@@ -99,6 +100,7 @@ describe('KanbanBoard', () => {
     vi.clearAllMocks();
     localStorage.clear();
     queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
   });
 
   afterEach(() => {
@@ -313,12 +315,10 @@ describe('KanbanBoard', () => {
       await screen.findByText('Parent Story');
 
       // Find the drill-down button inside the parent story's card.
-      // The drill button has the child count as its text.
-      const parentCard = screen.getByText('Parent Story').closest('[draggable="true"]')!;
-      const buttons = Array.from(parentCard.querySelectorAll('button'));
-      const drillBtn = buttons.find(b => b.textContent?.trim() === '2');
+      const parentCard = screen.getByText('Parent Story').closest('[draggable="true"]') as HTMLElement;
+      const drillBtn = within(parentCard).getByRole('button', { name: /child items/i });
       expect(drillBtn).toBeDefined();
-      fireEvent.click(drillBtn!);
+      fireEvent.click(drillBtn);
 
       // After drilling, only the children of the parent should be visible in columns.
       // The parent title appears in the breadcrumb but NOT as a card.
@@ -359,6 +359,7 @@ describe('KanbanBoard', () => {
         expect.objectContaining({ id: 'c2', updates: expect.objectContaining({ sortOrder: 0 }) }),
         expect.objectContaining({ id: 'c1', updates: expect.objectContaining({ sortOrder: 1 }) }),
       ]));
+      expect(callArgs).toHaveLength(2);
     });
   });
 
@@ -738,9 +739,6 @@ describe('KanbanBoard', () => {
   });
 
   describe('Dynamic Flow Columns', () => {
-    beforeEach(() => {
-      vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
-    });
 
     it('should render columns from the active flow steps in order', async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
