@@ -1,8 +1,11 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { io } from 'socket.io-client';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { API_URL } from '../apiUrl';
+import { stripAnsi } from '../utils';
 
 export interface AgentRun {
   id: string;
@@ -209,7 +212,13 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
                     <pre className="mt-1 font-mono text-[11px] bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 overflow-x-auto whitespace-pre-wrap break-words text-slate-700 dark:text-slate-200">{ev.text}</pre>
                   )}
                   {ev.kind !== 'tool' && ev.text && (
-                    <div className={'mt-1 text-[13px] break-words ' + (ev.kind === 'think' ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200')}>{ev.text}</div>
+                    <div className={'mt-1 text-[13px] break-words ' + (ev.kind === 'think' ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200')}>
+                      <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {stripAnsi(ev.text)}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
                   )}
                   {typeof ev.tokens === 'number' && (
                     <span className="inline-block mt-1 font-mono text-[10px] text-slate-400 dark:text-slate-500">{fmtTokens(ev.tokens)} tok</span>

@@ -231,8 +231,13 @@ describe('RunsPanel', () => {
     ] as any);
     renderPanel();
 
-    // Wait for the transcript to render
-    const transcript = await waitFor(() => screen.getByTestId('runs-transcript'));
+    // Wait for the CONTENT, not the container: the transcript div is present on
+    // the very first render, before the events query resolves, so awaiting the
+    // testid alone returns an empty transcript and every assertion below races.
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
 
     // After the fix, **bold text** produces a <strong> element
     expect(transcript.querySelector('strong')).not.toBeNull();
@@ -263,7 +268,11 @@ describe('RunsPanel', () => {
     ] as any);
     renderPanel();
 
-    const transcript = await waitFor(() => screen.getByTestId('runs-transcript'));
+    // Await the content, not the container — see the note in the test above.
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('del')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
     // After the fix, ~~strikethrough~~ produces a <del> element
     expect(transcript.querySelector('del')).not.toBeNull();
     expect(transcript.querySelector('del')?.textContent).toBe('strikethrough');
