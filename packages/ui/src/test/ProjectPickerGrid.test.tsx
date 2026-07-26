@@ -557,4 +557,71 @@ describe('ProjectPickerGrid', () => {
     expect(row).not.toBeNull();
     expect(row!.getAttribute('aria-selected')).toBe('true');
   });
+
+  // The modifier / IME guard had no coverage at all: deleting it left the suite
+  // green. It exists because Shift+Arrow (extending a selection) and IME
+  // composition keystrokes were both being swallowed as grid navigation.
+  describe('does not hijack keys that belong to the user', () => {
+    for (const modifier of ['shiftKey', 'metaKey', 'altKey', 'ctrlKey'] as const) {
+      it(`ignores ArrowDown with ${modifier}`, async () => {
+        setColumns(3);
+        setup();
+        await waitFor(() => screen.getByText('a1'));
+
+        fireEvent.keyDown(document, { key: 'ArrowDown', [modifier]: true });
+
+        expect(getProjectRow('a1')!.getAttribute('aria-selected')).toBe('false');
+      });
+    }
+
+    it('ignores ArrowDown mid-IME-composition', async () => {
+      setColumns(3);
+      setup();
+      await waitFor(() => screen.getByText('a1'));
+
+      fireEvent.keyDown(document, { key: 'ArrowDown', isComposing: true });
+
+      expect(getProjectRow('a1')!.getAttribute('aria-selected')).toBe('false');
+    });
+  });
+
+  // A delete confirmation is a question about one project. Navigation keys must
+  // not answer it, and Enter must not fall through to "open the highlighted
+  // project" while it is on screen.
+  describe('with a delete confirmation armed', () => {
+    async function armDelete() {
+      setColumns(3);
+      setup();
+      await waitFor(() => screen.getByText('a1'));
+      fireEvent.keyDown(document, { key: 'ArrowDown' }); // highlight a1
+      fireEvent.click(screen.getByLabelText('Delete project a1'));
+      await waitFor(() => screen.getByText('Delete "a1"?'));
+    }
+
+    it('Enter does not select the highlighted project', async () => {
+      await armDelete();
+
+      fireEvent.keyDown(document, { key: 'Enter' });
+
+      expect(localStorage.getItem('agenfk_project_id')).toBeNull();
+      expect(screen.getByText('Delete "a1"?')).toBeDefined();
+    });
+
+    it('an arrow key disarms the confirmation', async () => {
+      await armDelete();
+
+      fireEvent.keyDown(document, { key: 'ArrowRight' });
+
+      expect(screen.queryByText('Delete "a1"?')).toBeNull();
+    });
+
+    it('Escape cancels the confirmation and leaves the picker open', async () => {
+      await armDelete();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      expect(screen.queryByText('Delete "a1"?')).toBeNull();
+      expect(screen.getByRole('listbox', { name: /projects/i })).toBeDefined();
+    });
+  });
 });

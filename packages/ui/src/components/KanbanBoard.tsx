@@ -734,6 +734,13 @@ export const KanbanBoard: React.FC = () => {
     if (!selectedProjectId || (!isPickerOpen && !isCreatingProject)) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Escape answers the innermost question first: an armed delete confirm
+        // is cancelled, and the picker stays open. Closing the whole picker
+        // would dismiss the prompt without the user ever answering it.
+        if (confirmDeleteProjectId !== null) {
+          setConfirmDeleteProjectId(null);
+          return;
+        }
         setIsPickerOpen(false);
         setIsCreatingProject(false);
         setProjectSearch('');
@@ -742,7 +749,7 @@ export const KanbanBoard: React.FC = () => {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, confirmDeleteProjectId]);
 
   // Single source of truth for the sorted+filtered project list.
   // Placed before the early-return so hook order is always stable.
@@ -769,6 +776,32 @@ export const KanbanBoard: React.FC = () => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.shiftKey || e.metaKey || e.altKey || e.ctrlKey || e.isComposing) {
         return;
+      }
+
+      // A delete confirmation is a modal question about one specific project.
+      // Enter must not fall through to "open the highlighted project" while it
+      // is armed — the keystroke was aimed at the confirm, and answering it by
+      // navigating elsewhere is the wrong action for a destructive prompt.
+      // Enter is deliberately inert here rather than confirming: Enter must
+      // never be the key that deletes something. Arrow keys disarm instead,
+      // since moving the highlight away abandons the question.
+      // Escape is handled here rather than in the picker-dismiss effect below,
+      // because that effect is only mounted once a project is selected — on the
+      // first-load picker there is no board to return to, so it never attaches.
+      // The confirm can be armed on that screen too, and must be cancellable.
+      if (confirmDeleteProjectId !== null) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setConfirmDeleteProjectId(null);
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          return;
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+          setConfirmDeleteProjectId(null);
+        }
       }
 
       const caretTarget =
@@ -811,7 +844,7 @@ export const KanbanBoard: React.FC = () => {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex, columnCount]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex, columnCount, confirmDeleteProjectId]);
 
   // Scroll the highlighted option into view when the index changes
   useEffect(() => {
@@ -1184,6 +1217,7 @@ export const KanbanBoard: React.FC = () => {
                             onClick={(e) => { e.stopPropagation(); setConfirmDeleteProjectId(p.id); }}
                             className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
                             title="Delete project"
+                            aria-label={`Delete project ${p.name}`}
                           >
                             <Trash2 size={16} />
                           </button>
