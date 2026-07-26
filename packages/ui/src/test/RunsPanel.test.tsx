@@ -221,6 +221,90 @@ describe('RunsPanel', () => {
     expect(gutter.textContent).toContain(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   });
 
+  // CGLAB-18d: non-tool events must render markdown as formatted HTML, not raw syntax.
+  it('renders markdown constructs (bold, code, list) as real DOM elements in a non-tool event', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '**bold text** and `inline code`\n\n- first item\n- second item' },
+    ] as any);
+    renderPanel();
+
+    // Wait for the transcript to render
+    const transcript = await waitFor(() => screen.getByTestId('runs-transcript'));
+
+    // After the fix, **bold text** produces a <strong> element
+    expect(transcript.querySelector('strong')).not.toBeNull();
+    expect(transcript.querySelector('strong')?.textContent).toBe('bold text');
+
+    // After the fix, `inline code` produces a <code> element (inside a paragraph)
+    const code = transcript.querySelector('code');
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe('inline code');
+
+    // After the fix, list items are <li> elements (not "- item" text)
+    const lis = transcript.querySelectorAll('li');
+    expect(lis.length).toBe(2);
+    expect(lis[0].textContent).toBe('first item');
+
+    // Literal markdown syntax must NOT survive in the rendered output
+    expect(transcript.textContent).not.toContain('**');
+    expect(transcript.textContent).not.toContain('- first item');
+  });
+
+  // CGLAB-18d: remark-gfm must be wired up, not just react-markdown alone.
+  it('renders a GFM strikethrough as a <del> element', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '~~strikethrough~~' },
+    ] as any);
+    renderPanel();
+
+    const transcript = await waitFor(() => screen.getByTestId('runs-transcript'));
+    // After the fix, ~~strikethrough~~ produces a <del> element
+    expect(transcript.querySelector('del')).not.toBeNull();
+    expect(transcript.querySelector('del')?.textContent).toBe('strikethrough');
+  });
+
+  // CGLAB-18d: tool events must NOT render markdown — they stay literal in <pre>.
+  it('keeps markdown literal in a tool event (renders in <pre>, no formatting)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'tool', tool: 'bash', text: '**bold** and `code`\n- list' },
+    ] as any);
+    renderPanel();
+
+    // Wait for the <pre> to appear (tool events render text in <pre>)
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('**bold**');
+    expect(pre?.textContent).toContain('- list');
+
+    // No markdown-formatted elements should appear
+    expect(document.querySelector('strong')).toBeNull();
+  });
+
+  // CGLAB-18d: think events keep their italic visual distinction.
+  it('keeps italic styling on think events after markdown rendering', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'think', text: 'reasoning here' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('reasoning here')).toBeDefined());
+    const textEl = screen.getByText('reasoning here');
+    expect(textEl.closest('.italic')).not.toBeNull();
+  });
+
   it('renders nothing for the timestamp when ts is missing or unparseable', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([
       { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
