@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -349,5 +349,212 @@ describe('ProjectPickerGrid', () => {
     expect(listClasses).toContain('lg:grid-cols-3');
 
     expect(listClasses).toContain('overflow-y-auto');
+  });
+
+  // ── Group A — arrow keys must not steal the search caret ──────────────────
+
+  it('ArrowLeft with text in the search box moves the caret, not the highlight', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'a' } });
+    input.setSelectionRange(1, 1);
+
+    const result = fireEvent.keyDown(input, { key: 'ArrowLeft' });
+    // preventDefault() was NOT called (fireEvent returns false when it was)
+    expect(result).toBe(true);
+    expect(getHighlightedRow()).toBeNull();
+  });
+
+  it('ArrowRight with the caret mid-text moves the caret, not the highlight', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'a' } });
+    input.setSelectionRange(0, 0);
+
+    const result = fireEvent.keyDown(input, { key: 'ArrowRight' });
+    expect(result).toBe(true);
+    expect(getHighlightedRow()).toBeNull();
+  });
+
+  it('ArrowLeft at caret position 0 navigates the grid', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'a' } });
+    // highlight a1 (index 0), then ArrowRight to index 1 (a2), then ArrowLeft at caret 0
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1 (idx 0)
+    fireEvent.keyDown(document, { key: 'ArrowRight' }); // a2 (idx 1)
+
+    input.setSelectionRange(0, 0);
+    fireEvent.keyDown(input, { key: 'ArrowLeft' });
+
+    // highlight should have moved back to the first matching project (a1)
+    const row = getProjectRow('a1');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('ArrowRight at the end of the text navigates the grid', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'a' } });
+    input.setSelectionRange(1, 1);
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1 (idx 0)
+    fireEvent.keyDown(input, { key: 'ArrowRight' });
+
+    const row = getProjectRow('a2');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('ArrowDown and ArrowUp still navigate even with text in the box', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'a' } });
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1 (idx 0)
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a4 (idx 3)
+
+    const row = getProjectRow('a4');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+  });
+
+  // ── Group B — empty and stale index states ────────────────────────────────
+
+  it('arrowing on an empty filtered list highlights nothing', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'zzzz' } });
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+
+    expect(getHighlightedRow()).toBeNull();
+    expect(screen.queryByText(/No projects match/)).not.toBeNull();
+  });
+
+  it('the empty-state message spans the full grid width', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const input = screen.getByLabelText('Search projects');
+    fireEvent.change(input, { target: { value: 'zzzz' } });
+
+    const emptyMsg = screen.getByText(/No projects match/);
+    expect(emptyMsg.className).toContain('col-span-full');
+  });
+
+  it('ArrowUp re-clamps an index left beyond the end of a shrunken list', async () => {
+    setColumns(3);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    // ArrowDown x3 at 3 cols: 0 -> 3 -> 6 (a7)
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1 (idx 0)
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a4 (idx 3)
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a7 (idx 6)
+
+    const input = screen.getByLabelText('Search projects');
+    // narrow to just a1
+    fireEvent.change(input, { target: { value: 'a1' } });
+
+    // ArrowUp: 6-3 = 3, which is beyond the new list (length 1)
+    fireEvent.keyDown(document, { key: 'ArrowUp' });
+
+    // should clamp inside the new shorter list -> a1
+    const row = getProjectRow('a1');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+  });
+
+  // ── Group C — the matchMedia subscription is real ─────────────────────────
+
+  it('data-columns updates when a media query change fires', async () => {
+    // Build a matchMedia mock that records listeners and starts non-matching
+    const listeners: Array<(mq: any) => void> = [];
+    let matchesNow = false;
+
+    (window.matchMedia as any).mockImplementation((query: string) => ({
+      get matches() { return matchesNow; },
+      media: query,
+      onchange: null,
+      addEventListener(type: string, cb: (mq: any) => void) {
+        if (type === 'change') listeners.push(cb);
+      },
+      removeEventListener(type: string, cb: (mq: any) => void) {
+        if (type === 'change') {
+          const idx = listeners.indexOf(cb);
+          if (idx >= 0) listeners.splice(idx, 1);
+        }
+      },
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+
+    // Start with nothing matching -> 1 column
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    const listbox = screen.getByRole('listbox', { name: /projects/i });
+    expect(listbox.getAttribute('data-columns')).toBe('1');
+
+    // Flip the mock so the 1024px query now matches
+    matchesNow = true;
+    // Fire all recorded change listeners
+    await act(async () => {
+      for (const cb of listeners) {
+        cb({ matches: true } as any);
+      }
+    });
+
+    expect(listbox.getAttribute('data-columns')).toBe('3');
+  });
+
+  // ── Group D — navigation at one column ────────────────────────────────────
+
+  it('cols=1: ArrowDown moves one item at a time', async () => {
+    setColumns(1);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a2
+
+    const row = getProjectRow('a2');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('cols=1: ArrowRight also moves one item', async () => {
+    setColumns(1);
+    setup();
+    await waitFor(() => screen.getByText('a1'));
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' }); // a1
+    fireEvent.keyDown(document, { key: 'ArrowRight' }); // a2
+
+    const row = getProjectRow('a2');
+    expect(row).not.toBeNull();
+    expect(row!.getAttribute('aria-selected')).toBe('true');
   });
 });

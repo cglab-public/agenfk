@@ -752,6 +752,10 @@ export const KanbanBoard: React.FC = () => {
     [projects, projectSearch]
   );
 
+  // Clamp an index into [0, n-1]; returns -1 when the list is empty.
+  const clampIndex = (next: number, n: number): number =>
+    n === 0 ? -1 : Math.min(Math.max(next, 0), n - 1);
+
   // Keyboard navigation in the project picker — works anywhere when the picker
   // is open (first-load screen or overlay), so you don't need to focus the
   // search box first. Skips when creating a new project so Enter stays free.
@@ -760,19 +764,34 @@ export const KanbanBoard: React.FC = () => {
     if (!pickerVisible || isCreatingProject) return;
     const cols = columnCount;
     const n = sortedFilteredProjects.length;
+
     const onKeyDown = (e: KeyboardEvent) => {
+      const caretTarget =
+        e.target instanceof HTMLInputElement &&
+        e.target.getAttribute('aria-label') === 'Search projects'
+          ? e.target
+          : null;
+
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.min(prev + cols, n - 1));
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev + cols, n));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.max(prev - cols, 0));
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - cols, n));
       } else if (e.key === 'ArrowRight') {
+        // Boundary-aware: let the browser move the caret when it can.
+        if (caretTarget && (caretTarget.selectionEnd ?? 0) < caretTarget.value.length) {
+          return; // caret can move right — do nothing
+        }
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.min(prev + 1, n - 1));
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev + 1, n));
       } else if (e.key === 'ArrowLeft') {
+        // Boundary-aware: let the browser move the caret when it can.
+        if (caretTarget && (caretTarget.selectionStart ?? 0) > 0) {
+          return; // caret can move left — do nothing
+        }
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.max(prev - 1, 0));
+        setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - 1, n));
       } else if (e.key === 'Enter') {
         if (highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length) {
           handleSelectProject(sortedFilteredProjects[highlightedProjectIndex].id);
@@ -782,6 +801,15 @@ export const KanbanBoard: React.FC = () => {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex, columnCount]);
+
+  // Scroll the highlighted option into view when the index changes
+  useEffect(() => {
+    if (highlightedProjectIndex < 0) return;
+    const project = sortedFilteredProjects[highlightedProjectIndex];
+    if (!project) return;
+    const el = document.getElementById(`project-option-${project.id}`);
+    el?.scrollIntoView?.({ block: 'nearest' });
+  }, [highlightedProjectIndex, sortedFilteredProjects]);
 
   // Auto-focus the project-picker search input when the picker opens
   const pickerHasProjects = projects != null && projects.length > 0;
@@ -1068,7 +1096,7 @@ export const KanbanBoard: React.FC = () => {
   // Project Selection Screen
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
@@ -1100,7 +1128,7 @@ export const KanbanBoard: React.FC = () => {
                 />
                 <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-h-[60vh] overflow-y-auto" role="listbox" aria-label="Projects" data-columns={columnCount}>
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
-                    <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
+                    <p className="col-span-full text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
                     sortedFilteredProjects.map((p, index) => (
                     <div
@@ -1203,7 +1231,7 @@ export const KanbanBoard: React.FC = () => {
   // First load / no project chosen yet: full-screen, not dismissable (no close button).
   if (!selectedProjectId) {
     return (
-      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
+      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6">
         <Logo size={64} className="mb-8" />
         {projectPickerCard}
       </div>
@@ -1813,7 +1841,7 @@ export const KanbanBoard: React.FC = () => {
         <div
           data-testid="project-picker-backdrop"
           onClick={(e) => { if (e.target === e.currentTarget) closePicker(); }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-6"
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 backdrop-blur-sm p-6"
         >
           {projectPickerCard}
         </div>
