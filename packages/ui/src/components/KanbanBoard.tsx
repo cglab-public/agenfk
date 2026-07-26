@@ -404,6 +404,26 @@ export const KanbanBoard: React.FC = () => {
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
 
+  // Responsive column count for the project-picker grid
+  const [columnCount, setColumnCount] = useState(1);
+  useEffect(() => {
+    if (typeof window.matchMedia === 'undefined') return;
+    const mq3 = window.matchMedia('(min-width: 1024px)');
+    const mq2 = window.matchMedia('(min-width: 640px)');
+    const update = () => {
+      if (mq3.matches) setColumnCount(3);
+      else if (mq2.matches) setColumnCount(2);
+      else setColumnCount(1);
+    };
+    update();
+    mq3.addEventListener('change', update);
+    mq2.addEventListener('change', update);
+    return () => {
+      mq3.removeEventListener('change', update);
+      mq2.removeEventListener('change', update);
+    };
+  }, []);
+
   const togglePin = () => {
     setIsPinned(prev => {
       const next = !prev;
@@ -738,13 +758,21 @@ export const KanbanBoard: React.FC = () => {
   useEffect(() => {
     const pickerVisible = selectedProjectId === null || isPickerOpen;
     if (!pickerVisible || isCreatingProject) return;
+    const cols = columnCount;
+    const n = sortedFilteredProjects.length;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => Math.min(prev + 1, sortedFilteredProjects.length - 1));
+        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.min(prev + cols, n - 1));
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setHighlightedProjectIndex(prev => prev > 0 ? prev - 1 : 0);
+        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.max(prev - cols, 0));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.min(prev + 1, n - 1));
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setHighlightedProjectIndex(prev => prev === -1 ? 0 : Math.max(prev - 1, 0));
       } else if (e.key === 'Enter') {
         if (highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length) {
           handleSelectProject(sortedFilteredProjects[highlightedProjectIndex].id);
@@ -753,7 +781,7 @@ export const KanbanBoard: React.FC = () => {
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex]);
+  }, [selectedProjectId, isPickerOpen, isCreatingProject, sortedFilteredProjects, highlightedProjectIndex, columnCount]);
 
   // Auto-focus the project-picker search input when the picker opens
   const pickerHasProjects = projects != null && projects.length > 0;
@@ -1040,7 +1068,7 @@ export const KanbanBoard: React.FC = () => {
   // Project Selection Screen
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className="relative w-full max-w-4xl bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
@@ -1070,7 +1098,7 @@ export const KanbanBoard: React.FC = () => {
                   aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
                 />
-                <div className="grid gap-2 max-h-72 overflow-y-auto" role="listbox" aria-label="Projects">
+                <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-h-[60vh] overflow-y-auto" role="listbox" aria-label="Projects" data-columns={columnCount}>
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
                     <p className="text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
