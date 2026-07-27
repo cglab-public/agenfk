@@ -106,6 +106,71 @@ describe('PG parity: admin endpoints', () => {
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
   });
+
+  it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
+    await fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+       VALUES (?, ?, now(), now(), ?, ?)`,
+      ['inst-gone', 'org', 'gone', 'departed@acme.com'],
+    );
+    await fx.db.run(
+      `INSERT INTO api_keys (token_hash, org_id, label, installation_id) VALUES (?, ?, ?, ?)`,
+      ['hash-gone', 'org', 'k', 'inst-gone'],
+    );
+
+    const hide = await supertest(fx.app).post('/v1/admin/hidden-users').set('Cookie', fx.cookie)
+      .send({ userKey: 'Departed@Acme.com' });
+    expect(hide.status).toBe(201);
+    expect(hide.body.userKey).toBe('departed@acme.com');
+    expect(hide.body.revokedApiKeys).toBe(1);
+
+    const list = await supertest(fx.app).get('/v1/admin/hidden-users').set('Cookie', fx.cookie);
+    expect(list.body.map((u: any) => u.userKey)).toEqual(['departed@acme.com']);
+
+    const key = await fx.db.get<{ revoked_at: string | null }>(
+      'SELECT revoked_at FROM api_keys WHERE token_hash = ?', ['hash-gone'],
+    );
+    expect(key?.revoked_at).toBeTruthy();
+
+    const unhide = await supertest(fx.app).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', fx.cookie);
+    expect(unhide.body.unhidden).toBe(true);
+    const after = await supertest(fx.app).get('/v1/admin/hidden-users').set('Cookie', fx.cookie);
+    expect(after.body).toHaveLength(0);
+  });
+
+  it('events ingest drops hidden people before the installations upsert on PG (CGLAB-31)', async () => {
+    await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'alice@acme.com']);
+    const r = await supertest(fx.app).post('/v1/events')
+      .set('Authorization', `Bearer ${fx.token}`)
+      .send({ events: [
+        sample({ eventId: 'h1', actor: { osUser: 'alice', gitName: 'A', gitEmail: 'Alice@Acme.com' } }),
+        sample({ eventId: 'v1', installationId: 'inst-2', actor: { osUser: 'bob', gitName: 'B', gitEmail: 'bob@acme.com' } }),
+      ] });
+    expect(r.status).toBe(200);
+    expect(r.body.ingested).toBe(1);
+    expect(r.body.hiddenDropped).toBe(1);
+    const evts = await fx.db.all<{ event_id: string }>('SELECT event_id FROM events');
+    expect(evts.map(e => e.event_id)).toEqual(['v1']);
+    expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-1'])).toBeUndefined();
+    expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-2'])).toBeTruthy();
+  });
+
+  it('fleet exclusions: installations list hides + scope=all skips hidden on PG (CGLAB-31)', async () => {
+    for (const [id, email] of [['inst-vis', 'active@acme.com'], ['inst-hid', 'departed@acme.com']] as const) {
+      await fx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email, agenfk_version)
+         VALUES (?, ?, now(), now(), 'u', ?, '0.3.0')`,
+        [id, 'org', email],
+      );
+    }
+    await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'departed@acme.com']);
+
+    const def = await supertest(fx.app).get('/v1/admin/installations').set('Cookie', fx.cookie);
+    expect(def.body.map((i: any) => i.id)).toEqual(['inst-vis']);
+    const incl = await supertest(fx.app).get('/v1/admin/installations?includeHidden=1').set('Cookie', fx.cookie);
+    expect(incl.body).toHaveLength(2);
+    expect(incl.body.find((i: any) => i.id === 'inst-hid').hidden).toBe(true);
+  });
 });
 
 describe('PG parity: connect (device + invite)', () => {

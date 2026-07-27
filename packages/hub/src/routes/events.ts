@@ -113,7 +113,19 @@ export function eventsRouter(ctx: HubServerContext): Router {
     let ingested = 0;
     let skipped = 0;
     let rejected = 0;
+    let hiddenDropped = 0;
     const seenInstallations = new Set<string>();
+
+    // CGLAB-31: people hidden by an admin stop emitting go-forward data.
+    // Load the org's hidden user_keys once per batch; events whose user_key
+    // is hidden are dropped BEFORE the event insert AND before the
+    // installations upsert, so a hidden install cannot resurrect via the
+    // events stream. Historical rows already in the DB are untouched.
+    const hiddenRows = await ctx.db.all<{ user_key: string }>(
+      'SELECT user_key FROM hidden_users WHERE org_id = ?',
+      [orgId],
+    );
+    const hiddenUserKeys = new Set(hiddenRows.map(r => r.user_key));
 
     await ctx.db.transaction(async () => {
       for (const e of events) {
@@ -121,8 +133,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (e.orgId !== orgId) { rejected++; continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
-        seenInstallations.add(e.installationId);
         const userKey = userKeyFor(e.actor);
+        if (hiddenUserKeys.has(userKey)) { hiddenDropped++; continue; }
+        seenInstallations.add(e.installationId);
         const itemType = (e as any).itemType
           ?? (e.payload && typeof (e.payload as any).itemType === 'string' ? (e.payload as any).itemType : null);
         // Sanitise the git remote URL for de-duplication in the projects filter.
@@ -236,7 +249,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
       }
     });
 
-    res.json({ ingested, skipped, rejected, installationId: installationFromHeader });
+    res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader });
   });
 
   return router;

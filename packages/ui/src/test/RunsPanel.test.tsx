@@ -200,4 +200,379 @@ describe('RunsPanel', () => {
     // Selection auto-advances to the newest run → its transcript renders.
     await waitFor(() => expect(screen.getByText('impl phase')).toBeDefined());
   });
+
+  it('renders the event timestamp (date + time) under the identity caption when ts is valid', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    const ts = '2026-07-21T10:00:00.000Z';
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts, lane: 'worker', kind: 'note', text: 'hello' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('hello')).toBeDefined());
+    // Assert the rendered date and time themselves, not just that an extra span
+    // exists — a span-count check passes on any garbage the formatter emits.
+    // The exact strings are locale- and timezone-dependent, so derive the
+    // expectation the same way the component does rather than hardcoding it.
+    const d = new Date(ts);
+    const gutter = (screen.getByText('pi · Qwen').parentElement as HTMLElement);
+    expect(gutter.textContent).toContain(d.toLocaleDateString());
+    expect(gutter.textContent).toContain(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  });
+
+  // CGLAB-18d: non-tool events must render markdown as formatted HTML, not raw syntax.
+  it('renders markdown constructs (bold, code, list) as real DOM elements in a non-tool event', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '**bold text** and `inline code`\n\n- first item\n- second item' },
+    ] as any);
+    renderPanel();
+
+    // Wait for the CONTENT, not the container: the transcript div is present on
+    // the very first render, before the events query resolves, so awaiting the
+    // testid alone returns an empty transcript and every assertion below races.
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+
+    // After the fix, **bold text** produces a <strong> element
+    expect(transcript.querySelector('strong')).not.toBeNull();
+    expect(transcript.querySelector('strong')?.textContent).toBe('bold text');
+
+    // After the fix, `inline code` produces a <code> element (inside a paragraph)
+    const code = transcript.querySelector('code');
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe('inline code');
+
+    // After the fix, list items are <li> elements (not "- item" text)
+    const lis = transcript.querySelectorAll('li');
+    expect(lis.length).toBe(2);
+    expect(lis[0].textContent).toBe('first item');
+
+    // Literal markdown syntax must NOT survive in the rendered output
+    expect(transcript.textContent).not.toContain('**');
+    expect(transcript.textContent).not.toContain('- first item');
+  });
+
+  // CGLAB-18d: remark-gfm must be wired up, not just react-markdown alone.
+  it('renders a GFM strikethrough as a <del> element', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '~~strikethrough~~' },
+    ] as any);
+    renderPanel();
+
+    // Await the content, not the container — see the note in the test above.
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('del')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    // After the fix, ~~strikethrough~~ produces a <del> element
+    expect(transcript.querySelector('del')).not.toBeNull();
+    expect(transcript.querySelector('del')?.textContent).toBe('strikethrough');
+  });
+
+  // CGLAB-18d: tool events must NOT render markdown — they stay literal in <pre>.
+  it('keeps markdown literal in a tool event (renders in <pre>, no formatting)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'tool', tool: 'bash', text: '**bold** and `code`\n- list' },
+    ] as any);
+    renderPanel();
+
+    // Wait for the <pre> to appear (tool events render text in <pre>)
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('**bold**');
+    expect(pre?.textContent).toContain('- list');
+
+    // No markdown-formatted elements should appear
+    expect(document.querySelector('strong')).toBeNull();
+  });
+
+  // CGLAB-18d: think events keep their italic visual distinction.
+  it('keeps italic styling on think events after markdown rendering', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'think', text: 'reasoning here' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('reasoning here')).toBeDefined());
+    const textEl = screen.getByText('reasoning here');
+    expect(textEl.closest('.italic')).not.toBeNull();
+  });
+
+  it('renders nothing for the timestamp when ts is missing or unparseable', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 'not-a-date', lane: 'worker', kind: 'note', text: 'bad ts' },
+      { id: 'e2', runId: 'r1', seq: 1, lane: 'worker', kind: 'note', text: 'missing ts' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('bad ts')).toBeDefined());
+    // queryByText('Invalid Date') is NOT enough: with the guard removed the span
+    // renders "Invalid Date" twice (date + <br> + time), whose normalised
+    // textContent never equals the exact string — so that assertion passes on
+    // the very bug it exists to catch. Match the substring, and assert the
+    // timestamp span is genuinely absent rather than merely not-that-string.
+    for (const text of ['bad ts', 'missing ts']) {
+      const gutter = (screen.getByText(text).closest('.flex.gap-3') as HTMLElement)
+        .firstElementChild as HTMLElement;
+      expect(gutter.textContent).not.toMatch(/Invalid/);
+      // avatar tile + who caption only — no third (timestamp) span.
+      expect(gutter.querySelectorAll('span')).toHaveLength(2);
+    }
+  });
+
+  // Fix 5a: stripAnsi must be applied to non-tool event text.
+  // Mutation: changing stripAnsi(ev.text) back to ev.text would let escapes survive.
+  it('strips ANSI escapes from non-tool event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '\x1b[31mred error\x1b[0m' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('red error')).toBeDefined());
+    // The raw escape sequence must not appear in the rendered output
+    expect(screen.queryByText(/\x1b\[31m/)).toBeNull();
+  });
+
+  // Fix 5b: stripAnsi must be applied to tool event text.
+  // Mutation: omitting stripAnsi on the tool <pre> would let escapes render as garbage glyphs.
+  it('strips ANSI escapes from tool event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'tool', tool: 'bash', text: '\x1b[31mred error\x1b[0m' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('red error')).toBeDefined());
+    // The raw escape sequence must not appear in the rendered output
+    expect(screen.queryByText(/\x1b\[31m/)).toBeNull();
+  });
+
+  // Fix 5c: the prose classes must be present on the markdown wrapper.
+  // Mutation: deleting the class string would not break any semantic test.
+  it('wraps markdown output in an element with prose and dark:prose-invert classes', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: 'hello world' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('hello world')).toBeDefined());
+    const prose = document.querySelector('.prose');
+    expect(prose).not.toBeNull();
+    expect(prose?.className).toContain('prose');
+    expect(prose?.className).toContain('dark:prose-invert');
+  });
+
+  // Fix 5d: markdown images must not produce real <img> elements that fetch remote URLs.
+  it('does not render <img> elements for markdown image syntax in event text', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '![tracking pixel](https://evil.example/track.png)' },
+    ] as any);
+    renderPanel();
+    // Wait for the alt text to appear (rendered as plain text instead of <img>)
+    await waitFor(() => expect(screen.getByText('tracking pixel')).toBeDefined());
+    // No <img> element should exist in the DOM
+    expect(document.querySelector('img')).toBeNull();
+  });
+
+  // CGLAB-33: machine-output kinds (result, diff) must render literally, not as markdown.
+
+  it('renders a diff event inside <pre> and preserves leading spaces on context lines', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'diff', text: '--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n- old line\n+ new line\n unchanged line' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    // Leading space on context line must survive (diff alignment)
+    expect(pre?.textContent).toContain(' unchanged line');
+    // Must NOT produce markdown artefacts like <hr> or <ul>
+    expect(screen.queryByRole('separator')).toBeNull();
+    expect(screen.getByTestId('runs-transcript').querySelector('ul')).toBeNull();
+  });
+
+  it('renders __init__ verbatim in a result event (no <strong> from double underscores)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'result', text: "AttributeError: '__init__' missing" },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('__init__');
+    // Double underscores must NOT produce a <strong>
+    expect(screen.getByTestId('runs-transcript').querySelector('strong')).toBeNull();
+  });
+
+  it('does not produce a <table> from pipe-aligned lines in a result event', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'result', text: 'a | b | c\n--|--|--\n1 | 2 | 3' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() => expect(document.querySelector('pre')).not.toBeNull());
+    const pre = document.querySelector('pre');
+    expect(pre).not.toBeNull();
+    expect(pre?.textContent).toContain('a | b | c');
+    expect(pre?.textContent).toContain('1 | 2 | 3');
+    // Must NOT produce a GFM table
+    expect(screen.getByTestId('runs-transcript').querySelector('table')).toBeNull();
+  });
+
+  it('still renders markdown in a note event (prose path regression guard)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '**prose markdown** is still rendered' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')).not.toBeNull();
+    expect(transcript.querySelector('strong')?.textContent).toBe('prose markdown');
+  });
+
+  // CGLAB-33: 'verdict' and 'dispatch' are orchestrator-authored prose, not
+  // machine output, so they must keep rendering as markdown. Without these the
+  // suite stays green when both are misclassified into the machine-output set —
+  // the prose side was otherwise pinned only by 'note' and 'think'.
+  it('renders a verdict event as markdown (prose kind)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'rv', itemId: 'i1', step: 'REVIEW', actor: 'reviewer', harness: 'claude-code', model: 'claude-opus-4-8', status: 'done', verdict: 'APPROVE', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'rv', seq: 0, ts: 't', lane: 'reviewer', kind: 'verdict', text: '**APPROVED** — changes look solid' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')?.textContent).toBe('APPROVED');
+    expect(transcript.textContent).not.toContain('**');
+  });
+
+  it('renders a dispatch event as markdown (prose kind)', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'running', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'orchestrator', kind: 'dispatch', text: 'Please **implement** the `calculateTotal` function' },
+    ] as any);
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull()
+    );
+    const transcript = screen.getByTestId('runs-transcript');
+    expect(transcript.querySelector('strong')?.textContent).toBe('implement');
+    expect(transcript.querySelector('code')?.textContent).toBe('calculateTotal');
+  });
+
+  // Markdown emphasis rewrites literal text, which matters because these
+  // transcripts carry identifiers. '__init__' rendering as a bold "init" shows
+  // the WRONG SYMBOL NAME with nothing signalling the text was transformed.
+  // Resolved by convention rather than by guessing intent: underscores never
+  // mean emphasis, and asterisks do not mean emphasis mid-word.
+  const proseEvent = (text: string) => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text },
+    ] as any);
+    renderPanel();
+  };
+
+  it('keeps a dunder identifier literal instead of bolding it', async () => {
+    proseEvent("AttributeError: '__init__' missing");
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('AttributeError'));
+    const t = screen.getByTestId('runs-transcript');
+    // The symbol name must survive intact — this is the whole point.
+    expect(t.textContent).toContain('__init__');
+    expect(t.querySelector('strong')).toBeNull();
+  });
+
+  it('keeps a dunder inside a path literal', async () => {
+    proseEvent('see path/to/__pycache__/x for details');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('see path'));
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.textContent).toContain('__pycache__');
+    expect(t.querySelector('strong')).toBeNull();
+  });
+
+  it('does not italicise around intra-word asterisks', async () => {
+    proseEvent('2*3*4 equals 24');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('equals 24'));
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.textContent).toContain('2*3*4');
+    expect(t.querySelector('em')).toBeNull();
+  });
+
+  it('still renders asterisk bold and italic, which is how agents write emphasis', async () => {
+    proseEvent('**bold here** and *italic here* both work');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull());
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.querySelector('strong')?.textContent).toBe('bold here');
+    expect(t.querySelector('em')?.textContent).toBe('italic here');
+  });
+
+  // Fix 5e: links must open in a new tab with noopener/noreferrer for safety.
+  it('renders markdown links with target="_blank" and rel containing noopener', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text: '[click me](https://example.com)' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('click me')).toBeDefined());
+    const link = document.querySelector('a');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toContain('noopener');
+    expect(link?.getAttribute('rel')).toContain('noreferrer');
+  });
 });

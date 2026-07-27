@@ -190,6 +190,22 @@ const SCHEMA_SQLITE = `
     token TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  -- People hidden by an admin (CGLAB-31), keyed on events.user_key
+  -- (lowercased git email). Membership removes the person from selection
+  -- surfaces (installation lists, upgrade targeting, admin actions) and
+  -- blocks their new events at ingest. Historical data (events,
+  -- rollups_daily, dashboards) is deliberately untouched — the hide only
+  -- affects go-forward behaviour and is fully reversible by deleting the
+  -- row.
+  CREATE TABLE IF NOT EXISTS hidden_users (
+    org_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    hidden_by_user_id TEXT,
+    hidden_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, user_key)
+  );
 `;
 
 class SqliteAdapter implements HubDb {

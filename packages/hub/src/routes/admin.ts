@@ -111,26 +111,111 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ revoked: result.changes });
   });
 
+  // ── Hidden people (CGLAB-31) ─────────────────────────────────────────────
+  // Person-level hide keyed on events.user_key (lowercased git email).
+  // Selection surfaces only — historical data (events, rollups, dashboards)
+  // is deliberately untouched. Fully reversible via DELETE.
+  router.get('/hidden-users', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT user_key, hidden_by_user_id, hidden_by_email, created_at
+         FROM hidden_users
+         WHERE org_id = ?
+         ORDER BY created_at DESC`,
+      [req.session!.orgId],
+    );
+    res.json(rows.map((r: any) => ({
+      userKey: r.user_key,
+      hiddenByUserId: r.hidden_by_user_id ?? null,
+      hiddenByEmail: r.hidden_by_email ?? null,
+      createdAt: r.created_at,
+    })));
+  });
+
+  router.post('/hidden-users', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const raw = req.body?.userKey;
+    const userKey = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (!userKey) {
+      return res.status(400).json({ error: 'Body must be { userKey: string } (non-empty).' });
+    }
+
+    // Hide + revoke the person's installation api_keys atomically: if the
+    // revocation fails the hide must not persist (and vice versa), so a
+    // hidden install can never keep a live token.
+    let hiddenByEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?',
+        [req.session.userId],
+      );
+      hiddenByEmail = u?.email ?? null;
+    }
+    let revokedApiKeys = 0;
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        `INSERT OR IGNORE INTO hidden_users (org_id, user_key, hidden_by_user_id, hidden_by_email)
+         VALUES (?, ?, ?, ?)`,
+        [orgId, userKey, req.session!.userId, hiddenByEmail],
+      );
+      const r = await ctx.db.run(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+          WHERE org_id = ? AND revoked_at IS NULL
+            AND installation_id IN (
+              SELECT id FROM installations
+               WHERE org_id = ? AND lower(git_email) = ?
+            )`,
+        [orgId, orgId, userKey],
+      );
+      revokedApiKeys = r.changes;
+    });
+
+    res.status(201).json({ userKey, revokedApiKeys });
+  });
+
+  router.delete('/hidden-users/:userKey', guard, async (req: Request, res: Response) => {
+    const userKey = decodeURIComponent(req.params.userKey).trim().toLowerCase();
+    const r = await ctx.db.run(
+      'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
+      [req.session!.orgId, userKey],
+    );
+    // Note: api_key revocation is permanent — unhiding does NOT restore
+    // revoked tokens (the person must re-register their installation).
+    res.json({ userKey, unhidden: r.changes > 0 });
+  });
+
   // ── Users ────────────────────────────────────────────────────────────────
   router.get('/installations', guard, async (req: Request, res: Response) => {
+    // CGLAB-31: installations belonging to hidden people are excluded by
+    // default (this endpoint feeds the Admin installations list, the upgrade
+    // picker and the flow-assignment installation picker). ?includeHidden=1
+    // returns them flagged with hidden:true so the UI can render a
+    // show-hidden toggle.
+    const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
     const rows = await ctx.db.all<Record<string, unknown>>(
-      `SELECT id, agenfk_version, agenfk_version_updated_at, first_seen, last_seen, os_user, git_name, git_email
-         FROM installations
-         WHERE org_id = ?
-         ORDER BY last_seen DESC`,
+      `SELECT i.id, i.agenfk_version, i.agenfk_version_updated_at, i.first_seen, i.last_seen,
+              i.os_user, i.git_name, i.git_email,
+              CASE WHEN h.user_key IS NULL THEN 0 ELSE 1 END AS hidden
+         FROM installations i
+         LEFT JOIN hidden_users h
+           ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+        WHERE i.org_id = ?
+        ORDER BY i.last_seen DESC`,
       [req.session!.orgId],
     );
     res.json(
-      rows.map((r: any) => ({
-        id: r.id,
-        agenfkVersion: r.agenfk_version ?? null,
-        agenfkVersionUpdatedAt: r.agenfk_version_updated_at ?? null,
-        firstSeen: r.first_seen ?? null,
-        lastSeen: r.last_seen ?? null,
-        osUser: r.os_user ?? null,
-        gitName: r.git_name ?? null,
-        gitEmail: r.git_email ?? null,
-      })),
+      rows
+        .filter((r: any) => includeHidden || !r.hidden)
+        .map((r: any) => ({
+          id: r.id,
+          agenfkVersion: r.agenfk_version ?? null,
+          agenfkVersionUpdatedAt: r.agenfk_version_updated_at ?? null,
+          firstSeen: r.first_seen ?? null,
+          lastSeen: r.last_seen ?? null,
+          osUser: r.os_user ?? null,
+          gitName: r.git_name ?? null,
+          gitEmail: r.git_email ?? null,
+          hidden: !!r.hidden,
+        })),
     );
   });
 
@@ -654,8 +739,15 @@ export function adminRouter(ctx: HubServerContext): Router {
     type Inst = { id: string; agenfk_version: string | null };
     let installations: Inst[];
     if (scope.type === 'all') {
+      // CGLAB-31: fleet-wide directives skip hidden people's installations —
+      // a departed user's machine must not receive upgrade pushes.
       installations = await ctx.db.all<Inst>(
-        'SELECT id, agenfk_version FROM installations WHERE org_id = ?',
+        `SELECT i.id, i.agenfk_version FROM installations i
+          WHERE i.org_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM hidden_users h
+               WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+            )`,
         [orgId],
       );
     } else if (scope.type === 'installation') {
@@ -678,6 +770,26 @@ export function adminRouter(ctx: HubServerContext): Router {
         const found = new Set(installations.map(i => i.id));
         const missing = ids.filter(id => !found.has(id));
         return res.status(404).json({ error: 'One or more installations not found in this org', missing });
+      }
+    }
+
+    // CGLAB-31: explicitly targeting a hidden person's installation is
+    // rejected — the admin must unhide the person first. (scope=all silently
+    // skips them above; an explicit name is a deliberate act we refuse.)
+    if (installations.length > 0) {
+      const ids = installations.map(i => i.id);
+      const placeholders = ids.map(() => '?').join(',');
+      const hiddenTargets = await ctx.db.all<{ id: string }>(
+        `SELECT i.id FROM installations i
+          JOIN hidden_users h ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+          WHERE i.org_id = ? AND i.id IN (${placeholders})`,
+        [orgId, ...ids],
+      );
+      if (hiddenTargets.length > 0) {
+        return res.status(409).json({
+          error: 'One or more installations belong to a hidden person. Unhide them first to target their installations.',
+          hidden: hiddenTargets.map(t => t.id),
+        });
       }
     }
 

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
+import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
@@ -518,15 +519,47 @@ interface InstallationRow {
   osUser: string | null;
   gitName: string | null;
   gitEmail: string | null;
+  hidden?: boolean;
+}
+
+interface HiddenPersonRow {
+  userKey: string;
+  hiddenByEmail: string | null;
+  createdAt: string;
 }
 
 export function AdminInstallations() {
+  const qc = useQueryClient();
+  // CGLAB-31: hidden people are excluded server-side by default; the toggle
+  // re-fetches with ?includeHidden=1 and flags them inline.
+  const [showHidden, setShowHidden] = useState(false);
   const installations = useQuery<InstallationRow[]>({
-    queryKey: ['admin-installations'],
-    queryFn: async () => (await api.get('/v1/admin/installations')).data,
+    queryKey: ['admin-installations', showHidden],
+    queryFn: async () =>
+      (await api.get(showHidden ? '/v1/admin/installations?includeHidden=1' : '/v1/admin/installations')).data,
+  });
+  const hiddenPeople = useQuery<HiddenPersonRow[]>({
+    queryKey: ['admin-hidden-users'],
+    queryFn: async () => (await api.get('/v1/admin/hidden-users')).data,
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['admin-installations'] });
+    qc.invalidateQueries({ queryKey: ['admin-hidden-users'] });
+    qc.invalidateQueries({ queryKey: ['api-keys'] });
+  };
+  const hide = useMutation({
+    mutationFn: (userKey: string) => api.post('/v1/admin/hidden-users', { userKey }),
+    onSuccess: invalidate,
+  });
+  const unhide = useMutation({
+    mutationFn: (userKey: string) => api.delete(`/v1/admin/hidden-users/${encodeURIComponent(userKey)}`),
+    onSuccess: invalidate,
   });
 
   const rows = installations.data ?? [];
+  const { visible, hidden: hiddenRows } = partitionHiddenRows(rows);
+  const hiddenCount = hiddenPeople.data?.length ?? hiddenRows.length;
 
   return (
     <div className="space-y-6">
@@ -538,7 +571,18 @@ export function AdminInstallations() {
               Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
             </p>
           </div>
-          <span className="text-[11px] text-slate-500">{rows.length} total</span>
+          <div className="flex items-center gap-3">
+            {hiddenCount > 0 && (
+              <button
+                onClick={() => setShowHidden(v => !v)}
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+              >
+                {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                {showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
+              </button>
+            )}
+            <span className="text-[11px] text-slate-500">{showHidden ? rows.length : visible.length} total</span>
+          </div>
         </header>
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
@@ -549,13 +593,17 @@ export function AdminInstallations() {
                 <th className="text-left px-2 py-2">Version</th>
                 <th className="text-left px-2 py-2">Version updated</th>
                 <th className="text-right px-5 py-2">Last seen</th>
+                <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {rows.map(r => (
-                <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                <tr key={r.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${r.hidden ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
                     <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300">{r.id}</span>
+                    {r.hidden && (
+                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">hidden</span>
+                    )}
                   </td>
                   <td className="px-2 py-2.5">
                     <div className="text-xs text-slate-700 dark:text-slate-200">{r.gitName ?? r.osUser ?? <span className="text-slate-400">—</span>}</div>
@@ -572,15 +620,63 @@ export function AdminInstallations() {
                   <td className="px-5 py-2.5 text-right text-xs text-slate-500 tabular-nums">
                     {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-slate-400">—</span>}
                   </td>
+                  <td className="px-5 py-2.5 text-right">
+                    {canHideRow(r) && (
+                      <button
+                        onClick={() => {
+                          const key = hideTargetKey(r);
+                          if (!key) return;
+                          if (confirm(`Hide ${key}? Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. This is reversible.`)) {
+                            hide.mutate(key);
+                          }
+                        }}
+                        disabled={hide.isPending}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 hover:text-amber-600 dark:hover:text-amber-400"
+                        title="Hide this person from selection surfaces"
+                      >
+                        <EyeOff className="w-3.5 h-3.5" /> Hide
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={5} className="px-5 py-6 text-center text-sm text-slate-500">No installations have reported yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No installations have reported yet.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </section>
+
+      {(hiddenPeople.data?.length ?? 0) > 0 && (
+        <section className={cardCls}>
+          <header>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Hidden people</h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Hidden people no longer appear in installation pickers, their API keys are revoked, and new events from them are dropped. Historical dashboards are unaffected. Unhiding restores visibility but does not restore revoked keys.
+            </p>
+          </header>
+          <ul className="mt-3 divide-y divide-slate-100 dark:divide-slate-800">
+            {hiddenPeople.data!.map(p => (
+              <li key={p.userKey} className="flex items-center justify-between py-2">
+                <div>
+                  <div className="font-mono text-xs text-slate-700 dark:text-slate-200">{p.userKey}</div>
+                  <div className="text-[11px] text-slate-500">
+                    hidden {fmtDate(p.createdAt)}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={() => unhide.mutate(p.userKey)}
+                  disabled={unhide.isPending}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+                >
+                  <Eye className="w-3.5 h-3.5" /> Unhide
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }
