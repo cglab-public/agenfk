@@ -511,6 +511,54 @@ describe('RunsPanel', () => {
     expect(transcript.querySelector('code')?.textContent).toBe('calculateTotal');
   });
 
+  // Markdown emphasis rewrites literal text, which matters because these
+  // transcripts carry identifiers. '__init__' rendering as a bold "init" shows
+  // the WRONG SYMBOL NAME with nothing signalling the text was transformed.
+  // Resolved by convention rather than by guessing intent: underscores never
+  // mean emphasis, and asterisks do not mean emphasis mid-word.
+  const proseEvent = (text: string) => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'r1', seq: 0, ts: 't', lane: 'worker', kind: 'note', text },
+    ] as any);
+    renderPanel();
+  };
+
+  it('keeps a dunder identifier literal instead of bolding it', async () => {
+    proseEvent("AttributeError: '__init__' missing");
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('AttributeError'));
+    const t = screen.getByTestId('runs-transcript');
+    // The symbol name must survive intact — this is the whole point.
+    expect(t.textContent).toContain('__init__');
+    expect(t.querySelector('strong')).toBeNull();
+  });
+
+  it('keeps a dunder inside a path literal', async () => {
+    proseEvent('see path/to/__pycache__/x for details');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('see path'));
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.textContent).toContain('__pycache__');
+    expect(t.querySelector('strong')).toBeNull();
+  });
+
+  it('does not italicise around intra-word asterisks', async () => {
+    proseEvent('2*3*4 equals 24');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').textContent).toContain('equals 24'));
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.textContent).toContain('2*3*4');
+    expect(t.querySelector('em')).toBeNull();
+  });
+
+  it('still renders asterisk bold and italic, which is how agents write emphasis', async () => {
+    proseEvent('**bold here** and *italic here* both work');
+    await waitFor(() => expect(screen.getByTestId('runs-transcript').querySelector('strong')).not.toBeNull());
+    const t = screen.getByTestId('runs-transcript');
+    expect(t.querySelector('strong')?.textContent).toBe('bold here');
+    expect(t.querySelector('em')?.textContent).toBe('italic here');
+  });
+
   // Fix 5e: links must open in a new tab with noopener/noreferrer for safety.
   it('renders markdown links with target="_blank" and rel containing noopener', async () => {
     vi.mocked(api.listAgentRuns).mockResolvedValue([

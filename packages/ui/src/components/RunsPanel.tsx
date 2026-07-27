@@ -80,6 +80,57 @@ function prettyModel(model?: string): string {
   return family.charAt(0).toUpperCase() + family.slice(1);
 }
 
+// Markdown emphasis rewrites literal text, and these transcripts are full of
+// identifiers. "AttributeError: '__init__' missing" would render as 'init' —
+// the WRONG SYMBOL NAME, with nothing to signal the text was transformed — and
+// "2*3*4" would come out as 2<em>3</em>4.
+//
+// Intent is not recoverable: `__init__` as a literal and `__init__` as bold
+// "init" are the same bytes. So this resolves it by CONVENTION instead, applied
+// identically every time: an underscore never means emphasis, and an asterisk
+// never means emphasis mid-word. CommonMark already enforces exactly that rule
+// for `_` inside words (snake_case is safe); this extends it to `_` everywhere
+// and to `*` mid-word.
+//
+// The cost is `_italic_` and `__bold__`, which stop working. `*italic*` and
+// `**bold**` are untouched, and that is how agents actually write emphasis,
+// while identifiers are overwhelmingly underscored — so the trade favours the
+// identifiers. Code spans were never affected either way: `inlineCode` is a
+// different node type and is never visited here.
+//
+// Works off the mdast's source offsets rather than a regex over the raw text,
+// so it cannot misfire on text that merely looks like a delimiter.
+function remarkLiteralIdentifiers() {
+  const isWordChar = (c: string | undefined) => !!c && /[0-9A-Za-z]/.test(c);
+
+  return (tree: any, file: any) => {
+    const src: string = String(file.value ?? '');
+
+    const walk = (node: any) => {
+      if (!node || !Array.isArray(node.children)) return;
+      node.children.forEach(walk);
+
+      node.children = node.children.map((child: any) => {
+        if (child.type !== 'emphasis' && child.type !== 'strong') return child;
+        const start = child.position?.start?.offset;
+        const end = child.position?.end?.offset;
+        if (typeof start !== 'number' || typeof end !== 'number') return child;
+
+        const delimiter = src[start];
+        const intraWord =
+          isWordChar(src[start - 1]) && isWordChar(src[end]);
+        // Underscore emphasis is always literal; asterisk emphasis only when it
+        // sits inside a word (`2*3*4`), never when it stands alone (`**bold**`).
+        if (delimiter !== '_' && !(delimiter === '*' && intraWord)) return child;
+
+        return { type: 'text', value: src.slice(start, end), position: child.position };
+      });
+    };
+
+    walk(tree);
+  };
+}
+
 // Components override for ReactMarkdown:
 //   img → render alt text as plain text (no remote image fetch from untrusted text)
 //   a   → open in new tab, rel="noopener noreferrer" (safe links)
@@ -150,7 +201,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
         {!IS_MACHINE_OUTPUT[ev.kind] && ev.text && (
           <div className={'mt-1 text-[13px] break-words ' + (ev.kind === 'think' ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-700 dark:text-slate-200')}>
             <div className="prose prose-slate dark:prose-invert prose-sm max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkLiteralIdentifiers]} components={mdComponents}>
                 {stripAnsi(ev.text)}
               </ReactMarkdown>
             </div>
