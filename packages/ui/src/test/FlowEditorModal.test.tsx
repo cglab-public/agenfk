@@ -1371,6 +1371,32 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     });
   });
 
+  it('actually disables the delete button on a hub row, not just its styling', async () => {
+    await openFlow('flow-item-flow-hub');
+
+    expect((screen.getByTestId('delete-flow-btn-flow-hub') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('clears a stale delete error when the modal is reopened', async () => {
+    vi.mocked(api.deleteFlow).mockRejectedValue(axiosRejection(409, 'nope'));
+    const qc = makeQueryClient();
+    const { rerender } = render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(qc) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('delete-flow-btn-flow-1'));
+    await waitFor(() => screen.getByTestId('delete-confirm-yes'));
+    fireEvent.click(screen.getByTestId('delete-confirm-yes'));
+    await waitFor(() => screen.getByTestId('flow-delete-error'));
+
+    // The component never unmounts, so reopening must not resurrect the error.
+    rerender(<FlowEditorModal isOpen={false} onClose={() => {}} projectId={PROJECT_ID} />);
+    rerender(<FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />);
+
+    await waitFor(() => expect(screen.queryByTestId('flow-delete-error')).toBeNull());
+  });
+
   // (c) — block the payload the Hub rejects, and say which step is wrong.
   it('blocks Save on a step with no name and pins the error to that step', async () => {
     await openFlow('flow-item-flow-1');

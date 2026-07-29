@@ -58,9 +58,6 @@ const SCHEMA_PG = `
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(org_id, type, occurred_at);
-  -- BUG ab9b39d3: the Admin -> Flows assignment listing looks up the latest
-  -- remote_url per project; without this it seq-scans the whole events table.
-  CREATE INDEX IF NOT EXISTS idx_events_org_project_time ON events(org_id, project_id, occurred_at);
 
   CREATE TABLE IF NOT EXISTS rollups_daily (
     org_id TEXT NOT NULL,
@@ -318,6 +315,20 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
+
+  // BUG ab9b39d3: backs the Admin -> Flows lookup of the latest remote_url per
+  // project. CONCURRENTLY, and deliberately NOT inside SCHEMA_PG: that batch is
+  // one multi-statement simple query, so Postgres wraps it in an implicit
+  // transaction, and a plain CREATE INDEX there would hold a SHARE lock on the
+  // events ingestion table — blocking every insert — until the whole batch
+  // commits. Each standalone exec() is its own implicit transaction, where
+  // CONCURRENTLY is legal. A failed concurrent build leaves an INVALID index
+  // that is simply rebuilt on the next boot, so don't fail boot over it.
+  try {
+    await adapter.exec("CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_org_project_time ON events(org_id, project_id, occurred_at)");
+  } catch (e) {
+    console.warn('[hub] idx_events_org_project_time build skipped:', (e as Error)?.message);
+  }
 
   // Canonicalise events.remote_url so the projects filter in the hub UI
   // doesn't show duplicates for repos expressed as ssh / https / with-or-

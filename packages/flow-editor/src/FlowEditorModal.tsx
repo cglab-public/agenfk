@@ -328,8 +328,15 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // change exists to kill. Per-step messages render inside the step column, but
   // only for non-anchor steps (anchors expose no name field), and a flow-level
   // issue has no column at all. Surface anything that would otherwise be silent.
+  // A step column renders its own issue only when it has an editable name field
+  // (anchors don't) and isn't already showing the reserved-name message.
+  const stepShowsOwnIssue = (index: number): boolean => {
+    const step = steps[index];
+    if (!step || step.isAnchor) return false;
+    return !RESERVED_NAMES.has((step.name ?? '').toUpperCase());
+  };
   const silentIssues = definitionIssues.filter(
-    issue => issue.stepIndex === undefined || steps[issue.stepIndex]?.isAnchor,
+    issue => issue.stepIndex === undefined || !stepShowsOwnIssue(issue.stepIndex),
   );
 
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
@@ -487,7 +494,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
               // A reserved name has its own dedicated message below, so only
               // show the shape issue when that isn't already being reported.
-              const shapeIssue = hasReservedName ? undefined : stepIssue(definitionIssues, index);
+              const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
               const stepColor = step.color ?? '#6366f1';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
 
@@ -1066,8 +1073,14 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     : flows.find(f => f.id === selectedFlowId) ?? null;
 
   // If this is a legacy-props invocation the passed `flow` wins as initial selection
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isOpen) return;
+    // The component never unmounts (the wrapper mounts it and it self-returns
+    // null when closed), so a stale delete failure would otherwise still be on
+    // screen the next time the modal is opened.
+    setDeleteError(null);
     if (isLegacy && (props as LegacyProps).flow?.id) {
       setSelectedFlowId((props as LegacyProps).flow!.id);
       setIsNewFlow(false);
@@ -1084,7 +1097,6 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // The delete path had the same defect as save (BUG 269eeec8 (a)): no onError
   // and no rendering, so a refusal — e.g. the local server's 409 on a
   // hub-managed flow — vanished and the row simply stayed put.
-  const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: (id: string) => flowClient.deleteFlow(id),
     onError: (e: unknown) => {
@@ -1383,7 +1395,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       {/* Delete button */}
                       <button
                         data-testid={`delete-flow-btn-${flow.id}`}
-                        disabled={isActive}
+                        disabled={isActive || isRowHubManaged}
                         onClick={e => {
                           e.stopPropagation();
                           if (!isActive && !isRowHubManaged) setConfirmDeleteId(flow.id);

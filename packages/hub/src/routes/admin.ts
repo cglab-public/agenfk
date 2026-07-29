@@ -486,17 +486,28 @@ export function adminRouter(ctx: HubServerContext): Router {
       // to a single unbounded query streaming every matching event row into
       // Node, which is what a naive de-correlation would do on the ingestion
       // table. idx_events_org_project_time backs the lookup.
-      for (const projectId of projectTargetIds) {
-        const row = await ctx.db.get<{ remote_url: string | null }>(
-          `SELECT remote_url
-           FROM events
-           WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL
-           ORDER BY occurred_at DESC
-           LIMIT 1`,
-          [req.session!.orgId, projectId],
-        );
-        remoteByProjectId.set(projectId, row?.remote_url ?? null);
-      }
+      // Run them concurrently: project-scoped assignment targetIds are not
+      // validated on write, so an admin can accumulate a lot of them and a
+      // sequential loop would add one round-trip each to every page load.
+      // Safe here ONLY because this route opens no transaction — PgAdapter pins
+      // a single client for the duration of transaction(), so parallel queries
+      // inside one would interleave statements on that client. Don't copy this
+      // shape into a transactional path.
+      const remotes = await Promise.all(
+        projectTargetIds.map(projectId =>
+          ctx.db
+            .get<{ remote_url: string | null }>(
+              `SELECT remote_url
+               FROM events
+               WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL
+               ORDER BY occurred_at DESC
+               LIMIT 1`,
+              [req.session!.orgId, projectId],
+            )
+            .then(row => [projectId, row?.remote_url ?? null] as const),
+        ),
+      );
+      for (const [projectId, remoteUrl] of remotes) remoteByProjectId.set(projectId, remoteUrl);
     }
 
     res.json(rows.map(r => ({
