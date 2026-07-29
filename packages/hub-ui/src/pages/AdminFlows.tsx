@@ -92,13 +92,13 @@ export function AdminFlows() {
     <div className="space-y-4 max-w-3xl">
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Org-managed flows</h2>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+          <h2 className="text-sm font-semibold text-ink">Org-managed flows</h2>
+          <p className="mt-0.5 text-xs text-ink-tertiary">
             Define and assign workflow flows. Connected installations adopt the most specific assignment (installation &gt; project &gt; org).
           </p>
         </div>
         <button
-          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+          className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold inline-flex items-center gap-1.5"
           onClick={() => openEditor()}
           data-testid="admin-flows-new-btn"
         >
@@ -106,9 +106,9 @@ export function AdminFlows() {
         </button>
       </header>
 
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-200 dark:divide-slate-800">
+      <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft">
         {flows.length === 0 && (
-          <div className="p-6 text-sm text-slate-500 dark:text-slate-400">
+          <div className="p-6 text-sm text-ink-tertiary">
             No flows yet. Click <span className="font-semibold">New / Import</span> to create one or pull from the community registry.
           </div>
         )}
@@ -123,19 +123,19 @@ export function AdminFlows() {
               <button
                 onClick={() => setExpandedFlowId(expanded ? null : f.id)}
                 data-testid={`admin-flow-row-${f.id}`}
-                className="w-full text-left p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors flex items-center gap-3"
+                className="w-full text-left p-4 hover:bg-chip transition-colors flex items-center gap-3"
               >
-                <span className="text-slate-400 shrink-0">
+                <span className="text-ink-tertiary shrink-0">
                   {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-slate-800 dark:text-slate-100 truncate">{f.name}</span>
+                    <span className="font-semibold text-ink truncate">{f.name}</span>
                     <span className={
                       'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' +
                       (f.source === 'community'
-                        ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300')
+                        ? 'bg-chip text-accent-text'
+                        : 'bg-chip text-ink-secondary')
                     }>{f.source ?? 'hub'}</span>
                     {isOrgDefault && (
                       <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
@@ -158,14 +158,14 @@ export function AdminFlows() {
                       </span>
                     )}
                     {typeof f.hubVersion === 'number' && (
-                      <span className="text-[10px] text-slate-400">v{f.hubVersion}</span>
+                      <span className="text-[10px] text-ink-tertiary">v{f.hubVersion}</span>
                     )}
                   </div>
                   {f.description && (
-                    <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">{f.description}</p>
+                    <p className="mt-0.5 text-xs text-ink-tertiary truncate">{f.description}</p>
                   )}
                 </div>
-                <span className="text-xs text-slate-400 shrink-0">{f.steps?.length ?? 0} steps</span>
+                <span className="text-xs text-ink-tertiary shrink-0">{f.steps?.length ?? 0} steps</span>
               </button>
               {expanded && (
                 <AssignmentsPanel
@@ -244,13 +244,13 @@ function AssignmentsPanel({
   const availability = availabilityRowState(flow.orgAvailable === true, !!orgRow);
 
   return (
-    <div className="px-4 pb-4 pt-1 bg-slate-50 dark:bg-slate-900/40 border-t border-slate-200 dark:border-slate-800 space-y-3">
+    <div className="px-4 pb-4 pt-1 bg-chip border-t border-border-soft space-y-3">
       <div className="flex items-center justify-between pt-2">
-        <h3 className="text-xs uppercase tracking-wide font-semibold text-slate-500 dark:text-slate-400">Assignments</h3>
+        <h3 className="text-xs uppercase tracking-wide font-semibold text-ink-tertiary">Assignments</h3>
         <div className="flex items-center gap-1.5">
           <button
             onClick={onEdit}
-            className="px-2 py-1 rounded-md text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 inline-flex items-center gap-1"
+            className="px-2 py-1 rounded-md text-[11px] font-semibold text-ink-secondary hover:bg-chip inline-flex items-center gap-1"
             data-testid="admin-flow-edit-btn"
           >
             <Pencil className="w-3 h-3" /> Edit flow
@@ -264,7 +264,7 @@ function AssignmentsPanel({
           <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
             Org
           </span>
-          <span className="text-xs text-slate-700 dark:text-slate-200">
+          <span className="text-xs text-ink-secondary">
             {orgRow ? 'This flow is the org default.' : 'Not the org default.'}
           </span>
         </div>
@@ -296,10 +296,10 @@ function AssignmentsPanel({
           <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
             Picker
           </span>
-          <span className="text-xs text-slate-700 dark:text-slate-200">{availability.hint}</span>
+          <span className="text-xs text-ink-secondary">{availability.hint}</span>
         </div>
         {availability.locked ? (
-          <span className="text-[11px] text-slate-400 dark:text-slate-500">Locked on</span>
+          <span className="text-[11px] text-ink-tertiary">Locked on</span>
         ) : (
           <button
             onClick={() => setAvailability.mutate(availability.nextAvailable)}
@@ -364,25 +364,25 @@ function ScopeSection({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{label}</span>
+        <span className="text-[11px] font-semibold text-ink-secondary">{label}</span>
         <button
           onClick={onAdd}
-          className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline inline-flex items-center gap-1"
+          className="text-[11px] text-accent-text hover:underline inline-flex items-center gap-1"
         >
           <Plus className="w-3 h-3" /> Add
         </button>
       </div>
       {rows.length === 0 && (
-        <p className="text-[11px] text-slate-400 dark:text-slate-500">None.</p>
+        <p className="text-[11px] text-ink-tertiary">None.</p>
       )}
       {rows.map((r) => (
-        <div key={r.targetId} className="flex items-center justify-between bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5">
+        <div key={r.targetId} className="flex items-center justify-between bg-surface border border-border-soft rounded-md px-2 py-1.5">
           <span className={'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' + chipClass}>
             {r.remoteUrl ?? r.targetId}
           </span>
           <button
             onClick={() => onRemove(r.targetId)}
-            className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+            className="text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
             aria-label="Remove"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -427,17 +427,17 @@ function AddOverridePicker({
   }, [scope, projectsQ.data, apiKeysQ.data]);
 
   return (
-    <div className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg p-3 space-y-2 shadow-sm">
+    <div className="bg-surface border border-border-soft rounded-lg p-3 space-y-2 shadow-sm">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+        <span className="text-[11px] font-semibold text-ink-secondary">
           Pick a {scope}
         </span>
-        <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" aria-label="Cancel">
+        <button onClick={onCancel} className="text-ink-tertiary hover:text-ink" aria-label="Cancel">
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
       {options.length === 0 ? (
-        <p className="text-[11px] text-slate-400">
+        <p className="text-[11px] text-ink-tertiary">
           No {scope}s seen yet. Connect an installation and run agenfk to populate this list.
         </p>
       ) : (
@@ -449,11 +449,11 @@ function AddOverridePicker({
                 <button
                   disabled={taken}
                   onClick={() => onPick(o.id)}
-                  className="w-full text-left px-2 py-1 rounded-md hover:bg-indigo-50 dark:hover:bg-indigo-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full text-left px-2 py-1 rounded-md hover:bg-chip disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid={`admin-flow-${scope}-pick-${o.id}`}
                 >
-                  <div className="text-[12px] font-mono text-slate-800 dark:text-slate-100">{o.label}</div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400">{o.sub}{taken ? ' · already pinned' : ''}</div>
+                  <div className="text-[12px] font-mono text-ink">{o.label}</div>
+                  <div className="text-[10px] text-ink-tertiary">{o.sub}{taken ? ' · already pinned' : ''}</div>
                 </button>
               </li>
             );

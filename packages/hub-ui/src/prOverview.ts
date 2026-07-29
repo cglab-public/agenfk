@@ -1,14 +1,14 @@
 // Pure helpers for the PR Overview page — kept out of the component so they can
 // be unit-tested without a DOM.
 
-/** Ordinal PR-size ramp (XS→XL): a single indigo hue climbing in weight, so a
+/** Ordinal PR-size ramp (XS→XL): a single teal hue climbing in weight, so a
  *  bigger PR reads as a denser colour. Separate from status colours on purpose. */
 export const SIZE_META = [
-  { key: 'xs', label: 'XS', color: '#c7d2fe' },
-  { key: 's', label: 'S', color: '#818cf8' },
-  { key: 'm', label: 'M', color: '#6366f1' },
-  { key: 'l', label: 'L', color: '#4f46e5' },
-  { key: 'xl', label: 'XL', color: '#3730a3' },
+  { key: 'xs', label: 'XS', color: '#dbf7f0' },
+  { key: 's', label: 'S', color: '#7fe5ca' },
+  { key: 'm', label: 'M', color: '#04cc98' },
+  { key: 'l', label: 'L', color: '#056f71' },
+  { key: 'xl', label: 'XL', color: '#00332f' },
 ] as const;
 
 export type SizeKey = typeof SIZE_META[number]['key'];

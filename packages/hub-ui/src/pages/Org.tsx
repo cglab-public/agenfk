@@ -39,9 +39,9 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
   return (
     <div>
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</h3>
+        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
         {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
             Clear ({selected.size})
           </button>
         )}
@@ -55,8 +55,8 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
               onClick={() => onToggle(t)}
               title={t}
               className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300'}`}
+                ? 'text-accent-text border-border-brand bg-chip'
+                : 'bg-surface border-border-soft text-ink-secondary hover:border-border-brand hover:text-accent-text'}`}
             >
               {optionLabel ? optionLabel(t) : t}
             </button>
@@ -135,18 +135,18 @@ export function OrgPage() {
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">Dashboard</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Organization rollup</h1>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Fleet-wide AgEnFK activity across every connected installation.</p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Dashboard</p>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Organization rollup</h1>
+        <p className="mt-1 text-sm text-ink-tertiary">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 
       <MetricsTilesRow totals={totals} />
 
-      <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
+      <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-indigo-500" />
-          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Filters</h2>
-          <span className="text-[11px] text-slate-500">all queries below honor these</span>
+          <GitBranch className="w-4 h-4 text-accent-text" />
+          <h2 className="text-sm font-semibold text-ink">Filters</h2>
+          <span className="text-[11px] text-ink-tertiary">all queries below honor these</span>
         </div>
         <FacetMultiselect
           label="Project (git remote)"
@@ -171,15 +171,15 @@ export function OrgPage() {
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
         <div>
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">Period</h3>
-          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
+          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {RANGES.map(r => (
               <button
                 key={r.key}
                 onClick={() => setRange(r.key)}
                 className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                  ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  ? 'bg-surface text-accent-text shadow-sm'
+                  : 'text-ink-tertiary hover:text-ink'}`}
               >
                 {r.label}
               </button>
@@ -199,30 +199,30 @@ export function OrgPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Users</h2>
-          <span className="text-[11px] text-slate-500">{users.data?.length ?? 0} reporting</span>
+          <h2 className="text-sm font-semibold text-ink-secondary">Users</h2>
+          <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} reporting</span>
         </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+        <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
           {(users.data ?? []).map(u => (
             <Link
               key={u.user_key}
               to={`/users/${encodeURIComponent(u.user_key)}`}
-              className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-indigo-50/40 dark:hover:bg-indigo-900/10 transition-colors"
+              className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-chip/50 transition-colors"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-white text-[11px] font-bold flex items-center justify-center shrink-0">
+                <div className="w-8 h-8 rounded-full bg-[image:var(--gradient-accent)] text-navy text-[11px] font-bold flex items-center justify-center shrink-0">
                   {u.user_key.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0">
-                  <div className="font-mono text-[13px] text-slate-800 dark:text-slate-200 truncate group-hover:text-indigo-700 dark:group-hover:text-indigo-300 transition-colors">{u.user_key}</div>
-                  <div className="text-[11px] text-slate-500">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
+                  <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-text transition-colors">{u.user_key}</div>
+                  <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
                 </div>
               </div>
-              <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 transition-colors shrink-0" />
+              <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-text transition-colors shrink-0" />
             </Link>
           ))}
           {users.data?.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-slate-500">No users match the current filters.</div>
+            <div className="px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>
           )}
         </div>
       </section>

@@ -22,15 +22,15 @@ export function ConnectPage() {
   const ready = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(display);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100 dark:bg-slate-950 p-6">
-      <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm p-7">
+    <div className="min-h-screen flex items-center justify-center bg-chip p-6">
+      <div className="w-full max-w-md bg-card-glass backdrop-blur border border-border-soft rounded-2xl shadow-sm p-7">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-[image:var(--gradient-accent)] text-navy flex items-center justify-center">
             <Cpu className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">Connect a device</p>
-            <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100">Authorize this installation</h1>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Connect a device</p>
+            <h1 className="text-lg font-bold text-ink">Authorize this installation</h1>
           </div>
         </div>
 
@@ -44,18 +44,18 @@ export function ConnectPage() {
           </div>
         ) : (
           <>
-            <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">
+            <p className="mt-4 text-sm text-ink-secondary">
               Enter the code shown by your <span className="font-mono">agenfk hub login</span> command, then approve the connection. The token will be bound to your current org.
             </p>
             <label className="block mt-5">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400 font-semibold">Device code</span>
+              <span className="text-[11px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">Device code</span>
               <input
                 value={display}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
                 placeholder="ABCD-EFGH"
                 spellCheck={false}
                 autoComplete="off"
-                className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-mono tracking-[0.2em] text-center uppercase text-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-border-soft bg-chip text-ink dark:text-white font-mono tracking-[0.2em] text-center uppercase text-lg focus:outline-none focus:ring-2 focus:ring-brand"
               />
             </label>
             {approve.isError && (
@@ -67,7 +67,7 @@ export function ConnectPage() {
             <button
               disabled={!ready || approve.isPending}
               onClick={() => approve.mutate(display)}
-              className="mt-5 w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold transition-colors"
+              className="mt-5 w-full py-2.5 rounded-xl bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 font-bold transition-colors"
             >
               {approve.isPending ? 'Approving…' : 'Approve & connect'}
             </button>

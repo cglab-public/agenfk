@@ -41,7 +41,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       else nav('/login');
     }
   }, [me.isLoading, me.data, providers.data, nav]);
-  if (me.isLoading || !me.data) return <div className="p-8 text-zinc-500">Loading…</div>;
+  if (me.isLoading || !me.data) return <div className="p-8 bg-canvas text-ink-tertiary min-h-screen">Loading…</div>;
   return <>{children}</>;
 }
 
