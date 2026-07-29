@@ -11,7 +11,7 @@ describe('Hub UI favicon', () => {
     expect(fs.existsSync(FAVICON_PATH), `expected ${FAVICON_PATH} to exist`).toBe(true);
     const svg = fs.readFileSync(FAVICON_PATH, 'utf8');
     expect(svg.startsWith('<svg') || svg.includes('<svg')).toBe(true);
-    expect(svg.toLowerCase()).toMatch(/#[a-f0-9]{3,8}|rgb/);
+    expect(svg.toLowerCase()).toMatch(/04cc98|7fe5ca|056f71/i);
   });
 
   it('index.html links the favicon via <link rel="icon">', () => {

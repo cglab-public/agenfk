@@ -130,6 +130,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, disableLayoutAnimation
 }) => {
   const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
+  const moveMenuRef = React.useRef<HTMLDivElement>(null);
+  const moveMenuButtonRef = React.useRef<HTMLButtonElement>(null);
   const [isFlying, setIsFlying] = useState(false);
   const cardRef = React.useRef<HTMLDivElement>(null);
   const lastStatus = React.useRef(item.status);
@@ -198,6 +200,28 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
     }
   }, [isFlying, controls]);
   /* v8 ignore stop */
+
+  // Dismiss the "Move to project" menu on an outside click or Escape,
+  // matching the FacetMultiselect popover idiom (document-level listeners,
+  // scoped to when the menu is actually open).
+  useEffect(() => {
+    if (!isMoveMenuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (moveMenuRef.current?.contains(target)) return;
+      if (moveMenuButtonRef.current?.contains(target)) return;
+      setIsMoveMenuOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMoveMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isMoveMenuOpen]);
 
   return (
     <motion.div
@@ -271,6 +295,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           {projects && projects.filter(p => p.id !== item.projectId).length > 0 && (
             <div className="relative">
               <button
+                ref={moveMenuButtonRef}
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
                 className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
                 title="Move to project"
@@ -279,6 +304,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               </button>
               {isMoveMenuOpen && (
                 <div
+                  ref={moveMenuRef}
                   className="absolute right-0 top-5 z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 min-w-[140px]"
                   onClick={(e) => e.stopPropagation()}
                 >

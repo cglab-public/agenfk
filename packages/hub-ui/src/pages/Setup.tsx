@@ -47,7 +47,7 @@ export function SetupPage() {
           <button type="submit" className="w-full px-3 py-2 bg-[image:var(--gradient-accent)] text-navy shadow-glow rounded-lg font-bold disabled:opacity-50" disabled={!submittable}>
             {setup.isPending ? 'Creating…' : 'Create admin'}
           </button>
-          {err && <div className="text-sm text-danger-muted">{err}</div>}
+          {err && <div className="text-sm text-danger-text">{err}</div>}
         </form>
       </div>
     </div>

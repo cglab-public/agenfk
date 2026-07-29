@@ -592,7 +592,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <button 
                     type="submit"
                     disabled={!newSubitemTitle.trim() || isSubmitting}
-                    className="p-1.5 bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:bg-slate-400 rounded transition-colors"
+                    className="p-1.5 bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:bg-[image:none] disabled:bg-slate-400 rounded transition-colors"
                   >
                     {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                   </button>

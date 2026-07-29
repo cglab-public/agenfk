@@ -32,7 +32,7 @@ export function LoginPage() {
             <button type="submit" className="w-full px-3 py-2 bg-[image:var(--gradient-accent)] text-navy shadow-glow rounded-lg font-bold disabled:opacity-50" disabled={login.isPending}>
               {login.isPending ? 'Signing in…' : 'Sign in'}
             </button>
-            {err && <div className="text-sm text-danger-muted">{err}</div>}
+            {err && <div className="text-sm text-danger-text">{err}</div>}
           </form>
         )}
         <div className="space-y-2">

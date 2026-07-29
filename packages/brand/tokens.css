@@ -30,6 +30,7 @@
 
   /* Muted semantic accents, defined now for later stories. */
   --danger-muted: #f26d7e;      /* bug/danger */
+  --danger-text: #c23a52;       /* AA-compliant error copy (~4.99:1 on #f8fafc); danger-muted stays for decorative chip/badge/icon tints */
   --story-blue: #4f8ef7;        /* story */
 
   /* ---- Theme-dependent tokens: LIGHT defaults ---- */
@@ -83,6 +84,7 @@
 
     --accent-text: #7fe5ca;
     --chip-bg: rgba(4, 204, 152, .10);
+    --danger-text: #f26d7e;     /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
     --glow: 0 0 30px rgba(4, 204, 152, .12);
   }
@@ -111,6 +113,7 @@
 
   --accent-text: #7fe5ca;
   --chip-bg: rgba(4, 204, 152, .10);
+  --danger-text: #f26d7e;       /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
   --glow: 0 0 30px rgba(4, 204, 152, .12);
 }
@@ -132,6 +135,7 @@
 
   --accent-text: #056f71;
   --chip-bg: rgba(219, 247, 240, .55);
+  --danger-text: #c23a52;       /* AA-compliant error copy (~4.99:1 on #f8fafc); danger-muted stays for decorative chip/badge/icon tints */
 
   --glow: 0 0 20px rgba(4, 204, 152, .12);
 }
@@ -153,6 +157,8 @@
   --color-navy: var(--navy);
   --color-navy-deep: var(--navy-deep);
   --color-danger-muted: var(--danger-muted);
+  /* Error copy only (AA text contrast); danger-muted stays for decorative chip/badge/icon tints */
+  --color-danger-text: var(--danger-text);
   --color-story-blue: var(--story-blue);
 
   /* Theme-dependent colors (flip via the selectors above) -> bg-canvas,

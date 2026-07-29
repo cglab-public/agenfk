@@ -919,4 +919,43 @@ describe('KanbanBoard', () => {
       expect(ideasWrapper!.classList.contains('shrink-0')).toBe(true);
     });
   });
+
+  describe('Move to project menu dismissal', () => {
+    const project1 = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    const project2 = { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() };
+    const items = [
+      { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() },
+    ];
+
+    async function setupWithOpenMenu() {
+      vi.mocked(api.listProjects).mockResolvedValue([project1, project2] as any);
+      vi.mocked(api.listItems).mockResolvedValue(items as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<KanbanBoard />, { wrapper });
+
+      await screen.findByText('Task 1');
+      fireEvent.click(screen.getByTitle('Move to project'));
+      expect(await screen.findByText('Move to project')).toBeDefined();
+    }
+
+    it('closes when clicking outside the menu', async () => {
+      await setupWithOpenMenu();
+
+      fireEvent.pointerDown(document.body);
+
+      await waitFor(() => {
+        expect(screen.queryByText('Move to project')).toBeNull();
+      });
+    });
+
+    it('closes when pressing Escape', async () => {
+      await setupWithOpenMenu();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      await waitFor(() => {
+        expect(screen.queryByText('Move to project')).toBeNull();
+      });
+    });
+  });
 });
