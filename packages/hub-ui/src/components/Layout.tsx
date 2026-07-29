@@ -2,38 +2,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
 import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
-
-function Logo({ version }: { version?: string | null }) {
-  return (
-    <div className="flex items-start gap-2.5">
-      <svg viewBox="0 0 100 100" className="w-8 h-8 drop-shadow-sm shrink-0 mt-0.5" aria-hidden>
-        <defs>
-          <linearGradient id="hub-logo" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#6366f1" />
-            <stop offset="100%" stopColor="#a855f7" />
-          </linearGradient>
-        </defs>
-        <rect width="100" height="100" rx="24" fill="url(#hub-logo)" />
-        <path d="M50 25L25 75H35L50 45L65 75H75L50 25Z" fill="white" />
-        <circle cx="50" cy="25" r="8" fill="white" />
-        <circle cx="50" cy="25" r="4" fill="#6366f1" />
-        <rect x="40" y="55" width="20" height="4" rx="2" fill="white" fillOpacity="0.8" />
-      </svg>
-      <div className="leading-tight min-w-0">
-        <div className="text-sm font-bold text-slate-900 dark:text-slate-100">AgEnFK</div>
-        <div className="text-[10px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400">Hub</div>
-        {version && (
-          <div
-            title={`Hub version ${version}`}
-            className="mt-1 inline-block px-1.5 py-0.5 rounded-md font-mono text-[9px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-          >
-            v{version}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+import { Logo } from './Logo';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
