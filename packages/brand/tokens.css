@@ -1,0 +1,171 @@
+/*
+ * CG/lab shared design tokens.
+ *
+ * Single source of truth for the brand redesign (CGLAB-38 epic). Imported by
+ * BOTH packages/ui/src/index.css and packages/hub-ui/src/index.css via a
+ * relative path so the two independently-built Vite apps cannot drift.
+ *
+ * Do not restyle components against these values yet — this file only
+ * defines tokens + fonts + wiring. Consuming stories land later.
+ *
+ * Self-hosted fonts (offline-safe, no Google Fonts CDN):
+ *   - Manrope (400-800)      -> @fontsource-variable/manrope
+ *   - JetBrains Mono         -> @fontsource-variable/jetbrains-mono
+ * Each consuming package's index.css imports the two font CSS files above
+ * this file so the font-face declarations exist before @theme references
+ * them.
+ */
+
+:root {
+  /* ---- Brand palette (theme-independent) ---- */
+  --brand: #04cc98;             /* primary brand accent (teal) */
+  --brand-light: #7fe5ca;       /* teal-light */
+  --brand-dark: #056f71;        /* teal-dark */
+  --mint: #dbf7f0;
+
+  /* RESERVED: navy is for the logo gradient and for text sitting on teal
+   * CTAs only. Never use navy as a page/canvas background. */
+  --navy: #000f3b;
+  --navy-deep: #081049;
+
+  /* Muted semantic accents, defined now for later stories. */
+  --danger-muted: #f26d7e;      /* bug/danger */
+  --story-blue: #4f8ef7;        /* story */
+
+  /* ---- Theme-dependent tokens: LIGHT defaults ---- */
+  --canvas: #f8fafc;                        /* page canvas */
+  --surface: #ffffff;                       /* raised surface */
+  --card-glass: rgba(255, 255, 255, .82);   /* glass card fill */
+  --nav-surface: rgba(255, 255, 255, .72);  /* nav bar fill */
+
+  --text-primary: #000f3b;
+  --text-secondary: #3d4a6b;
+  --text-tertiary: #7c88a6;
+
+  --border-brand: rgba(4, 204, 152, .22);   /* brand hairline border */
+  --border-soft: rgba(0, 15, 59, .08);      /* soft neutral border */
+
+  --accent-text: #056f71;                   /* teal-dark on light bg */
+  --chip-bg: rgba(219, 247, 240, .55);
+
+  --glow: 0 0 20px rgba(4, 204, 152, .12);  /* the one glow shadow, light value */
+
+  /* Gradients (theme-independent). Not a recognized Tailwind @theme
+   * namespace, so kept as plain custom properties and consumed via
+   * arbitrary values, e.g. `bg-[image:var(--gradient-accent)]`. */
+  --gradient-accent: linear-gradient(135deg, #04cc98 0%, #7fe5ca 100%);
+  --gradient-main: linear-gradient(135deg, #000f3b 0%, #04cc98 100%);
+}
+
+/* Dark theme values.
+ * Two mechanisms are covered because the two apps pick dark mode differently:
+ *  - packages/ui explicitly toggles a `.dark` class + `[data-theme="dark"]`
+ *    attribute on <html> (see ThemeContext.tsx) and defines its own
+ *    `@variant dark` matching those selectors.
+ *  - packages/hub-ui has no manual theme toggle yet and relies on the
+ *    default Tailwind v4 `dark:` variant, which follows
+ *    `prefers-color-scheme`.
+ * Both blocks set the same values, so whichever mechanism a given app uses,
+ * the tokens stay in sync. Neutral dark surfaces — NOT navy-tinted. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #0d0f13;
+    --surface: #13161c;
+    --card-glass: rgba(22, 26, 33, .62);
+    --nav-surface: rgba(13, 15, 19, .72);
+
+    --text-primary: #f1f5f9;
+    --text-secondary: #b6bfcd;
+    --text-tertiary: #737d8f;
+
+    --border-brand: rgba(4, 204, 152, .18);
+    --border-soft: rgba(148, 163, 184, .10);
+
+    --accent-text: #7fe5ca;
+    --chip-bg: rgba(4, 204, 152, .10);
+
+    --glow: 0 0 30px rgba(4, 204, 152, .12);
+  }
+}
+
+:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *) {
+  --canvas: #0d0f13;
+  --surface: #13161c;
+  --card-glass: rgba(22, 26, 33, .62);
+  --nav-surface: rgba(13, 15, 19, .72);
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #b6bfcd;
+  --text-tertiary: #737d8f;
+
+  --border-brand: rgba(4, 204, 152, .18);
+  --border-soft: rgba(148, 163, 184, .10);
+
+  --accent-text: #7fe5ca;
+  --chip-bg: rgba(4, 204, 152, .10);
+
+  --glow: 0 0 30px rgba(4, 204, 152, .12);
+}
+
+/* Explicit light overrides win over an OS-level dark preference when an app
+ * (packages/ui) lets the user force light mode while the OS is dark. */
+:where(.light, .light *, [data-theme="light"], [data-theme="light"] *) {
+  --canvas: #f8fafc;
+  --surface: #ffffff;
+  --card-glass: rgba(255, 255, 255, .82);
+  --nav-surface: rgba(255, 255, 255, .72);
+
+  --text-primary: #000f3b;
+  --text-secondary: #3d4a6b;
+  --text-tertiary: #7c88a6;
+
+  --border-brand: rgba(4, 204, 152, .22);
+  --border-soft: rgba(0, 15, 59, .08);
+
+  --accent-text: #056f71;
+  --chip-bg: rgba(219, 247, 240, .55);
+
+  --glow: 0 0 20px rgba(4, 204, 152, .12);
+}
+
+@theme {
+  /* Typography: self-hosted Manrope for UI text, JetBrains Mono for
+   * identifiers/metrics. Fallbacks keep things readable before/if a font
+   * fails to load. */
+  --font-sans: "Manrope Variable", Manrope, ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Static brand colors -> bg-brand, text-brand-dark, border-brand-light, etc. */
+  --color-brand: var(--brand);
+  --color-brand-light: var(--brand-light);
+  --color-brand-dark: var(--brand-dark);
+  --color-mint: var(--mint);
+  --color-navy: var(--navy);
+  --color-navy-deep: var(--navy-deep);
+  --color-danger-muted: var(--danger-muted);
+  --color-story-blue: var(--story-blue);
+
+  /* Theme-dependent colors (flip via the selectors above) -> bg-canvas,
+   * bg-surface, bg-card-glass, bg-nav-surface, text-ink, text-ink-secondary,
+   * text-ink-tertiary, border-border-brand, border-border-soft,
+   * text-accent-text, bg-chip. */
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-card-glass: var(--card-glass);
+  --color-nav-surface: var(--nav-surface);
+
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-tertiary: var(--text-tertiary);
+
+  --color-border-brand: var(--border-brand);
+  --color-border-soft: var(--border-soft);
+
+  --color-accent-text: var(--accent-text);
+  --color-chip: var(--chip-bg);
+
+  /* Effects: exactly one glow shadow -> shadow-glow. */
+  --shadow-glow: var(--glow);
+}
