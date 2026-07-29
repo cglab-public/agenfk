@@ -50,28 +50,43 @@ interface NavItem {
 }
 
 const statusBorderColors: Record<Status, string> = {
-  [Status.IDEAS]: "border-t-indigo-400",
+  [Status.IDEAS]: "border-t-slate-400",
   [Status.TODO]: "border-t-slate-400",
-  [Status.IN_PROGRESS]: "border-t-blue-500",
-  [Status.TEST]: "border-t-purple-500",
+  [Status.IN_PROGRESS]: "border-t-brand",
+  [Status.TEST]: "border-t-story-blue",
   [Status.REVIEW]: "border-t-amber-500",
-  [Status.DONE]: "border-t-emerald-500",
+  [Status.DONE]: "border-t-brand-dark",
   [Status.BLOCKED]: "border-t-red-500",
   [Status.PAUSED]: "border-t-orange-400",
   [Status.ARCHIVED]: "border-t-gray-300",
 };
 
+// Sensible cycle of on-brand colors assigned to custom/arbitrary flow step
+// names that have no explicit FlowStep.color and aren't one of the known
+// Status values above — keeps the "no rainbow" rule for flows with
+// non-default step names instead of falling back to a single fixed hue.
+const UNKNOWN_STEP_COLOR_CYCLE = ['#04cc98', '#4f8ef7', '#7fe5ca', '#056f71', '#94a3b8'];
+
+function colorForUnknownStatus(status: string): string {
+  let hash = 0;
+  for (let i = 0; i < status.length; i++) {
+    hash = (hash * 31 + status.charCodeAt(i)) | 0;
+  }
+  const index = Math.abs(hash) % UNKNOWN_STEP_COLOR_CYCLE.length;
+  return UNKNOWN_STEP_COLOR_CYCLE[index];
+}
+
 // Default hex colors for main flow columns — used when a FlowStep has no color set
 const DEFAULT_STEP_COLORS: Record<string, string> = {
   [Status.TODO]: '#94a3b8',
-  [Status.IN_PROGRESS]: '#3b82f6',
+  [Status.IN_PROGRESS]: '#04cc98',
   [Status.REVIEW]: '#f59e0b',
-  [Status.TEST]: '#a855f7',
-  [Status.DONE]: '#10b981',
+  [Status.TEST]: '#4f8ef7',
+  [Status.DONE]: '#056f71',
   [Status.BLOCKED]: '#ef4444',
   [Status.PAUSED]: '#fb923c',
   [Status.ARCHIVED]: '#d1d5db',
-  [Status.IDEAS]: '#818cf8',
+  [Status.IDEAS]: '#94a3b8',
 };
 
 const statusIcons: Record<Status, React.ReactNode> = {
@@ -216,9 +231,10 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         },
       }}
       className={clsx(
-        "group bg-white dark:bg-slate-900 rounded-xl p-3 border border-slate-200 dark:border-slate-800 cursor-move hover:shadow-lg dark:hover:shadow-indigo-900/20 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors duration-200",
-        highlightedId === item.id && "search-highlight border-indigo-500 dark:border-indigo-500",
+        "group bg-card-glass backdrop-blur rounded-xl p-3 border border-border-soft cursor-move hover:shadow-glow hover:border-border-brand transition-colors duration-200",
+        highlightedId === item.id && "search-highlight border-brand",
         dragId === item.id && "opacity-40",
+        item.status === Status.DONE && dragId !== item.id && "opacity-60",
         isFlying ? "!z-[9999] isolate" : (highlightedId === item.id ? "z-20 relative" : "z-0 relative")
       )}
       style={{
@@ -235,18 +251,18 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       onDoubleClick={onDoubleClick}
     >
       {dropTargetId === item.id && dropPosition === 'above' && (
-        <div className="absolute -top-[1px] left-0 right-0 h-[2px] bg-indigo-500 rounded-t-xl z-50 pointer-events-none" />
+        <div className="absolute -top-[1px] left-0 right-0 h-[2px] bg-brand rounded-t-xl z-50 pointer-events-none" />
       )}
       {dropTargetId === item.id && dropPosition === 'below' && (
-        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-indigo-500 rounded-b-xl z-50 pointer-events-none" />
+        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-brand rounded-b-xl z-50 pointer-events-none" />
       )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
-          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-100 dark:border-purple-800" : item.type === ItemType.STORY ? "bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800" : item.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" : "bg-rose-50 dark:bg-rose-900/20 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800")}>
+          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" : item.type === ItemType.STORY ? "bg-story-blue/10 text-story-blue border-story-blue/30" : item.type === ItemType.TASK ? "bg-brand/10 text-brand border-brand/30" : "bg-danger-muted/10 text-danger-muted border-danger-muted/30")}>
             {item.type}
           </span>
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-800 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-chip hover:bg-chip/70 text-accent-text px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
           )}
@@ -256,7 +272,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className="relative">
               <button
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
-                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-indigo-500 dark:hover:text-indigo-400 transition-colors"
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
                 title="Move to project"
               >
                 <FolderInput size={11} />
@@ -270,7 +286,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
                   {projects.filter(p => p.id !== item.projectId).map(p => (
                     <button
                       key={p.id}
-                      className="w-full text-left px-2 py-1 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 hover:text-indigo-700 dark:hover:text-indigo-300 truncate"
+                      className="w-full text-left px-2 py-1 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-chip hover:text-accent-text truncate"
                       onClick={() => { setIsMoveMenuOpen(false); onMoveToProject(item.id, p.id); }}
                     >
                       {p.name}
@@ -285,7 +301,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           </button>
         </div>
       </div>
-      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-indigo-700 dark:group-hover:text-indigo-400 transition-colors">{item.title}</h3>
+      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-text transition-colors">{item.title}</h3>
       {!item.parentId && (item.branchName || item.prUrl) && (
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
           {item.branchName && (
@@ -299,11 +315,11 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-medium border transition-colors ${
-                item.prStatus === 'merged'  ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900' :
-                item.prStatus === 'closed'  ? 'bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100 dark:hover:bg-rose-900' :
+              className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-mono font-medium border transition-colors ${
+                item.prStatus === 'merged'  ? 'bg-chip text-accent-text border-border-brand hover:bg-chip/70' :
+                item.prStatus === 'closed'  ? 'bg-danger-muted/10 text-danger-muted border-danger-muted/30 hover:bg-danger-muted/20' :
                 item.prStatus === 'draft'   ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700' :
-                                              'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900'
+                                              'bg-brand/10 text-brand border-brand/30 hover:bg-brand/20'
               }`}
               title={`PR: ${item.prStatus || 'open'}`}
             >
@@ -327,7 +343,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
                   <span>{progress}%</span>
                 </div>
                 <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-50 dark:border-slate-800">
-                  <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progress}%` }} />
+                  <div className="h-full bg-[image:var(--gradient-accent)] transition-all duration-500" style={{ width: `${progress}%` }} />
                 </div>
               </div>
             );
@@ -343,7 +359,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="text-indigo-500 hover:text-indigo-700 transition-colors flex items-center gap-0.5"
+              className="text-accent-text hover:opacity-80 transition-colors flex items-center gap-0.5"
               title={item.externalUrl.includes('github.com') ? `GitHub Issue #${item.externalId}` : `Open JIRA: ${item.externalId}`}
             >
               {item.externalUrl.includes('github.com') ? (
@@ -363,7 +379,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             onClick={(e) => { e.stopPropagation(); onCopyId(item.id); }}
             title="Copy Full ID"
           >
-            <span className="group-hover/id:text-indigo-500 transition-colors">#{item.id.substring(0, 4)}</span>
+            <span className="group-hover/id:text-accent-text transition-colors">#{item.id.substring(0, 4)}</span>
             <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
               {copiedId === item.id ? <Check size={9} className="text-emerald-500" /> : <Copy size={9} />}
             </div>
@@ -592,7 +608,7 @@ export const KanbanBoard: React.FC = () => {
     const socket = io(API_URL || undefined);
 
     socket.on('connect', () => {
-      console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #6366f1; font-weight: bold', 'color: inherit');
+      console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #04cc98; font-weight: bold', 'color: inherit');
     });
 
     socket.on('items_updated', () => {
@@ -602,7 +618,7 @@ export const KanbanBoard: React.FC = () => {
     });
 
     socket.on('flow:updated', ({ projectId }: { projectId?: string }) => {
-      console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #6366f1; font-weight: bold', 'color: inherit');
+      console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #04cc98; font-weight: bold', 'color: inherit');
       if (projectId) {
         queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
       } else {
@@ -1130,8 +1146,8 @@ export const KanbanBoard: React.FC = () => {
 
   if (isLoadingProjects) {
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400">
-        <Loader2 className="h-10 w-10 animate-spin text-blue-500 mb-4" />
+      <div className="flex h-screen w-full flex-col items-center justify-center bg-canvas text-ink-secondary">
+        <Loader2 className="h-10 w-10 animate-spin text-accent-text mb-4" />
         <p className="font-medium">Connecting to AgEnFK Brain...</p>
       </div>
     );
@@ -1140,7 +1156,7 @@ export const KanbanBoard: React.FC = () => {
   // Project Selection Screen
 
   const projectPickerCard = (
-        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full my-auto bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
+        <div data-testid="project-picker-panel" role="dialog" aria-modal="true" aria-label="Project picker" className={`relative w-full my-auto bg-surface rounded-2xl shadow-xl border border-border-soft p-8 text-center ${isCreatingProject ? 'max-w-md' : 'max-w-4xl'}`}>
           {selectedProjectId && (
             <button
               aria-label="Close project picker"
@@ -1168,7 +1184,7 @@ export const KanbanBoard: React.FC = () => {
                   placeholder="Search projects..."
                   aria-label="Search projects"
                   aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
-                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-2"
+                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand mb-2"
                 />
                 <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-h-[60vh] overflow-y-auto" role="listbox" aria-label="Projects" data-columns={columnCount}>
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
@@ -1182,8 +1198,8 @@ export const KanbanBoard: React.FC = () => {
                       aria-selected={index === highlightedProjectIndex ? 'true' : 'false'}
                       className={`flex items-center gap-3 p-4 rounded-xl border transition-all group ${
                         index === highlightedProjectIndex
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
-                          : 'border-slate-100 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
+                          ? 'border-border-brand bg-chip'
+                          : 'border-slate-100 dark:border-slate-800 hover:border-border-brand hover:bg-chip'
                       }`}
                     >
                       {confirmDeleteProjectId === p.id ? (
@@ -1210,7 +1226,7 @@ export const KanbanBoard: React.FC = () => {
                             onClick={() => handleSelectProject(p.id)}
                             className="flex flex-1 items-center gap-3 text-left"
                           >
-                            <Briefcase className="text-slate-400 group-hover:text-indigo-500 shrink-0" size={20} />
+                            <Briefcase className="text-slate-400 group-hover:text-accent-text shrink-0" size={20} />
                             <span className="font-semibold text-slate-700 dark:text-slate-200">{p.name}</span>
                           </button>
                           <button
@@ -1241,14 +1257,14 @@ export const KanbanBoard: React.FC = () => {
                     onChange={(e) => setNewProjectName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && newProjectName && createProjectMutation.mutate(newProjectName)}
                     placeholder="e.g. My Awesome App"
-                    className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
                 <div className="flex gap-3 pt-2">
                   <button 
                     disabled={!newProjectName || createProjectMutation.isPending}
                     onClick={() => createProjectMutation.mutate(newProjectName)}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-3 rounded-xl transition-all"
+                    className="flex-1 bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 font-bold py-3 rounded-xl transition-all"
                   >
                     {createProjectMutation.isPending ? <Loader2 className="animate-spin mx-auto" size={20} /> : 'Create Project'}
                   </button>
@@ -1263,7 +1279,7 @@ export const KanbanBoard: React.FC = () => {
             ) : (
               <button 
                 onClick={() => setIsCreatingProject(true)}
-                className="w-full flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 hover:border-indigo-500 dark:hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 font-bold transition-all mt-4"
+                className="w-full flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 hover:border-border-brand hover:bg-chip text-accent-text font-bold transition-all mt-4"
               >
                 <Plus size={20} />
                 Create New Project
@@ -1276,7 +1292,7 @@ export const KanbanBoard: React.FC = () => {
   // First load / no project chosen yet: full-screen, not dismissable (no close button).
   if (!selectedProjectId) {
     return (
-      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-slate-50 dark:bg-slate-950 p-6">
+      <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-canvas p-6">
         <Logo size={64} className="mb-8" />
         {projectPickerCard}
       </div>
@@ -1292,8 +1308,8 @@ export const KanbanBoard: React.FC = () => {
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
   return (
-    <div className="h-full min-h-screen bg-slate-100 dark:bg-slate-950 flex flex-col font-sans text-slate-900 dark:text-slate-100 transition-colors duration-300">
-      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
+    <div className="h-full min-h-screen bg-canvas flex flex-col font-sans text-ink transition-colors duration-300">
+      <header className="bg-nav-surface backdrop-blur border-b border-border-brand px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 shrink-0">
             <Logo size={32} />
@@ -1323,11 +1339,11 @@ export const KanbanBoard: React.FC = () => {
               </div>
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
-                  Project: <span className="text-indigo-600 dark:text-indigo-400">{activeProject?.name || 'Loading...'}</span>
+                  Project: <span className="text-accent-text">{activeProject?.name || 'Loading...'}</span>
                 </p>
                 <button
                   onClick={() => setIsPickerOpen(true)}
-                  className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-indigo-600 transition-colors"
+                  className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-accent-text transition-colors"
                   title="Switch Project"
                 >
                   <FolderOpen size={11} />
@@ -1341,7 +1357,7 @@ export const KanbanBoard: React.FC = () => {
                     className={clsx(
                       'p-0.5 rounded transition-colors',
                       isPinned
-                        ? 'text-indigo-500 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300'
+                        ? 'text-accent-text hover:opacity-80'
                         : 'text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-400'
                     )}
                   >
@@ -1360,7 +1376,7 @@ export const KanbanBoard: React.FC = () => {
                 value={searchQuery}
                 onChange={(e) => { setSearchTerm(e.target.value); if (!e.target.value.trim()) clearSearch(); }}
                 onKeyDown={(e) => { if (e.key === 'Escape') clearSearch(); }}
-                className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all dark:text-slate-200 shadow-inner"
+                className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand/50 transition-all dark:text-slate-200 shadow-inner"
               />
               <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
@@ -1389,7 +1405,7 @@ export const KanbanBoard: React.FC = () => {
                 <button
                   onClick={() => setIsJiraImportOpen(true)}
                   data-testid="jira-import-btn"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <Download size={14} />
                   <span className="hidden xl:inline">Import</span>
@@ -1406,7 +1422,7 @@ export const KanbanBoard: React.FC = () => {
                     target="_blank"
                     rel="noopener noreferrer"
                     title={`Open ${ghStatus.owner}/${ghStatus.repo} Issues`}
-                    className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-colors"
+                    className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-chip border border-slate-200 dark:border-slate-700 hover:border-border-brand rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-text transition-colors"
                   >
                     <svg width={12} height={12} viewBox="0 0 16 16" fill="currentColor">
                       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
@@ -1415,7 +1431,7 @@ export const KanbanBoard: React.FC = () => {
                   </a>
                   <button
                     onClick={() => setIsGitHubImportOpen(true)}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                     title="Import GitHub Issues"
                   >
                     <Download size={14} />
@@ -1433,7 +1449,7 @@ export const KanbanBoard: React.FC = () => {
                   data-testid="manage-flow-btn"
                   onClick={() => setIsFlowEditorOpen(true)}
                   title="Manage Flow"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <GitBranch size={14} />
                   <span className="hidden xl:inline">Flow</span>
@@ -1445,7 +1461,7 @@ export const KanbanBoard: React.FC = () => {
                   data-testid="org-flows-btn"
                   onClick={() => setIsOrgFlowPickerOpen(true)}
                   title="Org Flows"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <Briefcase size={14} />
                   <span className="hidden xl:inline">Org Flows</span>
@@ -1454,7 +1470,7 @@ export const KanbanBoard: React.FC = () => {
 
               <button
                 onClick={toggleTheme}
-                className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-indigo-500 transition-all"
+                className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
                 title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               >
                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -1463,7 +1479,7 @@ export const KanbanBoard: React.FC = () => {
 
             <button 
               onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: selectedProjectId! } as any)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-indigo-500/20 transition-all active:scale-95 whitespace-nowrap"
+              className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
             >
               <Plus size={18} />
               <span>New Item</span>
@@ -1473,7 +1489,7 @@ export const KanbanBoard: React.FC = () => {
 
         <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/50 pt-2 px-1">
           <div className="flex items-center gap-1.5 text-xs overflow-x-auto scrollbar-hide py-1">
-            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/20" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
               <Home size={14} />
               <span className={clsx(navPath.length === 0 ? "inline" : "hidden sm:inline")}>Top Level</span>
             </button>
@@ -1484,8 +1500,8 @@ export const KanbanBoard: React.FC = () => {
                   /* v8 ignore start */
                   onClick={() => navigateTo(index)}
                   /* v8 ignore stop */
-                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-indigo-600 text-white font-bold shadow-md shadow-indigo-500/20" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-                  <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-purple-300" : "bg-blue-300")}></span>
+                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+                  <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-brand-light" : "bg-story-blue")}></span>
                   <span>{nav.title}</span>
                 </button>
               </React.Fragment>
@@ -1498,13 +1514,13 @@ export const KanbanBoard: React.FC = () => {
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
                 <Zap size={10} className="text-amber-500" />
                 Tokens / Cost
-                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-indigo-600 transition-colors">
+                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-accent-text transition-colors">
                   <Loader2 size={10} className={clsx(isLoading && "animate-spin")} />
                 </button>
               </div>
               <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
                 {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
-                {pricesData ? <span className="text-indigo-600 dark:text-indigo-400 ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
+                {pricesData ? <span className="text-accent-text ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
               </div>
             </div>
             */}
@@ -1512,7 +1528,7 @@ export const KanbanBoard: React.FC = () => {
             {activeFlow && (
               <div className="flex flex-col items-end">
                 <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
-                  <GitBranch size={10} className="text-indigo-500" />
+                  <GitBranch size={10} className="text-accent-text" />
                   Flow
                 </div>
                 <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none truncate max-w-[120px]" title={activeFlow.name}>
@@ -1540,10 +1556,10 @@ export const KanbanBoard: React.FC = () => {
             {/* Ideas Section — hidden in drill-down view */}
             {navPath.length === 0 && <div data-testid="ideas-column-wrapper" className={clsx("flex flex-col transition-all duration-300 h-full shrink-0", !isIdeasCollapsed ? "w-64" : "w-12")}>
               {isIdeasCollapsed ? (
-                <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-indigo-50/50 dark:bg-indigo-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/20 transition-colors group border border-dashed border-indigo-200 dark:border-indigo-900/30">
-                  <Lightbulb size={16} className="text-indigo-400 group-hover:text-indigo-500 shrink-0" />
-                  <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-indigo-400 shrink-0 mt-2">Ideas</span>
-                  <span className="bg-white dark:bg-slate-800 text-indigo-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-indigo-100 dark:border-indigo-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-chip/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-chip transition-colors group border border-dashed border-border-brand">
+                  <Lightbulb size={16} className="text-accent-text/70 group-hover:text-accent-text shrink-0" />
+                  <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-accent-text shrink-0 mt-2">Ideas</span>
+                  <span className="bg-white dark:bg-slate-800 text-accent-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-border-brand mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
                 </button>
               ) : (
                 /* v8 ignore start */
@@ -1551,10 +1567,10 @@ export const KanbanBoard: React.FC = () => {
                   onDrop={(e) => handleDrop(e, Status.IDEAS)}
                   onDragOver={handleDragOver}
                 >
-                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-indigo-400 pt-2">
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-400 pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsIdeasCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                      <Lightbulb size={14} className="text-indigo-500" />
+                      <Lightbulb size={14} className="text-accent-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
                     </div>
                     <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
@@ -1587,7 +1603,7 @@ export const KanbanBoard: React.FC = () => {
                         ))}
                       </AnimatePresence>
                     {/* v8 ignore start */}
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.IDEAS, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-500 dark:hover:text-indigo-400 transition-all flex items-center justify-center gap-1.5">
+                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.IDEAS, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add idea
                     </button>
                     {/* v8 ignore stop */}
@@ -1599,7 +1615,7 @@ export const KanbanBoard: React.FC = () => {
 
           {isLoadingFlow && !activeFlow && (
             <div className="flex items-center justify-center flex-1 min-h-[200px]">
-              <Loader2 size={24} className="animate-spin text-indigo-400" />
+              <Loader2 size={24} className="animate-spin text-accent-text" />
             </div>
           )}
 
@@ -1611,18 +1627,18 @@ export const KanbanBoard: React.FC = () => {
               <div
                 data-testid={`column-header-${status}`}
                 className="flex items-center justify-between mb-3 px-1 border-t-4 pt-2"
-                style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? '#6366f1' }}
+                style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
                 <div className="flex items-center gap-2">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? '#6366f1' }}>
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
-                  <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider">{columnLabel}</h2>
+                  <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
                   </button>
                 </div>
-                <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">
+                <span className="bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
                   {getItemsByStatus(status as Status).length}
                 </span>
               </div>
@@ -1659,7 +1675,7 @@ export const KanbanBoard: React.FC = () => {
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
-                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-indigo-300 dark:hover:border-indigo-700 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-all flex items-center justify-center gap-2">
+                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
                   <Plus size={16} /> Add {columnLabel.toLowerCase()}
                 </button>
               </div>
@@ -1838,7 +1854,7 @@ export const KanbanBoard: React.FC = () => {
                   )}
                   {isArchiveCollapsed && (
                     <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
-                      <Archive size={16} className="text-slate-500 group-hover:text-indigo-600 shrink-0" />
+                      <Archive size={16} className="text-slate-500 group-hover:text-accent-text shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
                       <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
                     </button>

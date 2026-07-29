@@ -73,8 +73,8 @@ export const ReadmeModal: React.FC<ReadmeModalProps> = ({ isOpen, onClose }) => 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg">
-              <Book size={20} className="text-indigo-600 dark:text-indigo-400" />
+            <div className="p-2 bg-chip rounded-lg">
+              <Book size={20} className="text-accent-text" />
             </div>
             <div>
               <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">Project README</h2>

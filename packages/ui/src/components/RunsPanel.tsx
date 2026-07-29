@@ -49,7 +49,7 @@ const IS_MACHINE_OUTPUT: Record<RunEvent['kind'], boolean> = {
 };
 
 const LANE = {
-  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-indigo-500/60', tag: 'text-indigo-600 dark:text-indigo-300' },
+  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-story-blue/60', tag: 'text-story-blue' },
   worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
   reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/60', tag: 'text-teal-600 dark:text-teal-300' },
 } as const;
@@ -285,14 +285,14 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
               className={
                 'w-full text-left rounded-lg border p-2.5 transition-colors ' +
                 (isSel
-                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
-                  : 'border-slate-200 dark:border-slate-700 hover:border-indigo-400')
+                  ? 'border-border-brand bg-chip'
+                  : 'border-slate-200 dark:border-slate-700 hover:border-brand-light')
               }
             >
               <div className="flex items-center gap-2">
                 <span className={
                   'w-2 h-2 rounded-full shrink-0 ' +
-                  (run.status === 'running' ? 'bg-indigo-500 animate-pulse' : run.status === 'failed' ? 'bg-red-500' : 'bg-emerald-500')
+                  (run.status === 'running' ? 'bg-brand animate-pulse' : run.status === 'failed' ? 'bg-danger-muted' : 'bg-brand-dark')
                 } />
                 <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{run.step}</span>
               </div>
@@ -313,8 +313,8 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
             <span className={
               'font-mono text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ' +
               (selected.status === 'running'
-                ? 'text-indigo-600 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-900/30 animate-pulse'
-                : 'text-emerald-600 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/30')
+                ? 'text-accent-text bg-chip animate-pulse'
+                : 'text-accent-text bg-chip')
             }>
               {selected.status === 'running' ? '● LIVE' : ('● ' + (selected.verdict || selected.status.toUpperCase()))}
             </span>

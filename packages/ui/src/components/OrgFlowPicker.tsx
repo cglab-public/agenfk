@@ -158,7 +158,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
                         {isSelected && (
                           <span
                             data-testid={`org-flow-selected-${flow.id}`}
-                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-indigo-600 bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-300 rounded-full px-1.5 py-0.5"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-accent-text bg-chip border border-border-brand rounded-full px-1.5 py-0.5"
                           >
                             <Check size={10} /> Selected
                           </span>
@@ -168,7 +168,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
                         data-testid={`select-org-flow-${flow.id}`}
                         disabled={isSelected || selectMutation.isPending}
                         onClick={() => selectMutation.mutate(flow.id)}
-                        className="shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold px-3 py-1.5 transition-all"
+                        className="shrink-0 rounded-lg bg-[image:var(--gradient-accent)] text-navy hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold px-3 py-1.5 transition-all shadow-glow"
                       >
                         {isSelected ? 'Current' : 'Select'}
                       </button>
