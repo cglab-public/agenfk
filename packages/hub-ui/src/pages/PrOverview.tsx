@@ -99,7 +99,7 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
   const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`).join(' ');
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
-      <polyline points={pts} fill="none" stroke="#6366f1" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+      <polyline points={pts} fill="none" stroke="#04cc98" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }

@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@plugin "@tailwindcss/typography";
 
 /* Self-hosted brand fonts (offline-safe — no Google Fonts CDN). */
 @import "@fontsource-variable/manrope";
@@ -8,6 +7,13 @@
 /* CG/lab shared design tokens — single source of truth, also consumed by
  * packages/hub-ui/src/index.css. Edit values only in packages/brand/tokens.css. */
 @import "../../brand/tokens.css";
+
+/* @import statements must precede all other statements (besides @charset or
+ * an empty @layer) per the CSS spec — @plugin/@source below silently broke
+ * every @import that followed them (PostCSS dropped fonts + design tokens
+ * from the compiled CSS without erroring at runtime). Keep all @import lines
+ * first. */
+@plugin "@tailwindcss/typography";
 
 /* The shared @agenfk/flow-editor workspace package contains JIT utilities used
  * by FlowEditorModal. Tailwind v4 only auto-scans the importing package's

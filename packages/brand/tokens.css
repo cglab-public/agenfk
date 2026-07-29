@@ -88,7 +88,15 @@
   }
 }
 
-:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *) {
+/* Plain selectors (not :where(), which has zero specificity) so an explicit
+ * .dark/.light class or data-theme attribute reliably outranks the
+ * `@media (prefers-color-scheme: dark) { :root {...} }` block above — that
+ * block's bare `:root` carries normal (0,1,0) specificity, so a
+ * zero-specificity override can never beat it regardless of source order.
+ * Both blocks below match :root's specificity per compound selector and are
+ * declared after it, so source order decides and the explicit choice wins
+ * in both directions (forcing light on a dark OS, or dark on a light OS). */
+.dark, .dark *, [data-theme="dark"], [data-theme="dark"] * {
   --canvas: #0d0f13;
   --surface: #13161c;
   --card-glass: rgba(22, 26, 33, .62);
@@ -109,7 +117,7 @@
 
 /* Explicit light overrides win over an OS-level dark preference when an app
  * (packages/ui) lets the user force light mode while the OS is dark. */
-:where(.light, .light *, [data-theme="light"], [data-theme="light"] *) {
+.light, .light *, [data-theme="light"], [data-theme="light"] * {
   --canvas: #f8fafc;
   --surface: #ffffff;
   --card-glass: rgba(255, 255, 255, .82);

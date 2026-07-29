@@ -495,7 +495,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               // A reserved name has its own dedicated message below, so only
               // show the shape issue when that isn't already being reported.
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
-              const stepColor = step.color ?? '#6366f1';
+              const stepColor = step.color ?? '#04cc98';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
 
               return (
