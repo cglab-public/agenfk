@@ -1288,9 +1288,64 @@ app.get("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
 
 const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
 
+/**
+ * BUG 269eeec8 (c): bring local flow writes into line with the shape contract
+ * the Hub enforces (packages/hub/src/routes/admin.ts validateDefinition), so a
+ * flow authored locally can always be published without an opaque 400.
+ *
+ * Deliberately NARROWER than the Hub's validator on two points, because the
+ * local server has always accepted these and callers (MCP create_flow, the CLI)
+ * depend on them:
+ *  - `steps: []` is allowed — creating an empty flow and populating it later is
+ *    a supported local flow. It only becomes un-publishable, not invalid.
+ *  - a missing step `id` is generated rather than rejected (see normalizeSteps).
+ *
+ * What it does reject is an empty step name, which is the actual defect: it is
+ * unusable as a workflow status, since nothing can transition an item to "".
+ * Mirrored client-side in packages/flow-editor/src/flowDefinition.ts.
+ *
+ * @returns an error message, or null when the step list is acceptable.
+ */
+function flowStepsError(steps: any): string | null {
+  if (!Array.isArray(steps)) return "steps must be an array";
+  for (const s of steps) {
+    if (!s || typeof s !== 'object') return "each step must be an object";
+    if (typeof s.name !== 'string' || !s.name.trim()) return "each step requires a name";
+    if (typeof s.order !== 'number' || Number.isNaN(s.order)) return "each step requires a numeric order";
+  }
+  return null;
+}
+
+/**
+ * Fill in step ids the caller omitted. The Hub requires every step to carry a
+ * non-empty id, so generating here means anything the local server persists is
+ * publishable — without breaking the callers that never sent ids.
+ */
+function normalizeSteps(steps: any): any {
+  if (!Array.isArray(steps)) return steps;
+  const seen = new Set<string>();
+  return steps.map((s: any) => {
+    if (!s || typeof s !== 'object') return s;
+    // Missing OR duplicated ids both get a fresh one: two steps sharing an id
+    // collide on React's key={step.id} in the flow editor, which silently drops
+    // a column from the UI.
+    const id = typeof s.id === 'string' ? s.id : '';
+    if (!id || seen.has(id)) {
+      const fresh = uuidv4();
+      seen.add(fresh);
+      return { ...s, id: fresh };
+    }
+    seen.add(id);
+    return { ...s };
+  });
+}
+
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
+
+  const stepsError = flowStepsError(steps);
+  if (stepsError) return res.status(400).json({ error: stepsError });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
   // writes hub-managed rows directly via storage.createFlow(); this route is
@@ -1300,7 +1355,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     name,
     description: description || "",
     version: version || "1.0.0",
-    steps: steps || [],
+    steps: normalizeSteps(steps || []),
     createdAt: new Date(),
     updatedAt: new Date(),
     source: 'local',
@@ -1325,11 +1380,17 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
   }
   try {
     const { name, description, version, steps } = req.body;
+    // Only validate steps when the caller is actually replacing them — a
+    // rename-only PUT must keep working.
+    if (steps !== undefined) {
+      const stepsError = flowStepsError(steps);
+      if (stepsError) return res.status(400).json({ error: stepsError });
+    }
     const updates: Partial<Flow> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (version !== undefined) updates.version = version;
-    if (steps !== undefined) updates.steps = steps;
+    if (steps !== undefined) updates.steps = normalizeSteps(steps);
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -1442,8 +1503,13 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
       .map((s: any, i: number) => ({
         id: uuidv4(),
-        name: s.name ?? `step-${i}`,
-        label: s.label ?? s.name ?? `Step ${i + 1}`,
+        // `??` does not catch '' — a community flow with "name": "" would
+        // install an empty-named step, the exact value flowStepsError exists to
+        // reject, while bypassing it (this path calls storage.createFlow direct).
+        name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
+        label: (typeof s.label === 'string' && s.label.trim())
+          ? s.label
+          : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
         order: i + 1,
         exitCriteria: s.exitCriteria ?? '',
         isSpecial: s.isSpecial ?? false,

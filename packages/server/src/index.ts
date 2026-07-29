@@ -549,10 +549,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { name, label?, exitCriteria?, order, isSpecial?, isAnchor? }.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
                 properties: {
+                  id: { type: "string" },
                   name: { type: "string" },
                   label: { type: "string" },
                   exitCriteria: { type: "string" },
@@ -1032,6 +1033,9 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string(),
           description: z.string().optional(),
           steps: z.array(z.object({
+            // Accept an id so it round-trips: zod strips unknown keys, so
+            // without this an update regenerated every step id on every call.
+            id: z.string().optional(),
             name: z.string(),
             label: z.string().optional(),
             exitCriteria: z.string().optional(),
@@ -1055,6 +1059,9 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string().optional(),
           description: z.string().optional(),
           steps: z.array(z.object({
+            // Accept an id so it round-trips: zod strips unknown keys, so
+            // without this an update regenerated every step id on every call.
+            id: z.string().optional(),
             name: z.string(),
             label: z.string().optional(),
             exitCriteria: z.string().optional(),

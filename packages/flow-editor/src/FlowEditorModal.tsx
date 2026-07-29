@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback, createContext, useCont
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
+import { extractApiError } from './apiError';
+import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
 
 // ── Host injection ─────────────────────────────────────────────────────────
 // The editor accepts its data layer (server REST + community registry) and
@@ -99,6 +101,12 @@ interface FlowEditorModalProps {
   // the hub (Org Flows picker) — the client may only author + publish. Defaults
   // to true (standalone installs and the hub admin, where it means set-default).
   canSelectFlow?: boolean;
+  // When true, a flow with source='hub' is presented as owned elsewhere and is
+  // not editable here. Set by the local agenfk UI, whose server answers any
+  // mutation of a hub-sourced flow with 409 (BUG 269eeec8 (b)) — offering Save
+  // was offering a guaranteed failure. The hub admin leaves this false: over
+  // there, hub-sourced flows are exactly the ones you are meant to edit.
+  hubManagedReadOnly?: boolean;
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -141,11 +149,12 @@ interface EditorPanelProps {
   onClone?: () => void;
   onUseDefault?: () => void;    // only provided for the builtin default flow row
   canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
+  isHubManaged: boolean;        // true → owned by the org Hub, not editable here
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
   flow,
-  isReadOnly,
+  isReadOnly: isBuiltinReadOnly,
   projectId,
   activeFlowId,
   onSaved,
@@ -153,7 +162,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onClone,
   onUseDefault,
   canSelectFlow,
+  isHubManaged,
 }) => {
+  // Two independent reasons this panel can't be edited: it's the built-in
+  // default flow, or (BUG 269eeec8 (b)) it's owned by the org Hub and this host
+  // can only read it. They render different badges but lock the same controls.
+  const isReadOnly = isBuiltinReadOnly || isHubManaged;
+
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
   const registryClient = useRegistryClient();
@@ -252,7 +267,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        steps: steps.map((s, i) => ({ ...s, order: i })),
+        // order is authoritative from array position; ids are backfilled so a
+        // flow loaded without them (MCP create_flow never sent ids) still
+        // satisfies the Hub's id rule.
+        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
       };
       if (flow?.id) {
         return flowClient.updateFlow(flow.id, payload);
@@ -276,7 +294,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        steps: steps.map((s, i) => ({ ...s, order: i })),
+        // order is authoritative from array position; ids are backfilled so a
+        // flow loaded without them (MCP create_flow never sent ids) still
+        // satisfies the Hub's id rule.
+        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
       };
       const created = await flowClient.createFlow(payload);
       await flowClient.setProjectFlow(projectId, created.id);
@@ -292,11 +313,24 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   });
 
   const isBusy = saveMutation.isPending || useFlowMutation.isPending;
-  const errorMsg =
-    (saveMutation.error as Error | null)?.message ??
-    (useFlowMutation.error as Error | null)?.message ??
-    null;
-  const isSaveDisabled = isBusy || !name.trim() || reservedNameError;
+  // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
+  // the latter is only ever "Request failed with status code N".
+  const failure = saveMutation.error ?? useFlowMutation.error ?? null;
+  const errorMsg = failure ? extractApiError(failure, 'Failed to save flow.') : null;
+
+  // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
+  // reject never leaves the browser, and the reason is pinned to its step.
+  const definitionIssues = flowDefinitionIssues(name, steps);
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+
+  // Every reason Save is blocked MUST be visible somewhere, or the user is left
+  // with a dead button and no way to fix it — the exact failure mode this whole
+  // change exists to kill. Per-step messages render inside the step column, but
+  // only for non-anchor steps (anchors expose no name field), and a flow-level
+  // issue has no column at all. Surface anything that would otherwise be silent.
+  const silentIssues = definitionIssues.filter(
+    issue => issue.stepIndex === undefined || steps[issue.stepIndex]?.isAnchor,
+  );
 
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
@@ -313,17 +347,50 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
       setPublishError(null);
     },
-    onError: (e: Error) => {
-      setPublishError(e.message || 'Failed to publish.');
+    onError: (e: unknown) => {
+      setPublishError(extractApiError(e, 'Failed to publish.'));
     },
   });
+
+  // Rendered by BOTH footers — the read-only footer also offers Publish now, and
+  // a button whose outcome renders somewhere else is a silent failure.
+  const publishFeedback = (
+    <>
+      {publishResult && (
+        <a
+          data-testid="publish-success-link"
+          href={publishResult.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+        >
+          <ExternalLink size={12} />
+          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+        </a>
+      )}
+      {publishError && (
+        <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+          <AlertCircle size={11} />
+          {publishError}
+        </p>
+      )}
+    </>
+  );
 
   return (
     <div className="flex flex-col h-full" data-testid="editor-panel">
       {/* Right panel header — inline-editable flow name */}
       <div className="px-6 pt-5 pb-3 shrink-0">
         <div className="flex items-center gap-2 mb-1.5">
-          {isReadOnly ? (
+          {isHubManaged ? (
+            <span
+              data-testid="hub-managed-badge"
+              title="This flow is managed by your organization's Hub. Edit it in the Hub admin, or clone it to author a local copy."
+              className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+            >
+              Managed by Hub
+            </span>
+          ) : isBuiltinReadOnly ? (
             <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
               Default (read-only)
             </span>
@@ -341,7 +408,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           )}
         </div>
         {isReadOnly ? (
-          <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">Default Flow</h3>
+          // Don't hardcode "Default Flow" — this branch now also renders
+          // hub-managed flows, which have their own names.
+          <h3 data-testid="flow-name-heading" className="text-xl font-bold text-slate-800 dark:text-slate-100">
+            {isHubManaged ? name || flow?.name : 'Default Flow'}
+          </h3>
         ) : (
           <input
             data-testid="flow-name-input"
@@ -414,6 +485,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const isStepLocked = isReadOnly || isAnchor;
               const stepNameUpper = step.name.toUpperCase();
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
+              // A reserved name has its own dedicated message below, so only
+              // show the shape issue when that isn't already being reported.
+              const shapeIssue = hasReservedName ? undefined : stepIssue(definitionIssues, index);
               const stepColor = step.color ?? '#6366f1';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
 
@@ -572,6 +646,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                                 : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-indigo-500'
                             )}
                           />
+                          {shapeIssue && (
+                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                              {shapeIssue.message}
+                            </p>
+                          )}
                           {hasReservedName && (
                             <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
                               Reserved name
@@ -616,6 +695,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             })}
           </div>
           {/* Reserved name global error */}
+          {silentIssues.length > 0 && (
+            <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
+              {silentIssues.map((issue, i) => (
+                <li key={i}>
+                  {issue.stepIndex === undefined
+                    ? issue.message
+                    : `${steps[issue.stepIndex]?.label || steps[issue.stepIndex]?.name || `Step ${issue.stepIndex + 1}`}: ${issue.message}`}
+                </li>
+              ))}
+            </ul>
+          )}
           {reservedNameError && (
             <p data-testid="reserved-name-error" className="text-sm text-red-600 dark:text-red-400 mt-1">
               One or more step names use a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED).
@@ -633,7 +723,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
       {/* Footer — sticky bottom */}
       {isReadOnly ? (
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3 flex-wrap">
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
+         <div className="flex items-center gap-3 flex-wrap">
+          {/* A hub-managed flow used to render the editable footer, which carried
+              Publish. Keep it reachable here rather than silently dropping the
+              capability along with Save. */}
+          {isHubManaged && flow?.id && (
+            <button
+              data-testid="publish-flow-btn"
+              type="button"
+              disabled={publishMutation.isPending}
+              onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+              {publishMutation.isPending ? 'Publishing…' : 'Publish'}
+            </button>
+          )}
           {onUseDefault && canSelectFlow && (
             <button
               data-testid="use-default-flow-btn"
@@ -664,6 +770,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           >
             Close
           </button>
+         </div>
+         {publishFeedback}
         </div>
       ) : (
         <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
@@ -707,24 +815,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </div>
           </div>
 
-          {publishResult && (
-            <a
-              data-testid="publish-success-link"
-              href={publishResult.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
-            >
-              <ExternalLink size={12} />
-              {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
-            </a>
-          )}
-          {publishError && (
-            <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
-              <AlertCircle size={11} />
-              {publishError}
-            </p>
-          )}
+          {publishFeedback}
         </div>
       )}
     </div>
@@ -906,6 +997,9 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     : (props as FlowEditorModalProps).initialFlowId;
   // Selection actions default on; hosts opt out (hub-connected clients).
   const canSelectFlow = isLegacy ? true : ((props as FlowEditorModalProps).canSelectFlow ?? true);
+  // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
+  // working without opting out; only the local agenfk UI sets it.
+  const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -987,9 +1081,18 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   }, [isOpen]);
 
   // ── Delete mutation ────────────────────────────────────────────────────────
+  // The delete path had the same defect as save (BUG 269eeec8 (a)): no onError
+  // and no rendering, so a refusal — e.g. the local server's 409 on a
+  // hub-managed flow — vanished and the row simply stayed put.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteMutation = useMutation({
     mutationFn: (id: string) => flowClient.deleteFlow(id),
+    onError: (e: unknown) => {
+      setDeleteError(extractApiError(e, 'Failed to delete flow.'));
+      setConfirmDeleteId(null);
+    },
     onSuccess: (_, deletedId) => {
+      setDeleteError(null);
       queryClient.invalidateQueries({ queryKey: ['flows'] });
       queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
       if (selectedFlowId === deletedId) {
@@ -1038,6 +1141,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
 
   const isReadOnly = selectedFlowId === BUILTIN_ID && !clonedFlow;
   const isEditingClone = clonedFlow !== null;
+  // A hub-owned flow, viewed from a host that may only read it. Hoisted because
+  // the footer actions below need it too: without a Clone action the panel would
+  // be a dead end, and the badge tooltip explicitly tells the user to clone.
+  const isHubManagedSelected =
+    hubManagedReadOnly && selectedFlow?.source === 'hub' && !isEditingClone;
+
 
   const handleClone = (source: Flow, sourceName: string) => {
     const copy = cloneFlow(source, `Copy of ${sourceName}`);
@@ -1201,10 +1310,19 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               </div>
             </div>
 
+            {deleteError && (
+              <p data-testid="flow-delete-error" className="text-xs text-red-600 dark:text-red-400 px-3 py-2">
+                {deleteError}
+              </p>
+            )}
+
             {flows.map(flow => {
               const isActive = flow.id === effectiveActiveFlowId;
               const isSelected = selectedFlowId === flow.id && !isNewFlow && !isEditingClone;
               const isPendingDelete = confirmDeleteId === flow.id;
+              // Hosts that can only read hub flows must not offer a delete the
+              // server answers with 409.
+              const isRowHubManaged = hubManagedReadOnly && flow.source === 'hub';
 
               return (
                 <div
@@ -1268,12 +1386,16 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         disabled={isActive}
                         onClick={e => {
                           e.stopPropagation();
-                          if (!isActive) setConfirmDeleteId(flow.id);
+                          if (!isActive && !isRowHubManaged) setConfirmDeleteId(flow.id);
                         }}
-                        title={isActive ? 'Cannot delete active flow' : 'Delete flow'}
+                        title={
+                          isRowHubManaged
+                            ? "Managed by your organization's Hub — delete it there"
+                            : isActive ? 'Cannot delete active flow' : 'Delete flow'
+                        }
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
-                          isActive
+                          isActive || isRowHubManaged
                             ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
                             : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
                         )}
@@ -1332,17 +1454,22 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               key={isEditingClone ? '__clone__' : isNewFlow ? '__new__' : selectedFlowId}
               flow={selectedFlow}
               isReadOnly={isReadOnly}
+              isHubManaged={isHubManagedSelected}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}
               onClose={onClose}
               onClone={
-                isReadOnly && builtinFlow
-                  ? () => handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow')
-                  : undefined
+                isHubManagedSelected && selectedFlow
+                  ? () => handleClone(selectedFlow, selectedFlow.name)
+                  : isReadOnly && builtinFlow
+                    ? () => handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow')
+                    : undefined
               }
               onUseDefault={
-                isReadOnly
+                // Only the builtin default flow — on a hub flow this would set
+                // the DEFAULT flow, which is not what the button says.
+                isReadOnly && !isHubManagedSelected
                   ? () => useDefaultFlowMutation.mutate()
                   : undefined
               }

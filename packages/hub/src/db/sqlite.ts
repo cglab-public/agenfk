@@ -58,6 +58,9 @@ const SCHEMA_SQLITE = `
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_type_time ON events(org_id, type, occurred_at);
+  -- BUG ab9b39d3: the Admin -> Flows assignment listing looks up the latest
+  -- remote_url per project; without this it seq-scans the whole events table.
+  CREATE INDEX IF NOT EXISTS idx_events_org_project_time ON events(org_id, project_id, occurred_at);
 
   CREATE TABLE IF NOT EXISTS rollups_daily (
     org_id TEXT NOT NULL,
