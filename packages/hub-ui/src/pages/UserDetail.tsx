@@ -43,8 +43,8 @@ function endOfDateInput(value: string): string {
 
 const TYPE_BADGE: Record<string, string> = {
   'item.created':       'bg-chip text-accent-text border-border-brand',
-  'item.updated':       'bg-mint/40 text-brand-dark border-border-brand',
-  'item.moved':         'bg-mint/40 text-brand-dark border-border-brand',
+  'item.updated':       'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
+  'item.moved':         'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
   'step.transitioned':  'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
   'validate.invoked':   'bg-chip text-ink-secondary border-border-soft',
   'validate.passed':    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
@@ -57,7 +57,7 @@ const TYPE_BADGE: Record<string, string> = {
 const DEFAULT_BADGE = 'bg-chip text-ink-secondary border-border-soft';
 
 const ITEM_TYPE_BADGE: Record<string, string> = {
-  EPIC:  'bg-mint/40 text-brand-dark border-border-brand',
+  EPIC:  'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
   STORY: 'bg-chip text-accent-text border-border-brand',
   TASK:  'bg-chip text-ink-secondary border-border-soft',
   BUG:   'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',

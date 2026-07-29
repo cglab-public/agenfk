@@ -505,7 +505,7 @@ export function PrOverviewPage() {
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
                           <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-text bg-chip border border-border-brand">{pct.prPct}% PRs</span>
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-brand-dark bg-mint/40 border border-border-brand">{pct.ptsPct}% pts</span>
+                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-brand-dark dark:text-brand-light bg-mint/40 dark:bg-brand/10 border border-border-brand">{pct.ptsPct}% pts</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
