@@ -427,7 +427,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 dark:focus:border-indigo-400 focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -447,7 +447,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             rows={2}
             placeholder="Optional description of this flow"
             disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -475,7 +475,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="add-step-btn"
                 type="button"
                 onClick={addStep}
-                className="flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
+                className="flex items-center gap-1 text-xs font-semibold text-accent-text hover:opacity-80 transition-colors"
               >
                 <Plus size={14} />
                 Add Step
@@ -513,7 +513,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                     isAnchor
                       ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
                       : dragOverIndex === index
-                      ? 'bg-slate-50 dark:bg-slate-800/50 border-indigo-400 shadow-md'
+                      ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
                       : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
                 >
@@ -576,7 +576,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                                   className={clsx(
                                     'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
                                     step.icon === opt.key
-                                      ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400'
+                                      ? 'bg-chip text-accent-text'
                                       : 'hover:bg-slate-100 dark:hover:bg-slate-700'
                                   )}
                                 >
@@ -628,7 +628,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           rows={5}
                           placeholder="What must be true before leaving this step?"
                           disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
+                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
                         />
                       </div>
                     )}
@@ -650,7 +650,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                               'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
                               hasReservedName
                                 ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
-                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-indigo-500'
+                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
                             )}
                           />
                           {shapeIssue && (
@@ -676,7 +676,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { label: e.target.value })}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
                         </div>
                         {/* Exit criteria */}
@@ -691,7 +691,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             rows={5}
                             placeholder="What must be true before leaving this step?"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
                           />
                         </div>
                       </>
@@ -741,7 +741,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               type="button"
               disabled={publishMutation.isPending}
               onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
               {publishMutation.isPending ? 'Publishing…' : 'Publish'}
@@ -763,7 +763,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               data-testid="clone-to-edit-btn"
               type="button"
               onClick={onClone}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
             >
               <CopyPlus size={15} />
               Clone to Edit
@@ -788,7 +788,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               type="button"
               disabled={isSaveDisabled}
               onClick={() => saveMutation.mutate()}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {saved ? <Check size={15} /> : <Save size={15} />}
               {isBusy ? 'Saving…' : saved ? 'Saved' : 'Save'}
@@ -801,7 +801,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   type="button"
                   disabled={publishMutation.isPending}
                   onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
                   {publishMutation.isPending ? 'Publishing…' : 'Publish'}
@@ -910,7 +910,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
     <div className="flex flex-col h-full" data-testid="community-preview-panel">
       <div className="px-6 pt-6 pb-4 shrink-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
+          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-accent-text">
             Community
           </span>
         </div>
@@ -970,7 +970,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'install'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {installMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
           Install
@@ -1185,7 +1185,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           {/* Sidebar header */}
           <div className="px-4 pt-5 pb-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <GitBranch size={16} className="text-indigo-500" />
+              <GitBranch size={16} className="text-accent-text" />
               <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                 Flows
               </span>
@@ -1207,7 +1207,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'my-flows'
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-brand text-accent-text'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1219,7 +1219,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'community'
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-brand text-accent-text'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1239,7 +1239,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     placeholder="Search by name or author…"
                     value={communitySearch}
                     onChange={e => setCommunitySearch(e.target.value)}
-                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand"
                   />
                 </div>
               </div>
@@ -1267,7 +1267,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       className={clsx(
                         'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                         selectedRegistryFlow?.filename === rf.filename
-                          ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                          ? 'bg-chip text-accent-text'
                           : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                       )}
                     >
@@ -1294,7 +1294,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
                 selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
-                  ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                  ? 'bg-chip text-accent-text'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               )}
             >
@@ -1311,7 +1311,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
                   >
                     <CopyPlus size={13} />
                   </button>
@@ -1343,7 +1343,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   className={clsx(
                     'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                      ? 'bg-chip text-accent-text'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   )}
                   onClick={() => {
@@ -1388,7 +1388,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1433,8 +1433,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
                 isNewFlow
-                  ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
-                  : 'text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
+                  ? 'bg-chip text-accent-text'
+                  : 'text-accent-text hover:bg-chip'
               )}
             >
               <Plus size={15} />
@@ -1493,7 +1493,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button
                 onClick={() => { setIsNewFlow(true); setClonedFlow(null); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
               >
                 <Plus size={14} />
                 New Flow
