@@ -72,6 +72,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | `get_item(id)` | `agenfk get <id> --json` |
 | `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` |
 | `update_item(id, {status})` | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) |
+| `update_item(id, {parentId})` | `agenfk update <id> --parent <parentId>` — re-parent; `--parent none` detaches to top level. Parent must be in the same project and cannot be the item itself or a descendant. |
 | `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<text>" ["<command>"]` |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>" [--author <name>]` |
 | `add_context(id, path)` | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` |

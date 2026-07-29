@@ -2010,12 +2010,47 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
+  // Validate a re-parent. This route has always applied `parentId` straight to
+  // storage with no checks, so a dangling parent, a cross-project parent, or a
+  // cycle were all reachable by any REST/MCP caller. The cycle matters most:
+  // syncParentStatus() walks upward via parent.parentId with no visited-set, so
+  // once a cycle exists any status propagation reaching it recurses unboundedly.
+  if (parentId !== undefined && parentId !== null && parentId !== '') {
+    if (parentId === req.params.id) {
+      return res.status(400).json({ error: "An item cannot be its own parent." });
+    }
+    const parent = await storage.getItem(parentId);
+    if (!parent) {
+      return res.status(400).json({ error: `Parent item '${parentId}' not found.` });
+    }
+    if (parent.projectId !== currentItem.projectId) {
+      return res.status(400).json({ error: "Parent must belong to the same project as the item." });
+    }
+    // Walk up from the proposed parent: if we meet this item, the new parent is
+    // one of its descendants. The `seen` set also stops the walk dead on data
+    // that already contains a cycle, rather than looping here.
+    const seen = new Set<string>([parentId]);
+    let cursor: string | undefined = parent.parentId;
+    while (cursor) {
+      if (cursor === req.params.id) {
+        return res.status(400).json({
+          error: "Cannot re-parent an item under one of its own descendants — that would create a cycle.",
+        });
+      }
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+      const ancestor: any = await storage.getItem(cursor);
+      cursor = ancestor?.parentId;
+    }
+  }
+
   const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
   if (status !== undefined) updates.status = status;
   if (type !== undefined) updates.type = type;
-  if (parentId !== undefined) updates.parentId = parentId;
+  // Normalize the detach forms ('' / null) to undefined-in-storage semantics.
+  if (parentId !== undefined) updates.parentId = parentId === '' ? null : parentId;
   if (context !== undefined) updates.context = context;
   if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
   if (reviews !== undefined) updates.reviews = reviews;

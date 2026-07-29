@@ -1397,6 +1397,62 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     await waitFor(() => expect(screen.queryByTestId('flow-delete-error')).toBeNull());
   });
 
+  // Hub-connected with an org-default flow: authoring stays fully available —
+  // create, save and publish — because only ACTIVATION is owned by the Hub.
+  describe('hub-connected authoring', () => {
+    beforeEach(() => {
+      vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({
+        flows: [], defaultFlowId: 'flow-hub', hubEnabled: true,
+      });
+    });
+
+    it('still offers New Flow', async () => {
+      render(
+        <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+        { wrapper: wrapper(makeQueryClient()) }
+      );
+      await waitFor(() => expect(screen.getByTestId('new-flow-btn')).toBeDefined());
+    });
+
+    it('saves a newly created local flow', async () => {
+      vi.mocked(api.createFlow).mockResolvedValue({ ...SAMPLE_FLOW, id: 'created' });
+      render(
+        <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+        { wrapper: wrapper(makeQueryClient()) }
+      );
+      await waitFor(() => screen.getByTestId('new-flow-btn'));
+      fireEvent.click(screen.getByTestId('new-flow-btn'));
+      await waitFor(() => screen.getByTestId('flow-name-input'));
+
+      fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Local Flow' } });
+      fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+      fireEvent.click(screen.getByTestId('save-flow-btn'));
+
+      await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    });
+
+    it('saves an edit to an existing local flow', async () => {
+      vi.mocked(api.updateFlow).mockResolvedValue(SAMPLE_FLOW);
+      await openFlow('flow-item-flow-1');
+
+      fireEvent.click(screen.getByTestId('save-flow-btn'));
+
+      await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+    });
+
+    it('offers Publish on a local flow', async () => {
+      await openFlow('flow-item-flow-1');
+
+      expect(screen.getByTestId('publish-flow-btn')).toBeDefined();
+    });
+
+    it('does NOT offer activation — that is the Hub\'s to own', async () => {
+      await openFlow('flow-item-flow-1');
+
+      expect(screen.queryByTestId('use-flow-btn')).toBeNull();
+    });
+  });
+
   // (c) — block the payload the Hub rejects, and say which step is wrong.
   it('blocks Save on a step with no name and pins the error to that step', async () => {
     await openFlow('flow-item-flow-1');
