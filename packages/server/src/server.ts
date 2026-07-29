@@ -356,6 +356,59 @@ const trashRecursively = async (id: string): Promise<boolean> => {
   return true;
 };
 
+/**
+ * Validate a proposed parent before it is written. All three write paths share
+ * this: POST /items, PUT /items/:id and POST /items/bulk each used to apply
+ * `parentId` straight to storage with no checks, so a dangling parent, a
+ * cross-project parent, or a cycle were reachable from any REST/MCP caller.
+ *
+ * @param itemId    the item being parented, or null at create time (a brand-new
+ *                  id can have no descendants, so no cycle is possible)
+ * @param projectId the item's project — the parent must be in the same one
+ * @param parentId  the proposed value, straight off the request body
+ * @returns an error message, or null when the assignment is acceptable
+ */
+async function validateParentAssignment(
+  itemId: string | null,
+  projectId: string,
+  parentId: unknown,
+): Promise<string | null> {
+  if (parentId === undefined || parentId === null || parentId === '') return null;
+  if (typeof parentId !== 'string') {
+    // Otherwise this reaches the sqlite bind and throws, surfacing as a 500.
+    return "parentId must be a string, or null to detach the item to top level.";
+  }
+  if (itemId !== null && parentId === itemId) {
+    return "An item cannot be its own parent.";
+  }
+  const parent = await storage.getItem(parentId);
+  if (!parent) {
+    return `Parent item '${parentId}' not found.`;
+  }
+  if (parent.projectId !== projectId) {
+    return "Parent must belong to the same project as the item.";
+  }
+  if (itemId === null) return null;
+
+  // Walk up from the proposed parent: meeting this item means the proposed
+  // parent is one of its descendants. The parent chain has out-degree 1, so the
+  // walk visits every reachable ancestor once before any repeat — the `seen`
+  // break therefore cannot skip an ancestor, it only stops the walk on data that
+  // already contains a cycle.
+  const seen = new Set<string>([parentId]);
+  let cursor: string | undefined = parent.parentId;
+  while (cursor) {
+    if (cursor === itemId) {
+      return "Cannot re-parent an item under one of its own descendants — that would create a cycle.";
+    }
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    const ancestor: any = await storage.getItem(cursor);
+    cursor = ancestor?.parentId;
+  }
+  return null;
+}
+
 const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
@@ -1288,9 +1341,64 @@ app.get("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
 
 const HUB_MANAGED_FLOW_MSG = "Flow is managed by your organization's Hub and cannot be modified locally";
 
+/**
+ * BUG 269eeec8 (c): bring local flow writes into line with the shape contract
+ * the Hub enforces (packages/hub/src/routes/admin.ts validateDefinition), so a
+ * flow authored locally can always be published without an opaque 400.
+ *
+ * Deliberately NARROWER than the Hub's validator on two points, because the
+ * local server has always accepted these and callers (MCP create_flow, the CLI)
+ * depend on them:
+ *  - `steps: []` is allowed — creating an empty flow and populating it later is
+ *    a supported local flow. It only becomes un-publishable, not invalid.
+ *  - a missing step `id` is generated rather than rejected (see normalizeSteps).
+ *
+ * What it does reject is an empty step name, which is the actual defect: it is
+ * unusable as a workflow status, since nothing can transition an item to "".
+ * Mirrored client-side in packages/flow-editor/src/flowDefinition.ts.
+ *
+ * @returns an error message, or null when the step list is acceptable.
+ */
+function flowStepsError(steps: any): string | null {
+  if (!Array.isArray(steps)) return "steps must be an array";
+  for (const s of steps) {
+    if (!s || typeof s !== 'object') return "each step must be an object";
+    if (typeof s.name !== 'string' || !s.name.trim()) return "each step requires a name";
+    if (typeof s.order !== 'number' || Number.isNaN(s.order)) return "each step requires a numeric order";
+  }
+  return null;
+}
+
+/**
+ * Fill in step ids the caller omitted. The Hub requires every step to carry a
+ * non-empty id, so generating here means anything the local server persists is
+ * publishable — without breaking the callers that never sent ids.
+ */
+function normalizeSteps(steps: any): any {
+  if (!Array.isArray(steps)) return steps;
+  const seen = new Set<string>();
+  return steps.map((s: any) => {
+    if (!s || typeof s !== 'object') return s;
+    // Missing OR duplicated ids both get a fresh one: two steps sharing an id
+    // collide on React's key={step.id} in the flow editor, which silently drops
+    // a column from the UI.
+    const id = typeof s.id === 'string' ? s.id : '';
+    if (!id || seen.has(id)) {
+      const fresh = uuidv4();
+      seen.add(fresh);
+      return { ...s, id: fresh };
+    }
+    seen.add(id);
+    return { ...s };
+  });
+}
+
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
+
+  const stepsError = flowStepsError(steps);
+  if (stepsError) return res.status(400).json({ error: stepsError });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
   // writes hub-managed rows directly via storage.createFlow(); this route is
@@ -1300,7 +1408,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     name,
     description: description || "",
     version: version || "1.0.0",
-    steps: steps || [],
+    steps: normalizeSteps(steps || []),
     createdAt: new Date(),
     updatedAt: new Date(),
     source: 'local',
@@ -1325,11 +1433,17 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
   }
   try {
     const { name, description, version, steps } = req.body;
+    // Only validate steps when the caller is actually replacing them — a
+    // rename-only PUT must keep working.
+    if (steps !== undefined) {
+      const stepsError = flowStepsError(steps);
+      if (stepsError) return res.status(400).json({ error: stepsError });
+    }
     const updates: Partial<Flow> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (version !== undefined) updates.version = version;
-    if (steps !== undefined) updates.steps = steps;
+    if (steps !== undefined) updates.steps = normalizeSteps(steps);
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -1442,8 +1556,13 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
       .map((s: any, i: number) => ({
         id: uuidv4(),
-        name: s.name ?? `step-${i}`,
-        label: s.label ?? s.name ?? `Step ${i + 1}`,
+        // `??` does not catch '' — a community flow with "name": "" would
+        // install an empty-named step, the exact value flowStepsError exists to
+        // reject, while bypassing it (this path calls storage.createFlow direct).
+        name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
+        label: (typeof s.label === 'string' && s.label.trim())
+          ? s.label
+          : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
         order: i + 1,
         exitCriteria: s.exitCriteria ?? '',
         isSpecial: s.isSpecial ?? false,
@@ -1768,6 +1887,11 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: "ProjectId is required" });
   }
 
+  // A brand-new id can have no descendants, so pass itemId=null: existence and
+  // project-match still apply, the cycle walk is skipped as impossible.
+  const createParentError = await validateParentAssignment(null, projectId, parentId);
+  if (createParentError) return res.status(400).json({ error: createParentError });
+
   const newItem: AgEnFKItem = {
     id: uuidv4(),
     projectId,
@@ -1817,6 +1941,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   const results = [];
+  // Rejected entries are reported back rather than silently dropped — the route
+  // already `continue`s past unknown ids, which hides mistakes.
+  const skipped: Array<{ id: string; error: string }> = [];
   const parentIdsToSync = new Set<string>();
   const projectIds = new Set<string>();
 
@@ -1840,11 +1967,19 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       continue;
     }
 
+    // Same guard as PUT /items/:id — this route is an update despite the POST
+    // verb, so without it every state that guard forbids stays reachable here.
+    const bulkParentError = await validateParentAssignment(id, currentItem.projectId, parentId);
+    if (bulkParentError) {
+      skipped.push({ id, error: bulkParentError });
+      continue;
+    }
+
     const updates: any = {};
     if (title !== undefined) updates.title = title;
     if (description !== undefined) updates.description = description;
     if (status !== undefined) updates.status = status;
-    if (parentId !== undefined) updates.parentId = parentId;
+    if (parentId !== undefined) updates.parentId = parentId === '' ? null : parentId;
     if (context !== undefined) updates.context = context;
     if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
     if (reviews !== undefined) updates.reviews = reviews;
@@ -1858,6 +1993,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
       if (updated.parentId) {
         parentIdsToSync.add(updated.parentId);
+      }
+      // A re-parent changes the child set of the old parent too, so it needs
+      // re-deriving as well — otherwise it keeps a status computed from a child
+      // it no longer has.
+      if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
+        parentIdsToSync.add(currentItem.parentId);
       }
 
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
@@ -1881,7 +2022,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(parentId);
   }
 
-  res.json({ results });
+  // `skipped` is additive — existing callers read `results` only.
+  res.json(skipped.length > 0 ? { results, skipped } : { results });
 }));
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
@@ -1944,12 +2086,16 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
+  const parentError = await validateParentAssignment(req.params.id, currentItem.projectId, parentId);
+  if (parentError) return res.status(400).json({ error: parentError });
+
   const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
   if (status !== undefined) updates.status = status;
   if (type !== undefined) updates.type = type;
-  if (parentId !== undefined) updates.parentId = parentId;
+  // Normalize the detach forms ('' / null) to undefined-in-storage semantics.
+  if (parentId !== undefined) updates.parentId = parentId === '' ? null : parentId;
   if (context !== undefined) updates.context = context;
   if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
   if (reviews !== undefined) updates.reviews = reviews;
@@ -1970,6 +2116,13 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.parentId) {
       await syncParentStatus(updated.parentId);
+    }
+    // A re-parent changes the child set of BOTH parents. Without this the old
+    // parent keeps a status derived from a child it no longer has — e.g. it sat
+    // at IN_PROGRESS only because of the child that just moved away, and should
+    // now roll up to DONE.
+    if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
+      await syncParentStatus(currentItem.parentId);
     }
 
     if (status !== undefined && status !== currentItem.status) {

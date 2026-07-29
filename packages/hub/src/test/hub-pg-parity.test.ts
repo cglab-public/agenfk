@@ -461,3 +461,64 @@ describe('PG parity: flows available + selection', () => {
     expect(active.body.scope).toBe('project');
   });
 });
+
+// BUG ab9b39d3 — GET /v1/admin/flow-assignments 500s on Postgres. The
+// remote-URL enrichment for project-scoped rows puts a correlated subquery in
+// the SELECT list of a GROUP BY query and correlates it on `e.org_id`, which is
+// neither grouped nor aggregated. SQLite allows the bare column, Postgres
+// rejects the statement outright ("subquery uses ungrouped column e.org_id from
+// outer query"), so the Admin -> Flows page is broken on every real deployment.
+// admin-flow-assignments-scopes.test.ts covers this route on SQLite only, which
+// is exactly why it shipped. The enrichment branch only runs when at least one
+// PROJECT-scoped assignment exists, so the fixture must create one.
+describe('PG parity: flow assignments listing (BUG ab9b39d3)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  const def = (name: string) => ({
+    name, description: '',
+    steps: [
+      { id: 's0', name: 'todo', label: 'Todo', order: 0, isAnchor: true },
+      { id: 's1', name: 'work', label: 'Work', order: 1 },
+      { id: 's2', name: 'done', label: 'Done', order: 2, isAnchor: true },
+    ],
+  });
+
+  it('GET /flow-assignments returns project-scoped rows enriched with remote_url on Postgres', async () => {
+    await supertest(fx.app).post('/v1/events')
+      .set('Authorization', `Bearer ${fx.token}`)
+      .send({ events: [
+        sample({ eventId: 'fa-old', projectId: 'proj-pg', remoteUrl: 'git@x:stale.git', occurredAt: '2026-05-01T10:00:00Z' }),
+        sample({ eventId: 'fa-new', projectId: 'proj-pg', remoteUrl: 'git@x:web.git', occurredAt: '2026-05-03T10:00:00Z' }),
+      ] });
+
+    const f = (await supertest(fx.app).post('/v1/admin/flows')
+      .set('Cookie', fx.cookie).send({ definition: def('PgAssign') })).body;
+
+    const assign = await supertest(fx.app).put('/v1/admin/flow-assignments')
+      .set('Cookie', fx.cookie).send({ scope: 'project', targetId: 'proj-pg', flowId: f.id });
+    expect(assign.status).toBe(200);
+
+    const list = await supertest(fx.app).get('/v1/admin/flow-assignments').set('Cookie', fx.cookie);
+    expect(list.status).toBe(200);
+
+    const row = list.body.find((r: any) => r.scope === 'project' && r.targetId === 'proj-pg');
+    expect(row).toBeTruthy();
+    // Most-recent event wins — the enrichment picks remote_url ordered by occurred_at DESC.
+    expect(row.remoteUrl).toBe('git@x:web.git');
+  });
+
+  it('GET /flow-assignments still lists org-scoped rows when no project assignment exists', async () => {
+    const f = (await supertest(fx.app).post('/v1/admin/flows')
+      .set('Cookie', fx.cookie).send({ definition: def('PgOrgOnly') })).body;
+    await supertest(fx.app).put('/v1/admin/flow-assignments')
+      .set('Cookie', fx.cookie).send({ scope: 'org', flowId: f.id });
+
+    const list = await supertest(fx.app).get('/v1/admin/flow-assignments').set('Cookie', fx.cookie);
+    expect(list.status).toBe(200);
+    const row = list.body.find((r: any) => r.scope === 'org');
+    expect(row.flowId).toBe(f.id);
+    expect(row.remoteUrl).toBeNull();
+  });
+});

@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Self-hosted brand fonts (offline-safe — no Google Fonts CDN). */
+@import "@fontsource-variable/manrope";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* CG/lab shared design tokens — single source of truth, also consumed by
+ * packages/ui/src/index.css. Edit values only in packages/brand/tokens.css. */
+@import "../../brand/tokens.css";
+
 /* Tailwind v4 only auto-scans the importing package's source by default.
  * The shared @agenfk/flow-editor workspace package contains JIT utilities
  * (w-[calc(100vw-2rem)], h-[90vh], w-64, flex-1, etc.) that need to land in
@@ -11,17 +19,10 @@
 html, body, #root { height: 100%; }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background: #f1f5f9; /* slate-100 */
-  color: #0f172a;       /* slate-900 */
+  font-family: var(--font-sans);
+  background: var(--canvas);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #020617; /* slate-950 */
-    color: #f1f5f9;
-  }
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

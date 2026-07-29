@@ -10,17 +10,17 @@ import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
     'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (isActive
-      ? 'bg-indigo-600 text-white shadow-sm'
-      : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800');
+      ? 'bg-[image:var(--gradient-accent)] text-navy shadow-glow'
+      : 'text-ink-secondary hover:bg-chip');
   return (
     <div className="max-w-[1100px] mx-auto space-y-6">
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">Settings</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Admin</h1>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Configure sign-in providers, distribute installation tokens, and manage organization users.</p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Settings</p>
+        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
+        <p className="mt-1 text-sm text-ink-tertiary">Configure sign-in providers, distribute installation tokens, and manage organization users.</p>
       </header>
 
-      <nav className="inline-flex p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <nav className="inline-flex p-1 rounded-xl border border-border-soft bg-surface">
         <NavLink to="auth" className={link}>
           <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Auth</span>
         </NavLink>
@@ -56,9 +56,9 @@ interface AuthConfig {
   emailAllowlist: string[];
 }
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500';
-const cardCls = 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors';
+const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
+const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
+const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
 
 export function AdminAuth() {
   const qc = useQueryClient();
@@ -68,24 +68,24 @@ export function AdminAuth() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-config'] }),
   });
   const [draft, setDraft] = useState<any>({});
-  if (!cfg.data) return <div className="text-sm text-slate-500">Loading…</div>;
+  if (!cfg.data) return <div className="text-sm text-ink-tertiary">Loading…</div>;
   const c = { ...cfg.data, ...draft };
 
   return (
     <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Email + password</h3>
+          <h3 className="text-sm font-semibold text-ink">Email + password</h3>
           <Toggle checked={c.passwordEnabled} onChange={(v) => setDraft({ ...draft, passwordEnabled: v })} />
         </header>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Allow users to sign in with email and a hashed password stored on this hub.</p>
+        <p className="mt-1 text-xs text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
       </section>
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Google</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
+            <h3 className="text-sm font-semibold text-ink">Google</h3>
+            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
           <Toggle checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
         </header>
@@ -102,8 +102,8 @@ export function AdminAuth() {
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Microsoft Entra</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
+            <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
+            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
           <Toggle checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
@@ -121,8 +121,8 @@ export function AdminAuth() {
       </section>
 
       <section className={cardCls}>
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Email allowlist</h3>
-        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
+        <h3 className="text-sm font-semibold text-ink">Email allowlist</h3>
+        <p className="mt-1 text-xs text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
         <input className={`${inputCls} mt-3 font-mono text-xs`}
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
@@ -143,7 +143,7 @@ export function AdminAuth() {
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`block ${className ?? ''}`}>
-      <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</span>
+      <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</span>
       <div className="mt-1.5">{children}</div>
     </label>
   );
@@ -156,9 +156,9 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative w-10 h-5 rounded-full transition-colors ${checked ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'}`}
+      className={`relative w-10 h-5 rounded-full transition-colors ${checked ? 'bg-brand' : 'bg-border-soft'}`}
     >
-      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-5' : ''}`} />
+      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-surface shadow-sm transition-transform ${checked ? 'translate-x-5' : ''}`} />
     </button>
   );
 }
@@ -198,12 +198,12 @@ export function AdminKeys() {
     <div className="space-y-6">
       <section className={`${cardCls} max-w-2xl`}>
         <header className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white flex items-center justify-center">
+          <div className="w-9 h-9 rounded-xl bg-[image:var(--gradient-accent)] text-navy flex items-center justify-center">
             <KeyRound className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Magic-link invite</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
+            <h3 className="text-sm font-semibold text-ink">Magic-link invite</h3>
+            <p className="mt-0.5 text-xs text-ink-tertiary">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
           </div>
         </header>
         <button
@@ -223,23 +223,23 @@ export function AdminKeys() {
         {invites.length > 0 && (
           <div className="mt-4 space-y-3">
             {invites.map((inv, idx) => (
-              <div key={inv.id} className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-900/20 p-4">
+              <div key={inv.id} className="rounded-xl border border-border-brand bg-chip p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-indigo-700 dark:text-indigo-300 font-semibold">
+                  <span className="text-[11px] uppercase tracking-[0.14em] text-accent-text font-semibold">
                     Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
                   </span>
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400">expires {fmtDate(inv.expiresAt)}</span>
+                    <span className="text-[11px] text-ink-tertiary">expires {fmtDate(inv.expiresAt)}</span>
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
                       title="Dismiss"
-                      className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
+                      className="text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-card-glass text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
                 <button
                   onClick={async () => {
                     try {
@@ -247,7 +247,7 @@ export function AdminKeys() {
                       setInvites(prev => prev.map(p => p.id === inv.id ? { ...p, copied: true } : p));
                     } catch { /* ignore */ }
                   }}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
                 >
                   {inv.copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {inv.copied ? 'Copied' : 'Copy to clipboard'}
@@ -260,8 +260,8 @@ export function AdminKeys() {
 
       <section className={`${cardCls} max-w-2xl`}>
         <header>
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Issue an API key</h3>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
+          <h3 className="text-sm font-semibold text-ink">Issue an API key</h3>
+          <p className="mt-0.5 text-xs text-ink-tertiary">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
         </header>
         <form className="mt-3 flex flex-col sm:flex-row gap-2" onSubmit={async (e) => {
           e.preventDefault();
@@ -276,16 +276,16 @@ export function AdminKeys() {
         {issued && (
           <div className="mt-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-900/20 p-4">
             <div className="text-[11px] uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300 font-semibold">Save this token now — it won't be shown again</div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-slate-900 text-slate-100 text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-card-glass text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
               <button
                 onClick={async () => { try { await navigator.clipboard.writeText(issued); setIssuedCopied(true); } catch { /* ignore */ } }}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
               >
                 {issuedCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {issuedCopied ? 'Copied' : 'Copy'}
               </button>
-              <button onClick={() => setIssued(null)} className="text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200">I've saved it</button>
+              <button onClick={() => setIssued(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
             </div>
           </div>
         )}
@@ -293,13 +293,13 @@ export function AdminKeys() {
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Active keys</h3>
-          <span className="text-[11px] text-slate-500">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
+          <h3 className="text-sm font-semibold text-ink">Active keys</h3>
+          <span className="text-[11px] text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
         </header>
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500 font-semibold">
+              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
                 <th className="text-left px-5 py-2">Preview</th>
                 <th className="text-left px-2 py-2">Label</th>
                 <th className="text-left px-2 py-2">Installation</th>
@@ -308,28 +308,28 @@ export function AdminKeys() {
                 <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            <tbody className="divide-y divide-border-soft">
               {(keys.data ?? []).map(k => {
                 const ident = k.gitEmail ?? k.osUser;
                 return (
-                <tr key={k.tokenHashPreview} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                  <td className="px-5 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">{k.tokenHashPreview}…</td>
-                  <td className="px-2 py-2.5 text-slate-700 dark:text-slate-300">{k.label ?? <span className="text-slate-400">—</span>}</td>
-                  <td className="px-2 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+                <tr key={k.tokenHashPreview} className="hover:bg-chip transition-colors">
+                  <td className="px-5 py-2.5 font-mono text-xs text-ink-secondary">{k.tokenHashPreview}…</td>
+                  <td className="px-2 py-2.5 text-ink-secondary">{k.label ?? <span className="text-ink-tertiary">—</span>}</td>
+                  <td className="px-2 py-2.5 text-xs text-ink-secondary">
                     {ident ? (
                       <span className="font-mono" title={k.installationId ? `installation: ${k.installationId}` : undefined}>
                         {ident}
                         {k.installationId && (
-                          <span className="ml-1 text-slate-400 dark:text-slate-500">· {k.installationId.slice(0, 8)}…</span>
+                          <span className="ml-1 text-ink-tertiary">· {k.installationId.slice(0, 8)}…</span>
                         )}
                       </span>
                     ) : k.installationId ? (
-                      <span className="font-mono text-slate-500" title={k.installationId}>{k.installationId.slice(0, 8)}…</span>
+                      <span className="font-mono text-ink-tertiary" title={k.installationId}>{k.installationId.slice(0, 8)}…</span>
                     ) : (
-                      <span className="text-slate-400">—</span>
+                      <span className="text-ink-tertiary">—</span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{fmtDate(k.createdAt)}</td>
+                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{fmtDate(k.createdAt)}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
                       ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">revoked</span>
@@ -338,7 +338,7 @@ export function AdminKeys() {
                   <td className="px-5 py-2.5 text-right">
                     {!k.revokedAt && (
                       <button onClick={() => revoke.mutate(k.tokenHashPreview)}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
                     )}
@@ -347,7 +347,7 @@ export function AdminKeys() {
                 );
               })}
               {keys.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No keys yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No keys yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -360,7 +360,7 @@ export function AdminKeys() {
 interface UserRow { id: string; email: string; provider: string; role: string; active: number; created_at: string; last_login_at: string | null }
 
 const PROVIDER_BADGE: Record<string, string> = {
-  password: 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700',
+  password: 'bg-chip text-ink-secondary border-border-soft',
   google:   'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
   entra:    'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800',
 };
@@ -387,8 +387,8 @@ export function AdminUsers() {
     <div className="space-y-6">
       <section className={`${cardCls} max-w-2xl`}>
         <header>
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Invite user</h3>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
+          <h3 className="text-sm font-semibold text-ink">Invite user</h3>
+          <p className="mt-0.5 text-xs text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
         </header>
         <form
           className="mt-4 grid sm:grid-cols-12 gap-3"
@@ -401,13 +401,13 @@ export function AdminUsers() {
           }}
         >
           <Field label="Auth method" className="sm:col-span-12">
-            <div className="inline-flex p-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+            <div className="inline-flex p-1 rounded-lg border border-border-soft bg-chip">
               {(['password', 'sso'] as const).map(m => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-text shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {m === 'password' ? 'Password' : 'SSO only'}
                 </button>
@@ -438,13 +438,13 @@ export function AdminUsers() {
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Users</h3>
-          <span className="text-[11px] text-slate-500">{users.data?.length ?? 0} total</span>
+          <h3 className="text-sm font-semibold text-ink">Users</h3>
+          <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} total</span>
         </header>
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500 font-semibold">
+              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
                 <th className="text-left px-5 py-2">Email</th>
                 <th className="text-left px-2 py-2">Provider</th>
                 <th className="text-left px-2 py-2">Role</th>
@@ -453,15 +453,15 @@ export function AdminUsers() {
                 <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            <tbody className="divide-y divide-border-soft">
               {(users.data ?? []).map(u => (
-                <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                <tr key={u.id} className="hover:bg-chip transition-colors">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-[image:var(--gradient-accent)] text-navy text-[10px] font-bold flex items-center justify-center shrink-0">
                         {u.email.slice(0, 2).toUpperCase()}
                       </div>
-                      <span className="font-mono text-xs text-slate-700 dark:text-slate-200">{u.email}</span>
+                      <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
@@ -471,13 +471,13 @@ export function AdminUsers() {
                     <select
                       value={u.role}
                       onChange={(e) => update.mutate({ id: u.id, role: e.target.value })}
-                      className="bg-transparent text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md px-1.5 py-0.5"
+                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-chip rounded-md px-1.5 py-0.5"
                     >
                       <option value="viewer">viewer</option>
                       <option value="admin">admin</option>
                     </select>
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-slate-400">never</span>}</td>
+                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
                     <Toggle checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
@@ -491,7 +491,7 @@ export function AdminUsers() {
                         }}
                         disabled={remove.isPending}
                         title="Delete user"
-                        className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-50"
                       >
                         <Trash2 className="w-3 h-3" /> Delete
                       </button>
@@ -500,7 +500,7 @@ export function AdminUsers() {
                 </tr>
               ))}
               {users.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No users yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No users yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -566,8 +566,8 @@ export function AdminInstallations() {
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Installations</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            <h3 className="text-sm font-semibold text-ink">Installations</h3>
+            <p className="mt-0.5 text-xs text-ink-tertiary">
               Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
             </p>
           </div>
@@ -575,19 +575,19 @@ export function AdminInstallations() {
             {hiddenCount > 0 && (
               <button
                 onClick={() => setShowHidden(v => !v)}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
               >
                 {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                 {showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
               </button>
             )}
-            <span className="text-[11px] text-slate-500">{showHidden ? rows.length : visible.length} total</span>
+            <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500 font-semibold">
+              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
                 <th className="text-left px-5 py-2">Installation</th>
                 <th className="text-left px-2 py-2">User</th>
                 <th className="text-left px-2 py-2">Version</th>
@@ -596,29 +596,29 @@ export function AdminInstallations() {
                 <th className="text-right px-5 py-2"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            <tbody className="divide-y divide-border-soft">
               {rows.map(r => (
-                <tr key={r.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${r.hidden ? 'opacity-50' : ''}`}>
+                <tr key={r.id} className={`hover:bg-chip transition-colors ${r.hidden ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
-                    <span className="font-mono text-[11px] text-slate-600 dark:text-slate-300">{r.id}</span>
+                    <span className="font-mono text-[11px] text-ink-secondary">{r.id}</span>
                     {r.hidden && (
                       <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">hidden</span>
                     )}
                   </td>
                   <td className="px-2 py-2.5">
-                    <div className="text-xs text-slate-700 dark:text-slate-200">{r.gitName ?? r.osUser ?? <span className="text-slate-400">—</span>}</div>
-                    {r.gitEmail && <div className="text-[11px] text-slate-500 font-mono">{r.gitEmail}</div>}
+                    <div className="text-xs text-ink-secondary">{r.gitName ?? r.osUser ?? <span className="text-ink-tertiary">—</span>}</div>
+                    {r.gitEmail && <div className="text-[11px] text-ink-tertiary font-mono">{r.gitEmail}</div>}
                   </td>
                   <td className="px-2 py-2.5">
                     {r.agenfkVersion
-                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">{r.agenfkVersion}</span>
-                      : <span className="text-[11px] text-slate-400 italic">unknown</span>}
+                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-border-brand bg-chip text-accent-text">{r.agenfkVersion}</span>
+                      : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-slate-500 tabular-nums">
-                    {r.agenfkVersionUpdatedAt ? fmtDate(r.agenfkVersionUpdatedAt) : <span className="text-slate-400">—</span>}
+                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
+                    {r.agenfkVersionUpdatedAt ? fmtDate(r.agenfkVersionUpdatedAt) : <span className="text-ink-tertiary">—</span>}
                   </td>
-                  <td className="px-5 py-2.5 text-right text-xs text-slate-500 tabular-nums">
-                    {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-slate-400">—</span>}
+                  <td className="px-5 py-2.5 text-right text-xs text-ink-tertiary tabular-nums">
+                    {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-ink-tertiary">—</span>}
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {canHideRow(r) && (
@@ -631,7 +631,7 @@ export function AdminInstallations() {
                           }
                         }}
                         disabled={hide.isPending}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 hover:text-amber-600 dark:hover:text-amber-400"
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-amber-600 dark:hover:text-amber-400"
                         title="Hide this person from selection surfaces"
                       >
                         <EyeOff className="w-3.5 h-3.5" /> Hide
@@ -641,7 +641,7 @@ export function AdminInstallations() {
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-slate-500">No installations have reported yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No installations have reported yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -651,24 +651,24 @@ export function AdminInstallations() {
       {(hiddenPeople.data?.length ?? 0) > 0 && (
         <section className={cardCls}>
           <header>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Hidden people</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            <h3 className="text-sm font-semibold text-ink">Hidden people</h3>
+            <p className="mt-0.5 text-xs text-ink-tertiary">
               Hidden people no longer appear in installation pickers, their API keys are revoked, and new events from them are dropped. Historical dashboards are unaffected. Unhiding restores visibility but does not restore revoked keys.
             </p>
           </header>
-          <ul className="mt-3 divide-y divide-slate-100 dark:divide-slate-800">
+          <ul className="mt-3 divide-y divide-border-soft">
             {hiddenPeople.data!.map(p => (
               <li key={p.userKey} className="flex items-center justify-between py-2">
                 <div>
-                  <div className="font-mono text-xs text-slate-700 dark:text-slate-200">{p.userKey}</div>
-                  <div className="text-[11px] text-slate-500">
+                  <div className="font-mono text-xs text-ink-secondary">{p.userKey}</div>
+                  <div className="text-[11px] text-ink-tertiary">
                     hidden {fmtDate(p.createdAt)}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
                   </div>
                 </div>
                 <button
                   onClick={() => unhide.mutate(p.userKey)}
                   disabled={unhide.isPending}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-text hover:opacity-80"
                 >
                   <Eye className="w-3.5 h-3.5" /> Unhide
                 </button>

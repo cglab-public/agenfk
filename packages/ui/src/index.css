@@ -1,4 +1,18 @@
 @import "tailwindcss";
+
+/* Self-hosted brand fonts (offline-safe — no Google Fonts CDN). */
+@import "@fontsource-variable/manrope";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* CG/lab shared design tokens — single source of truth, also consumed by
+ * packages/hub-ui/src/index.css. Edit values only in packages/brand/tokens.css. */
+@import "../../brand/tokens.css";
+
+/* @import statements must precede all other statements (besides @charset or
+ * an empty @layer) per the CSS spec — @plugin/@source below silently broke
+ * every @import that followed them (PostCSS dropped fonts + design tokens
+ * from the compiled CSS without erroring at runtime). Keep all @import lines
+ * first. */
 @plugin "@tailwindcss/typography";
 
 /* The shared @agenfk/flow-editor workspace package contains JIT utilities used
@@ -8,18 +22,17 @@
 
 @variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 
+body {
+  font-family: var(--font-sans);
+}
+
 @keyframes search-highlight {
-  0% { box-shadow: inset 0 0 0 2px rgb(99 102 241), 0 0 12px 2px rgba(99, 102, 241, 0.4); }
-  50% { box-shadow: inset 0 0 0 2px rgb(99 102 241), 0 0 20px 4px rgba(99, 102, 241, 0.6); }
-  100% { box-shadow: inset 0 0 0 2px rgb(99 102 241), 0 0 12px 2px rgba(99, 102, 241, 0.4); }
+  0%, 100% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 12px 2px rgba(4, 204, 152, 0.35); }
+  50% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 20px 4px rgba(4, 204, 152, 0.55); }
 }
 
 .search-highlight {
   animation: search-highlight 1s ease-in-out 2;
-  box-shadow: inset 0 0 0 2px rgb(99 102 241);
-  background-color: rgba(238, 242, 255, 0.6) !important;
-}
-
-:is(.dark) .search-highlight {
-  background-color: rgba(49, 46, 129, 0.4) !important;
+  box-shadow: inset 0 0 0 2px var(--brand);
+  background-color: var(--chip-bg) !important;
 }

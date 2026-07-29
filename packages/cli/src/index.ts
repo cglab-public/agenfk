@@ -1437,6 +1437,7 @@ program
   .option('-t, --title <title>', 'New title')
   .option('-d, --description <desc>', 'New description')
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
+  .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1461,8 +1462,47 @@ program
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
 
+      if (options.parent !== undefined) {
+        const detachWords = ['none', 'null', 'root', ''];
+        if (detachWords.includes(String(options.parent).toLowerCase())) {
+          updates.parentId = null;
+        } else {
+          // Accept a short parent id too, same as the item id above. Scope the
+          // candidates to the item's own project: a prefix that is unique where
+          // the user is working would otherwise be called ambiguous because of
+          // an unrelated project they cannot see.
+          let parentId = options.parent;
+          if (parentId.length < 36) {
+            const { data: allItems } = await axios.get(`${API_URL}/items`);
+            let candidates = allItems;
+            const { data: target } = await axios.get(`${API_URL}/items/${targetId}`).catch(() => ({ data: null }));
+            if (target?.projectId) {
+              candidates = allItems.filter((i: any) => i.projectId === target.projectId);
+            }
+            const found = candidates.filter((i: any) => i.id.startsWith(parentId));
+            if (found.length === 0) {
+              console.error(chalk.red(`Parent item starting with ${parentId} not found.`));
+              return;
+            }
+            if (found.length > 1) {
+              console.error(chalk.red(`Ambiguous parent ID ${parentId}, matches multiple items.`));
+              return;
+            }
+            parentId = found[0].id;
+          }
+          updates.parentId = parentId;
+        }
+      }
+
       const { data: updated } = await axios.put(`${API_URL}/items/${targetId}`, updates);
       console.log(chalk.green(`Updated item: ${updated.title} [${updated.type}] (${updated.status})`));
+      if (options.parent !== undefined) {
+        console.log(
+          updated.parentId
+            ? chalk.blue(`  Parent: ${updated.parentId}`)
+            : chalk.blue('  Parent: none (top level)')
+        );
+      }
     } catch (error: any) {
       console.error(chalk.red('Error updating item:'), error.response?.data?.error || error.message);
     }

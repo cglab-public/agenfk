@@ -34,9 +34,9 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-// Indigo→violet ramp matching the AgenFK logo when no specific type selected.
-const ACCENT = '#6366f1';
-const TYPE_COLORS = ['#6366f1', '#a855f7', '#22d3ee', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#eab308', '#3b82f6', '#8b5cf6', '#06b6d4'];
+// Teal ramp matching the CG/lab brand accent when no specific type selected.
+const ACCENT = '#04cc98';
+const TYPE_COLORS = ['#04cc98', '#7fe5ca', '#056f71', '#4f8ef7', '#f59e0b', '#f26d7e', '#ec4899', '#0d9488', '#eab308', '#3b82f6', '#22d3ee', '#06b6d4'];
 const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
 
 // "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
@@ -156,32 +156,32 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
     : `last ${range === '7d' ? 7 : range === '30d' ? 30 : 90} days`;
 
   return (
-    <section className={`relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm ${className ?? ''}`}>
-      <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-slate-100 dark:border-slate-800">
+    <section className={`relative bg-card-glass backdrop-blur border border-border-soft rounded-2xl ${className ?? ''}`}>
+      <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-border-soft">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{title ?? 'Activity'}</h3>
-          <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+          <h3 className="text-sm font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
+          <p className="mt-0.5 text-[11px] text-ink-tertiary">
             {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
                   onClick={() => setRange(r.key)}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
                 </button>
               ))}
             </div>
           )}
-          <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
@@ -192,10 +192,10 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
                   disabled={disabled}
                   title={disabled ? 'Today view is hourly' : undefined}
                   className={`px-2.5 py-1 rounded-md transition-colors ${active
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    ? 'bg-card-glass text-accent-text shadow-sm'
                     : disabled
-                      ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                      ? 'text-ink-tertiary/50 cursor-not-allowed'
+                      : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {b}
                 </button>
@@ -213,9 +213,9 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
             return (
               <g key={t}>
                 <line x1={m.left} x2={m.left + innerW} y1={y} y2={y}
-                      className="stroke-slate-200 dark:stroke-slate-800" strokeDasharray={t === 0 ? '0' : '2 3'} />
+                      className="stroke-border-soft" strokeDasharray={t === 0 ? '0' : '2 3'} />
                 <text x={m.left - 6} y={y} textAnchor="end" dominantBaseline="middle"
-                      className="fill-slate-400 dark:fill-slate-500" style={{ fontSize: 10 }}>
+                      className="fill-ink-tertiary" style={{ fontSize: 10 }}>
                   {t}
                 </text>
               </g>
@@ -255,18 +255,18 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
                 {/* faint placeholder bar so empty buckets are still readable */}
                 {total === 0 && (
                   <rect x={x} y={m.top + innerH - 1} width={barW} height={1}
-                        className="fill-slate-200 dark:fill-slate-800" />
+                        className="fill-border-soft" />
                 )}
                 {/* hover highlight column */}
                 {isHover && (
                   <rect x={x - 1} y={m.top} width={barW + 2} height={innerH}
-                        className="fill-indigo-500/5 dark:fill-indigo-400/5" pointerEvents="none" />
+                        className="fill-brand/5 dark:fill-brand/10" pointerEvents="none" />
                 )}
                 {/* count label on top of hovered bar */}
                 {isHover && total > 0 && (
                   <text x={x + barW / 2} y={m.top + innerH - barH - 4}
                         textAnchor="middle"
-                        className="fill-slate-700 dark:fill-slate-200 font-semibold"
+                        className="fill-ink font-semibold"
                         style={{ fontSize: 10 }}>
                     {total}
                   </text>
@@ -277,7 +277,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
 
           {/* X axis baseline */}
           <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH}
-                className="stroke-slate-300 dark:stroke-slate-700" />
+                className="stroke-border-soft" />
 
           {/* X tick labels */}
           {axis.map((t, i) => {
@@ -286,7 +286,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
             return (
               <text key={t} x={x} y={m.top + innerH + 14}
                     textAnchor="middle"
-                    className="fill-slate-500 dark:fill-slate-400 font-mono"
+                    className="fill-ink-tertiary font-mono"
                     style={{ fontSize: 10 }}>
                 {shortLabel(t, bucket, range)}
               </text>
@@ -295,7 +295,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
 
           {/* Axis titles */}
           <text x={m.left} y={m.top - 2}
-                className="fill-slate-400 dark:fill-slate-500"
+                className="fill-ink-tertiary"
                 style={{ fontSize: 9, letterSpacing: '0.06em' }}>
             EVENTS
           </text>
@@ -304,16 +304,16 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
         {/* Hover tooltip — positioned over the SVG using percentages of the same coordinate system. */}
         {hoveredBucket && hoverIdx != null && (
           <div
-            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] min-w-[140px]"
+            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-[11px] min-w-[140px]"
             style={{
               left: `calc(${(hoveredX / width) * 100}% )`,
               top: '14px',
               transform: hoveredX > width * 0.7 ? 'translateX(-100%)' : 'translateX(8px)',
             }}
           >
-            <div className="font-mono text-slate-500 dark:text-slate-400">{hoveredBucket.time}</div>
-            <div className="mt-0.5 font-semibold text-slate-900 dark:text-slate-100">
-              {hoveredBucket.total} <span className="font-normal text-slate-500">event{hoveredBucket.total === 1 ? '' : 's'}</span>
+            <div className="font-mono text-ink-tertiary">{hoveredBucket.time}</div>
+            <div className="mt-0.5 font-semibold text-ink">
+              {hoveredBucket.total} <span className="font-normal text-ink-tertiary">event{hoveredBucket.total === 1 ? '' : 's'}</span>
             </div>
             {Object.entries(hoveredBucket.by_type).length > 0 && (
               <ul className="mt-1.5 space-y-0.5">
@@ -326,9 +326,9 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
                       <li key={k} className="flex items-center justify-between gap-3">
                         <span className="flex items-center gap-1.5 min-w-0">
                           <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
-                          <span className="font-mono text-slate-600 dark:text-slate-300 truncate">{k}</span>
+                          <span className="font-mono text-ink-secondary truncate">{k}</span>
                         </span>
-                        <span className="font-semibold text-slate-900 dark:text-slate-100">{v}</span>
+                        <span className="font-semibold text-ink">{v}</span>
                       </li>
                     );
                   })}
@@ -340,7 +340,7 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
 
       {/* Legend (only when filtered by type) */}
       {stackedTypes && stackedTypes.length > 0 && (
-        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-ink-tertiary">
           {stackedTypes.map((tp, idx) => (
             <span key={tp} className="flex items-center gap-1.5">
               <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colorForType(tp, idx) }} />

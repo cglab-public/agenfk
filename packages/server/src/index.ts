@@ -151,6 +151,9 @@ const UpdateItemSchema = z.object({
   description: z.string().optional(),
   status: z.string().optional(),
   type: z.enum(["EPIC", "STORY", "TASK", "BUG"]).optional(),
+  // null detaches to top level; the REST route validates existence, project
+  // match and cycles.
+  parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
 });
 
@@ -268,7 +271,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, or description. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names.",
+        description: "Update an existing item's status, title, description, or parent. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
         inputSchema: {
           type: "object",
           properties: {
@@ -277,6 +280,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string" },
             status: { type: "string", description: "Step name from the project's active flow. Call get_flow(projectId) for valid step names." },
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
+            parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
           },
           required: ["id"],
@@ -549,10 +553,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { name, label?, exitCriteria?, order, isSpecial?, isAnchor? }.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
                 properties: {
+                  id: { type: "string" },
                   name: { type: "string" },
                   label: { type: "string" },
                   exitCriteria: { type: "string" },
@@ -1032,6 +1037,9 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string(),
           description: z.string().optional(),
           steps: z.array(z.object({
+            // Accept an id so it round-trips: zod strips unknown keys, so
+            // without this an update regenerated every step id on every call.
+            id: z.string().optional(),
             name: z.string(),
             label: z.string().optional(),
             exitCriteria: z.string().optional(),
@@ -1055,6 +1063,9 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string().optional(),
           description: z.string().optional(),
           steps: z.array(z.object({
+            // Accept an id so it round-trips: zod strips unknown keys, so
+            // without this an update regenerated every step id on every call.
+            id: z.string().optional(),
             name: z.string(),
             label: z.string().optional(),
             exitCriteria: z.string().optional(),

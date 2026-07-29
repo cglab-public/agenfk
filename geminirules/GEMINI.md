@@ -94,6 +94,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Get an item | `agenfk get <id> --json` | `get_item` |
 | Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` | `create_item` |
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
+| Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
 | Attach context | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` | `add_context` |

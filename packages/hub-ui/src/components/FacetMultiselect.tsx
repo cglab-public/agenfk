@@ -64,9 +64,9 @@ export function FacetMultiselect({
     return (
       <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</h3>
+          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
           {selected.size > 0 && (
-            <button onClick={onClear} className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+            <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted">
               Clear ({selected.size})
             </button>
           )}
@@ -80,8 +80,8 @@ export function FacetMultiselect({
                 onClick={() => onToggle(t)}
                 title={t}
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300'}`}
+                  ? 'text-accent-text border-border-brand bg-chip'
+                  : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
               >
                 {optionLabel ? optionLabel(t) : t}
               </button>
@@ -97,9 +97,9 @@ export function FacetMultiselect({
   return (
     <div ref={rootRef} className="relative">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</h3>
+        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
         {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted">
             Clear ({selected.size})
           </button>
         )}
@@ -108,7 +108,7 @@ export function FacetMultiselect({
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-border-brand hover:text-accent-text transition-colors"
           aria-haspopup="listbox"
           aria-expanded={open}
         >
@@ -122,13 +122,13 @@ export function FacetMultiselect({
           <span
             key={v}
             title={v}
-            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-[11px] border bg-indigo-600 border-indigo-600 text-white shadow-sm max-w-[260px]"
+            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-[11px] border text-accent-text border-border-brand bg-chip max-w-[260px]"
           >
             <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
             <button
               onClick={() => onToggle(v)}
               aria-label={`Remove ${v}`}
-              className="rounded-full hover:bg-indigo-500/40 p-0.5 -mr-0.5"
+              className="rounded-full hover:bg-brand/20 p-0.5 -mr-0.5"
             >
               <X className="w-3 h-3" />
             </button>
@@ -137,21 +137,21 @@ export function FacetMultiselect({
       </div>
 
       {open && (
-        <div className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 dark:border-slate-800">
-            <Search className="w-3.5 h-3.5 text-slate-400" />
+        <div className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft">
+            <Search className="w-3.5 h-3.5 text-ink-tertiary" />
             <input
               ref={inputRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={placeholder}
-              className="flex-1 bg-transparent outline-none text-[12px] text-slate-700 dark:text-slate-200 placeholder:text-slate-400"
+              className="flex-1 bg-transparent outline-none text-[12px] text-ink placeholder:text-ink-tertiary"
             />
             {query && (
               <button
                 onClick={() => setQuery('')}
                 aria-label="Clear search"
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                className="text-ink-tertiary hover:text-ink"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -159,7 +159,7 @@ export function FacetMultiselect({
           </div>
           <ul role="listbox" aria-multiselectable="true" className="max-h-64 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <li className="px-3 py-4 text-center text-[12px] text-slate-500">No matches.</li>
+              <li className="px-3 py-4 text-center text-[12px] text-ink-tertiary">No matches.</li>
             ) : (
               filtered.map((v) => {
                 const on = selected.has(v);
@@ -168,13 +168,13 @@ export function FacetMultiselect({
                     <button
                       onClick={() => onToggle(v)}
                       className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors ${on
-                        ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-200'
-                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
+                        ? 'bg-chip text-accent-text'
+                        : 'text-ink hover:bg-chip/50'}`}
                       title={v}
                     >
                       <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
-                        ? 'bg-indigo-600 border-indigo-600 text-white'
-                        : 'border-slate-300 dark:border-slate-600'}`}>
+                        ? 'bg-brand border-brand text-navy'
+                        : 'border-border-soft'}`}>
                         {on && <Check className="w-2.5 h-2.5" />}
                       </span>
                       <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
@@ -185,9 +185,9 @@ export function FacetMultiselect({
             )}
           </ul>
           {selected.size > 0 && (
-            <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 dark:border-slate-800 text-[11px]">
-              <span className="text-slate-500">{selected.size} selected</span>
-              <button onClick={onClear} className="font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+            <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
+              <span className="text-ink-tertiary">{selected.size} selected</span>
+              <button onClick={onClear} className="font-medium text-ink-tertiary hover:text-danger-muted">
                 Clear all
               </button>
             </div>

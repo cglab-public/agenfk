@@ -42,11 +42,11 @@ function endOfDateInput(value: string): string {
 }
 
 const TYPE_BADGE: Record<string, string> = {
-  'item.created':       'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
-  'item.updated':       'bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800',
-  'item.moved':         'bg-violet-50 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800',
+  'item.created':       'bg-chip text-accent-text border-border-brand',
+  'item.updated':       'bg-mint/40 text-brand-dark border-border-brand',
+  'item.moved':         'bg-mint/40 text-brand-dark border-border-brand',
   'step.transitioned':  'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
-  'validate.invoked':   'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700',
+  'validate.invoked':   'bg-chip text-ink-secondary border-border-soft',
   'validate.passed':    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
   'validate.failed':    'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
   'comment.added':      'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
@@ -54,12 +54,12 @@ const TYPE_BADGE: Record<string, string> = {
   'item.closed':        'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
   'item.deleted':       'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
 };
-const DEFAULT_BADGE = 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700';
+const DEFAULT_BADGE = 'bg-chip text-ink-secondary border-border-soft';
 
 const ITEM_TYPE_BADGE: Record<string, string> = {
-  EPIC:  'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800',
-  STORY: 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
-  TASK:  'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700',
+  EPIC:  'bg-mint/40 text-brand-dark border-border-brand',
+  STORY: 'bg-chip text-accent-text border-border-brand',
+  TASK:  'bg-chip text-ink-secondary border-border-soft',
   BUG:   'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
 };
 
@@ -75,9 +75,9 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
   return (
     <div>
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400">{label}</h3>
+        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
         {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-slate-500 hover:text-rose-600 dark:hover:text-rose-400">
+          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
             Clear ({selected.size})
           </button>
         )}
@@ -91,8 +91,8 @@ function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
               onClick={() => onToggle(t)}
               title={t}
               className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-300 hover:text-indigo-700 dark:hover:text-indigo-300'}`}
+                ? 'text-accent-text border-border-brand bg-chip'
+                : 'bg-surface border-border-soft text-ink-secondary hover:border-border-brand hover:text-accent-text'}`}
             >
               {optionLabel ? optionLabel(t) : t}
             </button>
@@ -197,26 +197,26 @@ export function UserDetailPage() {
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
-      <Link to="/" className="inline-flex items-center gap-1.5 text-[12px] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400">
+      <Link to="/" className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 
       <header className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 text-white text-base font-bold flex items-center justify-center shadow-sm">
+        <div className="w-12 h-12 rounded-2xl bg-[image:var(--gradient-accent)] text-navy text-base font-bold flex items-center justify-center shadow-sm">
           {decoded.slice(0, 2).toUpperCase()}
         </div>
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-400 font-semibold">User</p>
-          <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-slate-900 dark:text-slate-100 truncate">{decoded}</h1>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">User</p>
+          <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
         </div>
       </header>
 
       <MetricsTilesRow totals={totals} />
 
-      <section className="space-y-4 p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl">
+      <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-indigo-500" />
-          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Filters</h2>
+          <GitBranch className="w-4 h-4 text-accent-text" />
+          <h2 className="text-sm font-semibold text-ink">Filters</h2>
         </div>
         <FacetMultiselect
           label="Project (git remote)"
@@ -241,9 +241,9 @@ export function UserDetailPage() {
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
         <div>
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-slate-500 dark:text-slate-400 mb-1.5">Period</h3>
+          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 text-[11px] font-medium">
+            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
@@ -253,29 +253,29 @@ export function UserDetailPage() {
                     setCustomEnd('');
                   }}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
-                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                    ? 'bg-surface text-accent-text shadow-sm'
+                    : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
                 </button>
               ))}
             </div>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
               Start
               <input
                 type="date"
                 value={customStart}
                 onChange={e => setCustomStart(e.target.value)}
-                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-[11px] text-slate-700 dark:text-slate-200"
+                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
               />
             </label>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
               End
               <input
                 type="date"
                 value={customEnd}
                 onChange={e => setCustomEnd(e.target.value)}
-                className="h-7 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 text-[11px] text-slate-700 dark:text-slate-200"
+                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
               />
             </label>
           </div>
@@ -296,17 +296,17 @@ export function UserDetailPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Recent events</h2>
-          <span className="text-[11px] text-slate-500" title={`All times in ${browserTimezone()}`}>{tl.data?.events.length ?? 0} shown · times in {browserTimezone()}</span>
+          <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
+          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data?.events.length ?? 0} shown · times in {browserTimezone()}</span>
         </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+        <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
           {(tl.data?.events ?? []).map(e => {
             const badge = TYPE_BADGE[e.type] ?? DEFAULT_BADGE;
             const itemBadge = e.item_type ? (ITEM_TYPE_BADGE[e.item_type] ?? DEFAULT_BADGE) : null;
             return (
               <details key={e.event_id} className="group">
-                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 group-open:rotate-180 transition-transform shrink-0" />
+                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-chip transition-colors">
+                  <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
                   <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${badge}`}>{e.type}</span>
                   {itemBadge && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${itemBadge}`}>{e.item_type}</span>}
                   {e.external_id && (
@@ -315,12 +315,12 @@ export function UserDetailPage() {
                     </span>
                   )}
                   {e.remote_url && (
-                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 max-w-[180px] truncate">
+                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-chip text-ink-tertiary border border-border-soft max-w-[180px] truncate">
                       <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
                     </span>
                   )}
-                  <span className="text-[12px] text-slate-800 dark:text-slate-200 truncate flex-1" title={e.item_id ?? undefined}>
-                    {e.item_title ?? <span className="text-slate-400 font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
+                  <span className="text-[12px] text-ink truncate flex-1" title={e.item_id ?? undefined}>
+                    {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
                   </span>
                   {e.reporting_version && (
                     <span
@@ -330,14 +330,14 @@ export function UserDetailPage() {
                       v{e.reporting_version}
                     </span>
                   )}
-                  <span className="text-[11px] text-slate-400 tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
+                  <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
                 </summary>
-                <pre className="px-5 pb-3 text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap break-words bg-slate-50/60 dark:bg-slate-950/40 border-t border-slate-100 dark:border-slate-800 -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
+                <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-chip/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
               </details>
             );
           })}
           {tl.data?.events.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-slate-500">No events match the current filters.</div>
+            <div className="px-5 py-8 text-center text-sm text-ink-tertiary">No events match the current filters.</div>
           )}
         </div>
       </section>

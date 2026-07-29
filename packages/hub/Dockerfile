@@ -40,6 +40,9 @@ RUN npm ci --no-audit --no-fund
 
 COPY packages/core packages/core
 COPY packages/flow-editor packages/flow-editor
+# brand is a plain-CSS token package (no package.json) imported by
+# hub-ui/src/index.css as ../../brand/tokens.css at build time.
+COPY packages/brand packages/brand
 COPY packages/hub packages/hub
 COPY packages/hub-ui packages/hub-ui
 

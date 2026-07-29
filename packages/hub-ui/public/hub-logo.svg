@@ -1,18 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 164 164" fill="none">
   <defs>
-    <linearGradient id="hub-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#7c3aed" />
-      <stop offset="100%" stop-color="#a855f7" />
+    <linearGradient id="hub-favicon-spark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#7fe5ca" />
+      <stop offset=".45" stop-color="#04cc98" />
+      <stop offset=".8" stop-color="#056f71" />
+      <stop offset="1" stop-color="#081049" />
     </linearGradient>
   </defs>
-  <rect width="100" height="100" rx="20" fill="url(#hub-bg)" />
-  <circle cx="50" cy="50" r="6" fill="#ffffff" />
-  <circle cx="22" cy="28" r="5" fill="#ffffff" fill-opacity="0.95" />
-  <circle cx="78" cy="28" r="5" fill="#ffffff" fill-opacity="0.95" />
-  <circle cx="22" cy="72" r="5" fill="#ffffff" fill-opacity="0.95" />
-  <circle cx="78" cy="72" r="5" fill="#ffffff" fill-opacity="0.95" />
-  <line x1="50" y1="50" x2="22" y2="28" stroke="#ffffff" stroke-width="3" stroke-opacity="0.85" stroke-linecap="round" />
-  <line x1="50" y1="50" x2="78" y2="28" stroke="#ffffff" stroke-width="3" stroke-opacity="0.85" stroke-linecap="round" />
-  <line x1="50" y1="50" x2="22" y2="72" stroke="#ffffff" stroke-width="3" stroke-opacity="0.85" stroke-linecap="round" />
-  <line x1="50" y1="50" x2="78" y2="72" stroke="#ffffff" stroke-width="3" stroke-opacity="0.85" stroke-linecap="round" />
+  <path
+    fill="none"
+    stroke="url(#hub-favicon-spark)"
+    stroke-width="20"
+    stroke-miterlimit="10"
+    d="M17.97,11.04h0c38.1,27.93,89.92,27.93,128.02,0h0c4.7-3.45,10.58,2.42,7.13,7.13h0c-27.93,38.1-27.93,89.92,0,128.02h0c3.45,4.7-2.42,10.58-7.13,7.13h0c-38.1-27.93-89.92-27.93-128.02,0h0c-4.7,3.45-10.58-2.42-7.13-7.13h0c27.93-38.1,27.93-89.92,0-128.02h0c-3.45-4.7,2.42-10.58,7.13-7.13Z"
+  />
 </svg>

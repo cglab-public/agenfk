@@ -471,18 +471,43 @@ export function adminRouter(ctx: HubServerContext): Router {
       .map(r => r.target_id);
     const remoteByProjectId = new Map<string, string | null>();
     if (projectTargetIds.length > 0) {
-      const placeholders = projectTargetIds.map(() => '?').join(',');
-      const remoteRows = await ctx.db.all<{ project_id: string; remote_url: string | null }>(
-        `SELECT e.project_id,
-           (SELECT remote_url FROM events e2
-            WHERE e2.org_id = e.org_id AND e2.project_id = e.project_id AND e2.remote_url IS NOT NULL
-            ORDER BY e2.occurred_at DESC LIMIT 1) AS remote_url
-         FROM events e
-         WHERE e.org_id = ? AND e.project_id IN (${placeholders})
-         GROUP BY e.project_id`,
-        [req.session!.orgId, ...projectTargetIds],
+      // BUG ab9b39d3: this used a GROUP BY with a correlated subquery in the
+      // SELECT list, correlated on `e.org_id`. Postgres rejects an ungrouped
+      // outer column inside a subquery ("subquery uses ungrouped column
+      // e.org_id from outer query") while SQLite silently allows the bare
+      // column — so the route 500'd on every real deployment with the SQLite
+      // tests green. Correlating on the grouped `project_id` instead is legal
+      // in real Postgres but unsupported by pg-mem, which backs the parity
+      // suite, and DISTINCT ON is Postgres-only.
+      //
+      // So: one bounded LIMIT 1 lookup per assigned project. That is a small
+      // fixed number of queries (one per project-scoped assignment, which an
+      // admin configures by hand) each returning at most one row — as opposed
+      // to a single unbounded query streaming every matching event row into
+      // Node, which is what a naive de-correlation would do on the ingestion
+      // table. idx_events_org_project_time backs the lookup.
+      // Run them concurrently: project-scoped assignment targetIds are not
+      // validated on write, so an admin can accumulate a lot of them and a
+      // sequential loop would add one round-trip each to every page load.
+      // Safe here ONLY because this route opens no transaction — PgAdapter pins
+      // a single client for the duration of transaction(), so parallel queries
+      // inside one would interleave statements on that client. Don't copy this
+      // shape into a transactional path.
+      const remotes = await Promise.all(
+        projectTargetIds.map(projectId =>
+          ctx.db
+            .get<{ remote_url: string | null }>(
+              `SELECT remote_url
+               FROM events
+               WHERE org_id = ? AND project_id = ? AND remote_url IS NOT NULL
+               ORDER BY occurred_at DESC
+               LIMIT 1`,
+              [req.session!.orgId, projectId],
+            )
+            .then(row => [projectId, row?.remote_url ?? null] as const),
+        ),
       );
-      for (const rr of remoteRows) remoteByProjectId.set(rr.project_id, rr.remote_url ?? null);
+      for (const [projectId, remoteUrl] of remotes) remoteByProjectId.set(projectId, remoteUrl);
     }
 
     res.json(rows.map(r => ({

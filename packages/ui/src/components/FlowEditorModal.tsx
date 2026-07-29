@@ -67,6 +67,11 @@ export const FlowEditorModal: React.FC<FlowEditorModalProps | LegacyProps> = (pr
       flowClient={flowClient}
       registryClient={registryClient}
       canSelectFlow={!hubEnabled}
+      // BUG 269eeec8 (b): the local server answers any mutation of a
+      // source='hub' flow with 409, so the editor must present those flows as
+      // read-only here instead of offering a Save that cannot succeed. The hub
+      // admin does not pass this — there, hub flows are the editable ones.
+      hubManagedReadOnly
       theme={theme === 'dark' ? 'dark' : 'light'}
     />
   );

@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback, createContext, useCont
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
+import { extractApiError } from './apiError';
+import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
 
 // ── Host injection ─────────────────────────────────────────────────────────
 // The editor accepts its data layer (server REST + community registry) and
@@ -99,6 +101,12 @@ interface FlowEditorModalProps {
   // the hub (Org Flows picker) — the client may only author + publish. Defaults
   // to true (standalone installs and the hub admin, where it means set-default).
   canSelectFlow?: boolean;
+  // When true, a flow with source='hub' is presented as owned elsewhere and is
+  // not editable here. Set by the local agenfk UI, whose server answers any
+  // mutation of a hub-sourced flow with 409 (BUG 269eeec8 (b)) — offering Save
+  // was offering a guaranteed failure. The hub admin leaves this false: over
+  // there, hub-sourced flows are exactly the ones you are meant to edit.
+  hubManagedReadOnly?: boolean;
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -141,11 +149,12 @@ interface EditorPanelProps {
   onClone?: () => void;
   onUseDefault?: () => void;    // only provided for the builtin default flow row
   canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
+  isHubManaged: boolean;        // true → owned by the org Hub, not editable here
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
   flow,
-  isReadOnly,
+  isReadOnly: isBuiltinReadOnly,
   projectId,
   activeFlowId,
   onSaved,
@@ -153,7 +162,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onClone,
   onUseDefault,
   canSelectFlow,
+  isHubManaged,
 }) => {
+  // Two independent reasons this panel can't be edited: it's the built-in
+  // default flow, or (BUG 269eeec8 (b)) it's owned by the org Hub and this host
+  // can only read it. They render different badges but lock the same controls.
+  const isReadOnly = isBuiltinReadOnly || isHubManaged;
+
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
   const registryClient = useRegistryClient();
@@ -252,7 +267,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        steps: steps.map((s, i) => ({ ...s, order: i })),
+        // order is authoritative from array position; ids are backfilled so a
+        // flow loaded without them (MCP create_flow never sent ids) still
+        // satisfies the Hub's id rule.
+        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
       };
       if (flow?.id) {
         return flowClient.updateFlow(flow.id, payload);
@@ -276,7 +294,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const payload: Partial<Flow> = {
         name,
         description,
-        steps: steps.map((s, i) => ({ ...s, order: i })),
+        // order is authoritative from array position; ids are backfilled so a
+        // flow loaded without them (MCP create_flow never sent ids) still
+        // satisfies the Hub's id rule.
+        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
       };
       const created = await flowClient.createFlow(payload);
       await flowClient.setProjectFlow(projectId, created.id);
@@ -292,11 +313,31 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   });
 
   const isBusy = saveMutation.isPending || useFlowMutation.isPending;
-  const errorMsg =
-    (saveMutation.error as Error | null)?.message ??
-    (useFlowMutation.error as Error | null)?.message ??
-    null;
-  const isSaveDisabled = isBusy || !name.trim() || reservedNameError;
+  // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
+  // the latter is only ever "Request failed with status code N".
+  const failure = saveMutation.error ?? useFlowMutation.error ?? null;
+  const errorMsg = failure ? extractApiError(failure, 'Failed to save flow.') : null;
+
+  // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
+  // reject never leaves the browser, and the reason is pinned to its step.
+  const definitionIssues = flowDefinitionIssues(name, steps);
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+
+  // Every reason Save is blocked MUST be visible somewhere, or the user is left
+  // with a dead button and no way to fix it — the exact failure mode this whole
+  // change exists to kill. Per-step messages render inside the step column, but
+  // only for non-anchor steps (anchors expose no name field), and a flow-level
+  // issue has no column at all. Surface anything that would otherwise be silent.
+  // A step column renders its own issue only when it has an editable name field
+  // (anchors don't) and isn't already showing the reserved-name message.
+  const stepShowsOwnIssue = (index: number): boolean => {
+    const step = steps[index];
+    if (!step || step.isAnchor) return false;
+    return !RESERVED_NAMES.has((step.name ?? '').toUpperCase());
+  };
+  const silentIssues = definitionIssues.filter(
+    issue => issue.stepIndex === undefined || !stepShowsOwnIssue(issue.stepIndex),
+  );
 
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
@@ -313,17 +354,50 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
       setPublishError(null);
     },
-    onError: (e: Error) => {
-      setPublishError(e.message || 'Failed to publish.');
+    onError: (e: unknown) => {
+      setPublishError(extractApiError(e, 'Failed to publish.'));
     },
   });
+
+  // Rendered by BOTH footers — the read-only footer also offers Publish now, and
+  // a button whose outcome renders somewhere else is a silent failure.
+  const publishFeedback = (
+    <>
+      {publishResult && (
+        <a
+          data-testid="publish-success-link"
+          href={publishResult.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+        >
+          <ExternalLink size={12} />
+          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+        </a>
+      )}
+      {publishError && (
+        <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+          <AlertCircle size={11} />
+          {publishError}
+        </p>
+      )}
+    </>
+  );
 
   return (
     <div className="flex flex-col h-full" data-testid="editor-panel">
       {/* Right panel header — inline-editable flow name */}
       <div className="px-6 pt-5 pb-3 shrink-0">
         <div className="flex items-center gap-2 mb-1.5">
-          {isReadOnly ? (
+          {isHubManaged ? (
+            <span
+              data-testid="hub-managed-badge"
+              title="This flow is managed by your organization's Hub. Edit it in the Hub admin, or clone it to author a local copy."
+              className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+            >
+              Managed by Hub
+            </span>
+          ) : isBuiltinReadOnly ? (
             <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
               Default (read-only)
             </span>
@@ -341,7 +415,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           )}
         </div>
         {isReadOnly ? (
-          <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">Default Flow</h3>
+          // Don't hardcode "Default Flow" — this branch now also renders
+          // hub-managed flows, which have their own names.
+          <h3 data-testid="flow-name-heading" className="text-xl font-bold text-slate-800 dark:text-slate-100">
+            {isHubManaged ? name || flow?.name : 'Default Flow'}
+          </h3>
         ) : (
           <input
             data-testid="flow-name-input"
@@ -349,7 +427,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-indigo-500 dark:focus:border-indigo-400 focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -369,7 +447,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             rows={2}
             placeholder="Optional description of this flow"
             disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -397,7 +475,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="add-step-btn"
                 type="button"
                 onClick={addStep}
-                className="flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
+                className="flex items-center gap-1 text-xs font-semibold text-accent-text hover:opacity-80 transition-colors"
               >
                 <Plus size={14} />
                 Add Step
@@ -414,7 +492,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const isStepLocked = isReadOnly || isAnchor;
               const stepNameUpper = step.name.toUpperCase();
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
-              const stepColor = step.color ?? '#6366f1';
+              // A reserved name has its own dedicated message below, so only
+              // show the shape issue when that isn't already being reported.
+              const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
+              const stepColor = step.color ?? '#04cc98';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
 
               return (
@@ -432,7 +513,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                     isAnchor
                       ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
                       : dragOverIndex === index
-                      ? 'bg-slate-50 dark:bg-slate-800/50 border-indigo-400 shadow-md'
+                      ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
                       : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
                 >
@@ -495,7 +576,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                                   className={clsx(
                                     'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
                                     step.icon === opt.key
-                                      ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400'
+                                      ? 'bg-chip text-accent-text'
                                       : 'hover:bg-slate-100 dark:hover:bg-slate-700'
                                   )}
                                 >
@@ -547,7 +628,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           rows={5}
                           placeholder="What must be true before leaving this step?"
                           disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
+                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
                         />
                       </div>
                     )}
@@ -569,9 +650,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                               'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
                               hasReservedName
                                 ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
-                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-indigo-500'
+                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
                             )}
                           />
+                          {shapeIssue && (
+                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                              {shapeIssue.message}
+                            </p>
+                          )}
                           {hasReservedName && (
                             <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
                               Reserved name
@@ -590,7 +676,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { label: e.target.value })}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
                         </div>
                         {/* Exit criteria */}
@@ -605,7 +691,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             rows={5}
                             placeholder="What must be true before leaving this step?"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none disabled:opacity-60 min-h-[80px]"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
                           />
                         </div>
                       </>
@@ -616,6 +702,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             })}
           </div>
           {/* Reserved name global error */}
+          {silentIssues.length > 0 && (
+            <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
+              {silentIssues.map((issue, i) => (
+                <li key={i}>
+                  {issue.stepIndex === undefined
+                    ? issue.message
+                    : `${steps[issue.stepIndex]?.label || steps[issue.stepIndex]?.name || `Step ${issue.stepIndex + 1}`}: ${issue.message}`}
+                </li>
+              ))}
+            </ul>
+          )}
           {reservedNameError && (
             <p data-testid="reserved-name-error" className="text-sm text-red-600 dark:text-red-400 mt-1">
               One or more step names use a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED).
@@ -633,7 +730,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
       {/* Footer — sticky bottom */}
       {isReadOnly ? (
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3 flex-wrap">
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
+         <div className="flex items-center gap-3 flex-wrap">
+          {/* A hub-managed flow used to render the editable footer, which carried
+              Publish. Keep it reachable here rather than silently dropping the
+              capability along with Save. */}
+          {isHubManaged && flow?.id && (
+            <button
+              data-testid="publish-flow-btn"
+              type="button"
+              disabled={publishMutation.isPending}
+              onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+              {publishMutation.isPending ? 'Publishing…' : 'Publish'}
+            </button>
+          )}
           {onUseDefault && canSelectFlow && (
             <button
               data-testid="use-default-flow-btn"
@@ -650,7 +763,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               data-testid="clone-to-edit-btn"
               type="button"
               onClick={onClone}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
             >
               <CopyPlus size={15} />
               Clone to Edit
@@ -664,6 +777,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           >
             Close
           </button>
+         </div>
+         {publishFeedback}
         </div>
       ) : (
         <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
@@ -673,7 +788,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               type="button"
               disabled={isSaveDisabled}
               onClick={() => saveMutation.mutate()}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {saved ? <Check size={15} /> : <Save size={15} />}
               {isBusy ? 'Saving…' : saved ? 'Saved' : 'Save'}
@@ -686,7 +801,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   type="button"
                   disabled={publishMutation.isPending}
                   onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
                   {publishMutation.isPending ? 'Publishing…' : 'Publish'}
@@ -707,24 +822,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </div>
           </div>
 
-          {publishResult && (
-            <a
-              data-testid="publish-success-link"
-              href={publishResult.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
-            >
-              <ExternalLink size={12} />
-              {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
-            </a>
-          )}
-          {publishError && (
-            <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
-              <AlertCircle size={11} />
-              {publishError}
-            </p>
-          )}
+          {publishFeedback}
         </div>
       )}
     </div>
@@ -812,7 +910,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
     <div className="flex flex-col h-full" data-testid="community-preview-panel">
       <div className="px-6 pt-6 pb-4 shrink-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
+          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-accent-text">
             Community
           </span>
         </div>
@@ -872,7 +970,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'install'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {installMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
           Install
@@ -906,6 +1004,9 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     : (props as FlowEditorModalProps).initialFlowId;
   // Selection actions default on; hosts opt out (hub-connected clients).
   const canSelectFlow = isLegacy ? true : ((props as FlowEditorModalProps).canSelectFlow ?? true);
+  // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
+  // working without opting out; only the local agenfk UI sets it.
+  const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -972,8 +1073,14 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     : flows.find(f => f.id === selectedFlowId) ?? null;
 
   // If this is a legacy-props invocation the passed `flow` wins as initial selection
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isOpen) return;
+    // The component never unmounts (the wrapper mounts it and it self-returns
+    // null when closed), so a stale delete failure would otherwise still be on
+    // screen the next time the modal is opened.
+    setDeleteError(null);
     if (isLegacy && (props as LegacyProps).flow?.id) {
       setSelectedFlowId((props as LegacyProps).flow!.id);
       setIsNewFlow(false);
@@ -987,9 +1094,17 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   }, [isOpen]);
 
   // ── Delete mutation ────────────────────────────────────────────────────────
+  // The delete path had the same defect as save (BUG 269eeec8 (a)): no onError
+  // and no rendering, so a refusal — e.g. the local server's 409 on a
+  // hub-managed flow — vanished and the row simply stayed put.
   const deleteMutation = useMutation({
     mutationFn: (id: string) => flowClient.deleteFlow(id),
+    onError: (e: unknown) => {
+      setDeleteError(extractApiError(e, 'Failed to delete flow.'));
+      setConfirmDeleteId(null);
+    },
     onSuccess: (_, deletedId) => {
+      setDeleteError(null);
       queryClient.invalidateQueries({ queryKey: ['flows'] });
       queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
       if (selectedFlowId === deletedId) {
@@ -1038,6 +1153,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
 
   const isReadOnly = selectedFlowId === BUILTIN_ID && !clonedFlow;
   const isEditingClone = clonedFlow !== null;
+  // A hub-owned flow, viewed from a host that may only read it. Hoisted because
+  // the footer actions below need it too: without a Clone action the panel would
+  // be a dead end, and the badge tooltip explicitly tells the user to clone.
+  const isHubManagedSelected =
+    hubManagedReadOnly && selectedFlow?.source === 'hub' && !isEditingClone;
+
 
   const handleClone = (source: Flow, sourceName: string) => {
     const copy = cloneFlow(source, `Copy of ${sourceName}`);
@@ -1064,7 +1185,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           {/* Sidebar header */}
           <div className="px-4 pt-5 pb-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <GitBranch size={16} className="text-indigo-500" />
+              <GitBranch size={16} className="text-accent-text" />
               <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                 Flows
               </span>
@@ -1086,7 +1207,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'my-flows'
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-brand text-accent-text'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1098,7 +1219,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'community'
-                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  ? 'border-brand text-accent-text'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1118,7 +1239,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     placeholder="Search by name or author…"
                     value={communitySearch}
                     onChange={e => setCommunitySearch(e.target.value)}
-                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand"
                   />
                 </div>
               </div>
@@ -1146,7 +1267,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       className={clsx(
                         'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                         selectedRegistryFlow?.filename === rf.filename
-                          ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                          ? 'bg-chip text-accent-text'
                           : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                       )}
                     >
@@ -1173,7 +1294,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
                 selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
-                  ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                  ? 'bg-chip text-accent-text'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               )}
             >
@@ -1190,7 +1311,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
                   >
                     <CopyPlus size={13} />
                   </button>
@@ -1201,10 +1322,19 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               </div>
             </div>
 
+            {deleteError && (
+              <p data-testid="flow-delete-error" className="text-xs text-red-600 dark:text-red-400 px-3 py-2">
+                {deleteError}
+              </p>
+            )}
+
             {flows.map(flow => {
               const isActive = flow.id === effectiveActiveFlowId;
               const isSelected = selectedFlowId === flow.id && !isNewFlow && !isEditingClone;
               const isPendingDelete = confirmDeleteId === flow.id;
+              // Hosts that can only read hub flows must not offer a delete the
+              // server answers with 409.
+              const isRowHubManaged = hubManagedReadOnly && flow.source === 'hub';
 
               return (
                 <div
@@ -1213,7 +1343,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   className={clsx(
                     'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
+                      ? 'bg-chip text-accent-text'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   )}
                   onClick={() => {
@@ -1258,22 +1388,26 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-indigo-500 dark:text-slate-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
                       >
                         <CopyPlus size={13} />
                       </button>
                       {/* Delete button */}
                       <button
                         data-testid={`delete-flow-btn-${flow.id}`}
-                        disabled={isActive}
+                        disabled={isActive || isRowHubManaged}
                         onClick={e => {
                           e.stopPropagation();
-                          if (!isActive) setConfirmDeleteId(flow.id);
+                          if (!isActive && !isRowHubManaged) setConfirmDeleteId(flow.id);
                         }}
-                        title={isActive ? 'Cannot delete active flow' : 'Delete flow'}
+                        title={
+                          isRowHubManaged
+                            ? "Managed by your organization's Hub — delete it there"
+                            : isActive ? 'Cannot delete active flow' : 'Delete flow'
+                        }
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
-                          isActive
+                          isActive || isRowHubManaged
                             ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
                             : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
                         )}
@@ -1299,8 +1433,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
                 isNewFlow
-                  ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
-                  : 'text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'
+                  ? 'bg-chip text-accent-text'
+                  : 'text-accent-text hover:bg-chip'
               )}
             >
               <Plus size={15} />
@@ -1332,17 +1466,22 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               key={isEditingClone ? '__clone__' : isNewFlow ? '__new__' : selectedFlowId}
               flow={selectedFlow}
               isReadOnly={isReadOnly}
+              isHubManaged={isHubManagedSelected}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}
               onClose={onClose}
               onClone={
-                isReadOnly && builtinFlow
-                  ? () => handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow')
-                  : undefined
+                isHubManagedSelected && selectedFlow
+                  ? () => handleClone(selectedFlow, selectedFlow.name)
+                  : isReadOnly && builtinFlow
+                    ? () => handleClone(builtinFlow, builtinFlow.name ?? 'Default Flow')
+                    : undefined
               }
               onUseDefault={
-                isReadOnly
+                // Only the builtin default flow — on a hub flow this would set
+                // the DEFAULT flow, which is not what the button says.
+                isReadOnly && !isHubManagedSelected
                   ? () => useDefaultFlowMutation.mutate()
                   : undefined
               }
@@ -1354,7 +1493,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button
                 onClick={() => { setIsNewFlow(true); setClonedFlow(null); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
               >
                 <Plus size={14} />
                 New Flow
