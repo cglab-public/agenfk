@@ -356,6 +356,59 @@ const trashRecursively = async (id: string): Promise<boolean> => {
   return true;
 };
 
+/**
+ * Validate a proposed parent before it is written. All three write paths share
+ * this: POST /items, PUT /items/:id and POST /items/bulk each used to apply
+ * `parentId` straight to storage with no checks, so a dangling parent, a
+ * cross-project parent, or a cycle were reachable from any REST/MCP caller.
+ *
+ * @param itemId    the item being parented, or null at create time (a brand-new
+ *                  id can have no descendants, so no cycle is possible)
+ * @param projectId the item's project — the parent must be in the same one
+ * @param parentId  the proposed value, straight off the request body
+ * @returns an error message, or null when the assignment is acceptable
+ */
+async function validateParentAssignment(
+  itemId: string | null,
+  projectId: string,
+  parentId: unknown,
+): Promise<string | null> {
+  if (parentId === undefined || parentId === null || parentId === '') return null;
+  if (typeof parentId !== 'string') {
+    // Otherwise this reaches the sqlite bind and throws, surfacing as a 500.
+    return "parentId must be a string, or null to detach the item to top level.";
+  }
+  if (itemId !== null && parentId === itemId) {
+    return "An item cannot be its own parent.";
+  }
+  const parent = await storage.getItem(parentId);
+  if (!parent) {
+    return `Parent item '${parentId}' not found.`;
+  }
+  if (parent.projectId !== projectId) {
+    return "Parent must belong to the same project as the item.";
+  }
+  if (itemId === null) return null;
+
+  // Walk up from the proposed parent: meeting this item means the proposed
+  // parent is one of its descendants. The parent chain has out-degree 1, so the
+  // walk visits every reachable ancestor once before any repeat — the `seen`
+  // break therefore cannot skip an ancestor, it only stops the walk on data that
+  // already contains a cycle.
+  const seen = new Set<string>([parentId]);
+  let cursor: string | undefined = parent.parentId;
+  while (cursor) {
+    if (cursor === itemId) {
+      return "Cannot re-parent an item under one of its own descendants — that would create a cycle.";
+    }
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    const ancestor: any = await storage.getItem(cursor);
+    cursor = ancestor?.parentId;
+  }
+  return null;
+}
+
 const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
@@ -1834,6 +1887,11 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: "ProjectId is required" });
   }
 
+  // A brand-new id can have no descendants, so pass itemId=null: existence and
+  // project-match still apply, the cycle walk is skipped as impossible.
+  const createParentError = await validateParentAssignment(null, projectId, parentId);
+  if (createParentError) return res.status(400).json({ error: createParentError });
+
   const newItem: AgEnFKItem = {
     id: uuidv4(),
     projectId,
@@ -1883,6 +1941,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
   const results = [];
+  // Rejected entries are reported back rather than silently dropped — the route
+  // already `continue`s past unknown ids, which hides mistakes.
+  const skipped: Array<{ id: string; error: string }> = [];
   const parentIdsToSync = new Set<string>();
   const projectIds = new Set<string>();
 
@@ -1906,11 +1967,19 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       continue;
     }
 
+    // Same guard as PUT /items/:id — this route is an update despite the POST
+    // verb, so without it every state that guard forbids stays reachable here.
+    const bulkParentError = await validateParentAssignment(id, currentItem.projectId, parentId);
+    if (bulkParentError) {
+      skipped.push({ id, error: bulkParentError });
+      continue;
+    }
+
     const updates: any = {};
     if (title !== undefined) updates.title = title;
     if (description !== undefined) updates.description = description;
     if (status !== undefined) updates.status = status;
-    if (parentId !== undefined) updates.parentId = parentId;
+    if (parentId !== undefined) updates.parentId = parentId === '' ? null : parentId;
     if (context !== undefined) updates.context = context;
     if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
     if (reviews !== undefined) updates.reviews = reviews;
@@ -1924,6 +1993,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
       if (updated.parentId) {
         parentIdsToSync.add(updated.parentId);
+      }
+      // A re-parent changes the child set of the old parent too, so it needs
+      // re-deriving as well — otherwise it keeps a status computed from a child
+      // it no longer has.
+      if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
+        parentIdsToSync.add(currentItem.parentId);
       }
 
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
@@ -1947,7 +2022,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(parentId);
   }
 
-  res.json({ results });
+  // `skipped` is additive — existing callers read `results` only.
+  res.json(skipped.length > 0 ? { results, skipped } : { results });
 }));
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
@@ -2010,39 +2086,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
-  // Validate a re-parent. This route has always applied `parentId` straight to
-  // storage with no checks, so a dangling parent, a cross-project parent, or a
-  // cycle were all reachable by any REST/MCP caller. The cycle matters most:
-  // syncParentStatus() walks upward via parent.parentId with no visited-set, so
-  // once a cycle exists any status propagation reaching it recurses unboundedly.
-  if (parentId !== undefined && parentId !== null && parentId !== '') {
-    if (parentId === req.params.id) {
-      return res.status(400).json({ error: "An item cannot be its own parent." });
-    }
-    const parent = await storage.getItem(parentId);
-    if (!parent) {
-      return res.status(400).json({ error: `Parent item '${parentId}' not found.` });
-    }
-    if (parent.projectId !== currentItem.projectId) {
-      return res.status(400).json({ error: "Parent must belong to the same project as the item." });
-    }
-    // Walk up from the proposed parent: if we meet this item, the new parent is
-    // one of its descendants. The `seen` set also stops the walk dead on data
-    // that already contains a cycle, rather than looping here.
-    const seen = new Set<string>([parentId]);
-    let cursor: string | undefined = parent.parentId;
-    while (cursor) {
-      if (cursor === req.params.id) {
-        return res.status(400).json({
-          error: "Cannot re-parent an item under one of its own descendants — that would create a cycle.",
-        });
-      }
-      if (seen.has(cursor)) break;
-      seen.add(cursor);
-      const ancestor: any = await storage.getItem(cursor);
-      cursor = ancestor?.parentId;
-    }
-  }
+  const parentError = await validateParentAssignment(req.params.id, currentItem.projectId, parentId);
+  if (parentError) return res.status(400).json({ error: parentError });
 
   const updates: any = {};
   if (title !== undefined) updates.title = title;
@@ -2071,6 +2116,13 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
     if (updated.parentId) {
       await syncParentStatus(updated.parentId);
+    }
+    // A re-parent changes the child set of BOTH parents. Without this the old
+    // parent keeps a status derived from a child it no longer has — e.g. it sat
+    // at IN_PROGRESS only because of the child that just moved away, and should
+    // now roll up to DONE.
+    if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
+      await syncParentStatus(currentItem.parentId);
     }
 
     if (status !== undefined && status !== currentItem.status) {

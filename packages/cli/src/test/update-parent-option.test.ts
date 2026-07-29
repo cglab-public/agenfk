@@ -194,4 +194,47 @@ describe('agenfk update <id> --parent', () => {
     const printed = logSpy.mock.calls.flat().join('\n');
     expect(printed).toMatch(/top level/i);
   });
+
+  // A prefix unique inside the user's project must not be called ambiguous just
+  // because an unrelated project they cannot see shares it.
+  it('scopes short-parent-id matching to the item\'s own project', async () => {
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url.endsWith(`/items/${ITEM}`)) {
+        return Promise.resolve({ data: { id: ITEM, projectId: 'proj-a' } });
+      }
+      return Promise.resolve({
+        data: [
+          { id: PARENT, projectId: 'proj-a' },
+          { id: '22222222-dead-beef-0000-000000000000', projectId: 'proj-b' },
+        ],
+      });
+    });
+    mockedAxios.put.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'BUG', status: 'TODO', parentId: PARENT } });
+
+    await program.parseAsync(['node', 'agenfk', 'update', ITEM, '--parent', '2222']);
+
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      `${API}/items/${ITEM}`,
+      expect.objectContaining({ parentId: PARENT }),
+    );
+  });
+
+  it('still reports ambiguity when the collision is inside the same project', async () => {
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url.endsWith(`/items/${ITEM}`)) {
+        return Promise.resolve({ data: { id: ITEM, projectId: 'proj-a' } });
+      }
+      return Promise.resolve({
+        data: [
+          { id: PARENT, projectId: 'proj-a' },
+          { id: '22222222-dead-beef-0000-000000000000', projectId: 'proj-a' },
+        ],
+      });
+    });
+
+    await program.parseAsync(['node', 'agenfk', 'update', ITEM, '--parent', '2222']);
+
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Ambiguous parent ID'));
+  });
 });

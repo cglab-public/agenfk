@@ -23,16 +23,22 @@ const DOCS = [
 
 describe('re-parenting is documented in the rule bundles', () => {
   for (const rel of DOCS) {
-    it(`${rel} documents --parent on agenfk update`, () => {
+    // Anchor on the `agenfk update` invocation, not a bare /--parent/: `agenfk
+    // create` already documents -p/--parent in these files, so an unanchored
+    // grep would stay green if the flag were only ever shown on create.
+    const updateParentLine = (src: string) =>
+      src.split('\n').find(l => /agenfk update <id>/.test(l) && /--parent/.test(l));
+
+    it(`${rel} documents --parent on agenfk update specifically`, () => {
       const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-      expect(src).toMatch(/--parent/);
+      expect(updateParentLine(src)).toBeDefined();
     });
 
     it(`${rel} explains how to detach an item to top level`, () => {
       const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
       // The detach form is the non-obvious half — a bare --parent with no value
       // is not how you unparent.
-      expect(src).toMatch(/--parent\s+none/);
+      expect(updateParentLine(src)).toMatch(/--parent\s+none/);
     });
   }
 });

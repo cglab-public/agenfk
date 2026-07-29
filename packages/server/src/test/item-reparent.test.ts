@@ -9,10 +9,12 @@
  *     part of;
  *   - a cycle (self-parenting, or parenting to one's own descendant).
  *
- * The cycle case is not cosmetic: syncParentStatus() walks upward via
- * parent.parentId with no visited-set, so once a cycle exists any status
- * propagation that reaches it can recurse unboundedly. These tests pin the
- * guards and the happy path the CLI needs.
+ * The cycle case is about tree integrity rather than a crash: syncParentStatus()
+ * recurses upward with no visited-set, but the recursion is gated on the derived
+ * status actually changing and that derivation is monotonic toward DONE, so a
+ * cycle converges after a hop or two instead of spinning. A cycle still corrupts
+ * every consumer that walks the tree, which is reason enough to refuse it.
+ * These tests pin the guards and the happy path the CLI needs.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -168,5 +170,173 @@ describe('item re-parenting', () => {
     const r = await request(app).put(`/items/${task.id}`).send({ parentId: storyB.id });
     expect(r.status).toBe(200);
     expect(r.body.parentId).toBe(storyB.id);
+  });
+
+  // ── Status roll-up on both sides ──────────────────────────────────────────
+  // A re-parent changes the child set of the OLD parent too. Only syncing the
+  // new one leaves the old parent asserting a status derived from a child it no
+  // longer has.
+  it("re-syncs the old parent's status after a child moves away", async () => {
+    const oldParent = await makeItem('STORY', 'Old parent');
+    const newParent = await makeItem('STORY', 'New parent');
+    const ahead = await makeItem('TASK', 'Ahead', { parentId: oldParent.id });
+    const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
+
+    // Children at REVIEW + IN_PROGRESS roll the parent up to IN_PROGRESS.
+    await request(app).put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
+    await request(app).put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
+    await request(app).put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+
+    const before = await request(app).get(`/items/${oldParent.id}`);
+    expect(before.body.status).toBe('IN_PROGRESS');
+
+    // Move the laggard out. The old parent's only remaining child is at REVIEW,
+    // so it should roll up to REVIEW — it will only do so if the OLD parent is
+    // re-synced, which is the point.
+    const moved = await request(app).put(`/items/${laggard.id}`).send({ parentId: newParent.id });
+    expect(moved.status).toBe(200);
+
+    const after = await request(app).get(`/items/${oldParent.id}`);
+    expect(after.body.status).toBe('REVIEW');
+  });
+
+  it("re-syncs the old parent when a child is detached to top level", async () => {
+    const oldParent = await makeItem('STORY', 'Old parent');
+    const child = await makeItem('TASK', 'Child', { parentId: oldParent.id });
+
+    await request(app).put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    const parentNow = await request(app).get(`/items/${oldParent.id}`);
+    expect(parentNow.body.status).toBe('IN_PROGRESS');
+
+    const r = await request(app).put(`/items/${child.id}`).send({ parentId: null });
+    expect(r.status).toBe(200);
+
+    // Old parent has no children left; syncParentStatus leaves a childless
+    // parent alone, so this pins the CURRENT contract rather than inventing one.
+    const after = await request(app).get(`/items/${oldParent.id}`);
+    expect(after.body.status).toBe('IN_PROGRESS');
+  });
+
+  // ── Detach really clears storage, not just the response body ──────────────
+  it('persists the detach — re-reading the item shows no parent', async () => {
+    const story = await makeItem('STORY', 'Story');
+    const task = await makeItem('TASK', 'Task', { parentId: story.id });
+
+    await request(app).put(`/items/${task.id}`).send({ parentId: null });
+
+    const reread = await request(app).get(`/items/${task.id}`);
+    expect(reread.body.parentId ?? null).toBeNull();
+
+    const children = await request(app).get(`/items?parentId=${story.id}`);
+    expect(children.body.map((c: any) => c.id)).not.toContain(task.id);
+  });
+
+  it('persists an attach — re-reading shows the new parent', async () => {
+    const story = await makeItem('STORY', 'Story');
+    const task = await makeItem('TASK', 'Task');
+
+    await request(app).put(`/items/${task.id}`).send({ parentId: story.id });
+
+    const reread = await request(app).get(`/items/${task.id}`);
+    expect(reread.body.parentId).toBe(story.id);
+  });
+
+  // ── The sibling write paths must not be a back door ───────────────────────
+  // POST /items/bulk is an UPDATE route despite the verb, and POST /items sets
+  // parentId at create time. Guarding only PUT would leave every rejected state
+  // reachable one route over.
+  describe('POST /items/bulk enforces the same parent rules', () => {
+    it('refuses a cycle and reports it instead of applying it', async () => {
+      const epic = await makeItem('EPIC', 'Epic');
+      const story = await makeItem('STORY', 'Story', { parentId: epic.id });
+
+      const r = await request(app).post('/items/bulk').send({
+        items: [{ id: epic.id, updates: { parentId: story.id } }],
+      });
+      expect(r.status).toBe(200);
+      expect(r.body.skipped?.[0]?.error).toMatch(/descendant|cycle/i);
+
+      const after = await request(app).get(`/items/${epic.id}`);
+      expect(after.body.parentId ?? null).toBeNull();
+    });
+
+    it('refuses a nonexistent parent', async () => {
+      const task = await makeItem('TASK', 'Task');
+
+      const r = await request(app).post('/items/bulk').send({
+        items: [{ id: task.id, updates: { parentId: 'nope' } }],
+      });
+      expect(r.body.skipped?.[0]?.error).toMatch(/not found/i);
+
+      const after = await request(app).get(`/items/${task.id}`);
+      expect(after.body.parentId ?? null).toBeNull();
+    });
+
+    it('refuses a cross-project parent', async () => {
+      const foreign = await makeItem('STORY', 'Foreign', { projectId: otherProjectId });
+      const task = await makeItem('TASK', 'Task');
+
+      const r = await request(app).post('/items/bulk').send({
+        items: [{ id: task.id, updates: { parentId: foreign.id } }],
+      });
+      expect(r.body.skipped?.[0]?.error).toMatch(/project/i);
+    });
+
+    it('still applies a legitimate bulk re-parent, and re-syncs the old parent', async () => {
+      const oldParent = await makeItem('STORY', 'Old');
+      const newParent = await makeItem('STORY', 'New');
+      const ahead = await makeItem('TASK', 'Ahead', { parentId: oldParent.id });
+      const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
+
+      await request(app).put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
+      await request(app).put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
+      await request(app).put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+
+      const r = await request(app).post('/items/bulk').send({
+        items: [{ id: laggard.id, updates: { parentId: newParent.id } }],
+      });
+      expect(r.status).toBe(200);
+      expect(r.body.results[0].parentId).toBe(newParent.id);
+
+      const after = await request(app).get(`/items/${oldParent.id}`);
+      expect(after.body.status).toBe('REVIEW');
+    });
+  });
+
+  describe('POST /items enforces parent existence and project', () => {
+    it('refuses a nonexistent parent at create time', async () => {
+      const r = await request(app).post('/items').send({
+        type: 'TASK', title: 'Orphan', projectId, parentId: 'no-such-parent',
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/not found/i);
+    });
+
+    it('refuses a cross-project parent at create time', async () => {
+      const foreign = await makeItem('STORY', 'Foreign', { projectId: otherProjectId });
+
+      const r = await request(app).post('/items').send({
+        type: 'TASK', title: 'Misfiled', projectId, parentId: foreign.id,
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/project/i);
+    });
+
+    it('still creates a child under a valid parent', async () => {
+      const story = await makeItem('STORY', 'Story');
+      const r = await request(app).post('/items').send({
+        type: 'TASK', title: 'Child', projectId, parentId: story.id,
+      });
+      expect(r.status).toBe(201);
+      expect(r.body.parentId).toBe(story.id);
+    });
+  });
+
+  it('rejects a non-string parentId with 400 rather than a 500 from the driver', async () => {
+    const task = await makeItem('TASK', 'Task');
+
+    const r = await request(app).put(`/items/${task.id}`).send({ parentId: { nested: true } });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/string/i);
   });
 });
