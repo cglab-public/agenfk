@@ -15,6 +15,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ThemeProvider } from '../ThemeContext';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { Layout } from '../components/Layout';
+import { mockPrefersColorScheme, resetThemeState } from './themeTestUtils';
 
 vi.mock('../api', () => ({
   api: {
@@ -27,22 +28,7 @@ vi.mock('../api', () => ({
   },
 }));
 
-function mockMatchMedia(prefersDark = false) {
-  Object.defineProperty(window, 'matchMedia', {
-    writable: true,
-    configurable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
-      matches: prefersDark && query === '(prefers-color-scheme: dark)',
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })),
-  });
-}
+const mockMatchMedia = mockPrefersColorScheme;
 
 const renderToggle = () =>
   render(
@@ -68,9 +54,7 @@ const renderLayout = () => {
 
 describe('ThemeToggle', () => {
   beforeEach(() => {
-    localStorage.clear();
-    document.documentElement.className = '';
-    document.documentElement.removeAttribute('data-theme');
+    resetThemeState();
     mockMatchMedia(false);
   });
 
@@ -135,9 +119,7 @@ describe('ThemeToggle', () => {
 
 describe('Layout integration', () => {
   beforeEach(() => {
-    localStorage.clear();
-    document.documentElement.className = '';
-    document.documentElement.removeAttribute('data-theme');
+    resetThemeState();
     mockMatchMedia(false);
   });
 

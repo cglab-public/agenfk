@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
 import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { Logo } from './Logo';
-import { ThemeToggle } from './ThemeToggle';
+import { ThemeToggle, sidebarButtonClass } from './ThemeToggle';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -57,7 +57,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
             <button
               onClick={() => logout.mutate()}
-              className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary hover:bg-danger-muted/10 hover:border-danger-muted/40 hover:text-danger-muted transition-colors"
+              className={`${sidebarButtonClass} hover:bg-danger-muted/10 hover:border-danger-muted/40 hover:text-danger-muted`}
             >
               <LogOut className="w-3 h-3" /> Sign out
             </button>
