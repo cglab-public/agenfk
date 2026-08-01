@@ -14,6 +14,10 @@
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
 
+/* Enable dark: utilities to respond to explicit .dark class and [data-theme="dark"]
+ * attribute (set by ThemeContext) instead of only the OS prefers-color-scheme. */
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
 :root { color-scheme: light dark; }
 
 html, body, #root { height: 100%; }
