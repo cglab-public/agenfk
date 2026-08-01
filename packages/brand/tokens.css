@@ -59,15 +59,12 @@
 }
 
 /* Dark theme values.
- * Two mechanisms are covered because the two apps pick dark mode differently:
- *  - packages/ui explicitly toggles a `.dark` class + `[data-theme="dark"]`
- *    attribute on <html> (see ThemeContext.tsx) and defines its own
- *    `@variant dark` matching those selectors.
- *  - packages/hub-ui has no manual theme toggle yet and relies on the
- *    default Tailwind v4 `dark:` variant, which follows
- *    `prefers-color-scheme`.
- * Both blocks set the same values, so whichever mechanism a given app uses,
- * the tokens stay in sync. Neutral dark surfaces — NOT navy-tinted. */
+ * Both packages/ui and packages/hub-ui now explicitly toggle a `.dark` class
+ * + `[data-theme="dark"]` attribute on <html> via their own ThemeContext and
+ * declare a matching `@variant dark`. The `@media (prefers-color-scheme: dark)`
+ * block below remains as the fallback for the first paint before a user has
+ * ever chosen a theme. Both blocks set the same values so the tokens stay in
+ * sync. Neutral dark surfaces — NOT navy-tinted. */
 @media (prefers-color-scheme: dark) {
   :root {
     --canvas: #0d0f13;
