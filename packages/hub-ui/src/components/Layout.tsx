@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
 import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { Logo } from './Logo';
+import { ThemeToggle } from './ThemeToggle';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -48,7 +49,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {me.data?.role === 'admin' && (
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" />
         )}
-        <div className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
+        <div className="mt-auto flex flex-col gap-2">
+          <ThemeToggle />
+          <div className="px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
           <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
           <div className="mt-0.5 text-[12px] font-mono text-ink truncate">{me.data?.userId ?? '—'}</div>
           <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-text">{me.data?.role}</div>
@@ -58,6 +61,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <LogOut className="w-3 h-3" /> Sign out
           </button>
+          </div>
         </div>
       </aside>
       <main className="flex-1 min-w-0 p-6 lg:p-8">
