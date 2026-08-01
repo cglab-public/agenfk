@@ -20,6 +20,20 @@
 
 :root { color-scheme: light dark; }
 
+/* Pin color-scheme when the user has made an explicit choice.
+ * Without these rules, native UI (form controls, scrollbars, <select>
+ * dropdowns) follows the *OS* preference even after the user picks a
+ * theme, producing a half-broken look (e.g. light page + dark widgets).
+ * Both compound selectors match :root's specificity and are declared
+ * after the default so source order decides and the explicit choice wins.
+ * Matches the selector style in packages/brand/tokens.css. */
+.dark, .dark *, [data-theme="dark"], [data-theme="dark"] * {
+  color-scheme: dark;
+}
+.light, .light *, [data-theme="light"], [data-theme="light"] * {
+  color-scheme: light;
+}
+
 html, body, #root { height: 100%; }
 
 body {

@@ -234,4 +234,50 @@ describe('ThemeContext', () => {
     );
     consoleError.mockRestore();
   });
+
+  // ── defect #1 — guarded localStorage / matchMedia ─────────────
+
+  it('falls back to OS preference when localStorage.getItem throws', () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Access denied', 'SecurityError');
+    });
+    // Pretend the OS prefers dark so we can confirm the fallback path.
+    (window.matchMedia as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      query => ({
+        ...defaultMatchMedia(query),
+        matches: query === '(prefers-color-scheme: dark)',
+      }),
+    );
+    render(
+      <ThemeProvider>
+        <ThemeTester />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('current-theme').textContent).toBe('dark');
+    getItemSpy.mockRestore();
+  });
+
+  it('toggleTheme works when localStorage.setItem throws', () => {
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota exceeded', 'QuotaExceededError');
+    });
+    render(
+      <ThemeProvider>
+        <ThemeTester />
+      </ThemeProvider>,
+    );
+    // Start in light (no stored value, matchMedia defaults to false).
+    expect(screen.getByTestId('current-theme').textContent).toBe('light');
+
+    // Toggle to dark — must succeed even though setItem throws.
+    fireEvent.click(screen.getByTestId('toggle-btn'));
+    expect(screen.getByTestId('current-theme').textContent).toBe('dark');
+
+    // DOM side-effects still applied.
+    const root = document.documentElement;
+    expect(root.classList.contains('dark')).toBe(true);
+    expect(root.getAttribute('data-theme')).toBe('dark');
+
+    setItemSpy.mockRestore();
+  });
 });
