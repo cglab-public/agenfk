@@ -61,3 +61,17 @@ describe('hub-ui dark variant wiring', () => {
     expect(readCss()).not.toMatch(/color-scheme:\s*light\s+dark/);
   });
 });
+
+describe('shared FlowEditorModal theme prop', () => {
+  it('feeds the live theme into FlowEditorModal instead of hardcoding light', () => {
+    // The shared @agenfk/flow-editor styles itself AND initialises mermaid from
+    // this prop (FlowEditorModal.tsx: theme === 'dark' ? 'dark' : 'default').
+    // Hardcoding "light" leaves the flow editor and its diagrams in light mode
+    // even when the rest of the hub is dark. packages/ui passes useTheme()
+    // through; hub-ui must too.
+    const src = fs.readFileSync(path.join(HUB_UI_SRC, 'pages', 'AdminFlows.tsx'), 'utf8');
+    expect(src).not.toMatch(/theme=["']light["']/);
+    expect(src).toMatch(/useTheme/);
+    expect(src).toMatch(/theme=\{/);
+  });
+});
