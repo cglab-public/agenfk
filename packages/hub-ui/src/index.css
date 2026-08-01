@@ -13,6 +13,7 @@
  * (w-[calc(100vw-2rem)], h-[90vh], w-64, flex-1, etc.) that need to land in
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
 
 :root { color-scheme: light dark; }
 
