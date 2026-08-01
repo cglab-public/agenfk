@@ -14,7 +14,14 @@
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
 
-:root { color-scheme: light dark; }
+/* Dark mode follows the hub's manual toggle (.dark class / data-theme
+ * attribute set by ThemeContext on <html>) rather than the OS preference.
+ * This mirrors packages/ui so dark: utilities and the shared tokens stay in
+ * sync across both apps. */
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
+:root { color-scheme: light; }
+.dark, .dark *, [data-theme="dark"], [data-theme="dark"] * { color-scheme: dark; }
 
 html, body, #root { height: 100%; }
 
