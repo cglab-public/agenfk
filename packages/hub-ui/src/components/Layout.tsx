@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -58,6 +59,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           >
             <LogOut className="w-3 h-3" /> Sign out
           </button>
+          <ThemeToggle />
         </div>
       </aside>
       <main className="flex-1 min-w-0 p-6 lg:p-8">
@@ -101,5 +103,23 @@ function PendingEnvOrgIdBanner() {
         I've updated my deployment
       </button>
     </div>
+  );
+}
+
+function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme();
+  return (
+    <button
+      onClick={toggleTheme}
+      aria-label="Toggle theme"
+      className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-semibold border border-border-soft text-ink-secondary hover:bg-chip transition-colors"
+    >
+      {theme === 'dark' ? (
+        <Sun className="w-3 h-3" />
+      ) : (
+        <Moon className="w-3 h-3" />
+      )}
+      {theme === 'dark' ? 'Light' : 'Dark'}
+    </button>
   );
 }
