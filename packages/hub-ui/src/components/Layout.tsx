@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -27,6 +28,7 @@ interface HealthResponse { ok: boolean; version: string }
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const nav = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const me = useQuery<MeResponse>({ queryKey: ['me'], queryFn: async () => (await api.get('/auth/me')).data });
   const health = useQuery<HealthResponse>({
     queryKey: ['hub-healthz'],
@@ -49,7 +51,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" />
         )}
         <div className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
-          <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              className="p-1 rounded-md text-ink-tertiary hover:text-accent-text hover:bg-chip transition-colors"
+            >
+              {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            </button>
+          </div>
           <div className="mt-0.5 text-[12px] font-mono text-ink truncate">{me.data?.userId ?? '—'}</div>
           <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-text">{me.data?.role}</div>
           <button
