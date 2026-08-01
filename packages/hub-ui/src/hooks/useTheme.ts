@@ -1,21 +1,5 @@
 import { useEffect, useState } from 'react';
-
-interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-/**
- * Safely access window.localStorage, returning null in SSR or when unavailable.
- */
-function getLocalStorage(): StorageLike | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
+import { getLocalStorage, StorageLike } from './storage';
 
 /**
  * Resolve the initial theme from persisted storage, falling back to the
@@ -38,6 +22,18 @@ export function resolveInitialTheme(
 }
 
 /**
+ * Apply the theme class and data-theme attribute to the <html> element.
+ * Guarded for SSR (no-op when `document` is undefined).
+ */
+export function applyThemeToDocument(theme: 'light' | 'dark'): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.classList.remove('light', 'dark');
+  root.classList.add(theme);
+  root.setAttribute('data-theme', theme);
+}
+
+/**
  * Hook that tracks and persists the UI theme ('light' | 'dark').
  *
  * Applies the theme class and data-theme attribute to <html> on every change
@@ -57,10 +53,7 @@ export function useTheme(): { theme: 'light' | 'dark'; toggleTheme: () => void }
   });
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-    root.setAttribute('data-theme', theme);
+    applyThemeToDocument(theme);
 
     const storage = getLocalStorage();
     if (storage) {

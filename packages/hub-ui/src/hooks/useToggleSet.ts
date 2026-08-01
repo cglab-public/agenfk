@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-
-interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
+import { getLocalStorage, StorageLike } from './storage';
 
 /**
  * Read a persisted Set<string> from a Storage-like object.
@@ -43,15 +39,6 @@ export function writePersistedSet(
     storage.setItem(key, JSON.stringify([...value]));
   } catch {
     // Quota exceeded / private mode — drop silently; UX is fine without persistence.
-  }
-}
-
-function getLocalStorage(): StorageLike | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.localStorage;
-  } catch {
-    return null;
   }
 }
 
