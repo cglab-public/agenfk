@@ -8,10 +8,11 @@
  *   • #1 PR-open reminder  — on tool_result(bash), classify `gh pr create` /
  *        `git push` via the shared agenfk-pr-hook.mjs and inject a steer message
  *        telling the agent to call register_pr/update_pr_sizing.
- *   • #2 Deterministic model — read the live model from ctx.getModel() (with
- *        model_select as a fallback) so the reminder carries the REAL model id +
- *        harness=pi instead of the agent guessing it (the recurring "reported the
- *        wrong model id" bug).
+ *   • #2 Deterministic model — resolve the model THIS session is running
+ *        (ctx.getModel() → model_select → pi's own `--model` argv → the session
+ *        JSONL's model_change record → settings.json) so the reminder carries the
+ *        REAL model id + harness=pi instead of the agent guessing it (the recurring
+ *        "reported the wrong model id" bug).
  *   • #3 Enforcement parity — on tool_call(edit|write) delegate to agenfk-gatekeeper.mjs
  *        (block when no task is active) and on tool_call(bash) delegate to
  *        agenfk-mcp-enforcer.mjs (block direct-DB / curl-localhost bypass routes).
@@ -63,11 +64,15 @@ export interface PiExtensionDeps {
   gatekeeperVerdict: (filePath: string | undefined) => BlockVerdict | null;
   enforcerVerdict: (command: string | undefined) => BlockVerdict | null;
   prReminder: (command: string | undefined) => ReminderResult | null;
-  // The model pi is configured to run, read from ~/.pi/agent/settings.json. This
-  // is the ONLY reliable source in live pi: ctx.getModel() is often undefined and
-  // model_select does not fire for the config-default model, so without this the
-  // model never reaches the PR reminder / command rewrite.
+  // The model pi is CONFIGURED to run, read from ~/.pi/agent/settings.json. Last
+  // resort only: it describes the config, not this session, so it is wrong for any
+  // session launched with an explicit `--model`.
   readDefaultModel: () => string | null;
+  // The model THIS session is actually running, from pi's own argv (`--model`).
+  readArgvModel?: () => string | null;
+  // The model THIS session is actually running, from the session JSONL's
+  // `model_change` record — covers sessions launched without an explicit --model.
+  readSessionModel?: () => string | null;
 }
 
 const HOOK_DIR = path.join(os.homedir(), '.agenfk', 'bin');
@@ -78,6 +83,9 @@ const HOOK_DIR = path.join(os.homedir(), '.agenfk', 'bin');
  * Read pi's configured model (`defaultModel`) from ~/.pi/agent/settings.json.
  * Returns the bare model id (e.g. "@cf/zai-org/glm-5.2") or null. Never throws —
  * a missing/unreadable/garbage file yields null. The reader is injectable for tests.
+ *
+ * This is the CONFIG default, not the running session: it is wrong for any session
+ * launched with an explicit `--model`, so it sits last in resolveModelId's chain.
  */
 export function readPiDefaultModel(
   read: () => string = () => fs.readFileSync(path.join(os.homedir(), '.pi', 'agent', 'settings.json'), 'utf8'),
@@ -92,23 +100,124 @@ export function readPiDefaultModel(
 }
 
 /**
+ * Read the model this session was launched with from pi's own argv. The extension
+ * is loaded in-process (jiti), so process.argv IS pi's command line — `--model X`
+ * / `--model=X` is the most direct statement of what the session is running.
+ * Returns the last occurrence (shell last-wins) or null. Never throws.
+ */
+export function readPiArgvModel(argv: string[] = process.argv): string | null {
+  let found: string | null = null;
+  try {
+    for (let i = 0; i < argv.length; i += 1) {
+      const a = argv[i];
+      if (a === '--model') {
+        const v = argv[i + 1];
+        // A dangling --model, or one followed by another flag, carries no value.
+        if (v && !v.startsWith('-')) found = v;
+      } else if (a.startsWith('--model=')) {
+        const v = a.slice('--model='.length);
+        if (v) found = v;
+      }
+    }
+  } catch { /* never break the host */ }
+  return found;
+}
+
+/**
+ * pi's per-cwd sessions subdirectory name: the working directory with `/`
+ * replaced by `-`, wrapped in a leading and trailing `-` — e.g.
+ * `/Users/d/agenfk/agenfk` -> `--Users-d-agenfk-agenfk--`.
+ */
+export function piSessionDirName(cwd: string): string {
+  return `-${cwd.replace(/\//g, '-')}--`;
+}
+
+/**
+ * Read the model this session is running from pi's session JSONL. pi writes a
+ * `{"type":"model_change",…,"modelId":…}` record at session start (and on every
+ * switch), which reflects the EFFECTIVE model — so this also covers sessions
+ * launched without an explicit `--model`.
+ *
+ * Picks the most recently modified `*.jsonl` under
+ * `<home>/.pi/agent/sessions/<cwd-slug>/`, confirms its `session` record names the
+ * same cwd, and returns the LAST `model_change.modelId`. Never throws — any
+ * missing/unreadable/garbage input yields null.
+ */
+export function readPiSessionModel(
+  opts: { cwd?: string; home?: string } = {},
+): string | null {
+  try {
+    const cwd = opts.cwd ?? process.cwd();
+    const home = opts.home ?? os.homedir();
+    const dir = path.join(home, '.pi', 'agent', 'sessions', piSessionDirName(cwd));
+
+    const newest = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => {
+        const p = path.join(dir, f);
+        try { return { path: p, mtimeMs: fs.statSync(p).mtimeMs }; } catch { return null; }
+      })
+      .filter((x): x is { path: string; mtimeMs: number } => x !== null)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+    if (!newest) return null;
+
+    let model: string | null = null;
+    for (const line of fs.readFileSync(newest.path, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      let rec: any;
+      try { rec = JSON.parse(line); } catch { continue; } // partial trailing line
+      // Guard against a slug collision: the file must belong to this cwd.
+      if (rec?.type === 'session' && rec.cwd && String(rec.cwd) !== cwd) return null;
+      if (rec?.type === 'model_change' && rec.modelId) model = String(rec.modelId);
+    }
+    return model;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the BARE model id (not provider/id) from the most reliable source:
- *   1. ctx.getModel().id   — the live model, when pi exposes it
- *   2. lastSelected        — cached from a model_select event
- *   3. readDefault()       — ~/.pi/agent/settings.json defaultModel (the live-pi
- *                            fallback, since 1 & 2 are usually unavailable there)
+ *   1. ctx.getModel().id     — the live model, when pi exposes it
+ *   2. lastSelected          — cached from a model_select event, which pi emits on
+ *                              every runtime switch (`/model` → setModel, and the
+ *                              model-cycle shortcut). An interactive switch must
+ *                              outrank whatever the session launched with.
+ *   3. sources.argvModel()   — this session's own `--model` flag
+ *   4. sources.sessionModel()— this session's JSONL `model_change` record
+ *   5. readDefault()         — ~/.pi/agent/settings.json defaultModel
+ *
+ * 3 and 4 describe THIS session; 5 only describes the config, and is wrong
+ * whenever the session was launched with a different `--model` (the false
+ * pr.opened attribution bug). It stays last so an exotic setup still reports
+ * something, but it can no longer outrank the session's real model.
+ *
  * Bare id keeps reporting consistent with settings.json and the claude-code
  * convention (e.g. "claude-opus-4-8"), avoiding a redundant provider prefix.
+ *
+ * `readDefault` stays a positional parameter (rather than moving into `sources`)
+ * so existing callers keep working; the chain order below, not the parameter
+ * order, is what defines precedence.
  */
 export function resolveModelId(
   ctx: PiContext | undefined,
   lastSelected: string | null,
   readDefault: () => string | null = readPiDefaultModel,
+  sources: { argvModel?: () => string | null; sessionModel?: () => string | null } = {},
 ): string | null {
   const live = ctx && ctx.getModel ? ctx.getModel() : undefined;
-  if (live && live.id) return String(live.id);
-  if (lastSelected) return lastSelected;
-  return readDefault();
+  const chain: Array<() => string | null | undefined> = [
+    () => live && live.id,
+    () => lastSelected,
+    () => sources.argvModel?.(),
+    () => sources.sessionModel?.(),
+    readDefault,
+  ];
+  for (const source of chain) {
+    const found = source();
+    if (found) return String(found);
+  }
+  return null;
 }
 
 /**
@@ -182,6 +291,20 @@ export function injectDeterministicModel(command: string, model: string | null):
   return tail ? `${injected} ${tail.replace(/^\s+/, '')}` : injected;
 }
 
+/**
+ * Memoize a lookup, but only once it actually resolves: a null result is retried
+ * on the next call. Used for sources that are expensive to read yet may not be
+ * available on the first call (the session JSONL does not exist the instant pi
+ * starts), so an early miss must not poison the answer for the whole session.
+ */
+export function memoizeResolved(read: () => string | null): () => string | null {
+  let cached: string | null = null;
+  return () => {
+    if (cached === null) cached = read();
+    return cached;
+  };
+}
+
 // ── Delegation to the shared decision scripts ────────────────────────────────
 
 function runHookScript(script: string, argv: string[], stdin: unknown): any | null {
@@ -211,6 +334,19 @@ export function defaultDeps(): PiExtensionDeps {
     if (cachedDefault === undefined) cachedDefault = readPiDefaultModel();
     return cachedDefault;
   };
+  // argv cannot change for the life of the process, so read it once.
+  let cachedArgv: string | null | undefined;
+  const readArgvModel = () => {
+    if (cachedArgv === undefined) cachedArgv = readPiArgvModel();
+    return cachedArgv;
+  };
+  // Cached once resolved. The session JSONL grows to megabytes (it holds every
+  // message), and this runs on every bash tool_call — re-reading it each time
+  // would be a real cost. Caching is safe because it only ever needs to supply
+  // the LAUNCH model: a runtime switch reaches us as model_select, which outranks
+  // this source anyway. A null result is NOT cached, so an early call made before
+  // pi has written the file doesn't poison the answer for the rest of the session.
+  const readSessionModel = memoizeResolved(() => readPiSessionModel());
   return {
     gatekeeperVerdict: (filePath) =>
       filePath
@@ -228,6 +364,8 @@ export function defaultDeps(): PiExtensionDeps {
         ? runHookScript('agenfk-pr-hook.mjs', ['--client', 'pi'], { args: { command } })
         : null,
     readDefaultModel,
+    readArgvModel,
+    readSessionModel,
   };
 }
 
@@ -235,10 +373,14 @@ export function defaultDeps(): PiExtensionDeps {
 
 export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps()): void {
   // Cache the most recent model_select id (bare). resolveModelId prefers the live
-  // ctx.getModel(), then this cache, then ~/.pi/agent/settings.json (deps.readDefaultModel).
+  // ctx.getModel(), then this cache, then this session's own model (argv --model,
+  // else the session JSONL), and only then ~/.pi/agent/settings.json.
   let lastSelectedModel: string | null = null;
   const modelFor = (ctx: PiContext | undefined) =>
-    resolveModelId(ctx, lastSelectedModel, deps.readDefaultModel);
+    resolveModelId(ctx, lastSelectedModel, deps.readDefaultModel, {
+      argvModel: deps.readArgvModel,
+      sessionModel: deps.readSessionModel,
+    });
 
   pi.on('model_select', (event) => {
     try { const id = event?.model?.id; if (id) lastSelectedModel = String(id); } catch { /* ignore */ }

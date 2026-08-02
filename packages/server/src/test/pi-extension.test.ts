@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 // Importing the native pi extension. Pure helpers + the activate() default export
 // are exercised directly with a fake pi/ctx so no pi runtime is required.
 // @ts-ignore — .ts extension is loaded by pi via jiti; here we import it directly.
@@ -7,6 +10,10 @@ import activate, {
   injectDeterministicModel,
   resolveModelId,
   readPiDefaultModel,
+  readPiArgvModel,
+  readPiSessionModel,
+  piSessionDirName,
+  memoizeResolved,
 } from '../../../../bin/agenfk-pi-extension.ts';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -133,6 +140,184 @@ describe('readPiDefaultModel (parse ~/.pi/agent/settings.json)', () => {
     expect(readPiDefaultModel(() => JSON.stringify({ other: 1 }))).toBeNull();
     expect(readPiDefaultModel(() => 'not json')).toBeNull();
     expect(readPiDefaultModel(() => { throw new Error('ENOENT'); })).toBeNull();
+  });
+});
+
+describe('readPiArgvModel (the session\'s own `--model` flag)', () => {
+  it('reads the space-separated `--model <id>` form', () => {
+    expect(readPiArgvModel(['node', 'pi', '-p', '-a', '--provider', 'amazon-bedrock',
+      '--model', 'us.anthropic.claude-opus-5', '@prompt.md'])).toBe('us.anthropic.claude-opus-5');
+  });
+
+  it('reads the `--model=<id>` form', () => {
+    expect(readPiArgvModel(['node', 'pi', '--model=us.anthropic.claude-sonnet-5'])).toBe('us.anthropic.claude-sonnet-5');
+  });
+
+  it('takes the last occurrence (shell last-wins)', () => {
+    expect(readPiArgvModel(['pi', '--model', 'a', '--model', 'b'])).toBe('b');
+  });
+
+  it('returns null when --model is absent', () => {
+    expect(readPiArgvModel(['node', 'pi', '-p', '-a', '@prompt.md'])).toBeNull();
+  });
+
+  it('returns null for a dangling --model with no value, or a value that is another flag', () => {
+    expect(readPiArgvModel(['pi', '--model'])).toBeNull();
+    expect(readPiArgvModel(['pi', '--model', '--provider'])).toBeNull();
+  });
+
+  it('ignores a --model that belongs to some other embedded command string', () => {
+    // Only a standalone argv token counts; text mentioning --model must not match.
+    expect(readPiArgvModel(['pi', '@prompt', 'pass --model foo when registering'])).toBeNull();
+  });
+});
+
+describe('piSessionDirName (pi\'s cwd -> sessions subdirectory slug)', () => {
+  it('slugs a plain repo path the way pi does', () => {
+    expect(piSessionDirName('/Users/daniel/agenfk/agenfk')).toBe('--Users-daniel-agenfk-agenfk--');
+  });
+
+  it('slugs a nested worktree path the way pi does', () => {
+    expect(piSessionDirName('/private/tmp/claude-502/-Users-daniel-agenfk-agenfk-f9a195c5/scratchpad/bench-wt-qwen'))
+      .toBe('--private-tmp-claude-502--Users-daniel-agenfk-agenfk-f9a195c5-scratchpad-bench-wt-qwen--');
+  });
+});
+
+describe('readPiSessionModel (the live session JSONL model_change record)', () => {
+  /** Build a fake ~/.pi/agent/sessions/<slug>/ tree and return its home dir. */
+  function makeHome(cwd: string, files: Array<{ name: string; lines: string[]; mtime?: number }>): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-sess-'));
+    const dir = path.join(home, '.pi', 'agent', 'sessions', piSessionDirName(cwd));
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of files) {
+      const p = path.join(dir, f.name);
+      fs.writeFileSync(p, f.lines.join('\n'));
+      if (f.mtime) fs.utimesSync(p, new Date(f.mtime), new Date(f.mtime));
+    }
+    return home;
+  }
+
+  const sessionLine = (cwd: string, id: string) =>
+    JSON.stringify({ type: 'session', version: 3, id, timestamp: '2026-08-01T23:05:31.107Z', cwd });
+  const modelLine = (modelId: string, provider = 'amazon-bedrock') =>
+    JSON.stringify({ type: 'model_change', id: 'e05df1bc', parentId: null, provider, modelId });
+
+  it('returns the model_change modelId written at session start', () => {
+    const cwd = '/repo/proj';
+    const home = makeHome(cwd, [{
+      name: '2026-08-01T23-05-31-107Z_opus5-run.jsonl',
+      lines: [sessionLine(cwd, 'opus5-run'), modelLine('us.anthropic.claude-opus-5'), JSON.stringify({ type: 'message' })],
+    }]);
+    expect(readPiSessionModel({ cwd, home })).toBe('us.anthropic.claude-opus-5');
+  });
+
+  it('uses the LAST model_change so a mid-session switch wins', () => {
+    const cwd = '/repo/proj';
+    const home = makeHome(cwd, [{
+      name: 'a_run.jsonl',
+      lines: [sessionLine(cwd, 'run'), modelLine('model-one'), modelLine('model-two')],
+    }]);
+    expect(readPiSessionModel({ cwd, home })).toBe('model-two');
+  });
+
+  it('prefers the most recently modified session file when several share a cwd', () => {
+    const cwd = '/repo/proj';
+    const home = makeHome(cwd, [
+      { name: 'old_run.jsonl', lines: [sessionLine(cwd, 'old'), modelLine('stale-model')], mtime: Date.parse('2026-07-01T00:00:00Z') },
+      { name: 'new_run.jsonl', lines: [sessionLine(cwd, 'new'), modelLine('current-model')], mtime: Date.parse('2026-08-01T00:00:00Z') },
+    ]);
+    expect(readPiSessionModel({ cwd, home })).toBe('current-model');
+  });
+
+  it('ignores a session file recorded for a different cwd', () => {
+    const cwd = '/repo/proj';
+    const home = makeHome(cwd, [{
+      name: 'a_run.jsonl',
+      lines: [sessionLine('/somewhere/else', 'run'), modelLine('wrong-cwd-model')],
+    }]);
+    expect(readPiSessionModel({ cwd, home })).toBeNull();
+  });
+
+  it('tolerates a partial trailing line (pi is still appending)', () => {
+    const cwd = '/repo/proj';
+    const home = makeHome(cwd, [{
+      name: 'a_run.jsonl',
+      lines: [sessionLine(cwd, 'run'), modelLine('good-model'), '{"type":"messa'],
+    }]);
+    expect(readPiSessionModel({ cwd, home })).toBe('good-model');
+  });
+
+  it('returns null when the sessions dir, the file, or a model_change is missing', () => {
+    expect(readPiSessionModel({ cwd: '/repo/proj', home: fs.mkdtempSync(path.join(os.tmpdir(), 'pi-empty-')) })).toBeNull();
+    const cwd = '/repo/proj';
+    const noModel = makeHome(cwd, [{ name: 'a_run.jsonl', lines: [sessionLine(cwd, 'run'), JSON.stringify({ type: 'message' })] }]);
+    expect(readPiSessionModel({ cwd, home: noModel })).toBeNull();
+    const empty = makeHome(cwd, []);
+    expect(readPiSessionModel({ cwd, home: empty })).toBeNull();
+  });
+
+  it('never throws on an unreadable home', () => {
+    expect(() => readPiSessionModel({ cwd: '/x', home: '/nonexistent-home-xyz' })).not.toThrow();
+    expect(readPiSessionModel({ cwd: '/x', home: '/nonexistent-home-xyz' })).toBeNull();
+  });
+});
+
+describe('memoizeResolved (read the multi-MB session JSONL at most once)', () => {
+  it('reads once and reuses the resolved value', () => {
+    const read = vi.fn().mockReturnValue('model-x');
+    const memo = memoizeResolved(read);
+    expect(memo()).toBe('model-x');
+    expect(memo()).toBe('model-x');
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries while unresolved, so an early miss does not poison the session', () => {
+    // pi has not written the session file yet on the first call.
+    const read = vi.fn().mockReturnValueOnce(null).mockReturnValueOnce(null).mockReturnValue('model-x');
+    const memo = memoizeResolved(read);
+    expect(memo()).toBeNull();
+    expect(memo()).toBeNull();
+    expect(memo()).toBe('model-x');
+    expect(memo()).toBe('model-x');
+    expect(read).toHaveBeenCalledTimes(3); // stopped reading once resolved
+  });
+});
+
+describe('resolveModelId precedence: session sources outrank settings.json', () => {
+  const settings = () => 'deepseek/deepseek-v4-flash-0731'; // the stale settings.json default
+
+  it('prefers the session argv --model over settings.json defaultModel', () => {
+    expect(resolveModelId({} as any, null, settings, {
+      argvModel: () => 'us.anthropic.claude-sonnet-5',
+      sessionModel: () => 'from-jsonl',
+    })).toBe('us.anthropic.claude-sonnet-5');
+  });
+
+  it('falls back to the session JSONL model_change when argv carries no --model', () => {
+    expect(resolveModelId({} as any, null, settings, {
+      argvModel: () => null,
+      sessionModel: () => 'us.anthropic.claude-opus-5',
+    })).toBe('us.anthropic.claude-opus-5');
+  });
+
+  it('still falls back to settings.json when no session source resolves', () => {
+    expect(resolveModelId({} as any, null, settings, { argvModel: () => null, sessionModel: () => null }))
+      .toBe('deepseek/deepseek-v4-flash-0731');
+  });
+
+  it('lets an interactive model_select switch outrank the launch --model', () => {
+    expect(resolveModelId({} as any, 'switched-to', settings, {
+      argvModel: () => 'launched-with',
+      sessionModel: () => 'from-jsonl',
+    })).toBe('switched-to');
+  });
+
+  it('keeps ctx.getModel() at the top of the chain', () => {
+    const ctx = { getModel: () => ({ provider: 'p', id: 'live-model' }) };
+    expect(resolveModelId(ctx as any, 'switched-to', settings, {
+      argvModel: () => 'launched-with',
+      sessionModel: () => 'from-jsonl',
+    })).toBe('live-model');
   });
 });
 
@@ -331,6 +516,70 @@ describe('activate(): deterministic model injection on agenfk pr commands', () =
     const event: any = { toolName: 'bash', input: { command: 'npm test' } };
     await fire('tool_call', event, ctxWithModel('a', 'b'));
     expect(event.input.command).toBe('npm test');
+  });
+
+  // Regression: a session launched as `pi --model us.anthropic.claude-sonnet-5`
+  // while ~/.pi/agent/settings.json still said deepseek registered PRs #135/#136
+  // against deepseek. The session's own model must win over the config default.
+  it('injects the session --model, not the stale settings.json defaultModel', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({
+      readDefaultModel: () => 'deepseek/deepseek-v4-flash-0731',
+      readArgvModel: () => 'us.anthropic.claude-sonnet-5',
+    }));
+    const event: any = { toolName: 'bash', input: { command: 'agenfk pr create abc --title "T"' } };
+    await fire('tool_call', event, {}); // live pi: no getModel(), no model_select
+    expect(event.input.command).toContain('--model us.anthropic.claude-sonnet-5');
+    expect(event.input.command).not.toContain('deepseek');
+  });
+
+  // pi's /model (setModel) and the model-cycle shortcut both emit model_select
+  // before any later tool_call, so an interactive switch must beat the launch --model.
+  it('follows an interactive /model switch away from the launch --model', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({
+      readDefaultModel: () => 'deepseek/deepseek-v4-flash-0731',
+      readArgvModel: () => 'us.anthropic.claude-sonnet-5', // launched with this
+      readSessionModel: () => 'us.anthropic.claude-sonnet-5',
+    }));
+
+    const before: any = { toolName: 'bash', input: { command: 'agenfk pr create abc' } };
+    await fire('tool_call', before, {});
+    expect(before.input.command).toContain('--model us.anthropic.claude-sonnet-5');
+
+    fire('model_select', { model: { provider: 'amazon-bedrock', id: 'us.anthropic.claude-opus-5' } });
+
+    const after: any = { toolName: 'bash', input: { command: 'agenfk pr create abc' } };
+    await fire('tool_call', after, {});
+    expect(after.input.command).toContain('--model us.anthropic.claude-opus-5');
+    expect(after.input.command).not.toContain('sonnet');
+  });
+
+  it('injects the session JSONL model when the launch carried no --model', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({
+      readDefaultModel: () => 'deepseek/deepseek-v4-flash-0731',
+      readArgvModel: () => null,
+      readSessionModel: () => 'us.anthropic.claude-opus-5',
+    }));
+    const event: any = { toolName: 'bash', input: { command: 'agenfk pr-resize --number 5 --repo o/r --epic 0 --story 0 --task 1 --bug 0' } };
+    await fire('tool_call', event, {});
+    expect(event.input.command).toContain('--model us.anthropic.claude-opus-5');
+    expect(event.input.command).not.toContain('deepseek');
+  });
+});
+
+describe('activate(): PR reminder carries the session model, not settings.json', () => {
+  it('tells the agent the session --model rather than the config default', async () => {
+    const { pi, sent, fire } = makeFakePi();
+    activate(pi as any, makeDeps({
+      prReminder: vi.fn().mockReturnValue({ message: 'You just opened a PR.' }),
+      readDefaultModel: () => 'deepseek/deepseek-v4-flash-0731',
+      readArgvModel: () => 'us.anthropic.claude-sonnet-5',
+    }));
+    await fire('tool_result', { toolName: 'bash', input: { command: 'gh pr create --fill' } }, {});
+    expect(sent[0].message.content).toContain('us.anthropic.claude-sonnet-5');
+    expect(sent[0].message.content).not.toContain('deepseek');
   });
 });
 
