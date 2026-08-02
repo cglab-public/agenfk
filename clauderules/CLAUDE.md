@@ -26,7 +26,7 @@ If gatekeeper returns `❌`, you MUST stop and resolve the issue first:
 - If multiple tasks are active — use `--item-id` to disambiguate.
 - Never proceed past a gatekeeper rejection.
 
-3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
+3. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. If the item has **no** `branchName` and you created a branch yourself, link it back with `agenfk branch set <itemId>` so the rest of the workflow (`branch push`, `pr create`, `resume-work`) can find it. **Never code on the wrong branch.**
 
 ### Flow-Aware Status Check — MANDATORY at session start
 
@@ -122,6 +122,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Operation | CLI command | MCP tool |
 |-----------|-------------|----------|
 | Create a branch for an item | `agenfk branch create <itemId> [--name <name>]` | — |
+| Link an existing branch to an item | `agenfk branch set <itemId> [branchName]` (defaults to the current branch — use it when you created the branch yourself) | — |
 | Push an item's branch | `agenfk branch push <itemId>` | — |
 | Show an item's branch status | `agenfk branch status <itemId>` | — |
 | Create + auto-register a PR for an item | `agenfk pr create <itemId> [--title <t>][--body <b>][--draft] --model <id> --harness <name>` (`--model`/`--harness` **REQUIRED**; auto-emits `pr.opened` with item-tree-derived sizing — no separate `pr-register` needed) | — |
