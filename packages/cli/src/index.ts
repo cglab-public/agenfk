@@ -3231,6 +3231,17 @@ const branchCmd = program
   .command('branch')
   .description('Manage git branches for AgEnFK items');
 
+/**
+ * Branches are recorded on top-level items only — a child would fork the tree's
+ * single branch. Returns false (after reporting) when the item is a child.
+ */
+function requireTopLevelItem(item: any, itemId: string): boolean {
+  if (!item.parentId) return true;
+  console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+  process.exit(1);
+  return false;
+}
+
 branchCmd
   .command('create <itemId>')
   .description('Create a git branch for an item (BUG → fix/, others → feature/). Stores branch name on the item.')
@@ -3238,10 +3249,7 @@ branchCmd
   .action(async (itemId, options) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
-      if (item.parentId) {
-        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
-        process.exit(1);
-      }
+      if (!requireTopLevelItem(item, itemId)) return;
       const prefix = item.type === 'BUG' ? 'fix' : 'feature';
       const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
       const branchName = `${prefix}/${slug}`;
@@ -3268,11 +3276,7 @@ branchCmd
   .action(async (itemId, branchNameArg) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
-      if (item.parentId) {
-        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
-        process.exit(1);
-        return;
-      }
+      if (!requireTopLevelItem(item, itemId)) return;
 
       let branchName: string = branchNameArg;
       if (!branchName) {
