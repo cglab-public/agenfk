@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -40,8 +41,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
-        <div className="px-2 pt-1 pb-5">
+        <div className="px-2 pt-1 pb-5 flex items-start justify-between gap-2">
           <Logo version={health.data?.version ?? null} />
+          <ThemeToggle />
         </div>
         <NavItem to="/" icon={<LayoutDashboard className="w-4 h-4" />} label="Org rollup" />
         <NavItem to="/prs" icon={<GitPullRequest className="w-4 h-4" />} label="PR overview" />
@@ -65,6 +67,26 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {children}
       </main>
     </div>
+  );
+}
+
+/** Compact light/dark toggle for the sidebar. The brand token layer
+ * (packages/brand/tokens.css) already swaps --canvas/--surface/etc. via the
+ * `.light`/`.dark` class + `data-theme` attribute that ThemeProvider sets on
+ * <html>; this button just flips the choice. */
+function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme();
+  const isDark = theme === 'dark';
+  return (
+    <button
+      type="button"
+      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      onClick={toggleTheme}
+      className="shrink-0 mt-0.5 p-1.5 rounded-md text-ink-tertiary hover:text-ink hover:bg-chip border border-transparent hover:border-border-soft transition-colors"
+    >
+      {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+    </button>
   );
 }
 
