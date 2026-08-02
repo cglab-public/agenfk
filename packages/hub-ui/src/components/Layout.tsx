@@ -1,7 +1,8 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
+import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
@@ -37,6 +38,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     mutationFn: () => api.post('/auth/logout'),
     onSuccess: () => { nav('/login'); window.location.reload(); },
   });
+  const { theme, toggleTheme } = useTheme();
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
@@ -48,7 +50,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {me.data?.role === 'admin' && (
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" />
         )}
-        <div className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
+        <button
+          onClick={toggleTheme}
+          className="mt-auto mb-2 mx-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary hover:bg-chip hover:text-accent-text transition-colors"
+          title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        >
+          {theme === 'dark' ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}
+          {theme === 'dark' ? 'Light' : 'Dark'}
+        </button>
+        <div className="px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
           <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
           <div className="mt-0.5 text-[12px] font-mono text-ink truncate">{me.data?.userId ?? '—'}</div>
           <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-text">{me.data?.role}</div>
