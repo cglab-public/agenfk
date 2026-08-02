@@ -3263,13 +3263,57 @@ branchCmd
   });
 
 branchCmd
+  .command('set <itemId> [branchName]')
+  .description('Link an EXISTING git branch to an item (defaults to the current branch). Use when the branch was created outside AgEnFK.')
+  .action(async (itemId, branchNameArg) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+        return;
+      }
+
+      let branchName: string = branchNameArg;
+      if (!branchName) {
+        try {
+          branchName = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+        } catch {
+          console.error(chalk.red('❌ Not a git repository (or git is unavailable) — pass the branch name explicitly: agenfk branch set <itemId> <branchName>'));
+          process.exit(1);
+          return;
+        }
+        if (!branchName || branchName === 'HEAD') {
+          console.error(chalk.red('❌ You are on a detached HEAD — check out a branch first, or pass the branch name explicitly.'));
+          process.exit(1);
+          return;
+        }
+      }
+
+      try {
+        execSync(`git rev-parse --verify ${branchName}`, { stdio: 'ignore' });
+      } catch {
+        console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally. Create it with 'agenfk branch create ${itemId.substring(0, 8)}', or check the name.`));
+        process.exit(1);
+        return;
+      }
+
+      await axios.put(`${API_URL}/items/${itemId}`, { branchName });
+      console.log(chalk.green(`✅ Branch '${branchName}' linked to item [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
   .command('push <itemId>')
   .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')
   .action(async (itemId) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.branchName) {
-        console.error(chalk.yellow(`⚠ No branch linked to item [${itemId.substring(0, 8)}]. Run 'agenfk branch create' first.`));
+        console.error(chalk.yellow(`⚠ No branch linked to item [${itemId.substring(0, 8)}]. Run 'agenfk branch create' first — or 'agenfk branch set' if you already created the branch yourself.`));
         process.exit(1);
       }
 
@@ -3300,7 +3344,7 @@ branchCmd
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
       if (!item.branchName) {
-        console.log(chalk.yellow(`No branch linked to item [${itemId.substring(0, 8)}].`));
+        console.log(chalk.yellow(`No branch linked to item [${itemId.substring(0, 8)}]. Link the current one with 'agenfk branch set ${itemId.substring(0, 8)}', or create one with 'agenfk branch create ${itemId.substring(0, 8)}'.`));
         return;
       }
 

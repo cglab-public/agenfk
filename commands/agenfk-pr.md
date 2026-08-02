@@ -9,7 +9,8 @@ You are executing the `/agenfk-pr <itemId>` command. Follow these steps precisel
 **Step 1 — Verify branch and item state**
 - Run `agenfk get <itemId> --json` to read the current item (MCP: `get_item`).
 - Check `item.branchName`:
-  - If no branch is linked, inform the user: "No branch is linked to this item. Create and link one with `agenfk branch create <itemId>` (optionally `--name <branch-name>`)."
+  - If no branch is linked but you are already on a branch you created for this work, link it with `agenfk branch set <itemId>` (or `agenfk branch set <itemId> <branchName>`) and continue.
+  - If no branch is linked and none exists, inform the user: "No branch is linked to this item. Create and link one with `agenfk branch create <itemId>` (optionally `--name <branch-name>`)."
   - If a branch exists, confirm you are on it (`git branch --show-current`). If not, run `git checkout <branchName>`.
 
 **Step 1.5 — Commit local changes**
