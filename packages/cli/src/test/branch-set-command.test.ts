@@ -66,15 +66,18 @@ const API = 'http://localhost:3000';
 const ITEM = '11111111-1111-1111-1111-111111111111';
 const PARENT = '22222222-2222-2222-2222-222222222222';
 
-/** Drive git: `HEAD` resolves to `current`, and only `known` branches verify. */
+/**
+ * Drive git: `HEAD` resolves to `current`, and only `known` names exist as
+ * local branches (refs/heads/…). Anything else — a tag, a bare SHA, a typo —
+ * fails the existence check, exactly as git would.
+ */
 function gitWith({ current, known }: { current: string; known: string[] }) {
   mockedExecSync.mockImplementation(((cmd: string) => {
     if (cmd.includes('rev-parse --abbrev-ref HEAD')) return `${current}\n`;
-    const verify = cmd.match(/rev-parse --verify (?:--quiet )?(\S+)/);
-    if (verify) {
-      const ref = verify[1];
-      if (!known.includes(ref)) throw new Error(`fatal: Needed a single revision: ${ref}`);
-      return 'deadbeef\n';
+    const head = cmd.match(/refs\/heads\/(\S+)/);
+    if (head) {
+      if (!known.includes(head[1])) throw new Error(`fatal: no such ref: ${head[1]}`);
+      return '';
     }
     return '';
   }) as any);
@@ -188,6 +191,40 @@ describe('agenfk branch set', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('detached HEAD'));
   });
 
+  it('refuses a shell metacharacter in the name without running it', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK' } });
+    gitWith({ current: 'main', known: ['main'] });
+
+    await program.parseAsync(['node', 'agenfk', 'branch', 'set', ITEM, 'x; touch /tmp/pwned']);
+
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+    const ran = mockedExecSync.mock.calls.map(c => String(c[0]));
+    expect(ran.some(c => c.includes('touch'))).toBe(false);
+  });
+
+  it('refuses a tag or bare commit SHA — only a local branch counts', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK' } });
+    // 'v1.2.3' resolves as a revision but is not under refs/heads/.
+    gitWith({ current: 'main', known: ['main'] });
+
+    await program.parseAsync(['node', 'agenfk', 'branch', 'set', ITEM, 'v1.2.3']);
+
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('does not exist locally'));
+  });
+
+  it('says so out loud when it replaces an already-linked branch', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK', branchName: 'feature/old' } });
+    mockedAxios.put.mockResolvedValue({ data: {} });
+    gitWith({ current: 'feature/new', known: ['feature/new', 'feature/old'] });
+
+    await program.parseAsync(['node', 'agenfk', 'branch', 'set', ITEM]);
+
+    const said = logSpy.mock.calls.flat().join(' ');
+    expect(said).toContain('feature/old');
+    expect(mockedAxios.put).toHaveBeenCalledWith(`${API}/items/${ITEM}`, { branchName: 'feature/new' });
+  });
+
   it('surfaces the server refusal instead of claiming success', async () => {
     mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK' } });
     mockedAxios.put.mockRejectedValue({ response: { data: { error: 'Item not found' } } });
@@ -196,6 +233,32 @@ describe('agenfk branch set', () => {
     await program.parseAsync(['node', 'agenfk', 'branch', 'set', ITEM]);
 
     expect(errorSpy).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('Item not found'));
+  });
+});
+
+describe('agenfk branch create --name', () => {
+  it('refuses a shell metacharacter in --name instead of running it', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'TASK' } });
+    gitWith({ current: 'main', known: ['main'] });
+
+    await program.parseAsync(['node', 'agenfk', 'branch', 'create', ITEM, '--name', 'x; touch /tmp/pwned']);
+
+    const ran = mockedExecSync.mock.calls.map(c => String(c[0]));
+    expect(ran.some(c => c.includes('touch'))).toBe(false);
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a JIRA-style name with an underscore', async () => {
+    mockedAxios.get.mockResolvedValue({ data: { id: ITEM, title: 'T', type: 'BUG' } });
+    mockedAxios.put.mockResolvedValue({ data: {} });
+    gitWith({ current: 'main', known: ['main'] });
+
+    await program.parseAsync(['node', 'agenfk', 'branch', 'create', ITEM, '--name', 'CGLAB-39_dark-chip']);
+
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      `${API}/items/${ITEM}`,
+      { branchName: 'fix/CGLAB-39_dark-chip' },
+    );
   });
 });
 

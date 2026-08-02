@@ -3235,6 +3235,14 @@ const branchCmd = program
  * Branches are recorded on top-level items only — a child would fork the tree's
  * single branch. Returns false (after reporting) when the item is a child.
  */
+/**
+ * Branch names reach a shell in the commands below, so anything outside git's
+ * own ref alphabet is refused rather than escaped.
+ */
+function isValidBranchName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/.test(name) && !name.includes('..');
+}
+
 function requireTopLevelItem(item: any, itemId: string): boolean {
   if (!item.parentId) return true;
   console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
@@ -3253,6 +3261,11 @@ branchCmd
       const prefix = item.type === 'BUG' ? 'fix' : 'feature';
       const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
       const branchName = `${prefix}/${slug}`;
+      if (!isValidBranchName(branchName)) {
+        console.error(chalk.red(`❌ '${branchName}' is not a valid branch name.`));
+        process.exit(1);
+        return;
+      }
 
       console.log(chalk.blue(`Creating branch: ${branchName}`));
       try {
@@ -3294,12 +3307,24 @@ branchCmd
         }
       }
 
+      if (!isValidBranchName(branchName)) {
+        console.error(chalk.red(`❌ '${branchName}' is not a valid branch name.`));
+        process.exit(1);
+        return;
+      }
+
+      // show-ref, not rev-parse: only a real local branch counts — a tag or a
+      // bare commit SHA would satisfy rev-parse and link something unpushable.
       try {
-        execSync(`git rev-parse --verify ${branchName}`, { stdio: 'ignore' });
+        execSync(`git show-ref --verify --quiet refs/heads/${branchName}`, { stdio: 'ignore' });
       } catch {
         console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally. Create it with 'agenfk branch create ${itemId.substring(0, 8)}', or check the name.`));
         process.exit(1);
         return;
+      }
+
+      if (item.branchName && item.branchName !== branchName) {
+        console.log(chalk.yellow(`⚠ Replacing the branch linked to item [${itemId.substring(0, 8)}]: '${item.branchName}' → '${branchName}'.`));
       }
 
       await axios.put(`${API_URL}/items/${itemId}`, { branchName });
