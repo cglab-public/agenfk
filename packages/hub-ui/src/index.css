@@ -14,7 +14,17 @@
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
 
-:root { color-scheme: light dark; }
+/* Route every `dark:` utility through the explicit marker that ThemeContext
+ * puts on <html>, instead of Tailwind v4's default `prefers-color-scheme`.
+ * Without this line the CSS-variable tokens in brand/tokens.css would flip on
+ * toggle while hub-ui's ~132 `dark:` utilities stayed pinned to the OS — a
+ * half-themed UI. Must stay byte-identical to the same line in
+ * packages/ui/src/index.css (asserted by darkVariantWiring.test.ts) and must
+ * sit after all @import statements, per the CSS spec. */
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
+/* color-scheme is set imperatively on <html> by ThemeProvider so native
+ * controls follow the user's explicit choice rather than the OS. */
 
 html, body, #root { height: 100%; }
 

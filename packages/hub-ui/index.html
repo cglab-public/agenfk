@@ -5,6 +5,31 @@
     <link rel="icon" type="image/svg+xml" href="/hub-logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgEnFK Hub</title>
+    <!--
+      Pre-paint theme bootstrap. ThemeProvider applies the theme in a
+      useEffect, which runs after the first paint — so a user who forced dark
+      on a light-OS machine would see a white flash on every load. This
+      blocking inline script sets the same markers (class + data-theme +
+      color-scheme) from the same 'theme' key using the same precedence
+      (stored choice, else prefers-color-scheme) before the bundle runs.
+      Keep in sync with src/ThemeContext.tsx; themeBootstrap.test.ts executes
+      this snippet and asserts the precedence matches.
+    -->
+    <script>
+      try {
+        var stored = localStorage.getItem('theme');
+        var theme = stored === 'light' || stored === 'dark'
+          ? stored
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        var root = document.documentElement;
+        root.classList.remove('light', 'dark');
+        root.classList.add(theme);
+        root.setAttribute('data-theme', theme);
+        root.style.colorScheme = theme;
+      } catch (e) {
+        /* Blocked storage or exotic engine: fall through to CSS defaults. */
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

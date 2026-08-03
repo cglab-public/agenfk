@@ -18,6 +18,7 @@ import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
+import { useTheme } from '../ThemeContext';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
@@ -63,6 +64,9 @@ const registryClient: RegistryClient = {
 
 export function AdminFlows() {
   const qc = useQueryClient();
+  // The shared flow editor styles itself and initialises mermaid from this
+  // prop, so it must follow the hub's live theme rather than a constant.
+  const { theme } = useTheme();
   const [editorOpen, setEditorOpen] = useState(false);
   const [initialFlowId, setInitialFlowId] = useState<string | undefined>(undefined);
   const [expandedFlowId, setExpandedFlowId] = useState<string | null>(null);
@@ -187,7 +191,7 @@ export function AdminFlows() {
         initialFlowId={initialFlowId}
         flowClient={flowClient}
         registryClient={registryClient}
-        theme="light"
+        theme={theme}
       />
     </div>
   );
