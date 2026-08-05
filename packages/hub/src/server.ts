@@ -9,6 +9,7 @@ import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
+import { userKeyMergeRouter } from './routes/userKeyMerge.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -193,6 +194,7 @@ export async function createHubApp(
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1/admin', orgRenameRouter(ctx));
+  app.use('/v1/admin', userKeyMergeRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
   startRollupTimer(db);

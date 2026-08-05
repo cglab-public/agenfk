@@ -138,6 +138,50 @@ describe('PG parity: admin endpoints', () => {
     expect(after.body).toHaveLength(0);
   });
 
+  it('user-keys/merge repoints events and sums rollups on PG', async () => {
+    // The rollup fold is an INSERT ... SELECT ... GROUP BY ... ON CONFLICT DO
+    // UPDATE — the most involved statement the hub emits, and the one most
+    // likely to be mangled by the dialect translator. Exercise it on PG.
+    for (const [id, key] of [['m1', '='], ['m2', '='], ['m3', 'jonatansporn'], ['m4', 'real@acme.com']]) {
+      await fx.db.run(
+        `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, 'org', 'inst-1', key, '2026-07-29T10:00:00Z', '2026-07-29T10:00:00Z', 'item.closed', '{}'],
+      );
+    }
+    await fx.db.run(
+      `INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['org', '=', '2026-07-29', 2, 1, 100, 20, 0, 0, 1],
+    );
+    await fx.db.run(
+      `INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['org', 'real@acme.com', '2026-07-29', 5, 3, 7, 3, 0, 0, 2],
+    );
+
+    const r = await supertest(fx.app).post('/v1/admin/user-keys/merge').set('Cookie', fx.cookie)
+      .send({ from: ['=', 'JonatanSporn'], to: 'real@acme.com' });
+
+    expect(r.status).toBe(200);
+    expect(r.body.events).toBe(3);
+    expect(r.body.rollupsRemoved).toBe(1);
+
+    const keys = await fx.db.all<{ user_key: string }>('SELECT DISTINCT user_key FROM events');
+    expect(keys.map(k => k.user_key)).toEqual(['real@acme.com']);
+
+    const roll = await fx.db.all<any>(
+      'SELECT user_key, events_count, items_closed, tokens_in, tokens_out, prs_opened FROM rollups_daily',
+    );
+    expect(roll).toHaveLength(1);
+    expect(roll[0].user_key).toBe('real@acme.com');
+    expect(Number(roll[0].events_count)).toBe(7);
+    expect(Number(roll[0].items_closed)).toBe(4);
+    expect(Number(roll[0].tokens_in)).toBe(107);
+    expect(Number(roll[0].tokens_out)).toBe(23);
+    expect(Number(roll[0].prs_opened)).toBe(3);
+  });
+
   it('events ingest drops hidden people before the installations upsert on PG (CGLAB-31)', async () => {
     await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'alice@acme.com']);
     const r = await supertest(fx.app).post('/v1/events')
