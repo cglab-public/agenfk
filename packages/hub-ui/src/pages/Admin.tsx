@@ -1,11 +1,15 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye, GitMerge } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
+import {
+  UserKeyRow, deriveMergeSources, validateMerge, mergeSourceCandidates,
+  mergeConfirmMessage, formatMergeResult,
+} from './userKeyMerge';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
@@ -677,6 +681,130 @@ export function AdminInstallations() {
           </ul>
         </section>
       )}
+
+      <MergeIdentities />
     </div>
+  );
+}
+
+/**
+ * Admin → Merge identities. `user_key` is derived at ingest from the reporting
+ * client's git identity, so a wrong git config permanently splits one person
+ * across several rows (a literal `=` from `git config user.email = "x"`, or the
+ * OS username when git email is unset). Hiding those rows throws the work away;
+ * this credits it to the identity they should have reported as.
+ */
+function MergeIdentities() {
+  const qc = useQueryClient();
+  const [target, setTarget] = useState('');
+  const [selected, setSelected] = useState<string[]>([]);
+  const [done, setDone] = useState<string | null>(null);
+
+  const users = useQuery<UserKeyRow[]>({
+    queryKey: ['admin-merge-user-keys'],
+    queryFn: async () => (await api.get('/v1/users')).data,
+  });
+
+  const merge = useMutation({
+    mutationFn: (body: { from: string[]; to: string }) => api.post('/v1/admin/user-keys/merge', body),
+    onSuccess: (res, body) => {
+      setDone(formatMergeResult(body.to, res.data ?? {}));
+      setSelected([]);
+      // Every people-keyed surface is now stale, not just this list.
+      qc.invalidateQueries({ queryKey: ['admin-merge-user-keys'] });
+      qc.invalidateQueries({ queryKey: ['admin-installations'] });
+      qc.invalidateQueries({ queryKey: ['admin-hidden-users'] });
+      qc.invalidateQueries({ queryKey: ['users'] });
+      qc.invalidateQueries({ queryKey: ['metrics'] });
+      qc.invalidateQueries({ queryKey: ['timeline'] });
+    },
+  });
+
+  const rows = users.data ?? [];
+  const candidates = mergeSourceCandidates(rows, target);
+  const problem = validateMerge(selected, target);
+
+  const toggle = (key: string) =>
+    setSelected(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
+
+  if (rows.length < 2) return null;
+
+  return (
+    <section className={cardCls}>
+      <header>
+        <h3 className="text-sm font-semibold text-ink">Merge identities</h3>
+        <p className="mt-0.5 text-xs text-ink-tertiary">
+          People are keyed on the git email their client reports, falling back to its OS username. A wrong
+          git config therefore creates a second identity for someone already here — a literal <code className="font-mono">=</code>{' '}
+          comes from <code className="font-mono">git config user.email = "…"</code>. Merging credits the
+          selected identities' events, daily rollups and installations to the one you keep. It cannot be undone.
+        </p>
+      </header>
+
+      <div className="mt-4 space-y-1.5">
+        <label className="block text-[11px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+          Identity to keep
+        </label>
+        <select
+          value={target}
+          onChange={e => { setTarget(e.target.value); setSelected([]); setDone(null); }}
+          className="w-full max-w-md rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
+        >
+          <option value="">Choose…</option>
+          {rows.map(r => (
+            <option key={r.user_key} value={r.user_key}>{r.user_key}</option>
+          ))}
+        </select>
+      </div>
+
+      {target && (
+        <div className="mt-4">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">Merge in</p>
+          <ul className="mt-2 divide-y divide-border-soft">
+            {candidates.map(r => (
+              <li key={r.user_key} className="flex items-center justify-between py-2">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(r.user_key)}
+                    onChange={() => { toggle(r.user_key); setDone(null); }}
+                    className="accent-[var(--accent)]"
+                  />
+                  <span className="font-mono text-xs text-ink-secondary">{r.user_key}</span>
+                </label>
+                <span className="text-[11px] text-ink-tertiary tabular-nums">{Number(r.events_count ?? 0)} events</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          onClick={() => {
+            const from = deriveMergeSources(selected, target);
+            if (problem) return;
+            if (confirm(mergeConfirmMessage(selected, target))) {
+              merge.mutate({ from, to: target });
+            }
+          }}
+          disabled={!!problem || merge.isPending}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-[image:var(--gradient-accent)] px-3 py-1.5 text-[12px] font-semibold text-navy shadow-glow disabled:opacity-40 disabled:shadow-none"
+        >
+          <GitMerge className="w-3.5 h-3.5" />
+          {merge.isPending ? 'Merging…' : 'Merge identities'}
+        </button>
+        {problem && <span className="text-[11px] text-ink-tertiary">{problem}</span>}
+      </div>
+
+      {merge.isError && (
+        <p className="mt-3 text-xs text-red-600 dark:text-red-400">
+          {(merge.error as any)?.response?.data?.error ?? 'Merge failed.'}
+        </p>
+      )}
+      {done && !merge.isError && (
+        <p className="mt-3 text-xs text-accent-text">{done}</p>
+      )}
+    </section>
   );
 }
