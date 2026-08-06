@@ -8,6 +8,12 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
+import {
+  DEFAULT_USER_EVENT_TYPES,
+  USER_EVENT_TYPES_STORAGE_KEY,
+  USER_ITEM_TYPES_STORAGE_KEY,
+  USER_PROJECTS_STORAGE_KEY,
+} from './userDetailFilters';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { scrollPageToTop } from '../scroll';
@@ -108,12 +114,14 @@ export function UserDetailPage() {
   const decoded = decodeURIComponent(userKey);
 
   useEffect(() => { scrollPageToTop(); }, [userKey]);
-  // Default to "what did this user ship?" — closures only — until the dev
-  // widens the chip selection. Persisted in localStorage so a refresh
+  // Nothing is filtered out by default — see userDetailFilters.ts for why this
+  // is no longer "closures only". Persisted in localStorage so a refresh
   // restores the developer's last selection rather than snapping back.
-  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
-  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
-  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  const eventTypeSel = useToggleSet(DEFAULT_USER_EVENT_TYPES, {
+    storageKey: USER_EVENT_TYPES_STORAGE_KEY,
+  });
+  const projectSel = useToggleSet([], { storageKey: USER_PROJECTS_STORAGE_KEY });
+  const itemTypeSel = useToggleSet([], { storageKey: USER_ITEM_TYPES_STORAGE_KEY });
   const [range, setRange] = useState<RangeKey>('30d');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
