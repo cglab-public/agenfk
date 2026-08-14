@@ -63,9 +63,9 @@
  *  - packages/ui explicitly toggles a `.dark` class + `[data-theme="dark"]`
  *    attribute on <html> (see ThemeContext.tsx) and defines its own
  *    `@variant dark` matching those selectors.
- *  - packages/hub-ui has no manual theme toggle yet and relies on the
- *    default Tailwind v4 `dark:` variant, which follows
- *    `prefers-color-scheme`.
+ *  - packages/hub-ui has a manual theme toggle that applies the same
+ *    `.dark` / `[data-theme="dark"]` classes on <html>, matching the
+ *    override blocks below.
  * Both blocks set the same values, so whichever mechanism a given app uses,
  * the tokens stay in sync. Neutral dark surfaces — NOT navy-tinted. */
 @media (prefers-color-scheme: dark) {

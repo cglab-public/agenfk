@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
 import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { Logo } from './Logo';
+import { ThemeToggle } from './ThemeToggle';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -40,8 +41,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
-        <div className="px-2 pt-1 pb-5">
+        <div className="flex items-center justify-between px-2 pt-1 pb-5">
           <Logo version={health.data?.version ?? null} />
+          <ThemeToggle />
         </div>
         <NavItem to="/" icon={<LayoutDashboard className="w-4 h-4" />} label="Org rollup" />
         <NavItem to="/prs" icon={<GitPullRequest className="w-4 h-4" />} label="PR overview" />
