@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -27,6 +28,7 @@ interface HealthResponse { ok: boolean; version: string }
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const nav = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const me = useQuery<MeResponse>({ queryKey: ['me'], queryFn: async () => (await api.get('/auth/me')).data });
   const health = useQuery<HealthResponse>({
     queryKey: ['hub-healthz'],
@@ -59,6 +61,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <LogOut className="w-3 h-3" /> Sign out
           </button>
         </div>
+        <button
+          onClick={toggleTheme}
+          data-testid="theme-toggle"
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium border border-border-soft text-ink-secondary hover:text-ink hover:bg-chip transition-colors"
+        >
+          {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+        </button>
       </aside>
       <main className="flex-1 min-w-0 p-6 lg:p-8">
         {me.data?.role === 'admin' && <PendingEnvOrgIdBanner />}

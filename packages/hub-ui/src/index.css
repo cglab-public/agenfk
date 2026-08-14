@@ -14,6 +14,13 @@
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
 
+/* Tailwind v4's default `dark:` variant follows `prefers-color-scheme`. The hub
+ * UI now offers a manual light/dark toggle (see ThemeContext.tsx) that applies a
+ * `.dark` class and a `data-theme` attribute to <html>. Re-point the `dark:`
+ * variant at those selectors (matching packages/ui/src/index.css) so `dark:`
+ * utilities respond to the toggle rather than only to the OS preference. */
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
 :root { color-scheme: light dark; }
 
 html, body, #root { height: 100%; }
