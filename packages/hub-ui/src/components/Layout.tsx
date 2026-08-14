@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Moon, Sun } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -37,6 +38,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     mutationFn: () => api.post('/auth/logout'),
     onSuccess: () => { nav('/login'); window.location.reload(); },
   });
+  const { theme, toggleTheme } = useTheme();
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
@@ -57,6 +59,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
             className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary hover:bg-danger-muted/10 hover:border-danger-muted/40 hover:text-danger-muted transition-colors"
           >
             <LogOut className="w-3 h-3" /> Sign out
+          </button>
+          <button
+            onClick={toggleTheme}
+            aria-label="Toggle theme"
+            className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary hover:bg-chip hover:border-border-brand transition-colors"
+          >
+            {theme === 'light' ? <Moon className="w-3 h-3" /> : <Sun className="w-3 h-3" />}
           </button>
         </div>
       </aside>

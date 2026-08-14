@@ -57,7 +57,7 @@ describe('ThemeContext', () => {
         <ThemeTester />
       </ThemeProvider>
     );
-    expect(screen.getByTestId('theme-label')).toHaveTextContent(/light/i);
+    expect(screen.getByTestId('theme-label').textContent).toMatch(/light/i);
   });
 
   it('should toggle from light to dark and persist to localStorage', () => {
@@ -67,7 +67,7 @@ describe('ThemeContext', () => {
       </ThemeProvider>
     );
     fireEvent.click(screen.getByRole('button', { name: /toggle theme/i }));
-    expect(screen.getByTestId('theme-label')).toHaveTextContent(/dark/i);
+    expect(screen.getByTestId('theme-label').textContent).toMatch(/dark/i);
     expect(localStorage.getItem('theme')).toBe('dark');
   });
 
@@ -78,7 +78,7 @@ describe('ThemeContext', () => {
         <ThemeTester />
       </ThemeProvider>
     );
-    expect(screen.getByTestId('theme-label')).toHaveTextContent(/dark/i);
+    expect(screen.getByTestId('theme-label').textContent).toMatch(/dark/i);
   });
 
   it('should default to dark when system prefers dark and no localStorage value', () => {
@@ -99,7 +99,7 @@ describe('ThemeContext', () => {
         <ThemeTester />
       </ThemeProvider>
     );
-    expect(screen.getByTestId('theme-label')).toHaveTextContent(/dark/i);
+    expect(screen.getByTestId('theme-label').textContent).toMatch(/dark/i);
   });
 
   it('should toggle from dark back to light and persist', () => {
@@ -110,7 +110,7 @@ describe('ThemeContext', () => {
       </ThemeProvider>
     );
     fireEvent.click(screen.getByRole('button', { name: /toggle theme/i }));
-    expect(screen.getByTestId('theme-label')).toHaveTextContent(/light/i);
+    expect(screen.getByTestId('theme-label').textContent).toMatch(/light/i);
     expect(localStorage.getItem('theme')).toBe('light');
   });
 

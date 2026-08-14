@@ -9,6 +9,22 @@ import { describe, it, afterEach, vi, beforeAll } from 'vitest';
 import { Layout } from '../components/Layout';
 import { ThemeProvider } from '../ThemeContext';
 
+// Mock window.matchMedia (required by ThemeProvider)
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  configurable: true,
+  value: vi.fn().mockImplementation((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
+});
+
 // Mock the api module so react-query hooks don't hit a real server
 vi.mock('../api', () => ({
   api: {
