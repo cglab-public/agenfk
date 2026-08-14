@@ -14,7 +14,22 @@
  * hub-ui's compiled CSS — otherwise the modal renders unsized. */
 @source "../../flow-editor/src/**/*.{ts,tsx}";
 
+/* Class-based dark mode — mirrors packages/ui/src/index.css. hub-ui previously
+ * relied on Tailwind v4's default (media-query) `dark:` variant, so `dark:`
+ * utilities followed the OS. Now they follow the .dark/.light class +
+ * data-theme attribute applied by ThemeContext.tsx, so the sidebar toggle
+ * drives both the brand tokens and the `dark:` utilities.
+ * (tailwind.config.cjs's `darkMode: 'class'` is inert under Tailwind v4 — a
+ * JS config only loads via @config, which this app does not use.) */
+@variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
 :root { color-scheme: light dark; }
+
+/* Explicit theme choice wins over the OS for native widgets (scrollbars,
+ * form controls). Same specificity as :root, declared after it, so source
+ * order lets the applied class win. */
+.light { color-scheme: light; }
+.dark { color-scheme: dark; }
 
 html, body, #root { height: 100%; }
 

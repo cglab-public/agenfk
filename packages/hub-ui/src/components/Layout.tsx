@@ -1,8 +1,9 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
-import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest } from 'lucide-react';
+import { LayoutDashboard, Shield, LogOut, AlertTriangle, GitPullRequest, Sun, Moon } from 'lucide-react';
 import { Logo } from './Logo';
+import { useTheme } from '../ThemeContext';
 
 interface NavItemProps { to: string; icon: React.ReactNode; label: string }
 function NavItem({ to, icon, label }: NavItemProps) {
@@ -27,6 +28,7 @@ interface HealthResponse { ok: boolean; version: string }
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const nav = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const me = useQuery<MeResponse>({ queryKey: ['me'], queryFn: async () => (await api.get('/auth/me')).data });
   const health = useQuery<HealthResponse>({
     queryKey: ['hub-healthz'],
@@ -40,8 +42,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
-        <div className="px-2 pt-1 pb-5">
+        <div className="flex items-center justify-between px-2 pt-1 pb-5">
           <Logo version={health.data?.version ?? null} />
+          <button
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            className="p-1.5 rounded-lg text-ink-tertiary hover:text-accent-text hover:bg-chip transition-colors"
+          >
+            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
         </div>
         <NavItem to="/" icon={<LayoutDashboard className="w-4 h-4" />} label="Org rollup" />
         <NavItem to="/prs" icon={<GitPullRequest className="w-4 h-4" />} label="PR overview" />
