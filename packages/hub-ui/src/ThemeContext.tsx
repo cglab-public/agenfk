@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useRef, useState, useCallback, useLayoutEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 
 type Theme = 'light' | 'dark';
@@ -10,8 +10,8 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-/** Apply theme class + data-theme + localStorage. */
-function applyTheme(theme: Theme) {
+/** Apply theme class + data-theme + localStorage to the document. */
+function applyTheme(theme: Theme): void {
   const root = document.documentElement;
   root.classList.remove('light', 'dark');
   root.classList.add(theme);
@@ -30,25 +30,23 @@ function resolveInitialTheme(): Theme {
 }
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Mutable ref holds the live theme value — updated synchronously by toggleTheme.
-  const themeRef = useRef<Theme>(resolveInitialTheme());
-  const [, forceUpdate] = useState({});
+  const [theme, setTheme] = useState<Theme>(resolveInitialTheme);
 
-  // Apply the initial theme on mount.
-  useLayoutEffect(() => {
-    applyTheme(themeRef.current);
-  }, []);
+  // Apply on mount and after every theme change.
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
 
+  // flushSync ensures the re-render is synchronous so consumers (and tests) see
+  // the updated value immediately after calling toggleTheme.
   const toggleTheme = useCallback(() => {
-    themeRef.current = themeRef.current === 'light' ? 'dark' : 'light';
-    applyTheme(themeRef.current);
     flushSync(() => {
-      forceUpdate({});
+      setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
     });
   }, []);
 
   return (
-    <ThemeContext.Provider value={{ theme: themeRef.current, toggleTheme }}>
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );
