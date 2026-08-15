@@ -159,12 +159,12 @@ export function buildReason({ filePath, reason }) {
     `  Why:    ${reason}`,
     '',
     'A failing or inconvenient existing test is a signal, not a chore — it may be',
-    'the only guard on a real requirement. Ask the developer which they want:',
+    'the only guard on a real requirement. Which do you want:',
     '',
     '  (1) ACCEPT the test change — the test encoded behaviour that is now outdated.',
     '  (2) KEEP the test as-is and fix the production code instead.',
     '',
-    'Approve this call only for (1). If it is denied, treat that as (2): restore the',
+    'Approve this call only for (1). If it is denied, it will be treated as (2): restore the',
     'test untouched and fix the code under test. Adding NEW tests never needs approval.',
   ].join('\n');
 }
