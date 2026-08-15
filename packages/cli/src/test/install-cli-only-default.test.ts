@@ -52,6 +52,22 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
     expect(settings).toContain('agenfk-pr-hook');
   });
 
+  it('installs and wires the test guard, as an "ask" hook rather than a blocker', () => {
+    // The guard hands the accept-the-test-change vs fix-the-code call to the
+    // developer. It is only useful if it is actually registered on the edit AND
+    // Bash tools (Bash so `rm`/`git rm` of a test file is caught too), and it
+    // must never be installed as a hard block.
+    expect(existsSync(r.p('.local', 'bin', 'agenfk-test-guard'))).toBe(true);
+    expect(existsSync(r.p('.agenfk', 'bin', 'agenfk-test-guard.mjs'))).toBe(true);
+
+    const entry = readJson('.claude', 'settings.json').hooks.PreToolUse
+      .find((e: any) => JSON.stringify(e).includes('agenfk-test-guard'));
+    expect(entry).toBeDefined();
+    expect(entry.matcher).toContain('Edit');
+    expect(entry.matcher).toContain('Bash');
+    expect(readFileSync(r.p('.local', 'bin', 'agenfk-test-guard'), 'utf8')).not.toContain("'deny'");
+  });
+
   it('installs the agenfk skills and slash commands', () => {
     const skills = readdirSync(r.p('.claude', 'skills')).filter((n) => n.startsWith('agenfk'));
     const commands = readdirSync(r.p('.claude', 'commands')).filter((n) => n.startsWith('agenfk'));

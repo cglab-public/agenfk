@@ -32,22 +32,27 @@ const UNINSTALL = path.join(ROOT, 'scripts', 'uninstall.mjs');
 // Part A — pure helpers
 // ---------------------------------------------------------------------------
 describe('issue #88 — uninstall-helpers', () => {
-  it('tracks all three hook variants, not just the gatekeeper (Bug 2)', () => {
+  it('tracks every hook variant, not just the gatekeeper (Bug 2)', () => {
     expect(HOOK_VARIANTS).toEqual(
-      expect.arrayContaining(['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'])
+      expect.arrayContaining([
+        'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-test-guard',
+      ])
     );
-    expect(HOOK_VARIANTS).toHaveLength(3);
+    expect(HOOK_VARIANTS).toHaveLength(4);
   });
 
-  it('hookBinFilenames includes the CLI symlink + all 3 hooks, with .cmd on win32', () => {
+  it('hookBinFilenames includes the CLI symlink + every hook, with .cmd on win32', () => {
     expect(hookBinFilenames('linux')).toEqual([
-      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook',
+      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-test-guard',
     ]);
     expect(hookBinFilenames('win32')).toEqual([
       'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd', 'agenfk-pr-hook.cmd',
+      'agenfk-test-guard.cmd',
     ]);
   });
 
+  // Not derived from HOOK_VARIANTS: the test guard is a Claude Code PreToolUse
+  // hook with no Opencode plugin, so the plugin list stays at three.
   it('opencodePluginFilenames are the three .mjs plugins (Bug 3)', () => {
     expect(opencodePluginFilenames()).toEqual([
       'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs',

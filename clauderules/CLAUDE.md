@@ -59,6 +59,11 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 - **Feature verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark complete until confirmed.
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
 - **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
+- **Existing tests are a contract**: NEVER rewrite, relax, skip (`.skip`, `xit`, `@pytest.mark.skip`, `t.Skip`, `@Ignore`) or delete an **existing** test to make your change pass. A failing existing test is a signal, not a chore — it may be the only guard on a real requirement. STOP and ask the developer to choose:
+  1. **Accept the change to the test** — it encoded behaviour that is now intentionally outdated. Say which requirement changed.
+  2. **Keep the test as-is and fix the code** — the test caught a real regression.
+
+  Never choose for them, and never assume (1) because it is faster. Adding **new** tests never needs approval. On Claude Code the `agenfk-test-guard` PreToolUse hook raises this prompt mechanically — approving it means (1), denying it means (2), so restore the test untouched and fix the code under test.
 
 ### STRICTLY FORBIDDEN shortcuts
 
@@ -69,9 +74,10 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 | Reading `.agenfk/db.sqlite` or `.agenfk/db.json` directly (Bash or Read) | `agenfk list --json`, `agenfk get <id> --json` |
 | `curl` / `wget` to `http://localhost:3000` | `agenfk list`, `agenfk create`, `agenfk update`, `agenfk verify` |
 
-Two PreToolUse hooks enforce the workflow:
+Three PreToolUse hooks enforce the workflow:
 - `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no active task.
 - `agenfk-mcp-enforcer` — blocks the direct-DB and `curl localhost:3000` bypass routes above. (In CLI-only mode it permits the `agenfk` CLI; when MCP is registered it steers state queries to the MCP tools instead.)
+- `agenfk-test-guard` — asks the developer to confirm before an **existing** test is rewritten, skipped or deleted (including `rm` / `git rm` of a test file). It never blocks new tests or added test cases.
 
 ### Command Reference — the `agenfk` CLI
 

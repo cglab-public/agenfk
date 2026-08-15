@@ -56,7 +56,7 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 
 | Client | MCP Registration | Workflow Rules | Pre-edit hook | Post-tool hook (PR sizing) |
 |--------|-----------------|----------------|---------------|----------------------------|
-| **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | `PreToolUse` — `agenfk-gatekeeper` + `agenfk-mcp-enforcer` | `PostToolUse` matcher `Bash` — `agenfk-pr-hook --client claude-code` |
+| **Claude Code** | `claude mcp add` (user scope) | `~/.claude/CLAUDE.md` | `PreToolUse` — `agenfk-gatekeeper` + `agenfk-mcp-enforcer` + `agenfk-test-guard` | `PostToolUse` matcher `Bash` — `agenfk-pr-hook --client claude-code` |
 | **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/skills/agenfk/SKILL.md` | `tool.execute.before` plugin (`agenfk-mcp-enforcer-opencode.mjs`) | `tool.execute.after` plugin (`agenfk-pr-hook-opencode.mjs`) |
 | **pi** (0.79+) | opt-in (pi MCP config; not auto-registered) | (not yet bundled — extension provides enforcement) | native extension `~/.pi/agent/extensions/agenfk.ts` — `tool_call(edit\|write)` → gatekeeper, `tool_call(bash)` → mcp-enforcer (delegates to `~/.agenfk/bin/*.mjs`) | same extension — `tool_result(bash)` → `agenfk-pr-hook --client pi`, with the live model from `ctx.getModel()` injected into the reminder |
 | **Codex CLI** | `codex mcp add` | `~/.codex/AGENTS.md` | (no equivalent — CLAUDE.md-style instructional) | `hooks.PostToolUse` matcher `Bash` (Codex matches the shell tool as `Bash`) — `agenfk-pr-hook --client codex` |
@@ -66,6 +66,7 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 ### Enforcement model
 
 - **Pre-edit gatekeeping** (is a TASK/BUG in an active working step?) is mechanical on Claude Code, OpenCode, and **pi** — their hook systems support pre-tool blocking (pi via the `tool_call` event returning `{ block, reason }`). On Codex / Gemini / Cursor, this remains **instructional** via the per-client rule docs — backed by the server-side `workflow_gatekeeper` audit trail.
+- **Existing-test protection** (is the agent rewriting, skipping or deleting a test that already exists?) is mechanical on **Claude Code** via `agenfk-test-guard`, which returns `permissionDecision: "ask"` rather than blocking — the developer answers the permission prompt itself: approve = accept the change to the test, deny = keep the test and fix the code. It is deliberately not a `deny`: a hard block has no way to express "the developer said yes". Other clients cannot turn a hook verdict into a developer-facing question, so there it stays **instructional** via the Quality Guards rule in each rule bundle.
 - **PR sizing prompt** (after `gh pr create` / `git push`) is mechanical on **all six** clients via their respective post-tool hook events. On pi the reminder additionally carries the deterministically-detected model id (`ctx.getModel()`), so the agent reports the real model instead of guessing. Even when the post-tool directive isn't followed, the per-client instruction docs include a belt-and-suspenders rule asking the agent to call `register_pr` / `update_pr_sizing`.
 
 ### Note on Codex hook coverage

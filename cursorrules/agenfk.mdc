@@ -69,6 +69,11 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 - **Feature verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark complete until confirmed.
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
 - **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
+- **Existing tests are a contract**: NEVER rewrite, relax, skip (`.skip`, `xit`, `@pytest.mark.skip`, `t.Skip`, `@Ignore`) or delete an **existing** test to make your change pass. A failing existing test is a signal, not a chore — it may be the only guard on a real requirement. STOP and ask the developer to choose:
+  1. **Accept the change to the test** — it encoded behaviour that is now intentionally outdated. Say which requirement changed.
+  2. **Keep the test as-is and fix the code** — the test caught a real regression.
+
+  Never choose for them, and never assume (1) because it is faster. Adding **new** tests never needs approval. There is no mechanical hook for this on your client, so the rule is yours to honour: ask, wait for the answer, then act.
 
 ### STRICTLY FORBIDDEN shortcuts
 

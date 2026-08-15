@@ -15,6 +15,7 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
 **Step 2 — Generate Missing Tests**
 - If new logic was added without tests, generate the necessary test cases using the project's testing framework.
 - Ensure edge cases and error paths are covered.
+- **Never touch an existing test to go green.** Adding new tests is free; rewriting, relaxing, skipping or deleting a test that already exists is the developer's call. If an existing test fails or looks outdated, STOP and ask them to choose: (1) accept the change to the test, or (2) keep the test as-is and fix the code. On Claude Code the `agenfk-test-guard` hook raises that prompt for you.
 
 **Step 3 — Execute & Verify Coverage**
 - Run the project's test suite with coverage reporting (e.g., `npm run test:coverage`, `npx vitest run --coverage`).

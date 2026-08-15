@@ -520,6 +520,8 @@ async function run() {
     const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
     const prHookDestBase = path.join(localBinDir, 'agenfk-pr-hook');
     const prHookDest = os.platform() === 'win32' ? `${prHookDestBase}.cmd` : prHookDestBase;
+    const testGuardDestBase = path.join(localBinDir, 'agenfk-test-guard');
+    const testGuardDest = os.platform() === 'win32' ? `${testGuardDestBase}.cmd` : testGuardDestBase;
 
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
@@ -1213,7 +1215,7 @@ process.exit(0);
     const gatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper.mjs');
     const internalBinDir = path.join(agenfkHome, 'bin');
     await fs.mkdir(internalBinDir, { recursive: true });
-    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs']) {
+    for (const script of ['agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs', 'agenfk-test-guard.mjs']) {
         const src = path.join(rootDir, 'bin', script);
         if (existsSync(src)) {
             await fs.copyFile(src, path.join(internalBinDir, script));
@@ -1272,6 +1274,24 @@ process.exit(0);
             }
         }
         console.log(`  Installed: ${prHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+        // 12f. Install agenfk-test-guard into ~/.local/bin (asks the developer
+        // before an EXISTING test is rewritten, skipped or deleted).
+        const testGuardSource = path.join(rootDir, 'bin', 'agenfk-test-guard.mjs');
+
+        if (os.platform() === 'win32') {
+            await fs.writeFile(`${testGuardDestBase}.cmd`, `@echo off\nnode "${testGuardSource}" %*`, 'utf8');
+            if (isMinGW) {
+                await fs.writeFile(testGuardDestBase, `#!/bin/sh\nnode "${testGuardSource}" "$@"`, 'utf8');
+                chmodSync(testGuardDestBase, 0o755);
+            }
+        } else {
+            if (existsSync(testGuardSource)) {
+                await fs.copyFile(testGuardSource, testGuardDestBase);
+                chmodSync(testGuardDestBase, 0o755);
+            }
+        }
+        console.log(`  Installed: ${testGuardDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
     }
 
     // 12c. Install Opencode MCP enforcer plugin
@@ -1501,12 +1521,21 @@ process.exit(0);
         
         settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
             !JSON.stringify(entry).includes('agenfk-gatekeeper') &&
-            !JSON.stringify(entry).includes('agenfk-mcp-enforcer')
+            !JSON.stringify(entry).includes('agenfk-mcp-enforcer') &&
+            !JSON.stringify(entry).includes('agenfk-test-guard')
         );
 
         settings.hooks.PreToolUse.push({
             matcher: 'Edit|Write|NotebookEdit',
             hooks: [{ type: 'command', command: gatekeeperDest }]
+        });
+
+        // Test guard: asks the developer to choose (accept the test change vs fix
+        // the code) before existing test code is rewritten, skipped or deleted.
+        // Bash is matched too so `rm`/`git rm` of a test file is caught as well.
+        settings.hooks.PreToolUse.push({
+            matcher: 'Edit|Write|NotebookEdit|Bash',
+            hooks: [{ type: 'command', command: `${testGuardDest} --client claude-code` }]
         });
 
         settings.hooks.PreToolUse.push({
