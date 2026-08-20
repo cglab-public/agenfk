@@ -36,6 +36,35 @@ const CURRENT_VERSION: string = (() => {
   return '0.0.0';
 })();
 
+/**
+ * Does a 4xx response body carry the hub's own JSON error shape?
+ *
+ * A real hub always rejects with JSON carrying a string `error` field —
+ * 401 `{error: 'Invalid or revoked token'}` from packages/hub/src/auth/apiKey.ts,
+ * 400/413 from packages/hub/src/routes/events.ts. A captive portal or corporate
+ * proxy interposing on the connection answers HTML, or nothing at all.
+ *
+ * Only an authoritative rejection counts toward the halt threshold: halting on
+ * a proxy's 403 used to kill delivery for the rest of the process's lifetime,
+ * which is exactly what happens to a laptop off the VPN. (BUG 1843e145.)
+ */
+function isAuthoritativeRejection(data: unknown): boolean {
+  if (data && typeof data === 'object') {
+    const err = (data as { error?: unknown }).error;
+    return typeof err === 'string' && err.length > 0;
+  }
+  if (typeof data === 'string') {
+    // Some transports hand back an unparsed JSON string.
+    try {
+      const parsed = JSON.parse(data);
+      return !!parsed && typeof parsed === 'object' && typeof parsed.error === 'string' && parsed.error.length > 0;
+    } catch {
+      return false; // HTML, plain text, empty — a proxy, not the hub
+    }
+  }
+  return false;
+}
+
 export class Flusher {
   private timer: NodeJS.Timeout | null = null;
   private inflight: Promise<void> | null = null;
@@ -91,7 +120,7 @@ export class Flusher {
    */
   flush(): Promise<void> {
     if (this.inflight) return this.inflight;
-    if (this.status.halted) return Promise.resolve();
+    if (this.status.halted) return this.probeRecovery();
     if (Date.now() < this.nextEligibleAt) return Promise.resolve();
     this.inflight = this.flushOnce().finally(() => { this.inflight = null; });
     return this.inflight;
@@ -126,6 +155,28 @@ export class Flusher {
     }
   }
 
+  /**
+   * Recovery probe for a halted flusher. Without this, `halted` was terminal:
+   * nothing outside the constructor ever cleared it, so an install stopped
+   * delivering until someone restarted the API server. A successful
+   * GET /v1/ping means whatever rejected us is gone, so resume.
+   *
+   * Probes at the capped backoff cadence rather than every cycle, and never
+   * throws — a failed probe just leaves the flusher halted.
+   */
+  private async probeRecovery(): Promise<void> {
+    if (Date.now() < this.nextEligibleAt) return;
+    this.nextEligibleAt = Date.now() + MAX_BACKOFF_MS;
+    try {
+      await this.http.get('/v1/ping');
+      this.status.halted = false;
+      this.status.lastError = null;
+      this.nextEligibleAt = 0;
+    } catch {
+      /* still rejected — stay halted, retry after the backoff window */
+    }
+  }
+
   private async flushOnce(): Promise<void> {
     const allRows = this.storage.hubOutboxPeek(this.batchSize);
     // Never ship pending-org sentinel rows (orgId '') — they were queued while
@@ -152,14 +203,16 @@ export class Flusher {
       const msg = e?.response?.data?.error || e?.message || 'unknown';
       this.storage.hubOutboxIncrementAttempt(ids, msg);
       this.status.lastError = `HTTP ${status ?? 'ERR'}: ${msg}`;
-      if (status && status >= 400 && status < 500) {
-        const maxAttempts = Math.max(...rows.map(r => r.attempts + 1));
+      const maxAttempts = Math.max(...rows.map(r => r.attempts + 1));
+      const authoritative4xx = !!status && status >= 400 && status < 500
+        && isAuthoritativeRejection(e?.response?.data);
+      if (authoritative4xx) {
         if (maxAttempts >= HALT_AFTER_4XX_ATTEMPTS) {
           this.status.halted = true;
         }
       } else {
-        // 5xx / network: exponential backoff capped at MAX_BACKOFF_MS.
-        const maxAttempts = Math.max(...rows.map(r => r.attempts + 1));
+        // 5xx, network failure, or a 4xx interposed by a proxy (no hub JSON
+        // error body): exponential backoff capped at MAX_BACKOFF_MS.
         const backoff = Math.min(MAX_BACKOFF_MS, this.intervalMs * Math.pow(2, maxAttempts));
         this.nextEligibleAt = Date.now() + backoff;
       }
