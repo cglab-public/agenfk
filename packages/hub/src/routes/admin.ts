@@ -191,9 +191,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     // returns them flagged with hidden:true so the UI can render a
     // show-hidden toggle.
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
+    // CGLAB-64: retired installations are dead endpoints. They are hidden by
+    // default for the same reason hidden people are — they would otherwise sit
+    // in the upgrade picker and inflate campaign denominators forever.
+    const includeRetired = req.query.includeRetired === '1' || req.query.includeRetired === 'true';
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT i.id, i.agenfk_version, i.agenfk_version_updated_at, i.first_seen, i.last_seen,
               i.os_user, i.git_name, i.git_email,
+              i.retired_at, i.retired_by_email,
               CASE WHEN h.user_key IS NULL THEN 0 ELSE 1 END AS hidden
          FROM installations i
          LEFT JOIN hidden_users h
@@ -205,6 +210,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(
       rows
         .filter((r: any) => includeHidden || !r.hidden)
+        .filter((r: any) => includeRetired || !r.retired_at)
         .map((r: any) => ({
           id: r.id,
           agenfkVersion: r.agenfk_version ?? null,
@@ -215,8 +221,100 @@ export function adminRouter(ctx: HubServerContext): Router {
           gitName: r.git_name ?? null,
           gitEmail: r.git_email ?? null,
           hidden: !!r.hidden,
+          retired: !!r.retired_at,
+          retiredAt: r.retired_at ?? null,
+          retiredByEmail: r.retired_by_email ?? null,
         })),
     );
+  });
+
+  // ── Installation retirement (CGLAB-64) ────────────────────────────────────
+  //
+  // Retiring is the soft, reversible counterpart to hidden-users, applied to a
+  // machine rather than a person: a wiped laptop or a departed dev's install
+  // keeps every event it ever sent (history is attributed by user_key, not
+  // installation_id) but stops counting as a live target. Without the directive
+  // cancellation below, retiring would be cosmetic — an upgrade or repoint
+  // campaign board would still wait forever on a machine that is never coming
+  // back, which is precisely what makes an old hub DNS name undroppable.
+
+  /** Look up an installation inside the caller's org, or null. */
+  async function findInstallation(orgId: string, id: string) {
+    return ctx.db.get<{ id: string; retired_at: string | null }>(
+      'SELECT id, retired_at FROM installations WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+  }
+
+  router.post('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    const existing = await findInstallation(orgId, id);
+    if (!existing) { res.status(404).json({ error: 'Unknown installation' }); return; }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    let revokedApiKeys = 0;
+    let cancelledDirectiveTargets = 0;
+    let retiredAt = existing.retired_at;
+
+    // One transaction: a retire that revoked keys but failed to cancel
+    // directives (or vice versa) would leave a half-dead installation that
+    // still blocks campaigns while being unable to report progress.
+    await ctx.db.transaction(async () => {
+      // Idempotent: re-retiring must not move the original timestamp.
+      if (!existing.retired_at) {
+        await ctx.db.run(
+          `UPDATE installations
+              SET retired_at = ?, retired_by_user_id = ?, retired_by_email = ?
+            WHERE id = ? AND org_id = ?`,
+          [new Date().toISOString(), req.session!.userId ?? null, actorEmail, id, orgId],
+        );
+      }
+      const revoked = await ctx.db.run(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+          WHERE org_id = ? AND installation_id = ? AND revoked_at IS NULL`,
+        [orgId, id],
+      );
+      revokedApiKeys = revoked.changes;
+      // Only in-flight work is cancelled; a finished target keeps its verdict.
+      const cancelled = await ctx.db.run(
+        `UPDATE upgrade_directive_targets
+            SET state = 'cancelled', finished_at = ?
+          WHERE installation_id = ?
+            AND state IN ('pending', 'in_progress')
+            AND directive_id IN (SELECT id FROM upgrade_directives WHERE org_id = ?)`,
+        [new Date().toISOString(), id, orgId],
+      );
+      cancelledDirectiveTargets = cancelled.changes;
+    });
+
+    if (!retiredAt) {
+      const fresh = await findInstallation(orgId, id);
+      retiredAt = fresh?.retired_at ?? null;
+    }
+    res.json({ id, retired: true, retiredAt, revokedApiKeys, cancelledDirectiveTargets });
+  });
+
+  router.delete('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    if (!(await findInstallation(orgId, id))) {
+      res.status(404).json({ error: 'Unknown installation' });
+      return;
+    }
+    await ctx.db.run(
+      `UPDATE installations SET retired_at = NULL, retired_by_user_id = NULL, retired_by_email = NULL
+        WHERE id = ? AND org_id = ?`,
+      [id, orgId],
+    );
+    // Deliberately asymmetric, matching hidden-users: revocation is permanent,
+    // so the machine re-joins rather than silently regaining a live token.
+    res.json({ id, retired: false });
   });
 
   router.get('/users', guard, async (req: Request, res: Response) => {

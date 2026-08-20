@@ -35,7 +35,10 @@ const SCHEMA_PG = `
     git_name TEXT,
     git_email TEXT,
     agenfk_version TEXT,
-    agenfk_version_updated_at TIMESTAMPTZ
+    agenfk_version_updated_at TIMESTAMPTZ,
+    retired_at TIMESTAMPTZ,
+    retired_by_user_id TEXT,
+    retired_by_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -368,6 +371,11 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   const instHave = new Set(instCols.map(c => c.column_name));
   if (!instHave.has('agenfk_version')) await adapter.exec("ALTER TABLE installations ADD COLUMN agenfk_version TEXT");
   if (!instHave.has('agenfk_version_updated_at')) await adapter.exec("ALTER TABLE installations ADD COLUMN agenfk_version_updated_at TIMESTAMPTZ");
+
+  // installations retirement columns — CGLAB-64. See the sqlite adapter for rationale.
+  if (!instHave.has('retired_at')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_at TIMESTAMPTZ");
+  if (!instHave.has('retired_by_user_id')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
+  if (!instHave.has('retired_by_email')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
 
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = await adapter.all<{ column_name: string }>(

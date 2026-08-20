@@ -35,7 +35,10 @@ const SCHEMA_SQLITE = `
     git_name TEXT,
     git_email TEXT,
     agenfk_version TEXT,
-    agenfk_version_updated_at TEXT
+    agenfk_version_updated_at TEXT,
+    retired_at TEXT,
+    retired_by_user_id TEXT,
+    retired_by_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -327,6 +330,13 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const instHave = new Set(instCols.map(c => c.name));
   if (!instHave.has('agenfk_version')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version TEXT");
   if (!instHave.has('agenfk_version_updated_at')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version_updated_at TEXT");
+
+  // installations retirement columns — CGLAB-64. A retired install is a dead
+  // endpoint (wiped laptop, departed dev): it keeps its history but stops
+  // counting as a live target, so upgrade/repoint campaign boards can drain.
+  if (!instHave.has('retired_at')) raw.exec("ALTER TABLE installations ADD COLUMN retired_at TEXT");
+  if (!instHave.has('retired_by_user_id')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
+  if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
 
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = raw.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
