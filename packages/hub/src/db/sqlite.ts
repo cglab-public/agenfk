@@ -204,6 +204,19 @@ const SCHEMA_SQLITE = `
   -- rollups_daily, dashboards) is deliberately untouched — the hide only
   -- affects go-forward behaviour and is fully reversible by deleting the
   -- row.
+  -- Audit trail for identity merges (CGLAB-65). A merge rewrites history, so
+  -- who did it, when, and how much moved must be recoverable afterwards.
+  CREATE TABLE IF NOT EXISTS user_key_merges (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    from_user_key TEXT NOT NULL,
+    to_user_key TEXT NOT NULL,
+    events_moved INTEGER NOT NULL DEFAULT 0,
+    merged_by_user_id TEXT,
+    merged_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,

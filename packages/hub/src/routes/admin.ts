@@ -9,6 +9,7 @@ import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { recomputeRollups } from '../rollup.js';
 
 interface AuthConfigRow {
   org_id: string;
@@ -226,6 +227,105 @@ export function adminRouter(ctx: HubServerContext): Router {
           retiredByEmail: r.retired_by_email ?? null,
         })),
     );
+  });
+
+  // ── Identity merge (CGLAB-65) ─────────────────────────────────────────────
+  //
+  // Dashboards and rollups_daily are keyed on user_key — the lowercased git
+  // email, falling back to the OS username (routes/events.ts userKeyFor) — never
+  // on installation_id. So re-attributing a person's history is a user_key
+  // merge, not an installation_id rewrite: installation_id is immutable
+  // provenance and stays put. Two real cases: a developer's git email changed,
+  // or an install with no git config created a phantom osUser identity sitting
+  // beside the real person.
+
+  router.post('/user-keys/merge', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const from = String(req.body?.from ?? '').trim().toLowerCase();
+    const to = String(req.body?.to ?? '').trim().toLowerCase();
+    if (!from || !to) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+    if (from === to) { res.status(400).json({ error: 'Cannot merge a user key onto itself' }); return; }
+
+    // Ordering guard. Merging while the source can still ingest means new
+    // events keep landing under the old key behind us, so the repair silently
+    // undoes itself. Retire the installation (or revoke its key) first.
+    const live = await ctx.db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM api_keys
+        WHERE org_id = ? AND revoked_at IS NULL
+          AND installation_id IN (
+            SELECT id FROM installations WHERE org_id = ? AND lower(git_email) = ?
+          )`,
+      [orgId, orgId, from],
+    );
+    if (live && Number(live.n) > 0) {
+      res.status(409).json({
+        error: `Refusing to merge: ${live.n} live api key(s) still bound to "${from}". `
+             + 'Retire those installations (or revoke the keys) first, otherwise new events '
+             + 'keep arriving under the old key after the merge.',
+      });
+      return;
+    }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    // Oldest affected day, captured BEFORE the rewrite — afterwards these rows
+    // no longer match the source key and the range would be unrecoverable.
+    const span = await ctx.db.get<{ first_day: string | null }>(
+      `SELECT MIN(date(occurred_at)) AS first_day FROM events WHERE org_id = ? AND user_key = ?`,
+      [orgId, from],
+    );
+    const sourceHidden = await ctx.db.get(
+      'SELECT 1 AS x FROM hidden_users WHERE org_id = ? AND user_key = ?',
+      [orgId, from],
+    );
+    const sourceWasHidden = !!sourceHidden;
+
+    let eventsMoved = 0;
+    await ctx.db.transaction(async () => {
+      const moved = await ctx.db.run(
+        'UPDATE events SET user_key = ? WHERE org_id = ? AND user_key = ?',
+        [to, orgId, from],
+      );
+      eventsMoved = moved.changes;
+
+      // The recompute can never remove these: with no events left carrying the
+      // source key, its upsert produces no group and the stale per-day rows
+      // would keep the retired identity on the dashboard forever.
+      await ctx.db.run('DELETE FROM rollups_daily WHERE org_id = ? AND user_key = ?', [orgId, from]);
+
+      // Without this the next ingested event rebuilds the old key from the
+      // installation's git_email and the merge undoes itself.
+      await ctx.db.run(
+        'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = ?',
+        [to, orgId, from],
+      );
+
+      // Deliberately NOT inherited by the target: a merge asserts the two keys
+      // are the same human, and silently hiding an active developer would stop
+      // their ingest. Reported instead, so an admin can re-hide on purpose.
+      if (sourceWasHidden) {
+        await ctx.db.run('DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?', [orgId, from]);
+      }
+
+      await ctx.db.run(
+        `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, merged_by_user_id, merged_by_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), orgId, from, to, eventsMoved, req.session!.userId ?? null, actorEmail],
+      );
+    });
+
+    // Outside the transaction: recompute is idempotent and re-runnable, and
+    // holding a write transaction across a full-history scan would block ingest.
+    let daysRecomputed = 0;
+    if (eventsMoved > 0) {
+      daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day })).days;
+    }
+
+    res.json({ from, to, eventsMoved, daysRecomputed, sourceWasHidden });
   });
 
   // ── Installation retirement (CGLAB-64) ────────────────────────────────────

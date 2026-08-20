@@ -186,6 +186,19 @@ const SCHEMA_PG = `
   -- People hidden by an admin (CGLAB-31). See the SQLite schema for the
   -- full rationale — selection surfaces only, historical data untouched,
   -- reversible by row delete.
+  -- Audit trail for identity merges (CGLAB-65). A merge rewrites history, so
+  -- who did it, when, and how much moved must be recoverable afterwards.
+  CREATE TABLE IF NOT EXISTS user_key_merges (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    from_user_key TEXT NOT NULL,
+    to_user_key TEXT NOT NULL,
+    events_moved INTEGER NOT NULL DEFAULT 0,
+    merged_by_user_id TEXT,
+    merged_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,
