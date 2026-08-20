@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye, Archive, ArchiveRestore } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
+import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
@@ -520,6 +521,9 @@ interface InstallationRow {
   gitName: string | null;
   gitEmail: string | null;
   hidden?: boolean;
+  retired?: boolean;
+  retiredAt?: string | null;
+  retiredByEmail?: string | null;
 }
 
 interface HiddenPersonRow {
@@ -533,10 +537,18 @@ export function AdminInstallations() {
   // CGLAB-31: hidden people are excluded server-side by default; the toggle
   // re-fetches with ?includeHidden=1 and flags them inline.
   const [showHidden, setShowHidden] = useState(false);
+  // CGLAB-64: retired installations are excluded server-side too, on their own
+  // flag, so an admin can review dead endpoints without un-hiding people.
+  const [showRetired, setShowRetired] = useState(false);
   const installations = useQuery<InstallationRow[]>({
-    queryKey: ['admin-installations', showHidden],
-    queryFn: async () =>
-      (await api.get(showHidden ? '/v1/admin/installations?includeHidden=1' : '/v1/admin/installations')).data,
+    queryKey: ['admin-installations', showHidden, showRetired],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (showHidden) params.set('includeHidden', '1');
+      if (showRetired) params.set('includeRetired', '1');
+      const qs = params.toString();
+      return (await api.get(`/v1/admin/installations${qs ? `?${qs}` : ''}`)).data;
+    },
   });
   const hiddenPeople = useQuery<HiddenPersonRow[]>({
     queryKey: ['admin-hidden-users'],
@@ -556,10 +568,21 @@ export function AdminInstallations() {
     mutationFn: (userKey: string) => api.delete(`/v1/admin/hidden-users/${encodeURIComponent(userKey)}`),
     onSuccess: invalidate,
   });
+  const retire = useMutation({
+    mutationFn: (id: string) => api.post(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
+    onSuccess: invalidate,
+  });
+  const unretire = useMutation({
+    mutationFn: (id: string) => api.delete(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
+    onSuccess: invalidate,
+  });
 
   const rows = installations.data ?? [];
   const { visible, hidden: hiddenRows } = partitionHiddenRows(rows);
   const hiddenCount = hiddenPeople.data?.length ?? hiddenRows.length;
+  // Only meaningful once includeRetired=1 has loaded them; before that the
+  // server has already filtered them out, so the count reads 0.
+  const retiredCount = countRetired(rows);
 
   return (
     <div className="space-y-6">
@@ -581,6 +604,17 @@ export function AdminInstallations() {
                 {showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
               </button>
             )}
+            {/* Always available: the server filters retired rows out by default,
+                so their count is unknowable until the toggle loads them — which
+                is why this label only counts once they are on screen. */}
+            <button
+              onClick={() => setShowRetired(v => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
+              title="Retired installations are dead endpoints, excluded from upgrade and repoint campaigns"
+            >
+              {showRetired ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
+              {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}
+            </button>
             <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
@@ -598,11 +632,19 @@ export function AdminInstallations() {
             </thead>
             <tbody className="divide-y divide-border-soft">
               {rows.map(r => (
-                <tr key={r.id} className={`hover:bg-chip transition-colors ${r.hidden ? 'opacity-50' : ''}`}>
+                <tr key={r.id} className={`hover:bg-chip transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
                     <span className="font-mono text-[11px] text-ink-secondary">{r.id}</span>
                     {r.hidden && (
                       <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">hidden</span>
+                    )}
+                    {r.retired && (
+                      <span
+                        className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
+                        title={r.retiredByEmail ? `Retired by ${r.retiredByEmail}` : 'Retired'}
+                      >
+                        retired
+                      </span>
                     )}
                   </td>
                   <td className="px-2 py-2.5">
@@ -635,6 +677,26 @@ export function AdminInstallations() {
                         title="Hide this person from selection surfaces"
                       >
                         <EyeOff className="w-3.5 h-3.5" /> Hide
+                      </button>
+                    )}
+                    {canRetireRow(r) && (
+                      <button
+                        onClick={() => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); }}
+                        disabled={retire.isPending}
+                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-red-600 dark:hover:text-red-400"
+                        title="Retire this dead installation so campaigns stop waiting on it"
+                      >
+                        <Archive className="w-3.5 h-3.5" /> Retire
+                      </button>
+                    )}
+                    {canUnretireRow(r) && (
+                      <button
+                        onClick={() => unretire.mutate(r.id)}
+                        disabled={unretire.isPending}
+                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-accent-text"
+                        title="Restore this installation to the fleet (revoked keys are not restored)"
+                      >
+                        <ArchiveRestore className="w-3.5 h-3.5" /> Restore
                       </button>
                     )}
                   </td>
