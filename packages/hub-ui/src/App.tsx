@@ -11,6 +11,7 @@ import { ConnectPage } from './pages/Connect';
 import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } from './pages/Admin';
 import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
+import { AdminRepoint } from './pages/AdminRepoint';
 import { AdminOrg } from './pages/AdminOrg';
 import { Layout } from './components/Layout';
 
@@ -61,6 +62,7 @@ export function App() {
         <Route path="flows" element={<AdminFlows />} />
         <Route path="upgrades" element={<AdminUpgrades />} />
         <Route path="installations" element={<AdminInstallations />} />
+        <Route path="repoint" element={<AdminRepoint />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>
