@@ -1,3 +1,9 @@
+// Node 26 ships a global `localStorage` that is undefined without
+// --localstorage-file, and Vitest copies it onto the jsdom window, clobbering
+// jsdom's own. Share the root shim rather than duplicating it — this suite has
+// its own runner (packages/ui/vitest.config.ts) so the root setupFiles entry
+// does not reach it.
+import '../../../../vitest.setup';
 import '@testing-library/jest-dom';
 import { vi } from 'vitest';
 import * as React from 'react';

@@ -12,6 +12,10 @@ export interface FlusherStatus {
   lastError: string | null;
   outboxDepth: number;
   halted: boolean;
+  /** Consecutive failed delivery attempts; reset by any successful flush. */
+  consecutiveFailures: number;
+  /** When the next attempt becomes eligible, if currently backing off. */
+  nextRetryAt?: string | null;
 }
 
 export type RecordEventInput = Omit<HubEvent, 'eventId' | 'installationId' | 'orgId' | 'occurredAt' | 'actor'> & {

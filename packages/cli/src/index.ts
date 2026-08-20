@@ -14,6 +14,15 @@ import { followValidateRun } from './verifyRun.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 
+/**
+ * Consecutive delivery failures before the startup banner warns. A halted
+ * flusher warns immediately; this covers the stuck-but-not-halted case (moved
+ * hub URL, proxy in the way) that used to be invisible. Three cycles is a
+ * couple of minutes at the default 30s interval — long enough to ride out a
+ * laptop waking up, short enough to notice before the outbox grows.
+ */
+const STUCK_FAILURE_THRESHOLD = 3;
+
 const program = new Command();
 const API_URL = getApiUrl();
 
@@ -427,6 +436,15 @@ async function warnIfHubFlusherHalted(): Promise<void> {
       console.error(chalk.yellow(
         `⚠ Hub flusher halted (last error: ${data.lastError ?? 'unknown'}). ` +
         `Run \`agenfk hub status\` for details, or \`agenfk hub login --url <hub>\` to re-authenticate.`
+      ));
+    } else if (Number(data?.consecutiveFailures) >= STUCK_FAILURE_THRESHOLD) {
+      // A hub that has moved, or a proxy in the way, no longer halts — it backs
+      // off and retries forever. Without this the outbox would grow silently
+      // while `agenfk hub status` reported a cheerful "Halted: no".
+      console.error(chalk.yellow(
+        `⚠ Hub events are not being delivered — ${data.consecutiveFailures} consecutive failures, ` +
+        `${data.outboxDepth ?? '?'} queued (last error: ${data.lastError ?? 'unknown'}). ` +
+        `Run \`agenfk hub status\`; if the hub moved, \`agenfk hub repoint --url <hub>\`.`
       ));
     }
   } catch {

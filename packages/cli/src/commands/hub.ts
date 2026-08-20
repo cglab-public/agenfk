@@ -259,7 +259,13 @@ export function registerHubCommands(program: Command): void {
         console.log(`Outbox:    ${data.outboxDepth} pending`);
         console.log(`Last flush: ${data.lastFlushAt ?? 'never'}`);
         console.log(`Last error: ${data.lastError ?? 'none'}`);
-        console.log(`Halted:    ${data.halted ? 'YES (4xx threshold reached)' : 'no'}`);
+        console.log(`Halted:    ${data.halted ? 'YES (hub rejected us repeatedly)' : 'no'}`);
+        console.log(`Failures:  ${data.consecutiveFailures ?? 0} consecutive`);
+        if (data.nextRetryAt) console.log(`Next retry: ${data.nextRetryAt}`);
+        if (!data.halted && Number(data.consecutiveFailures) > 0) {
+          // Not halted but not delivering either — the case that used to be silent.
+          console.log(chalk.yellow('  Events are queued and retrying. If the hub moved, run `agenfk hub repoint --url <hub>`.'));
+        }
       } catch (e: any) {
         console.log(chalk.gray(`  (API server not reachable: ${e?.message ?? 'unknown error'})`));
       }
