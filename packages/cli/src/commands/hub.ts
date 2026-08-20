@@ -73,6 +73,28 @@ async function stampPendingOutbox(orgId: string): Promise<void> {
   } catch { /* best-effort — boot-time stamping covers this */ }
 }
 
+
+/**
+ * Ask the running API server to adopt the hub.json we just wrote. Without this
+ * the Flusher keeps presenting the credential it was constructed with, so a
+ * re-login left the outbox stranded until a restart. Best-effort: if the server
+ * is not running, the next `agenfk up` reads the file anyway.
+ */
+async function reloadServerHubConfig(): Promise<'reloaded' | 'unchanged' | 'unavailable'> {
+  const token = readVerifyToken();
+  if (!token) return 'unavailable';
+  try {
+    const { data } = await axios.post(
+      `${getApiUrl()}/internal/hub/reload`,
+      {},
+      { headers: { 'x-agenfk-internal': token }, timeout: 5000 },
+    );
+    return data?.changed ? 'reloaded' : 'unchanged';
+  } catch {
+    return 'unavailable';
+  }
+}
+
 export function registerHubCommands(program: Command): void {
   const hub = program.command('hub').description('Corporate Hub: forward events to a self-hosted fleet metrics server');
 
@@ -105,7 +127,11 @@ export function registerHubCommands(program: Command): void {
         }
         writeHubConfig(cfg);
         await stampPendingOutbox(cfg.orgId);
-        console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+        const applied = await reloadServerHubConfig();
+        console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
+        console.log(applied === 'unavailable'
+          ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
+          : chalk.gray('  Running server is now pushing events with this config.'));
         return;
       }
 
@@ -140,7 +166,11 @@ export function registerHubCommands(program: Command): void {
             const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
             writeHubConfig(cfg);
             await stampPendingOutbox(cfg.orgId);
-            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+            const applied = await reloadServerHubConfig();
+            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
+            console.log(applied === 'unavailable'
+              ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
+              : chalk.gray('  Running server is now pushing events with this config.'));
             return;
           }
           if (data.status === 'expired') {
@@ -369,6 +399,13 @@ export function registerHubCommands(program: Command): void {
 
       if (opts.restart === false) {
         console.log(chalk.gray('Skipping restart per --no-restart. Run `agenfk down && agenfk up` when convenient.'));
+        return;
+      }
+      // Prefer an in-place reload: it swaps the hub subsystems onto the new
+      // config without dropping the API server, which a full down/up does.
+      const applied = await reloadServerHubConfig();
+      if (applied !== 'unavailable') {
+        console.log(chalk.green('✓ Running server adopted the new hub config (no restart needed).'));
         return;
       }
       let servicesRunning = false;

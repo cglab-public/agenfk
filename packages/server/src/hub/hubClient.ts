@@ -54,6 +54,30 @@ export class HubClient {
   }
 
   /**
+   * Re-read the hub config and adopt it. Returns whether anything changed.
+   *
+   * Needed because the credential is baked in at construction: the Flusher's
+   * axios instance carries the Authorization header it was built with, so after
+   * `agenfk hub login` issues a replacement token the running server would keep
+   * presenting the revoked one — and its recovery probe would keep failing —
+   * until someone restarted it, stranding a perfectly deliverable outbox.
+   *
+   * The caller is responsible for restarting the subsystems that captured the
+   * old config (see startHubSubsystems in server.ts); this only updates what
+   * HubClient itself stamps onto events.
+   */
+  reloadConfig(loader: () => HubConfig | null = loadHubConfig): boolean {
+    const next = loader();
+    const before = this.config;
+    const same = before?.url === next?.url
+      && before?.token === next?.token
+      && before?.orgId === next?.orgId;
+    if (same) return false;
+    this.config = next;
+    return true;
+  }
+
+  /**
    * Append an event to the local outbox. Synchronous and best-effort: never
    * throws on the request path. The flusher will deliver it later.
    *

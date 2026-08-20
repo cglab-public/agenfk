@@ -435,7 +435,7 @@ async function warnIfHubFlusherHalted(): Promise<void> {
     if (data?.halted) {
       console.error(chalk.yellow(
         `⚠ Hub flusher halted (last error: ${data.lastError ?? 'unknown'}). ` +
-        `Run \`agenfk hub status\` for details, or \`agenfk hub login --url <hub>\` to re-authenticate.`
+        `Run \`agenfk hub status\` for details, or \`agenfk hub login --url <hub>\` to re-authenticate — \n  that now takes effect immediately, without restarting the server.`
       ));
     } else if (Number(data?.consecutiveFailures) >= STUCK_FAILURE_THRESHOLD) {
       // A hub that has moved, or a proxy in the way, no longer halts — it backs
