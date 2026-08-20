@@ -145,6 +145,23 @@ describe('repoint campaign (hub side)', () => {
       expect(String(r.body.error)).toMatch(/https/i);
     });
 
+    it.each([
+      'https://127.0.0.1',
+      'https://localhost',
+      'https://10.0.0.5',
+      'https://169.254.169.254',
+      'https://hub.internal',
+    ])('rejects the private target %s', async (url) => {
+      // Every installation in the org would fetch this with its live bearer
+      // token, turning a campaign into a token-harvest.
+      const r = await openCampaign(url);
+      expect(r.status).toBe(400);
+    });
+
+    it('rejects a target carrying userinfo', async () => {
+      expect((await openCampaign('https://evil@hub.new.example')).status).toBe(400);
+    });
+
     it('rejects a malformed target', async () => {
       expect((await openCampaign('not-a-url')).status).toBe(400);
     });
@@ -201,6 +218,24 @@ describe('repoint campaign (hub side)', () => {
       await openCampaign();
 
       expect((await directiveFor(orgToken)).status).toBe(204);
+    });
+
+    it('204s for a hidden person, who could never complete one', async () => {
+      // Their events are dropped at ingest before the transition runs, so
+      // handing them a directive would have them rewriting hub.json and
+      // reporting into the void forever while the board showed plain pending.
+      //
+      // Hiding also revokes their keys, so the poll normally 401s before
+      // reaching this filter; the key is re-issued here to exercise the filter
+      // itself, which is the backstop for a key issued after the hide.
+      await supertest(app).post('/v1/admin/hidden-users')
+        .set('Cookie', cookieAdmin).send({ userKey: 'a@acme.com' });
+      await openCampaign();
+      const fresh = await issueApiKey(ctx.db, 'org-a', 'post-hide', { installationId: 'inst-1' } as any);
+
+      expect((await directiveFor(fresh)).status).toBe(204);
+      // The unhidden peer still gets one, proving the filter is not blanket.
+      expect((await directiveFor(token2)).status).toBe(200);
     });
 
     it('204s after the campaign is closed', async () => {
@@ -290,6 +325,56 @@ describe('repoint campaign (hub side)', () => {
     });
   });
 
+  describe('completion cannot be forged', () => {
+    it('refuses a repoint report from a legacy org-wide key', async () => {
+      // Such a key is bound to no installation, so one holder could otherwise
+      // post 'succeeded' for every install in the org, the board would read
+      // drained, and the admin would drop a DNS record the fleet still needs.
+      const orgToken = await issueApiKey(ctx.db, 'org-a', 'legacy');
+      const c = await openCampaign();
+
+      await report(orgToken, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL }, NEW_HOST);
+      await report(orgToken, 'inst-2', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL }, NEW_HOST);
+
+      expect((await targetState(c.body.id, 'inst-1')).state).toBe('pending');
+      expect((await targetState(c.body.id, 'inst-2')).state).toBe('pending');
+      expect((await board()).body.drained).toBe(false);
+    });
+
+    it('ignores a client-appended X-Forwarded-Host hop', async () => {
+      // Nothing strips this header, so its leftmost element is attacker-chosen.
+      // A proxy appends, meaning the trustworthy hop is the LAST one.
+      const c = await openCampaign();
+
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
+        `${NEW_HOST}, hub.old.example`);
+
+      expect((await targetState(c.body.id, 'inst-1')).state).toBe('pending');
+    });
+
+    it('accepts the real host when a proxy appended it last', async () => {
+      const c = await openCampaign();
+
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
+        `hub.internal, ${NEW_HOST}`);
+
+      expect((await targetState(c.body.id, 'inst-1')).state).toBe('succeeded');
+    });
+  });
+
+  describe('campaign selection is consistent', () => {
+    it('serves the same campaign the board reports', async () => {
+      // A board watching one campaign while clients confirm another shows 100%
+      // pending forever with no way to reach the other one.
+      const c = await openCampaign();
+      const d = await directiveFor(token1);
+      const b = await board();
+
+      expect(d.body.campaignId).toBe(b.body.campaign.id);
+      expect(d.body.campaignId).toBe(c.body.id);
+    });
+  });
+
   describe('drain board', () => {
     it('reports per-state counts and rows', async () => {
       const c = await openCampaign();
@@ -332,6 +417,19 @@ describe('repoint campaign (hub side)', () => {
       await report(token2, 'inst-2', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL }, NEW_HOST);
 
       expect((await board()).body.drained).toBe(false);
+    });
+
+    it('counts as drained once every remaining installation is retired', async () => {
+      // The documented escape hatch must not invert when it is used on all of
+      // them: nothing is left resolving the old name, so it is safe to drop.
+      const c = await openCampaign();
+      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(app).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
+
+      const r = await board();
+
+      expect(r.body.targets).toHaveLength(0);
+      expect(r.body.drained).toBe(true);
     });
 
     it('retiring a stale installation drains the campaign', async () => {

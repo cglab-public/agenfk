@@ -65,8 +65,9 @@ describe('recomputeRollups bounded modes', () => {
 
     // The stale January row survives — this is the documented limitation the
     // bounded mode exists to fix, and the reason a merge cannot rely on the
-    // default path.
-    expect(rollup('dev@acme.com', '2026-01-10')).toBeTruthy();
+    // default path. (The await matters: without it this asserts that a Promise
+    // is truthy, which is unconditionally true.)
+    expect(await rollup('dev@acme.com', '2026-01-10')).toBeTruthy();
     expect(await rollup('moved@acme.com', '2026-01-10')).toBeFalsy();
   });
 

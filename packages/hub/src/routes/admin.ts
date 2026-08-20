@@ -11,6 +11,31 @@ import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 
+/**
+ * Hosts a repoint campaign may never target. Every installation in the org
+ * fetches the target with its live bearer token, so an internal address turns a
+ * campaign into a token-harvest and a host-enumeration probe run from every
+ * developer machine. Syntactic only — a public name resolving inward still gets
+ * through, so this complements network policy rather than replacing it.
+ */
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  if (h.endsWith('.internal') || h.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 127 || a === 0 || a === 10) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+  }
+  return false;
+}
+
 interface AuthConfigRow {
   org_id: string;
   password_enabled: number;
@@ -229,6 +254,26 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   });
 
+  /**
+   * Manual rollup repair. The merge recomputes after its transaction commits
+   * and is not retried, so a crash or a proxy timeout between the two leaves
+   * historical rollups_daily permanently wrong — the periodic timer is
+   * forward-only by design and will never notice. This is the way back.
+   */
+  router.post('/rollups/recompute', guard, async (req: Request, res: Response) => {
+    const since = req.body?.since;
+    const full = req.body?.full === true;
+    if (!full && (typeof since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(since))) {
+      res.status(400).json({ error: 'Pass since as YYYY-MM-DD, or full: true' });
+      return;
+    }
+    const out = await recomputeRollups(ctx.db, {
+      ...(full ? { full: true } : { since }),
+      orgId: req.session!.orgId,
+    });
+    res.json({ days: out.days, since: full ? null : since, full });
+  });
+
   // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
   //
   // Moving the hub to a new DNS name needs no rejoin: clients hold only
@@ -263,6 +308,19 @@ export function adminRouter(ctx: HubServerContext): Router {
       // A plaintext hub would ship org telemetry and a bearer token in clear,
       // and the client refuses such a target anyway.
       res.status(400).json({ error: 'targetUrl must use https' });
+      return;
+    }
+    if (parsed.username || parsed.password) {
+      res.status(400).json({ error: 'targetUrl must not carry userinfo' });
+      return;
+    }
+    if (isPrivateHostname(parsed.hostname)) {
+      // Every installation in the org would fetch this with its live bearer
+      // token. The client refuses these too; rejecting here means an admin
+      // finds out immediately instead of via a board full of failures.
+      res.status(400).json({
+        error: 'targetUrl must not be a private, loopback, link-local or internal address',
+      });
       return;
     }
     if (await openCampaign(orgId)) {
@@ -329,10 +387,12 @@ export function adminRouter(ctx: HubServerContext): Router {
         createdAt: campaign.created_at,
       },
       counts,
-      // Drained means every remaining (non-retired) installation has confirmed
-      // on the new hostname — the one condition under which dropping the old
-      // DNS record is safe.
-      drained: rows.length > 0 && rows.every((r: any) => r.state === 'succeeded'),
+      // Drained means nothing non-retired is left un-moved: either every
+      // remaining installation confirmed on the new hostname, or the stragglers
+      // were retired. Requiring rows.length > 0 would invert the documented
+      // escape hatch — retiring the LAST install would wedge the campaign
+      // permanently instead of finishing it.
+      drained: rows.every((r: any) => r.state === 'succeeded'),
       targets: rows.map((r: any) => ({
         installationId: r.installation_id,
         state: r.state,
@@ -369,21 +429,38 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.post('/user-keys/merge', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const from = String(req.body?.from ?? '').trim().toLowerCase();
-    const to = String(req.body?.to ?? '').trim().toLowerCase();
+    // Preserve case: userKeyFor lowercases gitEmail only, so an osUser-derived
+    // key ('Daniel', 'DPolistchuck' on Windows) is stored as-is. Lowercasing the
+    // input made those keys unaddressable — the UPDATE matched nothing and the
+    // endpoint answered 200 with eventsMoved 0, a silent no-op reported as
+    // success. Self-merge is still compared case-insensitively.
+    const from = String(req.body?.from ?? '').trim();
+    const to = String(req.body?.to ?? '').trim();
     if (!from || !to) { res.status(400).json({ error: 'Both from and to are required' }); return; }
-    if (from === to) { res.status(400).json({ error: 'Cannot merge a user key onto itself' }); return; }
+    if (from.toLowerCase() === to.toLowerCase()) {
+      res.status(400).json({ error: 'Cannot merge a user key onto itself' });
+      return;
+    }
 
     // Ordering guard. Merging while the source can still ingest means new
     // events keep landing under the old key behind us, so the repair silently
     // undoes itself. Retire the installation (or revoke its key) first.
+    // Mirror userKeyFor: an installation with no git email produces its
+    // os_user as the key. Matching only lower(git_email) left exactly the
+    // phantom-identity installs this endpoint exists for invisible to the
+    // guard, so the merge committed and their next event recreated the key.
     const live = await ctx.db.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM api_keys
         WHERE org_id = ? AND revoked_at IS NULL
           AND installation_id IN (
-            SELECT id FROM installations WHERE org_id = ? AND lower(git_email) = ?
+            SELECT id FROM installations
+             WHERE org_id = ?
+               AND (
+                 (git_email IS NOT NULL AND git_email <> '' AND lower(git_email) = lower(?))
+                 OR ((git_email IS NULL OR git_email = '') AND os_user = ?)
+               )
           )`,
-      [orgId, orgId, from],
+      [orgId, orgId, from, from],
     );
     if (live && Number(live.n) > 0) {
       res.status(409).json({
@@ -428,7 +505,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       // Without this the next ingested event rebuilds the old key from the
       // installation's git_email and the merge undoes itself.
       await ctx.db.run(
-        'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = ?',
+        'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
         [to, orgId, from],
       );
 
@@ -450,7 +527,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // holding a write transaction across a full-history scan would block ingest.
     let daysRecomputed = 0;
     if (eventsMoved > 0) {
-      daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day })).days;
+      daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day, orgId })).days;
     }
 
     res.json({ from, to, eventsMoved, daysRecomputed, sourceWasHidden });
@@ -1092,9 +1169,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (scope.type === 'all') {
       // CGLAB-31: fleet-wide directives skip hidden people's installations —
       // a departed user's machine must not receive upgrade pushes.
+      // CGLAB-64: and retired installations. Their keys were revoked when they
+      // were retired, so they can never poll or report — targeting them hangs
+      // the upgrade board on machines that are never coming back, which is the
+      // exact failure retirement exists to prevent.
       installations = await ctx.db.all<Inst>(
         `SELECT i.id, i.agenfk_version FROM installations i
           WHERE i.org_id = ?
+            AND i.retired_at IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM hidden_users h
                WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
@@ -1140,6 +1222,20 @@ export function adminRouter(ctx: HubServerContext): Router {
         return res.status(409).json({
           error: 'One or more installations belong to a hidden person. Unhide them first to target their installations.',
           hidden: hiddenTargets.map(t => t.id),
+        });
+      }
+      // Same treatment for retired installations: scope=all skips them, an
+      // explicit name is a deliberate act we refuse rather than silently queue
+      // work a revoked key can never collect. (CGLAB-64.)
+      const retiredTargets = await ctx.db.all<{ id: string }>(
+        `SELECT id FROM installations
+          WHERE org_id = ? AND retired_at IS NOT NULL AND id IN (${placeholders})`,
+        [orgId, ...ids],
+      );
+      if (retiredTargets.length > 0) {
+        return res.status(409).json({
+          error: 'One or more installations are retired. Restore them first to target them.',
+          retired: retiredTargets.map(t => t.id),
         });
       }
     }

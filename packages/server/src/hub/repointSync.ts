@@ -45,6 +45,33 @@ export type VerifyResult = { ok: true } | { ok: false; error: string };
 
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Hosts a campaign may never point at. Every fleet machine fetches the target
+ * with its live bearer token, so an unconstrained target turns a campaign into
+ * a token-harvest and an internal-host enumeration probe run from every dev
+ * laptop in the org.
+ *
+ * This is a syntactic guard, not a substitute for network policy: a public name
+ * resolving to a private address still gets through, and DNS can change between
+ * check and use.
+ */
+function isDisallowedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  if (h.endsWith('.internal') || h.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 127 || a === 0 || a === 10) return true;
+    if (a === 169 && b === 254) return true;          // link-local / cloud metadata
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+  }
+  return false;
+}
+
 const defaultGet: GetImpl = (url, opts) =>
   axios.get(url, { timeout: REQUEST_TIMEOUT_MS, headers: opts?.headers });
 
@@ -73,16 +100,32 @@ export async function verifyRepointTarget(input: {
   if (parsed.protocol !== 'https:') {
     return { ok: false, error: 'Refusing a non-https hub target: it would ship telemetry and a bearer token in clear' };
   }
-  // The hub derives allowed_host from the campaign's own target URL, so a
-  // mismatch here means the directive was altered between them and us.
+  if (parsed.username || parsed.password) {
+    // Would send basic-auth credentials to the real hub while still passing a
+    // host comparison.
+    return { ok: false, error: 'Refusing a hub target that carries userinfo' };
+  }
+  // Exact host match, so hub.new.example.evil.test cannot pass as
+  // hub.new.example. Note the allow-list arrives in the same response as the
+  // target, so this defends against a mangled or truncated directive — NOT
+  // against a hub that is itself compromised, which would simply send a
+  // consistent pair. Constraining that is an operator-side allow-list.
   if (parsed.hostname.toLowerCase() !== input.allowedHost.trim().toLowerCase()) {
     return {
       ok: false,
       error: `Target host "${parsed.hostname}" is not the campaign's allowed host "${input.allowedHost}"`,
     };
   }
+  if (isDisallowedHost(parsed.hostname)) {
+    return {
+      ok: false,
+      error: `Refusing "${parsed.hostname}": private, loopback, link-local and internal addresses are not valid hub targets`,
+    };
+  }
 
-  const base = input.targetUrl.replace(/\/$/, '');
+  // Probe the ORIGIN. Chopping the raw string would turn
+  // "https://h/?x=1" into "https://h/?x=1/healthz".
+  const base = parsed.origin;
   try {
     const { data } = await get(`${base}/healthz`);
     if (!data || typeof data !== 'object' || (data as any).service !== 'agenfk-hub') {
@@ -123,6 +166,13 @@ export interface ReconcileRepointArgs {
   /** Value of AGENFK_HUB_URL, which overrides hub.json entirely. */
   envHubUrl?: string | null;
   writeConfigImpl: (cfg: HubConfig) => void;
+  /**
+   * Point this process's hub transport at the new config. Required, because the
+   * flusher's baseURL is fixed at construction and nothing re-reads hub.json —
+   * without it the success report goes to the OLD host, the hub refuses it, and
+   * the target is reset to pending on every tick forever.
+   */
+  rebuildTransportImpl?: (cfg: HubConfig) => Promise<void>;
   recordEvent: RecordRepointEvent;
   flushNow: (timeoutMs?: number) => Promise<void>;
   fetchImpl?: FetchRepointImpl;
@@ -197,9 +247,27 @@ export async function reconcileRepointDirective(args: ReconcileRepointArgs): Pro
       return;
     }
 
-    const target = directive.targetUrl.replace(/\/$/, '');
+    const target = new URL(directive.targetUrl).origin;
+    const cfg: HubConfig = { url: target, token: args.hubToken, orgId: args.orgId };
     if (target !== args.hubUrl.replace(/\/$/, '')) {
-      args.writeConfigImpl({ url: target, token: args.hubToken, orgId: args.orgId });
+      args.writeConfigImpl(cfg);
+      if (args.rebuildTransportImpl) {
+        try {
+          await args.rebuildTransportImpl(cfg);
+        } catch (e: any) {
+          // Reporting now would push the confirmation through the old transport,
+          // where the hub rightly refuses it and resets us to pending — leaving
+          // an error on the board the admin cannot act on. Stay quiet and let
+          // the next tick retry.
+          console.error('[HUB_REPOINT_SYNC] could not rebuild transport:', e?.message ?? e);
+          return;
+        }
+      }
+      // Follow the move ourselves. startRepointSync closes over this same args
+      // object, so without this every later tick would still see the old url and
+      // repoint again — rewriting the file and rebuilding the transport on a
+      // loop for as long as the campaign stays open.
+      args.hubUrl = target;
     }
     // Confirm even when already on the target: the hub still needs the report
     // to move this target out of pending, or the campaign never drains.

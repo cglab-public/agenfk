@@ -614,7 +614,20 @@ const initStorage = async () => {
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
         try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
-        console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; restart to pick it up.`);
+      },
+      // Swap the live transport in-process. The Flusher bakes its baseURL and
+      // bearer token in at construction and nothing re-reads hub.json, so
+      // without this the confirmation would be POSTed to the OLD host — where
+      // the hub correctly refuses it and resets the target to pending, forever.
+      // The outbox is in SQLite, not in the Flusher, so the pending
+      // confirmation survives the swap.
+      rebuildTransportImpl: async (cfg) => {
+        const previous = hubFlusher;
+        previous?.stop();
+        const next = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
+        next.start();
+        hubFlusher = next;
+        console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; transport rebuilt.`);
       },
       recordEvent,
       flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),

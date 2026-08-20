@@ -163,6 +163,50 @@ describe('user_key merge admin API', () => {
     });
   });
 
+  describe('osUser-derived keys (the phantom-identity case)', () => {
+    it('merges a key containing uppercase, which userKeyFor never lowercases', async () => {
+      // userKeyFor lowercases gitEmail only, so an osUser fallback key keeps its
+      // case. Force-lowercasing the input made these keys unaddressable: the
+      // UPDATE matched nothing and the endpoint answered 200 / eventsMoved 0.
+      await addEvent('e1', 'Daniel', '2026-02-01');
+
+      const r = await merge('Daniel', 'dev@acme.com');
+
+      expect(r.status).toBe(200);
+      expect(r.body.eventsMoved).toBe(1);
+      expect(await eventKeys()).toEqual(['dev@acme.com']);
+    });
+
+    it('refuses while an installation with no git email still holds a live key', async () => {
+      // Its user_key comes from os_user, so a guard matching only on
+      // lower(git_email) cannot see it — and the machine recreates the key on
+      // its very next event, silently undoing the merge.
+      await ctx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+         VALUES ('inst-noemail', 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, null)`,
+      );
+      await seedApiKey('hash-live', 'inst-noemail');
+      await addEvent('e1', 'dev', '2026-02-01');
+
+      const r = await merge('dev', 'dev@acme.com');
+
+      expect(r.status).toBe(409);
+      expect(await eventKeys()).toEqual(['dev']); // nothing moved
+    });
+
+    it('proceeds for a no-git-email installation once its key is revoked', async () => {
+      await ctx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+         VALUES ('inst-noemail', 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, null)`,
+      );
+      await seedApiKey('hash-live', 'inst-noemail');
+      await ctx.db.run("UPDATE api_keys SET revoked_at = datetime('now') WHERE token_hash = 'hash-live'");
+      await addEvent('e1', 'dev', '2026-02-01');
+
+      expect((await merge('dev', 'dev@acme.com')).status).toBe(200);
+    });
+  });
+
   describe('rollups', () => {
     it('sums the two identities per day instead of colliding on the primary key', async () => {
       // Both keys have activity on the SAME day — a naive UPDATE of
@@ -264,6 +308,40 @@ describe('user_key merge admin API', () => {
       await addEvent('e1', 'dev', '2026-02-01');
 
       expect((await merge('dev', 'dev@acme.com')).status).toBe(200);
+    });
+  });
+
+  describe('manual rollup repair', () => {
+    it('lets an admin re-run the repair a crashed merge would have skipped', async () => {
+      // The merge recomputes after its transaction commits and never retries,
+      // so this is the only way back from a crash in between.
+      await addEvent('e1', 'dev', '2026-02-01');
+      await ctx.db.run('UPDATE events SET user_key = ? WHERE event_id = ?', ['dev@acme.com', 'e1']);
+
+      const r = await supertest(app)
+        .post('/v1/admin/rollups/recompute')
+        .set('Cookie', cookieAdmin)
+        .send({ since: '2026-01-01' });
+
+      expect(r.status).toBe(200);
+      expect(Number((await rollup('dev@acme.com', '2026-02-01')).events_count)).toBe(1);
+    });
+
+    it('accepts full: true', async () => {
+      await addEvent('e1', 'dev@acme.com', '2025-01-01');
+      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ full: true });
+      expect(r.status).toBe(200);
+      expect(r.body.days).toBe(1);
+    });
+
+    it('rejects a malformed since', async () => {
+      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ since: 'yesterday' });
+      expect(r.status).toBe(400);
+    });
+
+    it('rejects a viewer', async () => {
+      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieView).send({ full: true });
+      expect(r.status).toBe(403);
     });
   });
 

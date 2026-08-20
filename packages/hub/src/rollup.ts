@@ -5,6 +5,12 @@ export interface RecomputeOptions {
   since?: string;
   /** Recompute the entire history. Wins over `since`. */
   full?: boolean;
+  /**
+   * Limit the repair to one org. Without it a single tenant's identity merge
+   * recomputes every other tenant's days too — a large, tenant-crossing write
+   * triggered by one org's admin.
+   */
+  orgId?: string;
 }
 
 /**
@@ -32,18 +38,22 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
     const latest = await db.get<{ day: string }>(`SELECT MAX(day) AS day FROM rollups_daily`);
     from = latest?.day ?? null;
   }
+  const orgFilter = opts.orgId ? ' AND org_id = ?' : '';
+  const orgParam = opts.orgId ? [opts.orgId] : [];
   const days = from
     ? await db.all<{ day: string }>(
       `SELECT DISTINCT date(occurred_at) AS day
        FROM events
-       WHERE date(occurred_at) >= ?
+       WHERE date(occurred_at) >= ?${orgFilter}
        ORDER BY day ASC`,
-      [from],
+      [from, ...orgParam],
     )
     : await db.all<{ day: string }>(
       `SELECT DISTINCT date(occurred_at) AS day
        FROM events
+       ${opts.orgId ? 'WHERE org_id = ?' : ''}
        ORDER BY day ASC`,
+      orgParam,
     );
   if (days.length === 0) return { days: 0 };
 
@@ -65,7 +75,7 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
       SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
       SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
     FROM events
-    WHERE date(occurred_at) = ?
+    WHERE date(occurred_at) = ?${orgFilter}
     GROUP BY org_id, user_key, date(occurred_at)
     ON CONFLICT(org_id, user_key, day) DO UPDATE SET
       events_count = excluded.events_count,
@@ -77,11 +87,17 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
       prs_opened = excluded.prs_opened
   `;
 
-  await db.transaction(async () => {
-    for (const { day } of days) {
-      await db.run(upsertSql, [day]);
-    }
-  });
+  // One transaction PER DAY rather than one across the whole range. A
+  // full-history repair would otherwise hold a write transaction open for the
+  // entire scan, and on Postgres the adapter routes every concurrent statement
+  // through the open transaction's client — so a failure late in the scan would
+  // roll back unrelated ingest that happened during it. Per-day also means a
+  // crash leaves earlier days already repaired.
+  for (const { day } of days) {
+    await db.transaction(async () => {
+      await db.run(upsertSql, [day, ...orgParam]);
+    });
+  }
   return { days: days.length };
 }
 

@@ -13,8 +13,15 @@ function userKeyFor(actor: HubEvent['actor']): string {
  * as publicHubUrl in routes/connect.ts.
  */
 function requestHost(req: Request): string | null {
-  const fwd = (req.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim();
-  const host = fwd || (req.headers.host as string | undefined) || null;
+  // X-Forwarded-Host is client-controlled unless a proxy overwrites it, and a
+  // proxy APPENDS — so the leftmost element is whatever the caller supplied and
+  // the rightmost is the last hop that actually handled the request. Taking [0]
+  // would trust exactly the attacker-chosen value.
+  const fwdRaw = req.headers['x-forwarded-host'] as string | undefined;
+  const hops = fwdRaw ? fwdRaw.split(',').map(h => h.trim()).filter(Boolean) : [];
+  const host = (hops.length ? hops[hops.length - 1] : undefined)
+    || (req.headers.host as string | undefined)
+    || null;
   return host ? host.split(':')[0].toLowerCase() : null;
 }
 
@@ -96,14 +103,25 @@ export function eventsRouter(ctx: HubServerContext): Router {
   router.get('/repoint-directive', requireKey, async (req: Request, res: Response) => {
     const installationId = req.hubApiKey!.installationId;
     if (!installationId) return res.status(204).end();
+    // A hidden person's events are dropped at ingest, so such an install would
+    // rewrite hub.json and report forever without ever completing — excluded via
+    // LEFT JOIN + IS NULL, the same idiom as the installations list (NOT EXISTS
+    // with an outer alias is not portable to both backends).
+    //
+    // Newest campaign, matching what GET /v1/admin/repoint reports. Serving the
+    // oldest would have clients confirming one campaign while the board watched
+    // another, showing 100% pending with no explanation.
     const row = await ctx.db.get<{ id: string; target_url: string; allowed_host: string; created_at: string }>(
       `SELECT c.id, c.target_url, c.allowed_host, c.created_at
          FROM repoint_campaign_targets t
          JOIN repoint_campaigns c ON c.id = t.campaign_id
+         JOIN installations i ON i.id = t.installation_id
+         LEFT JOIN hidden_users h ON h.org_id = i.org_id AND h.user_key = lower(i.git_email)
         WHERE t.installation_id = ? AND c.org_id = ?
           AND c.closed_at IS NULL
+          AND h.user_key IS NULL
           AND t.state IN ('pending', 'blocked_by_env', 'failed')
-        ORDER BY c.created_at ASC
+        ORDER BY c.created_at DESC
         LIMIT 1`,
       [installationId, req.hubApiKey!.orgId],
     );
@@ -230,7 +248,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
           || e.type === 'hub:repoint:blocked'
           || e.type === 'hub:repoint:failed') {
           const campaignId = (e.payload as any)?.campaignId;
-          if (typeof campaignId === 'string' && campaignId) {
+          // A legacy org-wide key is bound to no installation, so one holder
+          // could otherwise post 'succeeded' for every install in the org: the
+          // board would read drained and an admin would drop a DNS record the
+          // whole fleet still needs. Such keys get no repoint directive either.
+          if (!keyInstallation) {
+            // fall through without transitioning anything
+          } else if (typeof campaignId === 'string' && campaignId) {
             const campaign = await ctx.db.get<{ allowed_host: string }>(
               'SELECT allowed_host FROM repoint_campaigns WHERE id = ? AND org_id = ?',
               [campaignId, orgId],

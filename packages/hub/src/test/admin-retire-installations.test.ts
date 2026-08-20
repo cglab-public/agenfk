@@ -86,7 +86,9 @@ describe('retire-installation admin API', () => {
       secretKey: SECRET,
       sessionSecret: 'test-session-secret',
       defaultOrgId: 'org-a',
-    });
+      // The upgrade route verifies the release exists before creating targets.
+      releaseExists: async (version: string) => version === '1.2.3',
+    } as any);
     app = out.app;
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
@@ -238,6 +240,38 @@ describe('retire-installation admin API', () => {
     it('404s an unknown installation', async () => {
       const r = await supertest(app).delete('/v1/admin/installations/nope/retire').set('Cookie', cookieAdmin);
       expect(r.status).toBe(404);
+    });
+  });
+
+  describe('retired installations stay out of future campaigns', () => {
+    it('a fleet-wide upgrade directive does not target a retired installation', async () => {
+      // Its keys were just revoked, so it can never poll or report — targeting
+      // it hangs the upgrade board forever, the exact failure retire prevents.
+      await seedInstallation(ctx.db, 'org-a', 'inst-2', 'other@acme.com');
+      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+
+      const r = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '1.2.3', scope: { type: 'all' } });
+
+      expect(r.status).toBeLessThan(400);
+      const rows = await ctx.db.all(
+        'SELECT installation_id FROM upgrade_directive_targets WHERE directive_id = ?',
+        [r.body.directiveId ?? r.body.id],
+      );
+      expect(rows.map((x: any) => x.installation_id)).toEqual(['inst-2']);
+    });
+
+    it('refuses to target a retired installation explicitly', async () => {
+      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+
+      const r = await supertest(app)
+        .post('/v1/admin/upgrade')
+        .set('Cookie', cookieAdmin)
+        .send({ targetVersion: '1.2.3', scope: { type: 'installation', installationId: 'inst-1' } });
+
+      expect(r.status).toBe(409);
     });
   });
 

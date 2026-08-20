@@ -125,6 +125,82 @@ describe('verifyRepointTarget', () => {
   });
 });
 
+describe('verifyRepointTarget private-address guard', () => {
+  const base = { token: TOKEN, orgId: ORG };
+
+  it.each([
+    ['https://127.0.0.1', '127.0.0.1'],
+    ['https://localhost', 'localhost'],
+    ['https://10.1.2.3', '10.1.2.3'],
+    ['https://192.168.0.9', '192.168.0.9'],
+    ['https://172.16.4.5', '172.16.4.5'],
+    ['https://169.254.169.254', '169.254.169.254'],
+    ['https://hub.internal', 'hub.internal'],
+  ])('refuses %s', async (url, host) => {
+    // Every fleet machine would otherwise GET this with its live bearer token,
+    // turning a campaign into an internal-host probe and a token-harvest.
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: url, allowedHost: host, getImpl: makeGet(healthyRoutes),
+    });
+    expect(r).toMatchObject({ ok: false });
+    expect((r as any).error).toMatch(/private|internal|loopback|link-local/i);
+  });
+
+  it('does not contact a refused private address', async () => {
+    const seen: string[] = [];
+    await verifyRepointTarget({
+      ...base, targetUrl: 'https://10.0.0.1', allowedHost: '10.0.0.1',
+      getImpl: makeGet(healthyRoutes, u => seen.push(u)),
+    });
+    expect(seen).toEqual([]);
+  });
+
+  it('still accepts an ordinary public hostname', async () => {
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: NEW_URL, allowedHost: 'hub.new.example', getImpl: makeGet(healthyRoutes),
+    });
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe('verifyRepointTarget URL normalisation', () => {
+  const base = { token: TOKEN, orgId: ORG, allowedHost: 'hub.new.example' };
+
+  it('probes the origin, not a path built by string-chopping the raw input', async () => {
+    // 'https://hub.new.example/?x=1' + '/healthz' would request '/?x=1/healthz'.
+    const seen: string[] = [];
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: 'https://hub.new.example/?x=1',
+      getImpl: makeGet(healthyRoutes, u => seen.push(u)),
+    });
+    expect(r.ok).toBe(true);
+    expect(seen).toEqual(['https://hub.new.example/healthz', 'https://hub.new.example/v1/ping']);
+  });
+
+  it('refuses a target carrying userinfo', async () => {
+    // https://evil@hub.new.example passes a naive host check while sending
+    // basic-auth credentials to the real hub.
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: 'https://evil@hub.new.example', getImpl: makeGet(healthyRoutes),
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('compares hosts case-insensitively', async () => {
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: 'https://HUB.New.Example', getImpl: makeGet(healthyRoutes),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('is not fooled by a suffix-extended host', async () => {
+    const r = await verifyRepointTarget({
+      ...base, targetUrl: 'https://hub.new.example.evil.test', getImpl: makeGet(healthyRoutes),
+    });
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe('reconcileRepointDirective', () => {
   let written: any[];
   let events: any[];
@@ -168,12 +244,35 @@ describe('reconcileRepointDirective', () => {
     expect(events[0].payload).toMatchObject({ campaignId: 'camp-1', url: NEW_URL });
   });
 
-  it('flushes so the confirmation lands on the NEW host', async () => {
-    // The hub only believes a success that arrives on the target hostname, and
-    // the flusher is rebuilt from hub.json — so the report has to be pushed
-    // after the rewrite, not before.
-    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk });
-    expect(flushed).toBeGreaterThan(0);
+  it('rebuilds the transport before flushing, so the confirmation reaches the NEW host', async () => {
+    // The hub only believes a success that arrives on the target hostname. The
+    // flusher's baseURL is fixed at construction and nothing re-reads hub.json,
+    // so without an explicit rebuild the report goes to the OLD host, is
+    // refused, and the target is reset to pending — forever.
+    const order: string[] = [];
+    await reconcileRepointDirective({
+      ...baseArgs(),
+      fetchImpl: fetchOk,
+      writeConfigImpl: () => { order.push('write'); },
+      rebuildTransportImpl: async (cfg: any) => { order.push(`rebuild:${cfg.url}`); },
+      recordEvent: () => { order.push('record'); },
+      flushNow: async () => { order.push('flush'); },
+    });
+
+    expect(order).toEqual(['write', `rebuild:${NEW_URL}`, 'record', 'flush']);
+  });
+
+  it('does not report success at all if the transport cannot be rebuilt', async () => {
+    // Reporting into the old host would have the hub reset us to pending; worse,
+    // the board would show an error the admin cannot act on. Better to stay
+    // pending silently and retry on the next tick.
+    await reconcileRepointDirective({
+      ...baseArgs(),
+      fetchImpl: fetchOk,
+      rebuildTransportImpl: async () => { throw new Error('cannot rebuild'); },
+    });
+
+    expect(events).toEqual([]);
   });
 
   it('reports blocked and writes nothing when AGENFK_HUB_URL overrides hub.json', async () => {
@@ -267,6 +366,42 @@ describe('reconcileRepointDirective', () => {
     await Promise.all([a, b]);
 
     expect(calls).toBe(1);
+  });
+
+  it('releases the single-flight guard so later ticks still run', async () => {
+    // Without the finally that clears it, one tick would silently stop this
+    // install reconciling for the life of the process.
+    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk });
+    written = [];
+    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk });
+
+    expect(written).toHaveLength(1);
+  });
+
+  it('releases the guard even when the tick throws internally', async () => {
+    await reconcileRepointDirective({
+      ...baseArgs(),
+      fetchImpl: fetchOk,
+      recordEvent: () => { throw new Error('boom'); },
+    }).catch(() => { /* the tick may surface it; the guard must still clear */ });
+
+    written = [];
+    await reconcileRepointDirective({ ...baseArgs(), fetchImpl: fetchOk });
+    expect(written).toHaveLength(1);
+  });
+
+  it('stops repointing once it has followed the move', async () => {
+    const args = { ...baseArgs(), fetchImpl: fetchOk, rebuildTransportImpl: async () => {} };
+
+    await reconcileRepointDirective(args);
+    __resetRepointInflight();
+    await reconcileRepointDirective(args);
+
+    // Second tick must not rewrite the file again — the reconciler follows its
+    // own move rather than looping for the life of the campaign.
+    expect(written).toHaveLength(1);
+    // But it still confirms, because the hub needs the report to drain.
+    expect(events.filter(e => e.type === 'hub:repoint:succeeded')).toHaveLength(2);
   });
 
   it('records the event against its own installation id', async () => {
