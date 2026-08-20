@@ -7,6 +7,17 @@ function userKeyFor(actor: HubEvent['actor']): string {
   return (actor.gitEmail?.toLowerCase() || actor.osUser || 'unknown').trim();
 }
 
+/**
+ * The hostname this request actually arrived on. Behind a proxy the real name
+ * is in X-Forwarded-Host; req.headers.host is the internal one. Same precedence
+ * as publicHubUrl in routes/connect.ts.
+ */
+function requestHost(req: Request): string | null {
+  const fwd = (req.headers['x-forwarded-host'] as string | undefined)?.split(',')[0]?.trim();
+  const host = fwd || (req.headers.host as string | undefined) || null;
+  return host ? host.split(':')[0].toLowerCase() : null;
+}
+
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
@@ -74,6 +85,33 @@ export function eventsRouter(ctx: HubServerContext): Router {
     res.json({
       directiveId: row.directive_id,
       targetVersion: row.target_version,
+      issuedAt: row.created_at,
+    });
+  });
+
+  // Repoint directive (CGLAB-66). Same shape as /upgrade-directive: keyed off
+  // the api_key's installation binding, so a legacy org-wide key gets nothing —
+  // it cannot be attributed to a machine and therefore cannot be tracked to a
+  // confirmed move.
+  router.get('/repoint-directive', requireKey, async (req: Request, res: Response) => {
+    const installationId = req.hubApiKey!.installationId;
+    if (!installationId) return res.status(204).end();
+    const row = await ctx.db.get<{ id: string; target_url: string; allowed_host: string; created_at: string }>(
+      `SELECT c.id, c.target_url, c.allowed_host, c.created_at
+         FROM repoint_campaign_targets t
+         JOIN repoint_campaigns c ON c.id = t.campaign_id
+        WHERE t.installation_id = ? AND c.org_id = ?
+          AND c.closed_at IS NULL
+          AND t.state IN ('pending', 'blocked_by_env', 'failed')
+        ORDER BY c.created_at ASC
+        LIMIT 1`,
+      [installationId, req.hubApiKey!.orgId],
+    );
+    if (!row) return res.status(204).end();
+    res.json({
+      campaignId: row.id,
+      targetUrl: row.target_url,
+      allowedHost: row.allowed_host,
       issuedAt: row.created_at,
     });
   });
@@ -179,6 +217,61 @@ export function eventsRouter(ctx: HubServerContext): Router {
           e.installationId, e.orgId, now, now,
           e.actor.osUser ?? null, e.actor.gitName ?? null, e.actor.gitEmail ?? null,
         ]);
+
+        // Repoint campaign reports (CGLAB-66) transition the matching target.
+        //
+        // `succeeded` is only believed when the report arrives ON the campaign's
+        // target hostname. A client that repointed itself is by definition
+        // talking to the new name, so a success claim delivered to the old one
+        // proves nothing — and trusting it would let an admin drop a DNS name
+        // that installations are still using. `blocked`/`failed` are reports of
+        // NOT having moved, so they are accepted from either name.
+        if (e.type === 'hub:repoint:succeeded'
+          || e.type === 'hub:repoint:blocked'
+          || e.type === 'hub:repoint:failed') {
+          const campaignId = (e.payload as any)?.campaignId;
+          if (typeof campaignId === 'string' && campaignId) {
+            const campaign = await ctx.db.get<{ allowed_host: string }>(
+              'SELECT allowed_host FROM repoint_campaigns WHERE id = ? AND org_id = ?',
+              [campaignId, orgId],
+            );
+            if (campaign) {
+              const arrivedOn = requestHost(req);
+              const onTargetHost = !!arrivedOn && arrivedOn === String(campaign.allowed_host).toLowerCase();
+              let nextState: string;
+              let errorMessage: string | null;
+              if (e.type === 'hub:repoint:succeeded') {
+                nextState = onTargetHost ? 'succeeded' : 'pending';
+                errorMessage = onTargetHost
+                  ? null
+                  : `Reported success but the report arrived on host "${arrivedOn ?? 'unknown'}", not "${campaign.allowed_host}".`;
+              } else if (e.type === 'hub:repoint:blocked') {
+                nextState = 'blocked_by_env';
+                errorMessage = (e.payload as any)?.reason ?? 'Blocked';
+              } else {
+                nextState = 'failed';
+                errorMessage = (e.payload as any)?.error ?? 'Failed';
+              }
+              // A proved success is terminal: late noise from a retrying agent
+              // must not un-prove a machine that demonstrably moved.
+              await ctx.db.run(
+                `UPDATE repoint_campaign_targets
+                    SET state = ?,
+                        attempted_at = COALESCE(attempted_at, ?),
+                        finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE finished_at END,
+                        reported_url = COALESCE(?, reported_url),
+                        error_message = ?
+                  WHERE campaign_id = ? AND installation_id = ?
+                    AND state <> 'succeeded'`,
+                [
+                  nextState, now, nextState, now,
+                  (e.payload as any)?.url ?? null, errorMessage,
+                  campaignId, e.installationId,
+                ],
+              );
+            }
+          }
+        }
 
         // Fleet upgrade events transition the matching directive_target.
         // Identified by directiveId in the payload + the event's installation_id.

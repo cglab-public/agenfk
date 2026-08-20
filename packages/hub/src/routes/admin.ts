@@ -229,6 +229,134 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   });
 
+  // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
+  //
+  // Moving the hub to a new DNS name needs no rejoin: clients hold only
+  // {url, token, orgId} and api keys are org-scoped, not host-scoped. What is
+  // missing is push-down — /v1/ping cannot tell a connected install that the
+  // hub moved. A campaign is that push-down; its per-target rows are what make
+  // dropping the old name safe rather than hopeful.
+
+  /** The open campaign for an org, if any. */
+  async function openCampaign(orgId: string) {
+    return ctx.db.get<{ id: string; target_url: string; allowed_host: string; created_at: string }>(
+      `SELECT id, target_url, allowed_host, created_at
+         FROM repoint_campaigns
+        WHERE org_id = ? AND closed_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [orgId],
+    );
+  }
+
+  router.post('/repoint', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const raw = String(req.body?.targetUrl ?? '').trim().replace(/\/$/, '');
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      res.status(400).json({ error: 'targetUrl must be an absolute URL' });
+      return;
+    }
+    if (parsed.protocol !== 'https:') {
+      // A plaintext hub would ship org telemetry and a bearer token in clear,
+      // and the client refuses such a target anyway.
+      res.status(400).json({ error: 'targetUrl must use https' });
+      return;
+    }
+    if (await openCampaign(orgId)) {
+      res.status(409).json({ error: 'A repoint campaign is already open. Close it before starting another.' });
+      return;
+    }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    // Retired installations are excluded: they are never coming back, so
+    // counting them would keep the board from ever draining — which is exactly
+    // what makes an old DNS name undroppable.
+    const targets = await ctx.db.all<{ id: string }>(
+      'SELECT id FROM installations WHERE org_id = ? AND retired_at IS NULL',
+      [orgId],
+    );
+    const id = randomUUID();
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        `INSERT INTO repoint_campaigns (id, org_id, target_url, allowed_host, created_by_user_id, created_by_email)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, orgId, raw, parsed.hostname.toLowerCase(), req.session!.userId ?? null, actorEmail],
+      );
+      for (const t of targets) {
+        await ctx.db.run(
+          `INSERT INTO repoint_campaign_targets (campaign_id, installation_id, state) VALUES (?, ?, 'pending')`,
+          [id, t.id],
+        );
+      }
+    });
+    res.status(201).json({ id, targetUrl: raw, allowedHost: parsed.hostname.toLowerCase(), targeted: targets.length });
+  });
+
+  router.get('/repoint', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const campaign = await openCampaign(orgId);
+    if (!campaign) { res.json({ campaign: null, counts: {}, targets: [], drained: false }); return; }
+
+    // Retired installations drop out of the board entirely — retiring a wiped
+    // laptop is the documented way to finish a campaign it can never complete.
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT t.installation_id, t.state, t.attempted_at, t.finished_at, t.reported_url, t.error_message,
+              i.git_email, i.git_name, i.os_user, i.last_seen
+         FROM repoint_campaign_targets t
+         JOIN installations i ON i.id = t.installation_id
+        WHERE t.campaign_id = ? AND i.retired_at IS NULL
+        ORDER BY t.state ASC, i.last_seen DESC`,
+      [campaign.id],
+    );
+    const counts: Record<string, number> = { pending: 0, succeeded: 0, blocked_by_env: 0, failed: 0, cancelled: 0 };
+    for (const r of rows) {
+      const st = String((r as any).state);
+      counts[st] = (counts[st] ?? 0) + 1;
+    }
+    res.json({
+      campaign: {
+        id: campaign.id,
+        targetUrl: campaign.target_url,
+        allowedHost: campaign.allowed_host,
+        createdAt: campaign.created_at,
+      },
+      counts,
+      // Drained means every remaining (non-retired) installation has confirmed
+      // on the new hostname — the one condition under which dropping the old
+      // DNS record is safe.
+      drained: rows.length > 0 && rows.every((r: any) => r.state === 'succeeded'),
+      targets: rows.map((r: any) => ({
+        installationId: r.installation_id,
+        state: r.state,
+        attemptedAt: r.attempted_at ?? null,
+        finishedAt: r.finished_at ?? null,
+        reportedUrl: r.reported_url ?? null,
+        errorMessage: r.error_message ?? null,
+        gitEmail: r.git_email ?? null,
+        gitName: r.git_name ?? null,
+        osUser: r.os_user ?? null,
+        lastSeen: r.last_seen ?? null,
+      })),
+    });
+  });
+
+  router.post('/repoint/:id/close', guard, async (req: Request, res: Response) => {
+    const r = await ctx.db.run(
+      "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
+      [req.params.id, req.session!.orgId],
+    );
+    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
+    res.json({ id: req.params.id, closed: true });
+  });
+
   // ── Identity merge (CGLAB-65) ─────────────────────────────────────────────
   //
   // Dashboards and rollups_daily are keyed on user_key — the lowercased git

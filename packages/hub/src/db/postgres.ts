@@ -188,6 +188,36 @@ const SCHEMA_PG = `
   -- reversible by row delete.
   -- Audit trail for identity merges (CGLAB-65). A merge rewrites history, so
   -- who did it, when, and how much moved must be recoverable afterwards.
+  -- Repoint campaigns (CGLAB-66). A hub can change DNS name without anyone
+  -- rejoining, because clients hold only {url, token, orgId} and keys are
+  -- org-scoped. What was missing is push-down: a campaign tells connected
+  -- installations to move, and the per-target rows are what make it safe to
+  -- drop the old name once every one of them has confirmed ON the new name.
+  CREATE TABLE IF NOT EXISTS repoint_campaigns (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    allowed_host TEXT NOT NULL,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_repoint_campaigns_org ON repoint_campaigns(org_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS repoint_campaign_targets (
+    campaign_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    -- pending | succeeded | blocked_by_env | failed | cancelled
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempted_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    reported_url TEXT,
+    error_message TEXT,
+    PRIMARY KEY (campaign_id, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_rct_install_state ON repoint_campaign_targets(installation_id, state);
+
   CREATE TABLE IF NOT EXISTS user_key_merges (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
