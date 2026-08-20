@@ -17,6 +17,22 @@ function readGitConfig(key: string): string | null {
   }
 }
 
+/**
+ * Warn when this machine has no git email. The hub attributes events with
+ * `gitEmail || osUser`, so without one the person's entire history is filed
+ * under an OS username — and setting user.email later creates a SECOND identity
+ * that an admin has to merge. Cheap to fix now, awkward to fix later.
+ */
+function warnIfNoGitEmail(identity: { osUser: string; gitEmail: string | null }): void {
+  if (identity.gitEmail) return;
+  console.log();
+  console.log(chalk.yellow('⚠ No git email configured on this machine.'));
+  console.log(chalk.gray(`  Your work will be attributed to the OS username "${identity.osUser}" instead of you,`));
+  console.log(chalk.gray('  and setting it later creates a second identity an admin has to merge.'));
+  console.log(chalk.gray('  Fix it first with: git config --global user.email "you@company.com"'));
+  console.log();
+}
+
 function localInstallationIdentity(): { installationId: string; osUser: string; gitName: string | null; gitEmail: string | null } {
   return {
     installationId: getInstallationId(),
@@ -136,9 +152,17 @@ export function registerHubCommands(program: Command): void {
       }
 
       // Device-code flow.
+      warnIfNoGitEmail(localInstallationIdentity());
       let start;
       try {
-        start = (await axios.post(`${url}/hub/device/start`, {}, { timeout: 10_000 })).data;
+        // Send who we are: the hub binds this onto the issued key, and an
+        // unbound key is never handed a fleet directive — that made
+        // device-onboarded installs invisible to upgrades and repoints.
+        start = (await axios.post(
+          `${url}/hub/device/start`,
+          { installation: localInstallationIdentity() },
+          { timeout: 10_000 },
+        )).data;
       } catch (e: any) {
         console.error(chalk.red(`Could not reach ${url}: ${e?.message ?? 'unknown'}`));
         console.error(chalk.gray('Tip: pass --token <key> --org <id> to skip the browser flow.'));
@@ -201,6 +225,8 @@ export function registerHubCommands(program: Command): void {
       // One-arg form: `hub join <token>` falls back to AGENFK_HUB_URL or existing hub.json.
       const hasUrlArg = typeof token === 'string' && token.length > 0;
       const inviteToken = hasUrlArg ? (token as string) : urlOrToken;
+
+      warnIfNoGitEmail(localInstallationIdentity());
 
       const existing = readHubConfig();
       const candidates: string[] = [];

@@ -1339,14 +1339,20 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const out: any[] = [];
     for (const d of directives) {
+      // Identity comes from the installations row, which ingest refreshes from
+      // every event's actor. The api_key label the UI used to prefer is a
+      // snapshot from issue time and goes stale — an install that had no git
+      // email when it redeemed its invite kept showing invite:<osuser> forever.
       const targets = await ctx.db.all<{
         installation_id: string; state: string;
         attempted_at: string | null; finished_at: string | null;
         result_version: string | null; error_message: string | null;
         agenfk_version: string | null; agenfk_version_updated_at: string | null;
+        git_name: string | null; git_email: string | null; os_user: string | null;
       }>(
         `SELECT t.installation_id, t.state, t.attempted_at, t.finished_at, t.result_version, t.error_message,
-                i.agenfk_version, i.agenfk_version_updated_at
+                i.agenfk_version, i.agenfk_version_updated_at,
+                i.git_name, i.git_email, i.os_user
          FROM upgrade_directive_targets t
          LEFT JOIN installations i ON i.id = t.installation_id
          WHERE t.directive_id = ?`,
@@ -1375,6 +1381,9 @@ export function adminRouter(ctx: HubServerContext): Router {
           errorMessage: t.error_message,
           agenfkVersion: t.agenfk_version,
           agenfkVersionUpdatedAt: t.agenfk_version_updated_at,
+          gitName: t.git_name ?? null,
+          gitEmail: t.git_email ?? null,
+          osUser: t.os_user ?? null,
         })),
       });
     }

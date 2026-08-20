@@ -97,6 +97,14 @@ const SCHEMA_PG = `
     org_id TEXT,
     token_hash TEXT,
     approved_at TIMESTAMPTZ,
+    -- Identity of the machine that started this code, so the token can be
+    -- BOUND when it is issued at approve time. Without it the device flow
+    -- produced an unbound key, and an unbound key is never handed a fleet
+    -- directive — the install went permanently invisible. (BUG 159360db.)
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -439,6 +447,18 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys'"
   );
   const akHave = new Set(akCols.map(c => c.column_name));
+  // device_codes identity columns — BUG 159360db. See the sqlite adapter.
+  const dcCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'device_codes'",
+  );
+  const dcHave = new Set(dcCols.map(c => c.column_name));
+  if (dcCols.length > 0) {
+    if (!dcHave.has('installation_id')) await adapter.exec("ALTER TABLE device_codes ADD COLUMN installation_id TEXT");
+    if (!dcHave.has('os_user'))         await adapter.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
+    if (!dcHave.has('git_name'))        await adapter.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
+    if (!dcHave.has('git_email'))       await adapter.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
+
   if (!akHave.has('installation_id')) await adapter.exec("ALTER TABLE api_keys ADD COLUMN installation_id TEXT");
   if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");

@@ -99,6 +99,14 @@ const SCHEMA_SQLITE = `
     org_id TEXT,
     token_hash TEXT,
     approved_at TEXT,
+    -- Identity of the machine that started this code, so the token can be
+    -- BOUND when it is issued at approve time. Without it the device flow
+    -- produced an unbound key, and an unbound key is never handed a fleet
+    -- directive — the install went permanently invisible. (BUG 159360db.)
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -380,6 +388,17 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!instHave.has('retired_at')) raw.exec("ALTER TABLE installations ADD COLUMN retired_at TEXT");
   if (!instHave.has('retired_by_user_id')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
   if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
+
+  // device_codes identity columns — BUG 159360db. Older hubs created this table
+  // without them, and the device flow silently produced unbound keys.
+  const dcCols = raw.prepare("PRAGMA table_info(device_codes)").all() as Array<{ name: string }>;
+  const dcHave = new Set(dcCols.map(c => c.name));
+  if (dcCols.length > 0) {
+    if (!dcHave.has('installation_id')) raw.exec("ALTER TABLE device_codes ADD COLUMN installation_id TEXT");
+    if (!dcHave.has('os_user'))         raw.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
+    if (!dcHave.has('git_name'))        raw.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
+    if (!dcHave.has('git_email'))       raw.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
 
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = raw.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
