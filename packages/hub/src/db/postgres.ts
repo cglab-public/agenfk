@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import type { HubDb, Params, RunResult } from './types';
 import { toPostgres } from './dialect';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
@@ -240,15 +241,25 @@ const SCHEMA_PG = `
 `;
 
 /**
- * Per-instance state held by PgAdapter so we can route queries that run inside
- * a transaction to a single dedicated client (PG transactions are tied to a
- * connection, not a pool).
+ * Per-instance state held by PgAdapter. The transaction client is deliberately
+ * NOT here: see txStorage.
  */
 interface PgState {
   pool: Pool;
-  /** Set during `transaction()`; null otherwise. */
-  txClient: PoolClient | null;
 }
+
+/**
+ * The client backing the transaction the CURRENT async context is inside, if
+ * any. A PG transaction is tied to a connection rather than a pool, so its
+ * statements must all use one client — but scoping that client to the adapter
+ * meant every concurrent request's statements joined whatever transaction
+ * happened to be open, and a rollback in an admin operation silently discarded
+ * unrelated event ingest that ran during it. (BUG c5e8b847.)
+ *
+ * AsyncLocalStorage propagates through the awaits inside the transaction
+ * callback and nowhere else, which is exactly the boundary we want.
+ */
+const txStorage = new AsyncLocalStorage<PoolClient>();
 
 class PgAdapter implements HubDb {
   constructor(private state: PgState) {}
@@ -256,8 +267,9 @@ class PgAdapter implements HubDb {
   private exec_(sql: string, params: Params): Promise<QueryResult<any>> {
     const text = toPostgres(sql);
     const values = params as unknown[];
-    return this.state.txClient
-      ? this.state.txClient.query(text, values)
+    const tx = txStorage.getStore();
+    return tx
+      ? tx.query(text, values)
       : this.state.pool.query(text, values);
   }
 
@@ -280,27 +292,29 @@ class PgAdapter implements HubDb {
     // Multi-statement DDL goes through pool.query directly without dialect
     // rewriting — schema bootstrap is already PG-flavoured. Raw exec callers
     // (the bootstrap and ad-hoc test helpers) own their dialect.
-    if (this.state.txClient) await this.state.txClient.query(sql);
+    const tx = txStorage.getStore();
+    if (tx) await tx.query(sql);
     else await this.state.pool.query(sql);
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state.txClient) {
+    if (txStorage.getStore()) {
       // Nested transactions aren't supported in v1 — the hub doesn't use them.
       throw new Error('PgAdapter: nested transactions are not supported');
     }
     const client = await this.state.pool.connect();
-    this.state.txClient = client;
     try {
       await client.query('BEGIN');
-      const result = await fn();
+      // Run the callback INSIDE the async-context scope, so only its own
+      // statements reach this client. Concurrent work stays on the pool.
+      const result = await txStorage.run(client, fn);
       await client.query('COMMIT');
       return result;
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
       throw err;
     } finally {
-      this.state.txClient = null;
+      // Nothing to unset: the client's visibility ended with the async scope.
       client.release();
     }
   }
@@ -467,13 +481,23 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
     await pool.end().catch(() => {});
     throw new Error(`Cannot connect to Postgres at ${redactDsn(connectionString)}: ${(err as Error).message}`);
   }
-  const state: PgState = { pool, txClient: null };
+  const state: PgState = { pool };
   const adapter = new PgAdapter(state);
   await bootstrap(adapter);
   return adapter;
 }
 
 /** Test-only entry point: spin up an in-process pg-mem instance. */
+/**
+ * Test-only: build an adapter over an arbitrary pool-shaped object, so the
+ * transaction ROUTING can be asserted directly. Proving isolation through
+ * pg-mem would not be faithful — it is one in-memory database with no
+ * per-connection snapshot.
+ */
+export function __createPgAdapterForTest(pool: unknown): HubDb {
+  return new PgAdapter({ pool: pool as Pool });
+}
+
 export async function openPgMemDb(): Promise<HubDb> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { newDb, DataType } = require('pg-mem') as typeof import('pg-mem');
@@ -481,7 +505,7 @@ export async function openPgMemDb(): Promise<HubDb> {
   registerPgMemPolyfills(memDb, DataType);
   const { Pool } = memDb.adapters.createPg();
   const pool = new Pool() as unknown as Pool;
-  const state: PgState = { pool, txClient: null };
+  const state: PgState = { pool };
   const adapter = new PgAdapter(state);
   await bootstrap(adapter);
   return adapter;
