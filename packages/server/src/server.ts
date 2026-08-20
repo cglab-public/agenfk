@@ -10,6 +10,7 @@ import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
+import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -92,6 +93,7 @@ let flowSyncHandle: FlowSyncHandle | null = null;
 // so the two never re-fetch the same unchanged flow.
 const flowSyncEtagCache = new Map<string, string>();
 let upgradeSyncHandle: UpgradeSyncHandle | null = null;
+let repointSyncHandle: RepointSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -539,6 +541,7 @@ const initStorage = async () => {
   hubFlusher?.stop();
   flowSyncHandle?.stop();
   upgradeSyncHandle?.stop();
+  repointSyncHandle?.stop();
   hubClient.attachStorage(storage as SQLiteStorageProvider);
   if (hubClient.isEnabled && hubClient.hubConfig) {
     // Stamp events queued while disconnected (pending-org sentinel '') with
@@ -594,6 +597,28 @@ const initStorage = async () => {
       installationId,
       recordEvent,
     }).catch((e) => console.error('[HUB_UPGRADE_SYNC] replay failed:', (e as Error).message));
+
+    // CGLAB-66 — repoint campaign reconciler. Applies an admin-issued move to
+    // a new hub DNS name, after re-verifying the target's identity locally.
+    repointSyncHandle = startRepointSync({
+      hubUrl: hubClient.hubConfig.url,
+      hubToken: hubClient.hubConfig.token,
+      orgId: hubClient.hubConfig.orgId,
+      installationId,
+      // AGENFK_HUB_URL overrides hub.json, so a rewrite would be a no-op here;
+      // the reconciler reports blocked_by_env instead of a false success.
+      envHubUrl: process.env.AGENFK_HUB_URL ?? null,
+      intervalMs: Number(process.env.AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS) || undefined,
+      writeConfigImpl: (cfg) => {
+        const target = path.join(os.homedir(), '.agenfk', 'hub.json');
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
+        console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; restart to pick it up.`);
+      },
+      recordEvent,
+      flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
+    });
 
     const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
     upgradeSyncHandle = startUpgradeSync({
