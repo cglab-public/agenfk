@@ -274,6 +274,119 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ days: out.days, since: full ? null : since, full });
   });
 
+  // ── Identity hygiene (task 2b7a391b) ──────────────────────────────────────
+  //
+  // installation_id is immutable provenance, so the hub can infer that an
+  // install whose current git_email implies one user_key while its history
+  // carries another is a merge candidate.
+  //
+  // What it must NOT do is act on that alone. userKeyFor falls back to a BARE
+  // osUser with no namespacing, so 'dev', 'ubuntu', 'runner' and 'ec2-user' are
+  // buckets rather than people: merging one into the first email seen would
+  // attribute one person's history to another, and there is no unmerge. Hence
+  // the confidence split — conflated candidates are reported with their
+  // breakdown and are never offered as a single action.
+
+  router.get('/identity-suggestions', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const rows = await ctx.db.all<{
+      from_key: string; to_key: string; installation_id: string;
+      events: number; first_seen: string; last_seen: string;
+    }>(
+      `SELECT e.user_key AS from_key,
+              lower(i.git_email) AS to_key,
+              i.id AS installation_id,
+              COUNT(*) AS events,
+              MIN(e.occurred_at) AS first_seen,
+              MAX(e.occurred_at) AS last_seen
+         FROM events e
+         JOIN installations i ON i.id = e.installation_id
+        WHERE e.org_id = ?
+          AND i.git_email IS NOT NULL AND i.git_email <> ''
+          AND e.user_key <> lower(i.git_email)
+        GROUP BY e.user_key, lower(i.git_email), i.id`,
+      [orgId],
+    );
+    if (rows.length === 0) { res.json([]); return; }
+
+    // How many installations produced each source key, across the whole org —
+    // this is what separates "one person's old identity" from "a shared bucket".
+    const sourceSpread = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!sourceSpread.has(r.from_key)) sourceSpread.set(r.from_key, new Set());
+      sourceSpread.get(r.from_key)!.add(r.installation_id);
+    }
+    const targetsPerSource = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!targetsPerSource.has(r.from_key)) targetsPerSource.set(r.from_key, new Set());
+      targetsPerSource.get(r.from_key)!.add(r.to_key);
+    }
+
+    // Live keys bound to any installation producing the source key: the merge
+    // endpoint 409s on these, so report it instead of letting the UI fail.
+    const liveRows = await ctx.db.all<{ installation_id: string }>(
+      `SELECT DISTINCT installation_id FROM api_keys
+        WHERE org_id = ? AND revoked_at IS NULL AND installation_id IS NOT NULL`,
+      [orgId],
+    );
+    const liveInstalls = new Set(liveRows.map(r => r.installation_id));
+
+    // Collapse per-installation rows into one suggestion per (from, to) pair.
+    const merged = new Map<string, {
+      from: string; to: string; events: number;
+      firstSeen: string; lastSeen: string; installations: string[];
+    }>();
+    for (const r of rows) {
+      const key = `${r.from_key}\u0000${r.to_key}`;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          from: r.from_key, to: r.to_key, events: Number(r.events),
+          firstSeen: String(r.first_seen), lastSeen: String(r.last_seen),
+          installations: [r.installation_id],
+        });
+        continue;
+      }
+      existing.events += Number(r.events);
+      if (String(r.first_seen) < existing.firstSeen) existing.firstSeen = String(r.first_seen);
+      if (String(r.last_seen) > existing.lastSeen) existing.lastSeen = String(r.last_seen);
+      existing.installations.push(r.installation_id);
+    }
+
+    const out = [...merged.values()].map(m => {
+      const spread = sourceSpread.get(m.from)?.size ?? 1;
+      const targets = targetsPerSource.get(m.from)?.size ?? 1;
+      return {
+        ...m,
+        installations: m.installations.sort(),
+        sourceInstallationCount: spread,
+        targetCandidateCount: targets,
+        confidence: spread === 1 && targets === 1 ? 'unambiguous' : 'conflated',
+        blockedByLiveKey: (sourceSpread.get(m.from) ? [...sourceSpread.get(m.from)!] : [])
+          .some(id => liveInstalls.has(id)),
+      };
+    });
+    // Most history first: the biggest attribution errors are worth fixing first.
+    out.sort((a, b) => b.events - a.events);
+    res.json(out);
+  });
+
+  router.get('/user-keys/merges', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, created_at
+         FROM user_key_merges WHERE org_id = ? ORDER BY created_at DESC`,
+      [req.session!.orgId],
+    );
+    res.json(rows.map((r: any) => ({
+      id: r.id,
+      from: r.from_user_key,
+      to: r.to_user_key,
+      eventsMoved: Number(r.events_moved ?? 0),
+      mergedByEmail: r.merged_by_email ?? null,
+      createdAt: r.created_at ?? null,
+    })));
+  });
+
   // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
   //
   // Moving the hub to a new DNS name needs no rejoin: clients hold only
