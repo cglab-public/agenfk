@@ -44,6 +44,9 @@ export function AdminLayout() {
         <NavLink to="repoint" className={link}>
           <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="w-3.5 h-3.5" /> Repoint</span>
         </NavLink>
+        <NavLink to="identities" className={link}>
+          <span className="inline-flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Identities</span>
+        </NavLink>
         <NavLink to="org" className={link}>
           <span className="inline-flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Organization</span>
         </NavLink>

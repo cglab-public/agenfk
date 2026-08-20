@@ -12,6 +12,7 @@ import { AdminLayout, AdminAuth, AdminKeys, AdminUsers, AdminInstallations } fro
 import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
 import { AdminRepoint } from './pages/AdminRepoint';
+import { AdminIdentities } from './pages/AdminIdentities';
 import { AdminOrg } from './pages/AdminOrg';
 import { Layout } from './components/Layout';
 
@@ -63,6 +64,7 @@ export function App() {
         <Route path="upgrades" element={<AdminUpgrades />} />
         <Route path="installations" element={<AdminInstallations />} />
         <Route path="repoint" element={<AdminRepoint />} />
+        <Route path="identities" element={<AdminIdentities />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>
