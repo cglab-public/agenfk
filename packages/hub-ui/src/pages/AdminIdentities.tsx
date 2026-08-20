@@ -12,7 +12,7 @@
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Users, AlertTriangle, Merge, History, ShieldAlert } from 'lucide-react';
+import { Users, AlertTriangle, Merge, History, ShieldAlert, Undo2 } from 'lucide-react';
 import { api } from '../api';
 import {
   canMergeInOneClick,
@@ -32,6 +32,7 @@ interface MergeRecord {
   to: string;
   eventsMoved: number;
   mergedByEmail: string | null;
+  revertedAt: string | null;
   createdAt: string | null;
 }
 
@@ -68,6 +69,16 @@ export function AdminIdentities() {
     qc.invalidateQueries({ queryKey: ['admin-user-key-merges'] });
     qc.invalidateQueries({ queryKey: ['admin-installations'] });
   };
+  const revert = useMutation({
+    mutationFn: (id: string) => api.post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`),
+    onSuccess: (r: any) => {
+      // A zero-restore is a real outcome, not a failure: a newer merge has
+      // claimed those rows and must be reverted first.
+      setError(r?.data?.eventsRestored === 0 ? (r?.data?.note ?? null) : null);
+      invalidate();
+    },
+    onError: (e: any) => setError(e?.response?.data?.error ?? 'Revert failed'),
+  });
   const merge = useMutation({
     mutationFn: (v: { from: string; to: string }) => api.post('/v1/admin/user-keys/merge', v),
     onSuccess: () => { setFrom(''); setTo(''); setError(null); invalidate(); },
@@ -207,6 +218,11 @@ export function AdminIdentities() {
         <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
           <History className="w-4 h-4" /> Merge history
         </h3>
+        <p className="mt-0.5 text-xs text-ink-tertiary">
+          Each merge can be reverted, which moves exactly the events it touched back. Revert the
+          newest first: a later merge that claimed the same events has to be undone before an
+          earlier one can be.
+        </p>
         {(mergesQ.data ?? []).length === 0 ? (
           <p className="mt-3 text-sm text-ink-tertiary">Nothing merged yet.</p>
         ) : (
@@ -217,7 +233,8 @@ export function AdminIdentities() {
                   <th className="text-left px-5 py-2">Merge</th>
                   <th className="text-right px-2 py-2">Events</th>
                   <th className="text-left px-2 py-2">By</th>
-                  <th className="text-right px-5 py-2">When</th>
+                  <th className="text-right px-2 py-2">When</th>
+                  <th className="text-right px-5 py-2"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-soft">
@@ -228,7 +245,21 @@ export function AdminIdentities() {
                     </td>
                     <td className="px-2 py-2 text-right text-[11px] text-ink-tertiary tabular-nums">{m.eventsMoved}</td>
                     <td className="px-2 py-2 text-[11px] text-ink-tertiary">{m.mergedByEmail ?? '—'}</td>
-                    <td className="px-5 py-2 text-right text-[11px] text-ink-tertiary tabular-nums">{fmtDay(m.createdAt)}</td>
+                    <td className="px-2 py-2 text-right text-[11px] text-ink-tertiary tabular-nums">{fmtDay(m.createdAt)}</td>
+                    <td className="px-5 py-2 text-right">
+                      {m.revertedAt ? (
+                        <span className="text-[11px] text-ink-tertiary">reverted {fmtDay(m.revertedAt)}</span>
+                      ) : (
+                        <button
+                          onClick={() => revert.mutate(m.id)}
+                          disabled={revert.isPending}
+                          title="Move these events back to their original identity"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-amber-600 dark:hover:text-amber-400"
+                        >
+                          <Undo2 className="w-3.5 h-3.5" /> Revert
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

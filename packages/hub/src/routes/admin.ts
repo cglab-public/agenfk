@@ -371,9 +371,97 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(out);
   });
 
+  /**
+   * Undo one merge. Restores exactly the rows that merge moved, using the
+   * provenance stamped on them — a timestamp plus installation ids would be
+   * inexact whenever the target produced its own events in the same window.
+   *
+   * LIFO by construction: an event carries only its LAST merge, so reverting an
+   * older merge after a newer one claimed the same rows finds nothing. That is
+   * reported as zero-restored with a note, never as a silent success.
+   */
+  router.post('/user-keys/merges/:id/revert', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    const record = await ctx.db.get<{
+      id: string; from_user_key: string; to_user_key: string; reverted_at: string | null;
+    }>(
+      'SELECT id, from_user_key, to_user_key, reverted_at FROM user_key_merges WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+    if (!record) { res.status(404).json({ error: 'Unknown merge' }); return; }
+    if (record.reverted_at) { res.status(409).json({ error: 'This merge has already been reverted' }); return; }
+
+    // Oldest affected day BEFORE the restore, or the range is unrecoverable.
+    const span = await ctx.db.get<{ first_day: string | null }>(
+      `SELECT MIN(date(e.occurred_at)) AS first_day
+         FROM user_key_merge_events j
+         JOIN events e ON e.event_id = j.event_id
+        WHERE e.org_id = ? AND j.merge_id = ?`,
+      [orgId, id],
+    );
+
+    let eventsRestored = 0;
+    await ctx.db.transaction(async () => {
+      // Only rows still sitting on this merge's target are ours to move: if a
+      // later merge took them onward, reverting here would corrupt the chain.
+      const restored = await ctx.db.run(
+        `UPDATE events
+            SET user_key = (
+              SELECT j.previous_user_key FROM user_key_merge_events j
+               WHERE j.merge_id = ? AND j.event_id = events.event_id
+            )
+          WHERE org_id = ?
+            AND lower(user_key) = lower(?)
+            AND event_id IN (SELECT event_id FROM user_key_merge_events WHERE merge_id = ?)`,
+        [id, orgId, record.to_user_key, id],
+      );
+      eventsRestored = restored.changes;
+      if (eventsRestored > 0) {
+        // Both identities change shape, so neither's stale rows may survive:
+        // the recompute only rebuilds groups that still have events.
+        await ctx.db.run(
+          'DELETE FROM rollups_daily WHERE org_id = ? AND user_key IN (?, ?)',
+          [orgId, record.from_user_key, record.to_user_key],
+        );
+        // Put the installation identity back too, or the next ingested event
+        // recreates the merged key and undoes this immediately.
+        await ctx.db.run(
+          'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
+          [record.from_user_key, orgId, record.to_user_key],
+        );
+      }
+      await ctx.db.run(
+        "UPDATE user_key_merges SET reverted_at = datetime('now') WHERE id = ? AND org_id = ?",
+        [id, orgId],
+      );
+    });
+
+    let daysRecomputed = 0;
+    if (eventsRestored > 0) {
+      daysRecomputed = (await recomputeRollups(ctx.db, {
+        since: span?.first_day ?? undefined,
+        full: !span?.first_day,
+        orgId,
+      })).days;
+    }
+
+    res.json({
+      mergeId: id,
+      from: record.from_user_key,
+      to: record.to_user_key,
+      eventsRestored,
+      daysRecomputed,
+      note: eventsRestored === 0
+        ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
+          + 'Revert the newer merge first.'
+        : null,
+    });
+  });
+
   router.get('/user-keys/merges', guard, async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(
-      `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, created_at
+      `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, reverted_at, created_at
          FROM user_key_merges WHERE org_id = ? ORDER BY created_at DESC`,
       [req.session!.orgId],
     );
@@ -383,6 +471,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       to: r.to_user_key,
       eventsMoved: Number(r.events_moved ?? 0),
       mergedByEmail: r.merged_by_email ?? null,
+      revertedAt: r.reverted_at ?? null,
       createdAt: r.created_at ?? null,
     })));
   });
@@ -603,7 +692,17 @@ export function adminRouter(ctx: HubServerContext): Router {
     const sourceWasHidden = !!sourceHidden;
 
     let eventsMoved = 0;
+    const mergeId = randomUUID();
     await ctx.db.transaction(async () => {
+      // Journal exactly which rows move, BEFORE moving them: counts alone made
+      // a mistaken merge permanent, and the Identities tab makes merging one
+      // click. Recorded per merge rather than as a column on events, so a chain
+      // can be unwound step by step instead of one slot being overwritten.
+      await ctx.db.run(
+        `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key)
+         SELECT ?, event_id, user_key FROM events WHERE org_id = ? AND user_key = ?`,
+        [mergeId, orgId, from],
+      );
       const moved = await ctx.db.run(
         'UPDATE events SET user_key = ? WHERE org_id = ? AND user_key = ?',
         [to, orgId, from],
@@ -632,7 +731,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       await ctx.db.run(
         `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, merged_by_user_id, merged_by_email)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [randomUUID(), orgId, from, to, eventsMoved, req.session!.userId ?? null, actorEmail],
+        [mergeId, orgId, from, to, eventsMoved, req.session!.userId ?? null, actorEmail],
       );
     });
 
@@ -643,7 +742,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day, orgId })).days;
     }
 
-    res.json({ from, to, eventsMoved, daysRecomputed, sourceWasHidden });
+    res.json({ mergeId, from, to, eventsMoved, daysRecomputed, sourceWasHidden });
   });
 
   // ── Installation retirement (CGLAB-64) ────────────────────────────────────

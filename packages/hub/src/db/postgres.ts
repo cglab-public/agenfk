@@ -227,6 +227,19 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_rct_install_state ON repoint_campaign_targets(installation_id, state);
 
+  -- What each identity merge actually moved (BUG 098f8ba7). The audit row
+  -- recorded only counts, so a mistaken merge — attributing one person's work to
+  -- another — was permanent. A journal rather than a column on events, because a
+  -- single slot is overwritten by the next merge and a chain could then never be
+  -- unwound past one step.
+  CREATE TABLE IF NOT EXISTS user_key_merge_events (
+    merge_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    previous_user_key TEXT NOT NULL,
+    PRIMARY KEY (merge_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ukme_merge ON user_key_merge_events(merge_id);
+
   CREATE TABLE IF NOT EXISTS user_key_merges (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -235,6 +248,7 @@ const SCHEMA_PG = `
     events_moved INTEGER NOT NULL DEFAULT 0,
     merged_by_user_id TEXT,
     merged_by_email TEXT,
+    reverted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -447,6 +461,14 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys'"
   );
   const akHave = new Set(akCols.map(c => c.column_name));
+  // user_key_merges.reverted_at — BUG 098f8ba7.
+  const ukmCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'user_key_merges'",
+  );
+  if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.column_name)).has('reverted_at')) {
+    await adapter.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TIMESTAMPTZ");
+  }
+
   // device_codes identity columns — BUG 159360db. See the sqlite adapter.
   const dcCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_name = 'device_codes'",

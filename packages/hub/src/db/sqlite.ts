@@ -244,6 +244,19 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_rct_install_state ON repoint_campaign_targets(installation_id, state);
 
+  -- What each identity merge actually moved (BUG 098f8ba7). The audit row
+  -- recorded only counts, so a mistaken merge — attributing one person's work to
+  -- another — was permanent. A journal rather than a column on events, because a
+  -- single slot is overwritten by the next merge and a chain could then never be
+  -- unwound past one step.
+  CREATE TABLE IF NOT EXISTS user_key_merge_events (
+    merge_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    previous_user_key TEXT NOT NULL,
+    PRIMARY KEY (merge_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ukme_merge ON user_key_merge_events(merge_id);
+
   CREATE TABLE IF NOT EXISTS user_key_merges (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -252,6 +265,7 @@ const SCHEMA_SQLITE = `
     events_moved INTEGER NOT NULL DEFAULT 0,
     merged_by_user_id TEXT,
     merged_by_email TEXT,
+    reverted_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -388,6 +402,12 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!instHave.has('retired_at')) raw.exec("ALTER TABLE installations ADD COLUMN retired_at TEXT");
   if (!instHave.has('retired_by_user_id')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
   if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
+
+  // user_key_merges.reverted_at — BUG 098f8ba7.
+  const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
+  if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {
+    raw.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TEXT");
+  }
 
   // device_codes identity columns — BUG 159360db. Older hubs created this table
   // without them, and the device flow silently produced unbound keys.

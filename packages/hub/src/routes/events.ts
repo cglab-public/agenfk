@@ -2,10 +2,9 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
+import { userKeyFor } from '../util/userKey.js';
 
-function userKeyFor(actor: HubEvent['actor']): string {
-  return (actor.gitEmail?.toLowerCase() || actor.osUser || 'unknown').trim();
-}
+
 
 /**
  * The hostname this request actually arrived on. Behind a proxy the real name
@@ -189,7 +188,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
         if (e.orgId !== orgId) { rejected++; continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
-        const userKey = userKeyFor(e.actor);
+        const userKey = userKeyFor(e.actor, e.installationId);
         if (hiddenUserKeys.has(userKey)) { hiddenDropped++; continue; }
         seenInstallations.add(e.installationId);
         const itemType = (e as any).itemType
