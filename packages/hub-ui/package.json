@@ -28,7 +28,7 @@
   "devDependencies": {
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "autoprefixer": "^10.4.24",
+    "autoprefixer": "^10.5.4",
     "postcss": "^8.5.6",
     "typescript": "~5.9.3"
   }
