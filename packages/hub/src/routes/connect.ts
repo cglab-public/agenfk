@@ -177,7 +177,11 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/device/approve', guard, async (req: Request, res: Response) => {
+  // adminGuard, not guard: approving mints a live bearer token via issueApiKey
+  // below, exactly like /invite/create. /device/start needs no auth at all, so a
+  // merely-signed-in viewer could otherwise start a code, approve it, redeem it,
+  // and escalate read-only access to ingest-and-fleet-write. (Security: CGLAB-75.)
+  router.post('/device/approve', adminGuard, async (req: Request, res: Response) => {
     const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
     if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
     const row = await ctx.db.get<{

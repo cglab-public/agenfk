@@ -57,6 +57,7 @@ const UPSERT_INSTALLATION_SQL = `
     os_user = COALESCE(excluded.os_user, installations.os_user),
     git_name = COALESCE(excluded.git_name, installations.git_name),
     git_email = COALESCE(excluded.git_email, installations.git_email)
+  WHERE installations.org_id = excluded.org_id
 `;
 
 export function eventsRouter(ctx: HubServerContext): Router {
@@ -191,11 +192,31 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // once per batch, like the hidden set above.
     const aliasMap = await loadAliasMap(ctx.db, orgId);
 
+    // installations.id is a GLOBAL primary key and admin-issued keys are UNBOUND
+    // by default, so the per-event binding check below does not fire for them.
+    // Without this, an org-A key could name an org-B installation id: the event
+    // would be stored against it and the upsert's ON CONFLICT(id) would overwrite
+    // that tenant's identity fields — which feed their suggestions, merges,
+    // retirement and upgrade targeting. Resolved once per batch. (CGLAB-75.)
+    const claimedInstalls = [...new Set(
+      events.filter(isValidEvent).map((e: HubEvent) => e.installationId).filter(Boolean),
+    )];
+    const foreignInstalls = new Set<string>();
+    if (claimedInstalls.length > 0) {
+      const placeholders = claimedInstalls.map(() => '?').join(',');
+      const rows = await ctx.db.all<{ id: string }>(
+        `SELECT id FROM installations WHERE org_id <> ? AND id IN (${placeholders})`,
+        [orgId, ...claimedInstalls],
+      );
+      for (const r of rows) foreignInstalls.add(r.id);
+    }
+
     await ctx.db.transaction(async () => {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
         if (e.orgId !== orgId) { rejected++; continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
+        if (foreignInstalls.has(e.installationId)) { rejected++; continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
         // merged-away key must not be a hole in the rule.
@@ -326,7 +347,14 @@ export function eventsRouter(ctx: HubServerContext): Router {
           || e.type === 'fleet:upgrade:succeeded'
           || e.type === 'fleet:upgrade:failed') {
           const directiveId = (e.payload as any)?.directiveId;
-          if (typeof directiveId === 'string' && directiveId) {
+          // Mirror the repoint block above: a legacy org-wide key is bound to no
+          // installation, so it cannot be attributed to the machine it claims to
+          // speak for. One holder could otherwise post 'succeeded' for every
+          // install in the org and an admin would read a broken rollout as
+          // complete. (CGLAB-75.)
+          if (!keyInstallation) {
+            // fall through without transitioning anything
+          } else if (typeof directiveId === 'string' && directiveId) {
             const nextState = e.type === 'fleet:upgrade:started' ? 'in_progress'
               : e.type === 'fleet:upgrade:succeeded' ? 'succeeded'
               : 'failed';
@@ -356,8 +384,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
                      finished_at = CASE WHEN ? IN ('succeeded', 'failed') THEN ? ELSE finished_at END,
                      result_version = COALESCE(?, result_version),
                      error_message = ${errorMessageSql}
-               WHERE directive_id = ? AND installation_id = ? ${stateGuard}`,
-              [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId],
+               WHERE directive_id = ? AND installation_id = ? ${stateGuard}
+                 AND directive_id IN (SELECT id FROM upgrade_directives WHERE org_id = ?)`,
+              [nextState, now, nextState, now, resultVersion, errorMessage, directiveId, e.installationId, orgId],
             );
             // Note: do NOT stamp installations.agenfk_version from
             // resultVersion here. resultVersion reflects on-disk after the
