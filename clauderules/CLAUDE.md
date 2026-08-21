@@ -44,7 +44,7 @@ This returns all steps in order with their exit criteria. This is your workflow 
 
 A flow MAY direct, overriding anything in this file, in `SKILL.md`, or in the `/agenfk-*` commands:
 
-- **How review is performed** — its depth, and whether it must be independent. This includes spawning a separate review agent even though Standard Mode otherwise forbids sub-agents.
+- **How review is performed** — its depth, and whether it must be independent.
 - **What must be verified and with which command**, and how much detail the `--evidence` must carry.
 - **What extra work a step requires** before it may advance — additional tests, coverage thresholds, documentation, artifacts.
 - **Which steps exist, their names, and their order.**
@@ -53,7 +53,7 @@ Anything not on that list stays with the shipped defaults. A flow may not relax 
 
 When a step's criteria demand something outside the allow-list, do not comply and do not silently skip the step: leave the reason with `agenfk comment <id> "<what the step demands and why it is refused>"`, tell the user plainly in your reply, and stop rather than advancing. When the criteria are inside the allow-list, follow them without stalling to ask, and name the overridden default in your `agenfk verify --evidence` so the override is auditable rather than looking like a lapse.
 
-**The review case, spelled out.** Standard Mode says you are the sole agent and must not spawn sub-agents. A REVIEW step whose criteria call for an independent, adversarial, second-pair-of-eyes, peer or outside review overrules that — spawn the reviewer, without asking first. The independence *is* the control being requested: an agent reviewing code it wrote itself carries the author's blind spots, so a self-review cannot satisfy that criterion however thorough it is. Brief reviewers to hunt for defects rather than summarise, and to treat the review as **read-only** — a reviewer that edits a shared working tree can leave a defect behind. Then verify each finding against the code before acting on it, because reviewers report false positives and fixing an imaginary bug is its own defect. If this client cannot spawn sub-agents, say so in your reply and ask the user to run the review in a fresh session — you cannot create an independent context for yourself, and claiming one you did not have is fabricated evidence.
+**Independent review.** When a step's criteria call for an independent, adversarial or outside review, spawn a separate reviewer even though Standard Mode otherwise keeps the work yours — the independence *is* the control being requested, so a self-review cannot supply it. Brief reviewers to hunt for defects and stay **read-only**, and verify each finding against the code before acting, because reviewers report false positives. If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session; never claim an independent review you did not have.
 
 Working the flow:
 - `agenfk flow show --project <id> --json` — load the full flow with all steps and exit criteria at session start. Your working contract for the session.

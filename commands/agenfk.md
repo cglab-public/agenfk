@@ -5,7 +5,7 @@ description: Initialize AgenFK and execute tasks in Standard Mode (Single Agent)
 > Use the `agenfk` CLI for all workflow operations (CLI-only is the default; read with `--json` for machine-readable output). If `mcp__agenfk__*` tools are present (installed with `--with-mcp`), the equivalent MCP tool is interchangeable.
 
 Load the `agenfk` skill. Run its Initialization protocol if needed.
-Identify the user's request and follow the **Standard Mode** protocol below. You are the sole agent — execute all phases yourself without spawning sub-agents.
+Identify the user's request and follow the **Standard Mode** protocol below. You are the sole agent — do the work yourself without spawning sub-agents, with the one exception in the loop's review step.
 
 **The flow directs the method.** A step's `exitCriteria` is the project's own configuration and overrules the defaults shipped with AgEnFK on *how* work is done — including the rule above. If a step requires an independent or adversarial review, spawn that reviewer without asking; the independence is the control being requested, and a review by the author cannot supply it. Note the override in your `--evidence`. What a flow may **not** overrule is listed below.
 
@@ -16,14 +16,14 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward in the workflow (e.g., TODO → IN_PROGRESS, IN_PROGRESS → REVIEW, TEST → DONE) once **ALL** of its child items have also moved to that same state or further.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. This holds for whatever steps the active flow defines — read them from `activeFlow` in the `agenfk gatekeeper` response rather than assuming a fixed pipeline.
 
 ## Sibling Propagation Rule
 
 When child items of the same parent share the same source code (same branch/workspace), a single `agenfk verify` call validates the code for **all** siblings:
 
-- After `agenfk verify` passes on **one** sibling (advancing it to the next step), move remaining siblings to that same step via `agenfk update <id> --status <nextStep>` — no individual `agenfk verify` calls needed.
-- For the final step (→ DONE): run `agenfk verify <id> --evidence "<text>"` on each remaining sibling — the server's sibling propagation will skip execution and pass immediately.
+- After `agenfk verify` passes on **one** sibling, advance each remaining sibling with its own `agenfk verify <id> --evidence "<text>"` call. The server's sibling propagation skips the build and test execution and passes immediately, so this is cheap — but it still records evidence and still goes through the gate.
+- Never shortcut a sibling forward with `agenfk update <id> --status <step>`. The server permits a one-step forward move, so that write succeeds and advances the item with no evidence and no exit-criteria check. `agenfk update --status` is for backward/rollback moves only.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
 
@@ -74,37 +74,63 @@ Before creating any item, evaluate the request against these signals:
 
 ---
 
-## Phase 1 — Code
+## The Work Loop
 
-- **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
-- Explore the codebase, understand the context, then implement the changes.
-- **MANDATORY**: Run `agenfk comment <itemId> "<content>"` for every significant step (e.g. "Analyzed file X", "Implemented function Y").
-- Keep changes minimal and focused on the request.
-- **Bug/Error fixing**: Investigate root causes fully before applying fixes. Avoid workarounds that can create new problems (e.g. infinite loops). Trace errors from symptom to source. Apply one fix at a time and verify.
+There is no fixed sequence of phases. You walk **this project's flow**, one step at a
+time, and each step tells you what it wants via its exit criteria. Run steps 1-6 below,
+then go back to 1 for the next step, until the item reaches DONE.
 
----
+1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
+   The response gives you the current step, its **exit criteria**, and `activeFlow`. The exit
+   criteria are your work definition for this step — read them before doing anything, because
+   working before you know them means working against the wrong bar. Never assume the step's
+   name or what it wants from its name alone: a step called `REFACTOR` or `DISCOVERY` is not a
+   coding step, and a project may have steps this file has never heard of.
 
-## Phase 2 — Review + Validate Gate
+2. **Do what the criteria ask.** Whatever that is for this step — explore, write tests,
+   implement, refactor, document. Along the way:
+   - **Evidence-based claims**: before claiming a feature already exists, search the codebase
+     for the specific UI components, API endpoints and database queries. Never assume
+     implementation status without evidence.
+   - **MANDATORY**: run `agenfk comment <itemId> "<content>"` for every significant step
+     (e.g. "Analyzed file X", "Implemented function Y").
+   - Keep changes minimal and focused on the request.
+   - **Bug/error fixing**: investigate root causes fully before applying fixes. Avoid
+     workarounds that create new problems (e.g. infinite loops). Trace errors from symptom to
+     source. Apply one fix at a time and verify.
 
-1. Run `agenfk gatekeeper --item-id <itemId>` **first** — the response includes the current step's **exit criteria** if defined. Read them before reviewing anything: they define what an acceptable review is, and reviewing before you know them means reviewing against the wrong bar.
-2. **Pick the review mode from those criteria.**
-   - If they call for an **independent, adversarial, second-pair-of-eyes, peer or outside** review, spawn a separate review agent to do it — yes, in Standard Mode, and without stopping to ask. The independence is the control being requested; an agent reviewing code it wrote cannot supply it. Brief the reviewer to hunt for defects and to stay **read-only**, then verify each finding against the code before acting on it (reviewers report false positives). If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session — never claim an independent review you did not have.
+3. **If the criteria ask for a review, pick the mode from them.**
+   - If they call for an **independent, adversarial, second-pair-of-eyes, peer or outside**
+     review, spawn a separate review agent — yes, in Standard Mode, and without stopping to
+     ask. The independence *is* the control being requested; an agent reviewing code it wrote
+     cannot supply it. Brief the reviewer to hunt for defects and stay **read-only**, then
+     verify each finding against the code before acting on it (reviewers report false
+     positives). If this client cannot spawn sub-agents, say so and ask the user to review in
+     a fresh session — never claim an independent review you did not have.
    - Otherwise, review it yourself.
-3. **End-to-end verification**: Re-read every file you modified. For features, trace the full path from UI interaction to backend response and confirm the UI actually triggers the expected behavior. Do not mark complete until verified.
-4. Run `agenfk comment <itemId> "Review complete (<self|independent, N reviewers>): <findings, and which survived verification>"`.
-5. Once satisfied, run `agenfk verify <itemId> --evidence "<how you satisfied this step's exit criteria>" "<command>"` with a **build/compile command** (e.g., `npm run build`, `tsc --noEmit`). The evidence is mandatory — describe concretely what you did.
-   - Success: advances to the next flow step. Repeat Phase 2 for each remaining intermediate step.
-   - Failure: moves back to the coding step automatically. Fix and repeat from Phase 1.
+   - If this step is not a review step, skip this item.
 
----
+4. **Prove it end-to-end.** Re-read every file you modified. For features, trace the full path
+   from UI interaction to backend response and confirm the UI actually triggers the expected
+   behavior. Do not treat a step as satisfied until verified.
 
-## Phase 3 — Final Validation (→ DONE)
+5. **Log what you did.** `agenfk comment <itemId> "<what this step produced, and for a review: self|independent, N reviewers, which findings survived verification>"`.
 
-1. When the item is in the last intermediate step before DONE, run `agenfk verify <itemId> --evidence "<how you satisfied this step's exit criteria>"` — omit the command to use the project's `verifyCommand` automatically.
-2. If no `verifyCommand` is configured, the command returns `NO_VERIFY_COMMAND`. **Auto-detect** the project's stack instead of asking the developer:
-   1. Read the project root for config files: `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`, `Makefile`, `*.csproj`/`*.sln`.
-   2. Detect the stack and compose the idiomatic build+test command:
-      - **Node.js** (`package.json`): detect the package manager from lockfiles (`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, default → `npm`). Read `package.json` `scripts` for `build` and `test` entries. Compose `{pm} run build && {pm} test`.
+6. **Advance the gate.** Run `agenfk verify <itemId> --evidence "<how you satisfied THIS step's exit criteria>" ["<command>"]`.
+   The evidence is mandatory and must be concrete. This is the only way to move forward —
+   never use `agenfk update --status` to advance, because the server permits a one-step forward
+   move, so that write succeeds and advances the item with no evidence and no criteria check.
+   - Pass a **build/compile command** (e.g. `npm run build`, `tsc --noEmit`) for intermediate steps.
+   - **Omit the command on the final step** — it uses the project's `verifyCommand` and lands DONE.
+   - **Success**: the item advances. Go back to step 1 for the next step.
+   - **Failure**: the item moves back to the flow's coding step. Fix, then resume from step 2.
+   - Do NOT use `agenfk update <id> --status DONE` — the server blocks direct DONE transitions.
+
+   If verify returns `NO_VERIFY_COMMAND`, **auto-detect** the stack instead of asking the developer:
+   1. Read the project root for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`,
+      `pom.xml`, `build.gradle`, `Makefile`, `*.csproj`/`*.sln`.
+   2. Compose the idiomatic build+test command:
+      - **Node.js** (`package.json`): detect the package manager from lockfiles (`bun.lockb` → `bun`, `pnpm-lock.yaml` → `pnpm`, `yarn.lock` → `yarn`, default → `npm`). Read `package.json` `scripts` for `build` and `test`. Compose `{pm} run build && {pm} test`.
       - **Rust** (`Cargo.toml`): `cargo build && cargo test`
       - **Go** (`go.mod`): `go build ./... && go test ./...`
       - **Python** (`pyproject.toml`): `python -m pytest`
@@ -112,24 +138,41 @@ Before creating any item, evaluate the request against these signals:
       - **Java/Gradle** (`build.gradle`): `./gradlew build`
       - **.NET** (`*.csproj` or `*.sln`): `dotnet build && dotnet test`
       - **Make** (`Makefile`): `make test`
-   3. Run `agenfk update-project <id> --verify-command "<detected>"` to persist the command.
+   3. Persist it: `agenfk update-project <id> --verify-command "<detected>"`.
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
-   5. If no config files are found and the stack cannot be detected, **then** ask the developer as a last resort.
-3. On success, the item moves to DONE automatically. On failure, it moves back to the coding step.
-4. Do NOT use `agenfk update <id> --status DONE` — the server blocks direct DONE transitions.
-5. **Push your branch**: After DONE, push the branch to remote so your changes are available for PR/review:
-   ```
-   git push -u origin <branchName>
-   ```
-   Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
+   5. Only if no config files exist and the stack cannot be detected, ask the developer.
+
+Once the item is DONE, **push your branch** so the work is available for PR/review:
+
+```
+git push -u origin <branchName>
+```
+
+Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
+
+### Illustration — the loop on the default flow
+
+This is an **example only**, not the contract. It shows the loop running on the shipped
+default flow (`TODO → IN_PROGRESS → REVIEW → TEST → DONE`). Your project almost certainly
+has different steps; read them from `activeFlow` and let the exit criteria drive you.
+
+| Pass | Step you are on | What its criteria typically ask | How you advance |
+|------|-----------------|--------------------------------|-----------------|
+| 1 | `IN_PROGRESS` | Implement the change | `agenfk verify <id> --evidence "..." "npm run build"` |
+| 2 | `REVIEW` | Review it, independently if the criteria say so | `agenfk verify <id> --evidence "..." "npm run build"` |
+| 3 | `TEST` | Suite green, coverage met | `agenfk verify <id> --evidence "..."` (no command → `verifyCommand`) → **DONE** |
+
+A flow with five working steps runs the same loop five times. A flow whose second step is
+`CREATE_UNIT_TESTS` writes tests on that pass, not a review — the criteria say so, and the
+step's name is not what decides it.
 
 ---
 
-## Phase 4 — Close
+## Close
 
 1. Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 2. Run `agenfk comment <itemId> "### FINAL SUMMARY\n\n- Changes: <bullet list>\n- Verification: <result>"`.
 3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     - **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
+    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).

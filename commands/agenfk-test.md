@@ -30,7 +30,7 @@ You are executing the `/agenfk-test <id>` command as a **Testing Agent**. Follow
     - Run `agenfk comment <id> "TESTS PASSED: ... [85% Coverage]"` to log the summary.
     - Run `agenfk comment <id> "Phase Test complete: Coverage threshold met and tests passed."` to log the phase completion.
     - **DO NOT run `agenfk verify`** — the Closing Agent handles the final advance to DONE.
-    - **DO NOT transition to DONE** — the Closing Agent handles TEST → DONE.
+    - **DO NOT transition to DONE** — the Closing Agent handles the final advance, whatever the last step before DONE is called in this project's flow.
     - STOP and YIELD. The supervisor will assign a closing agent to finalize the task.
 - If failed:
     - Run `agenfk log-test <id> --command "<test-command>" --output "<full captured output>" --status FAILED` to record the failure.

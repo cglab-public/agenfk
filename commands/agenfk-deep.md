@@ -35,7 +35,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward in the workflow (e.g., TODO → IN_PROGRESS, IN_PROGRESS → REVIEW, TEST → DONE) once **ALL** of its child items have also moved to that same state or further.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. This holds for whatever steps the active flow defines — read them from `activeFlow` in the `agenfk gatekeeper` response rather than assuming a fixed pipeline.
 
 ## Sibling Propagation Rule
 
