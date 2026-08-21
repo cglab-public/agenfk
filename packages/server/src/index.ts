@@ -17,7 +17,7 @@ import { toToon } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, spawnSync, spawn } from "child_process";
-import { getActiveStepItems } from "./gatekeeper-utils";
+import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -793,15 +793,15 @@ async function callToolHandler(request: any): Promise<any> {
           task = actionableItems[0];
         }
 
-        // Surface exit criteria for the current step. Resolved the same way the
-        // `agenfk gatekeeper` CLI does — see decideGatekeeperAuthorization in
-        // @agenfk/core. Keep these in step: a divergence here is what let the
-        // shipped docs claim the CLI returned criteria when it did not.
-        const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
-        const stepCriteria = (currentStep?.exitCriteria as string | undefined)?.trim() || undefined;
-        const exitCriteriaHint = stepCriteria
-          ? `\n\nExit criteria for ${task.status}:\n${stepCriteria}\n→ Satisfy the above, then call validate_progress(itemId, evidence).`
-          : `\n\nStep ${task.status} defines no exit criteria. That is not the same as "nothing required" — do the work the step is for, then call validate_progress(itemId, evidence).`;
+        // Resolved and rendered by the SHARED core helpers, not by a local copy.
+        // A hand-rolled duplicate here is exactly what let the shipped docs claim
+        // the CLI returned exit criteria when it never did.
+        const stepContract = resolveStepContract(activeFlow, task.status);
+        const exitCriteriaHint = renderStepContract(
+          stepContract,
+          task.status,
+          'call validate_progress(itemId, evidence)',
+        );
 
         // Branch hint
         let branchHint = '';
@@ -820,7 +820,7 @@ async function callToolHandler(request: any): Promise<any> {
           }
         }
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${flowStepsSummary}` }] };
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);

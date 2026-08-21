@@ -3116,9 +3116,16 @@ program
       // whether the step is literally named IN_PROGRESS. Falls back to default
       // TODO/DONE anchors when no flow is resolvable.
       let activeFlow: any = null;
+      let flowFetchFailed = false;
       if (projectId) {
         try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${projectId}/flow`)); }
-        catch { activeFlow = null; }
+        catch {
+          // Do NOT swallow this. Without the flow the step's exit criteria are
+          // unknown, and reporting "no criteria" for a failed lookup asserts a
+          // bar does not exist when it was never read.
+          activeFlow = null;
+          flowFetchFailed = true;
+        }
       }
 
       const decision = decideGatekeeperAuthorization(projectItems, activeFlow, {
@@ -3133,10 +3140,19 @@ program
           message: decision.message,
           task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
           exitCriteria: decision.exitCriteria ?? null,
+          // criteriaState keeps "absent" and "unknown" distinguishable for JSON
+          // consumers; exitCriteria is null for both.
+          criteriaState: decision.criteriaState ?? null,
           activeFlow: decision.activeFlow ?? null,
+          codingStep: decision.codingStep ?? null,
+          finalStep: decision.finalStep ?? null,
+          flowFetchFailed,
         }));
       } else {
         console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
+        if (flowFetchFailed) {
+          console.error(chalk.yellow(`⚠️  Could not load the project's flow from ${API_URL}. Exit criteria are unknown, not absent — retry or run \`agenfk flow show\` before advancing.`));
+        }
       }
       process.exit(decision.authorized ? 0 : 1);
     } catch (error: any) {

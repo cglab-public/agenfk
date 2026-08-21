@@ -96,13 +96,102 @@ export interface GatekeeperDecision {
   ambiguous?: boolean;
   /**
    * Exit criteria of the step the authorized item currently sits on, when that
-   * step defines any. Undefined on refusal, and undefined when the step has no
-   * criteria — the shipped default flow defines none, so callers must treat
-   * absence as "no stated bar", never as "nothing required".
+   * step defines any. Undefined on refusal, and undefined whenever
+   * `criteriaState` is anything other than 'present'.
    */
   exitCriteria?: string;
+  /**
+   * WHY `exitCriteria` is absent. Absent criteria and unknowable criteria are
+   * different facts and must not be reported with the same sentence: telling an
+   * agent a step "defines no exit criteria" when the flow merely failed to load
+   * asserts a bar does not exist when it was never looked up.
+   */
+  criteriaState?: 'present' | 'none-defined' | 'flow-unresolved' | 'status-not-in-flow';
   /** The governing flow, so a caller never has to guess the step names. */
   activeFlow?: { name?: string; steps: string[] };
+  /** First non-anchor step. Resolved here so callers never re-derive it. */
+  codingStep?: string;
+  /** The step with no successor — last before the DONE anchor, or simply last. */
+  finalStep?: string;
+}
+
+/** Resolved facts about where an item sits in its flow. */
+export interface StepContract {
+  exitCriteria?: string;
+  criteriaState: 'present' | 'none-defined' | 'flow-unresolved' | 'status-not-in-flow';
+  activeFlow?: { name?: string; steps: string[] };
+  codingStep?: string;
+  finalStep?: string;
+}
+
+/**
+ * Resolve the step contract for `status` within `flow`.
+ *
+ * Shared by the `agenfk gatekeeper` CLI and the server's workflow_gatekeeper MCP
+ * tool. Both MUST call this rather than reimplementing it: a hand-rolled copy in
+ * the MCP handler is what let the shipped docs claim the CLI reported exit
+ * criteria when it never did.
+ */
+export function resolveStepContract(
+  flow: GatekeeperFlow | null | undefined,
+  status: string,
+): StepContract {
+  const sorted = flow?.steps?.length ? [...flow.steps].sort((a, b) => a.order - b.order) : [];
+  if (sorted.length === 0) {
+    return { criteriaState: 'flow-unresolved' };
+  }
+
+  const activeFlow = { name: flow?.name, steps: sorted.map(s => s.name) };
+  const codingStep = sorted.find(s => !s.isAnchor)?.name;
+  const nonTerminal = sorted.filter(s => s.name.toUpperCase() !== 'DONE');
+  const finalStep = (nonTerminal.length ? nonTerminal : sorted)[
+    (nonTerminal.length ? nonTerminal : sorted).length - 1
+  ]?.name;
+
+  const currentStep = sorted.find(s => s.name.toUpperCase() === status.toUpperCase());
+  if (!currentStep) {
+    return { criteriaState: 'status-not-in-flow', activeFlow, codingStep, finalStep };
+  }
+
+  const exitCriteria = currentStep.exitCriteria?.trim() || undefined;
+  return {
+    exitCriteria,
+    criteriaState: exitCriteria ? 'present' : 'none-defined',
+    activeFlow,
+    codingStep,
+    finalStep,
+  };
+}
+
+/**
+ * Render a step contract as the text block appended to an authorization message.
+ * `advanceHint` differs per surface (`agenfk verify ...` vs `validate_progress(...)`).
+ */
+export function renderStepContract(c: StepContract, status: string, advanceHint: string): string {
+  let head: string;
+  switch (c.criteriaState) {
+    case 'present':
+      head = `\n\nExit criteria for ${status}:\n${c.exitCriteria}\n→ Satisfy the above, then ${advanceHint}.`;
+      break;
+    case 'none-defined':
+      head = `\n\nStep ${status} defines no exit criteria. That is not the same as "nothing required" — do the work the step is for, then ${advanceHint}.`;
+      break;
+    case 'status-not-in-flow':
+      head = `\n\n⚠️ ${status} is not a step of the active flow, so there are no criteria to satisfy. The project's flow was probably changed while this item sat here. Check with \`agenfk flow show\` and move the item onto a step the flow defines.`;
+      break;
+    case 'flow-unresolved':
+    default:
+      head = `\n\n⚠️ Could not resolve this project's flow, so the exit criteria for ${status} are UNKNOWN — not absent. Load them with \`agenfk flow show --project <projectId> --json\` before advancing.`;
+      break;
+  }
+
+  const steps = c.activeFlow
+    ? `\n\nActive flow${c.activeFlow.name ? ` "${c.activeFlow.name}"` : ''}: ${c.activeFlow.steps.join(' → ')}`
+      + (c.codingStep ? `\nCoding step: ${c.codingStep}` : '')
+      + (c.finalStep ? `\nFinal step (omit the command on this one): ${c.finalStep}` : '')
+    : '';
+
+  return `${head}${steps}`;
 }
 
 export interface GatekeeperDecisionOptions {
@@ -174,30 +263,20 @@ export function decideGatekeeperAuthorization(
     task = actionable[0];
   }
 
-  // Surface the step contract. The flow is already in hand here; discarding it
-  // is what forced CLI-only agents to fetch criteria from a second command, and
-  // what let the CLI and the MCP tool drift apart in the first place.
-  const sorted = flow?.steps ? [...flow.steps].sort((a, b) => a.order - b.order) : [];
-  const currentStep = sorted.find(s => s.name.toUpperCase() === task.status.toUpperCase());
-  const exitCriteria = currentStep?.exitCriteria?.trim() || undefined;
-
-  const activeFlow = sorted.length
-    ? { name: flow?.name, steps: sorted.map(s => s.name) }
-    : undefined;
-
-  const criteriaBlock = exitCriteria
-    ? `\n\nExit criteria for ${task.status}:\n${exitCriteria}\n→ Satisfy the above, then advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<how you satisfied them>"\`.`
-    : `\n\nStep ${task.status} defines no exit criteria. That is not the same as "nothing required" — do the work the step is for, then advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\`.`;
-
-  const flowBlock = activeFlow
-    ? `\n\nActive flow${activeFlow.name ? ` "${activeFlow.name}"` : ''}: ${activeFlow.steps.join(' → ')}`
-    : '';
+  // Surface the step contract via the shared resolver, so this and the MCP
+  // handler cannot drift — that drift is what produced false claims in the docs.
+  const contract = resolveStepContract(flow, task.status);
+  const advanceHint = `advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\``;
 
   return {
     authorized: true,
     task,
-    exitCriteria,
-    activeFlow,
-    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${criteriaBlock}${flowBlock}`,
+    exitCriteria: contract.exitCriteria,
+    criteriaState: contract.criteriaState,
+    activeFlow: contract.activeFlow,
+    codingStep: contract.codingStep,
+    finalStep: contract.finalStep,
+    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
+      + renderStepContract(contract, task.status, advanceHint),
   };
 }

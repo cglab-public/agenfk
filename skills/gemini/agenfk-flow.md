@@ -112,6 +112,6 @@ Report:
 
 ## Notes
 
-- Once activated, `workflow_gatekeeper` returns the active flow's steps automatically.
+- Once activated, the gatekeeper returns the active flow's steps automatically — `agenfk gatekeeper` and the `workflow_gatekeeper` MCP tool both report them, along with the current step's exit criteria.
 - Reset to default: `agenfk flow reset --project <projectId>`
 - Share: `agenfk flow publish <flowId>`

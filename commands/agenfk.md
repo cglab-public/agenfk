@@ -84,17 +84,22 @@ defines none, so this is the common case — empty criteria never mean "no work"
 *add* to the default for a step; they do not replace it with nothing.
 
 1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
-   It authorizes the edit and reports three things: the step the item is currently on, that
-   step's **exit criteria**, and the **active flow's steps**. If the step defines no criteria it
-   says so explicitly — that means "no stated bar", not "nothing required".
+   It authorizes the edit and reports everything you need: the step the item is currently on,
+   that step's **exit criteria**, the **active flow's steps**, and — resolved for you, so you
+   never derive them — which step is the **coding step** and which is the **final step**.
 
-   (`agenfk flow show --project <projectId> --json` gives the same flow with every step's
-   criteria at once, which is useful at session start to see the whole contract ahead of you.)
+   Read its verdict on the criteria carefully, because three cases look similar and mean
+   different things:
+   - criteria present → satisfy them;
+   - "defines no exit criteria" → the step genuinely has none. That is not "nothing required":
+     do the work the step is for;
+   - "UNKNOWN" or "not a step of the active flow" → something is wrong. The flow failed to
+     load, or the item is parked on a step this flow does not contain. Resolve that with
+     `agenfk flow show --project <projectId> --json` before advancing; do not treat it as
+     "no criteria".
 
-   From the flow it reports, identify two things before you start:
-   - the **coding step** — the first non-anchor step in the flow;
-   - the **final step** — the step with no successor: the last step before the `DONE` anchor,
-     or simply the last step in the flow if it has no anchor.
+   (`agenfk flow show` also gives every step's criteria at once, which is useful at session
+   start to see the whole contract ahead of you.)
 
    Read any criteria before doing anything: they define the bar for this step. Do not infer
    the work from the step's *name* — a step called `REFACTOR` or `DISCOVERY` is not a coding

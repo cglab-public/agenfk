@@ -1,0 +1,72 @@
+# Dependabot for cglab-public/agenfk.
+#
+# This repo is PUBLIC and its installer runs on other people's machines, so a
+# vulnerable transitive dependency propagates outward. Everything below is
+# grouped and weekly on purpose: ungrouped daily updates on this surface would
+# exceed the PR limit and get ignored, which is the same as having no coverage.
+version: 2
+
+updates:
+  # ── npm ───────────────────────────────────────────────────────────────────
+  # ONE entry at the root, not one per package. This is an npm workspaces
+  # monorepo: all 11 manifests resolve through a single root package-lock.json,
+  # and Dependabot updates that lockfile. A directory entry per workspace would
+  # emit concurrent PRs all rewriting the same lockfile, conflicting by
+  # construction.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    ignore:
+      # The internal packages are exact-pinned to the monorepo version across
+      # dependencies, devDependencies and peerDependencies, and are rewritten in
+      # lockstep by scripts/bump-version.mjs. They are not published to npm.
+      # Dependabot must never touch them.
+      - dependency-name: "@agenfk/*"
+    groups:
+      # Runtime dependencies move on their own so a risky bump is never bundled
+      # with tooling churn and can be reverted alone.
+      npm-production:
+        dependency-type: production
+        update-types: [minor, patch]
+      npm-development:
+        dependency-type: development
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+
+  # ── Docker ────────────────────────────────────────────────────────────────
+  # packages/hub/Dockerfile builds the hub image that runs in production.
+  - package-ecosystem: docker
+    directory: "/packages/hub"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      docker-base-images:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  # ci.yml, hub-image.yml and release.yml. Pinned action versions go stale
+  # quietly, and a compromised action runs with the workflow's permissions.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope

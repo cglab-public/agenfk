@@ -243,3 +243,100 @@ describe('decideGatekeeperAuthorization surfaces the step contract (CGLAB-83)', 
     expect(d.exitCriteria).toBeUndefined();
   });
 });
+
+// ── Review findings F1 / F6 ─────────────────────────────────────────────────
+// F1: "no exit criteria" was asserted for three different situations, only one
+// of which actually means the step defines none. Claiming a bar does not exist
+// when it merely could not be looked up is worse than saying nothing.
+// F6: the loop tells agents to identify the coding step and the final step from
+// what the gatekeeper reports, but a bare string[] of names cannot be used for
+// that without re-hardcoding TODO/DONE — the exact thing this refactor kills.
+
+const anchoredFlow: GatekeeperFlow = {
+  name: 'TDD Flow',
+  steps: [
+    { name: 'TODO', order: 0, isAnchor: true },
+    { name: 'DISCOVERY', order: 1, exitCriteria: 'Cards created.' },
+    { name: 'IN_PROGRESS', order: 2 },
+    { name: 'DONE', order: 3, isAnchor: true },
+  ],
+} as GatekeeperFlow;
+
+describe('the gatekeeper distinguishes unknown criteria from absent criteria (F1)', () => {
+  it('says criteria are UNKNOWN, not absent, when the flow could not be resolved', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], null as any, {});
+    expect(d.authorized).toBe(true);
+    expect(d.criteriaState).toBe('flow-unresolved');
+    expect(d.message).toMatch(/unknown/i);
+    expect(d.message).not.toMatch(/defines no exit criteria/i);
+  });
+
+  it('treats an empty step list as unresolved rather than as "no criteria"', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], { steps: [] }, {});
+    expect(d.criteriaState).toBe('flow-unresolved');
+    expect(d.message).not.toMatch(/defines no exit criteria/i);
+  });
+
+  it('flags a status that is not a step of the active flow instead of inventing a verdict', () => {
+    // Reachable: `agenfk flow use` can switch a project's flow under an item
+    // that is sitting on a step the new flow does not contain.
+    const d = decideGatekeeperAuthorization([item('a', 'TEST')], anchoredFlow, {});
+    expect(d.criteriaState).toBe('status-not-in-flow');
+    expect(d.message).toMatch(/not a step of the active flow/i);
+    expect(d.message).not.toMatch(/defines no exit criteria/i);
+  });
+
+  it('only says a step defines no criteria when the step really is in the flow', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.criteriaState).toBe('none-defined');
+    expect(d.message).toMatch(/defines no exit criteria/i);
+  });
+
+  it('reports criteriaState "present" when the step has criteria', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'DISCOVERY')], anchoredFlow, {});
+    expect(d.criteriaState).toBe('present');
+    expect(d.exitCriteria).toBe('Cards created.');
+  });
+});
+
+describe('the gatekeeper resolves the coding and final steps itself (F6)', () => {
+  it('names the coding step as the first non-anchor step', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.codingStep).toBe('DISCOVERY');
+  });
+
+  it('names the final step as the last step before the DONE anchor', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.finalStep).toBe('IN_PROGRESS');
+  });
+
+  it('treats the last step as final when the flow has no DONE anchor', () => {
+    // POST /flows does not require anchors, so an anchorless flow is real. The
+    // server's rule is "the step with no successor", not "the step before DONE".
+    const anchorless: GatekeeperFlow = {
+      name: 'Lean',
+      steps: [{ name: 'BUILD', order: 0 }, { name: 'SHIP', order: 1 }],
+    } as GatekeeperFlow;
+    const d = decideGatekeeperAuthorization([item('a', 'BUILD')], anchorless, {});
+    expect(d.finalStep).toBe('SHIP');
+    expect(d.codingStep).toBe('BUILD');
+  });
+
+  it('puts the coding and final steps in the message so no derivation is needed', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.message).toMatch(/coding step/i);
+    expect(d.message).toMatch(/final step/i);
+  });
+
+  it('leaks no step contract at all onto a refused authorization', () => {
+    // Strengthened per F8: the original guard checked only exitCriteria.
+    const d = decideGatekeeperAuthorization([item('a', 'TODO')], anchoredFlow, {});
+    expect(d.authorized).toBe(false);
+    expect(d.exitCriteria).toBeUndefined();
+    expect(d.activeFlow).toBeUndefined();
+    expect(d.codingStep).toBeUndefined();
+    expect(d.finalStep).toBeUndefined();
+    expect(d.criteriaState).toBeUndefined();
+    expect(d.message).not.toContain('Cards created.');
+  });
+});
