@@ -152,6 +152,37 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
     });
   });
 
+  describe('what does not count as live', () => {
+    it('ignores a retired installation, since retiring is the advised remedy', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev');
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      await liveKey('hash-live', 'aaaaaaaa-1111-2222-3333-444455556666');
+      await ctx.db.run(
+        "UPDATE installations SET retired_at = datetime('now') WHERE id = ?",
+        ['aaaaaaaa-1111-2222-3333-444455556666'],
+      );
+
+      expect((await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com')).status).toBe(200);
+    });
+
+    it('honours a shortened window from the environment', async () => {
+      // Proves the override reaches the endpoint, not just the helper.
+      const prev = process.env.AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS;
+      process.env.AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS = '1';
+      try {
+        await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(3));
+        await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+        await liveKey('hash-live', 'aaaaaaaa-1111-2222-3333-444455556666');
+
+        // Inside the default 48h, outside the configured 1h.
+        expect((await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com')).status).toBe(200);
+      } finally {
+        if (prev === undefined) delete process.env.AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS;
+        else process.env.AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS = prev;
+      }
+    });
+  });
+
   // ── Defect 2: the merge guard never matched a namespaced key ──────────────
 
   describe('the merge guard covers namespaced osuser keys', () => {
