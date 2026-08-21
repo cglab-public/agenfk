@@ -16,8 +16,8 @@ import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
-import { execSync, spawnSync, spawn } from "child_process";
-import { getActiveStepItems } from "./gatekeeper-utils";
+import { execSync, execFileSync, spawnSync, spawn } from "child_process";
+import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -793,20 +793,28 @@ async function callToolHandler(request: any): Promise<any> {
           task = actionableItems[0];
         }
 
-        // Surface exit criteria for the current step
-        const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
-        const exitCriteriaHint = currentStep?.exitCriteria
-          ? `\nExit criteria: "${currentStep.exitCriteria}"\n→ Satisfy the above before calling validate_progress.`
-          : '\n→ Call validate_progress(itemId, command?) to advance to the next step.';
+        // Resolved and rendered by the SHARED core helpers, not by a local copy.
+        // A hand-rolled duplicate here is exactly what let the shipped docs claim
+        // the CLI returned exit criteria when it never did.
+        const stepContract = resolveStepContract(activeFlow, task.status);
+        const exitCriteriaHint = renderStepContract(
+          stepContract,
+          task.status,
+          'call validate_progress(itemId, evidence)',
+        );
 
         // Branch hint
         let branchHint = '';
         if (task.branchName) {
           try {
-            execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
-            const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+            // execFileSync with an argument array, never a template literal in a
+            // shell: branchName is stored data, and this runs implicitly on every
+            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
+            // break out of the command. `--` stops it being read as an option.
+            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
+            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
             if (currentBranch !== task.branchName) {
-              execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
               branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
             } else {
               branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
@@ -816,14 +824,14 @@ async function callToolHandler(request: any): Promise<any> {
           }
         }
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${flowStepsSummary}` }] };
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
         return { 
           content: [{ 
             type: "text", 
-            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: Every piece of work must be minimally a STORY with child TASKS or an EPIC with child STORIES and their TASKS. Direct coding on a STORY or EPIC without child TASKS is prohibited.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. Create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.` 
+            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before any of them starts — an EPIC is never worked directly. A STORY is decomposed into TASKs only when it is large (multiple deliverables, several packages, or more than one focused implementation pass) — the agent's judgement.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. When decomposing, create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of a decomposition before moving any item to IN_PROGRESS.` 
           }] 
         };
       }
@@ -877,25 +885,21 @@ async function callToolHandler(request: any): Promise<any> {
         // Fetch current item to check status for state machine transitions
         const { data: currentItem } = await api.get(`/items/${id}`);
 
-        // Enforce workflow: block direct transitions to DONE — must use test_changes
+        // DONE is reachable ONLY through validate_progress, which records evidence
+        // and evaluates the step's exit criteria.
+        //
+        // This branch used to re-issue the PUT carrying x-agenfk-internal:
+        // VERIFY_TOKEN, the header that makes the server treat a request as an
+        // internal verify and skip BOTH the DONE guard and the flow guard. That
+        // made `update_item({ status: "DONE" })` land DONE from any working step
+        // with no evidence recorded and no command run — a hole in the framework's
+        // central guarantee, reachable by any MCP client. Never mint that token
+        // here: it exists so validate_progress can write its own result.
         if (updates.status === "DONE") {
-          // Fetch active flow to determine valid pre-DONE steps
-          let preDoneSteps = new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
-          try {
-            const { data: itemFlow } = await api.get(`/projects/${currentItem.projectId}/flow`).catch(() => ({ data: null }));
-            if (itemFlow?.steps) {
-              preDoneSteps = new Set(itemFlow.steps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()));
-            }
-          } catch { /* use defaults */ }
-          if (!preDoneSteps.has(currentItem.status.toUpperCase())) {
-            return {
-              isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Use test_changes(itemId) to run the project's test suite and advance to DONE.` }],
-            };
-          }
-          // Allow TEST -> DONE, using verify token to bypass server guard
-          const { data } = await api.put(`/items/${id}`, updates, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
-          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+          return {
+            isError: true,
+            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly (currently ${currentItem.status}). DONE is only reachable through validate_progress on the flow's final step, which records your evidence and runs the project's verify command.` }],
+          };
         }
 
         const { data } = await api.put(`/items/${id}`, updates);

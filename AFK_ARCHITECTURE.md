@@ -17,27 +17,27 @@ The project is organized as a TypeScript monorepo using npm workspaces under the
 2.  **CLI/UI as Clients**: The CLI and Web UI communicate with the Server via a RESTful API.
 3.  **Real-time Updates**: The Server uses WebSockets to push state changes to the UI for immediate visual feedback.
 4.  **Planning Phase (Complex Items)**:
-    - For items identified as EPIC or STORY, the system enforces a decomposition step.
-    - All sub-items (Stories/Tasks) are created in `TODO` status first.
-    - The Agent MUST obtain explicit user approval of the decomposition before transitioning any child item to `IN_PROGRESS`.
-    - **Minimum Decomposition Rule**: After exiting plan mode, the type of card that needs to be created is minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
+    - For items identified as EPIC, the system enforces a decomposition step into stories; for a STORY, decomposition into tasks happens only when the story is large.
+    - When decomposing, all sub-items (Stories/Tasks) are created in `TODO` status first.
+    - The Agent MUST obtain explicit user approval of a decomposition before transitioning any child item to `IN_PROGRESS`.
+    - **Minimum Decomposition Rule**: An **EPIC** is created with its child **STORIES** (each story decomposed into tasks when large) — an EPIC is never worked directly. A **STORY** is worked directly when small, or created with sub-**TASK**s when large — the agent's judgement.
     - **Backlog Inspection Rule**: When starting new work, only items in **TODO** status should be inspected. Items labeled or in a state suggesting they are **IDEAs** (draft ideas or speculative plans) MUST be ignored until they are promoted to TODO.
     - **Item Type Selection Rule**: An agent receiving a new request MUST classify it before creating any item. Use TASK only for single-file, immediately-obvious changes. Use STORY for multi-file, single-package work. Use EPIC whenever the request spans multiple packages, introduces new architecture, or requires a plan to decompose — and always run `/agenfk-plan` before coding. Key signals for EPIC: new package/subsystem, 3+ packages touched, multiple distinct user-facing capabilities, or needing Plan Mode to understand scope.
 5.  **Verification Loop**:
     - **Intermediate Steps (REVIEW, TEST, etc.)**: Advanced via `validate_progress`. Before calling it, agents call `workflow_gatekeeper(itemId)` to receive the current step's `exitCriteria`. `validate_progress` runs an agent-chosen command (or `verifyCommand` on the final step) to gate advancement.
-    - **Exit Criteria**: Free-text conditions on each `FlowStep`. Surfaced by the gatekeeper response so agents know what to satisfy before calling `validate_progress`.
+    - **Exit Criteria**: Free-text conditions on each `FlowStep`. Surfaced by the gatekeeper — both `agenfk gatekeeper` and the `workflow_gatekeeper` MCP tool report the current step's criteria and the active flow's steps, resolved by one shared implementation in `@agenfk/core`. A step with no criteria says so explicitly rather than staying silent. Note the shipped default flow defines none (CGLAB-82).
     - **Coverage Rule**: Newly inserted code MUST meet a minimum threshold (e.g., 80%). The specific implementation of this check (e.g., parsing Vitest vs Jest outputs) is project-specific. For the AgenFK Framework itself, a helper script at `scripts/enforce-coverage.ts` is provided to perform this check against Vitest output.
-    - **DONE Status**: Only reachable via `validate_progress` at the final intermediate step. Direct `update_item({ status: "DONE" })` is blocked by the server.
+    - **DONE Status**: Only reachable via `validate_progress` at the final intermediate step. Direct `update_item({ status: "DONE" })` is rejected on the REST path, but the MCP handler currently re-issues it with the internal verify token — see CGLAB-81. Treat DONE-by-any-route-but-verify as prohibited regardless.
 
 ## Multi-Agent Orchestration
-AgenFK features an automated orchestration layer where the primary agent acts as a supervisor, automatically spawning specialized sub-agents at each phase transition using the `task` tool:
+AgenFK features an automated orchestration layer where the primary agent acts as a supervisor, automatically spawning specialized sub-agents at each step transition using the `task` tool. The steps below name the DEFAULT flow for illustration; a project's own flow decides how many hand-offs there are and what each one is for:
 
 1.  **Planning Agent (TODO Phase)**:
     - **Trigger**: New user request or creation of an EPIC/STORY.
     - **Protocol**: Decomposes request into `TODO` sub-items and **PAUSES** for human approval.
 2.  **Coding Agent (IN_PROGRESS Phase)**:
     - **Trigger**: Human approval of the plan.
-    - **Protocol**: Implements the plan and calls `update_item({ status: "REVIEW" })` to signal coding is done, then calls `workflow_gatekeeper(itemId)` followed by `validate_progress` to transition to `TEST`.
+    - **Protocol**: Implements the plan, then calls `validate_progress` to close the coding step. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
 3.  **Review Agent (REVIEW Phase)**:
     - **Trigger**: Automatic spawn when item enters REVIEW.
     - **Protocol**: Calls `workflow_gatekeeper(itemId)` to read exit criteria, audits code for security and requirements, then calls `validate_progress` to advance to `TEST`.

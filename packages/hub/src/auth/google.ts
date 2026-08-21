@@ -3,6 +3,7 @@ import axios from 'axios';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
@@ -24,6 +25,10 @@ function callbackUrl(req: Request): string {
 
 export function googleRouter(ctx: HubServerContext): Router {
   const router = Router();
+
+  // Unauthenticated entry point, so it is the front door: bound it before a
+  // caller can drive config reads and redirects in a loop.
+  router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many sign-in requests, slow down.' }));
 
   router.get('/start', async (req: Request, res: Response) => {
     const cfg = await readGoogleConfig(ctx);

@@ -11,6 +11,8 @@
 export {
   getActiveStepItems,
   decideGatekeeperAuthorization,
+  resolveStepContract,
+  renderStepContract,
   INACTIVE_STATUSES,
   type GatekeeperFlow,
   type GatekeeperItem,

@@ -5,6 +5,7 @@ import jwksClient, { JwksClient } from 'jwks-rsa';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 interface EntraCfg {
   entra_enabled: number;
@@ -64,6 +65,10 @@ function verifyIdToken(idToken: string, jwks: JwksClient, audience: string, issu
 
 export function entraRouter(ctx: HubServerContext): Router {
   const router = Router();
+
+  // Unauthenticated entry point, so it is the front door: bound it before a
+  // caller can drive config reads and redirects in a loop.
+  router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many sign-in requests, slow down.' }));
 
   router.get('/start', async (req: Request, res: Response) => {
     const cfg = await readEntraConfig(ctx);

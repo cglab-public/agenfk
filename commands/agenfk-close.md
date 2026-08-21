@@ -26,13 +26,13 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 4 — Close Children First (Bottom-Up)**
 - If the item has children (EPIC with STORYs, STORY with TASKs), run `agenfk list --project <id> --json` (filter by parent) to check their status.
-- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>"` — if no command is provided, the project's verifyCommand runs automatically. The server blocks direct DONE transitions via `agenfk update --status`.
+- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>" "<build command>"` once per remaining step. Pass a command on every intermediate step — omitting it advances **without running anything**; `verifyCommand` is substituted only on the final step. Never set `DONE` directly by any route.
 - **Sibling propagation**: If one child's `agenfk verify` already reached DONE, remaining siblings will pass immediately (same verified code). Run `agenfk verify <id> --evidence "<evidence>"` on each — the server skips execution via sibling propagation.
-- Any child still in the coding step (IN_PROGRESS or equivalent) should be flagged to the user before proceeding.
+- Any child still sitting in the flow's coding step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
 - Only proceed to Step 5 once ALL children are DONE.
 
 **Step 5 — Move to DONE**
-- Run `agenfk comment <id> "Phase Close complete: Final summary prepared."` to log the phase completion.
+- Run `agenfk comment <id> "Closing complete: final summary prepared."` to log the step completion.
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
 - For leaf items (TASK/BUG) in an intermediate step: run `agenfk verify <id> --evidence "<how exit criteria were met>"` to advance to DONE.
 - **Push your branch**: After the item reaches DONE, push the branch to remote:
@@ -45,4 +45,4 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included and move the item back to `IN_PROGRESS`).
+    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).

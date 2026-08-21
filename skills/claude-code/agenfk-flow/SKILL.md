@@ -156,6 +156,6 @@ If the user wants to edit a flow instead of creating one:
 ## Notes
 
 - Flow names must be unique within a project.
-- The `workflow_gatekeeper` MCP tool returns the active flow's steps — all platforms benefit automatically once a flow is activated.
+- The gatekeeper returns the active flow's steps and the current step's exit criteria — `agenfk gatekeeper` and the `workflow_gatekeeper` MCP tool both report them, so all platforms benefit automatically once a flow is activated.
 - To reset a project back to the default flow: `agenfk flow reset --project <projectId>`
 - To share a flow with the community: `agenfk flow publish <flowId>`

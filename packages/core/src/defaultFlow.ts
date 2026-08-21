@@ -16,18 +16,24 @@ const DEFAULT_STEPS: FlowStep[] = [
     name: "IN_PROGRESS",
     label: "In Progress",
     order: 1,
+    exitCriteria:
+      "Implement the change. Explore the codebase first and confirm what already exists before claiming it does — search for the specific components, endpoints and queries rather than assuming. Keep the change focused on what was asked. For a defect, trace it from symptom to root cause and fix the cause, one fix at a time, rather than working around it. The project builds.",
   },
   {
     id: "default-review",
     name: "REVIEW",
     label: "Review",
     order: 2,
+    exitCriteria:
+      "Review everything you changed, and state what you reviewed. Re-read each modified file and check correctness, edge cases, error handling, input validation and authorization, and whether any test you touched still proves what its name claims. If the change is risky or wide, get the review from an independent reviewer rather than yourself — a review by the author carries the author's blind spots. Verify each finding against the code before acting on it, and say which findings you rejected and why.",
   },
   {
     id: "default-test",
     name: "TEST",
     label: "Test",
     order: 3,
+    exitCriteria:
+      "The project's full test suite passes, and the new behaviour is covered by tests that fail if the change is reverted. Report the actual numbers rather than 'tests pass'. Compare the test names before and after your work and confirm none was deleted, renamed away, skipped or had its assertions weakened — a green suite with fewer tests than you started with is a regression, not a pass.",
   },
   {
     id: "default-done",

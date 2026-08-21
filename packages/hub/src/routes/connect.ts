@@ -25,9 +25,19 @@ const MAX_PENDING_DEVICE_CODES = 1000;
 const USER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function userCode(): string {
-  const buf = randomBytes(8);
+  // Rejection sampling rather than `% alphabet.length`. With today's 32-character
+  // alphabet the modulo happens to be unbiased because 256 is an exact multiple
+  // of 32 — but that is a property of the string, not of the code, and editing
+  // the alphabet to any non-power-of-two length would skew codes silently.
+  const limit = 256 - (256 % USER_CODE_ALPHABET.length);
   let s = '';
-  for (let i = 0; i < 8; i++) s += USER_CODE_ALPHABET[buf[i] % USER_CODE_ALPHABET.length];
+  while (s.length < 8) {
+    for (const byte of randomBytes(8)) {
+      if (byte >= limit) continue;          // would bias the tail; draw again
+      s += USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
+      if (s.length === 8) break;
+    }
+  }
   return `${s.slice(0, 4)}-${s.slice(4)}`;
 }
 

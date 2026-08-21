@@ -12,6 +12,7 @@ import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -68,6 +69,10 @@ function publicAuthConfig(row: AuthConfigRow) {
 
 export function adminRouter(ctx: HubServerContext): Router {
   const router = Router();
+
+  // Admin routes are session-guarded, but several mutate state or run wide
+  // queries, so bound them too rather than relying on the guard alone.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────

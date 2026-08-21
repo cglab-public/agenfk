@@ -10,9 +10,9 @@ You are executing the `/agenfk-pause [id]` command. Follow these steps precisely
 
 **Step 1 — Identify the item to pause**
 - If an `<id>` argument was provided, use it directly.
-- Otherwise, run `agenfk list --status IN_PROGRESS --json` to find the active task (MCP: `list_items`).
-- If multiple items are IN_PROGRESS, ask the user which one to pause.
-- If no items are IN_PROGRESS, check for items in REVIEW or TEST status.
+- Otherwise, run `agenfk list --active --json` to find the work in flight (MCP: `list_items`). `--active` is flow-aware: it returns items in any active working step of the project's own flow, excluding the TODO/DONE anchors and PAUSED/BLOCKED/terminal items. Do **not** filter by a guessed step name such as `--status IN_PROGRESS` — on a flow that does not use that name, the item you need is invisible and the command reports nothing to pause.
+- If it returns more than one item, ask the user which one to pause.
+- If it returns nothing, there is genuinely no work in flight; say so rather than searching for other step names.
 - Confirm the item ID and title before proceeding.
 
 **Step 2 — Gather context**

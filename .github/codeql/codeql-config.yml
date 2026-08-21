@@ -1,0 +1,19 @@
+# CodeQL configuration for cglab-public/agenfk.
+#
+# Only possible because the repo uses ADVANCED setup (.github/workflows/codeql.yml).
+# GitHub's default setup generates its own workflow and ignores a config file.
+name: agenfk CodeQL config
+
+paths-ignore:
+  # Test code is not shipped to a user's machine, so a regex or URL check in a
+  # fixture is not an exposure. Three alerts were dismissed as "used in tests"
+  # before this existed; excluding the directories stops that class recurring
+  # rather than needing a dismissal each time.
+  - "**/src/test/**"
+  - "**/test/**"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+
+  # Build output. Analysing it re-reports every source finding a second time,
+  # attributed to a generated file nobody can fix.
+  - "**/dist/**"

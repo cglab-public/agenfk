@@ -100,3 +100,71 @@ describe('isNamespacedOsUserKey', () => {
     expect(isNamespacedOsUserKey('dev@acme.com')).toBe(false);
   });
 });
+
+// ── CGLAB-85: ReDoS ─────────────────────────────────────────────────────────
+// The old pattern /^[^@\s]+@[^@\s]+\.[^@\s]+$/ backtracked quadratically,
+// because \. is also matched by [^@\s]. With no length bound and a 10mb JSON
+// body limit, a crafted key stalled the whole single-threaded hub: measured
+// 96ms at 20KB, 2.4s at 100KB, 38s at 400KB.
+describe('isEmailShapedKey is not a DoS vector (CGLAB-85)', () => {
+  const adversarial = (reps: number) => '!@' + '!.'.repeat(reps) + ' ';
+
+  it('rejects a 400KB adversarial key in well under a second', () => {
+    const started = Date.now();
+    expect(isEmailShapedKey(adversarial(200_000))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('stays fast as the adversarial input grows — no super-linear blowup', () => {
+    const time = (reps: number) => {
+      const t = Date.now();
+      isEmailShapedKey(adversarial(reps));
+      return Date.now() - t;
+    };
+    time(10_000); // warm
+    const small = time(20_000);
+    const large = time(200_000); // 10x the input
+    // Quadratic would be ~100x. Allow generous headroom for a noisy CI box
+    // while still failing loudly on a return to polynomial behaviour.
+    expect(large).toBeLessThan(Math.max(small * 12, 250));
+  });
+
+  it('rejects an over-long key outright rather than scanning it', () => {
+    expect(isEmailShapedKey('a'.repeat(5000) + '@acme.com')).toBe(false);
+  });
+
+  it('still accepts a realistic address at the boundary of sane length', () => {
+    const local = 'a'.repeat(60);
+    expect(isEmailShapedKey(`${local}@really-long-corporate-domain.example.com`)).toBe(true);
+  });
+});
+
+describe('isEmailShapedKey keeps its contract after the ReDoS fix (CGLAB-85)', () => {
+  it('accepts multi-label domains', () => {
+    expect(isEmailShapedKey('dev@mail.corp.acme.co.uk')).toBe(true);
+  });
+
+  it('accepts a dotted local part', () => {
+    expect(isEmailShapedKey('first.last@acme.com')).toBe(true);
+  });
+
+  it('rejects a domain with no dot', () => {
+    expect(isEmailShapedKey('dev@localhost')).toBe(false);
+  });
+
+  it('rejects consecutive dots, which the ambiguous pattern used to accept', () => {
+    // Behaviour change, called out deliberately: the old regex matched this
+    // because [^@\s]+ could absorb a dot. A dotted-label pattern cannot.
+    expect(isEmailShapedKey('dev@acme..com')).toBe(false);
+  });
+
+  it('rejects a trailing or leading dot in the domain', () => {
+    expect(isEmailShapedKey('dev@acme.com.')).toBe(false);
+    expect(isEmailShapedKey('dev@.acme.com')).toBe(false);
+  });
+
+  it('rejects whitespace and multiple @ signs', () => {
+    expect(isEmailShapedKey('de v@acme.com')).toBe(false);
+    expect(isEmailShapedKey('dev@a@acme.com')).toBe(false);
+  });
+});

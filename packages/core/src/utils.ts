@@ -176,3 +176,46 @@ export function migrateCardsToFlow(
 
   return results;
 }
+
+
+/**
+ * Fields a FlowStep is allowed to carry. Flows arrive from a community registry
+ * and from org-wide hub pushes, so their steps are untrusted input: anything not
+ * on this list is dropped at the door rather than persisted.
+ *
+ * A `command` must never be added here. `validate_progress` ends in
+ * spawn(..., { shell: true }); the only thing separating that from remote code
+ * execution is that a flow cannot supply the command.
+ */
+export const FLOW_STEP_FIELDS = [
+  'id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial',
+] as const;
+
+/**
+ * Whitelist step fields and guarantee unique ids.
+ *
+ * Missing OR duplicated ids both get a fresh one: two steps sharing an id
+ * collide on React's key={step.id} in the flow editor, which silently drops a
+ * column from the UI.
+ *
+ * Every path that persists a flow must call this — `POST /flows`, the flow
+ * editor, the registry install, and the hub sync. The hub path previously took
+ * remote steps verbatim, so the whitelist did not cover the one channel whose
+ * untrustworthiness is the reason it exists.
+ */
+export function normalizeFlowSteps(steps: any, newId: () => string): any {
+  if (!Array.isArray(steps)) return steps;
+  const seen = new Set<string>();
+  return steps.map((step: any) => {
+    if (!step || typeof step !== 'object') return step;
+    const out: any = {};
+    for (const k of FLOW_STEP_FIELDS) {
+      if (step[k] !== undefined) out[k] = step[k];
+    }
+    const id = typeof step.id === 'string' ? step.id : '';
+    const resolved = (!id || seen.has(id)) ? newId() : id;
+    seen.add(resolved);
+    out.id = resolved;
+    return out;
+  });
+}

@@ -6,6 +6,7 @@ import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 function parseList(s: string | undefined): string[] | null {
   if (!s) return null;
@@ -51,6 +52,11 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
 
 export function queriesRouter(ctx: HubServerContext): Router {
   const router = Router();
+
+  // Authenticated and org-scoped, but every route here runs real SQL, so an
+  // authenticated client in a loop is still a resource concern. Generous cap:
+  // high enough that no legitimate dashboard hits it, low enough to bound abuse.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret);
 
   router.get('/users', guard, async (req: Request, res: Response) => {

@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege for GITHUB_TOKEN. Without this block a public repo's token
+# takes the broad default scope, so a compromised action or dependency in the
+# build could write to the repo. This job only needs to read the code.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build & Test
