@@ -15,13 +15,13 @@
     "@agenfk/core": "1.1.15",
     "@agenfk/storage-sqlite": "1.1.15",
     "@agenfk/telemetry": "1.1.15",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "axios": "^1.13.5",
-    "body-parser": "^2.2.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "axios": "^1.19.0",
+    "body-parser": "^2.3.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
-    "uuid": "^14.0.1",
+    "uuid": "^14.0.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {
