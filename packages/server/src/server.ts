@@ -2102,11 +2102,14 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     type: type as ItemType,
     title,
     description: description || "",
-    // An item is born at the flow's entry step, never mid-flow. `status` used to
-    // be accepted raw here, so create_item({status:'DONE'}) was documented on the
-    // MCP surface and free — the same hole that was just closed on update_item,
-    // one function away. A platform status is allowed (BLOCKED/IDEAS are valid
-    // things to create into); a working step is not.
+    // `status` used to be accepted raw here, so create_item({status:'DONE'}) was
+    // documented on the MCP surface and free — the same hole just closed on
+    // update_item, one function away. The rule that replaced it is the RELAXED
+    // one: an item may be parked in any working step it already holds (JIRA and
+    // GitHub imports bring items in whatever state they're in, and two
+    // pre-existing tests rely on it). Only completion has to be earned, so
+    // DONE and the flow's exit anchor are the only refused targets — see
+    // sanitizeCreateStatus for the authoritative version of this rule.
     status: sanitizeCreateStatus(status, createFlowForStatus),
     parentId: parentId,
     implementationPlan: implementationPlan || "",

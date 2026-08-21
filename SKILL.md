@@ -186,7 +186,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Workflow** (use the active flow's step names, from `agenfk flow show --project <id> --json`):
         *   Closing the coding step is itself an `agenfk verify` call — there is no separate "move to review" write. `agenfk update --status` must never be used to go forward.
         *   Run `agenfk gatekeeper --item-id <itemId>` before `agenfk verify` — it reports the step you are on and its exit criteria.
-        *   `agenfk verify <itemId> --evidence "<text>" ["<command>"]` — `evidence` is **required**: describe concretely how you satisfied the current step's exit criteria. It is logged as a tagged comment (audit trail) and serves as your mandatory confirmation before the step advances. Runs `command` (or `project.verifyCommand` if omitted) and advances to the next flow step on success.
+        *   `agenfk verify <itemId> --evidence "<text>" ["<command>"]` — `evidence` is **required**: describe concretely how you satisfied the current step's exit criteria. It is logged as a tagged comment (audit trail) and serves as your mandatory confirmation before the step advances. Pass a command on every intermediate step — omitting it advances **without running anything**; `verifyCommand` is substituted only on the final step (below).
         *   The Agent verifies coverage and regressions in each intermediate step.
         *   Run `agenfk verify <itemId> --evidence "<how you satisfied this step>"` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retries. Do NOT set `DONE` directly by any route — `agenfk verify` on the final step is the only legitimate way in.
         *   Failure: Agent moves item back to the active coding step.
@@ -194,7 +194,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
 
 6.  **Final Verification (Validate Tool)**
     *   **Action**: The Agent reads the current step's exit criteria FIRST (they define what an acceptable review is), reviews accordingly, then runs `agenfk verify <itemId> --evidence "<text>" ["<command>"]` to gate the transition to the next step.
-    *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `agenfk update-project <id> --verify-command "<cmd>"`) is used automatically when no `command` is provided. Agents cannot override or bypass it.
+    *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `agenfk update-project <id> --verify-command "<cmd>"`) is substituted automatically only on the **final step** when no `command` is provided. On intermediate steps, omitting the command advances without running anything, so pass the command explicitly. No advance is possible without evidence, which agents cannot fabricate or skip.
     *   **Transition Logic (Automated by Tool)**:
         1. The agent closes the coding step with `agenfk verify <id> --evidence "<text>" ["<command>"]`, which is what advances it.
         2. The agent reviews — independently, via a separate review agent, when the step's exit criteria call for it; otherwise re-reads files and checks correctness itself.
