@@ -197,7 +197,10 @@ async function run() {
                     return out.stdout.split('\n').some(looksLikeServerCmd);
                 }
                 // Fallback: pgrep against a node-anchored regex if ps is unavailable.
-                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${SERVER_PATTERN.replace(/\./g, '\\.')}`], { encoding: 'utf8' });
+                // Escape every regex metacharacter, not just the dot — a partial escape is
+                // the kind that quietly stops matching when the pattern changes.
+                const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8' });
                 return pg.status === 0 && (pg.stdout || '').trim().length > 0;
             } catch {
                 return false;

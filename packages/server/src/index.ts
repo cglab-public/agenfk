@@ -16,7 +16,7 @@ import * as os from "os";
 import { toToon } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
-import { execSync, spawnSync, spawn } from "child_process";
+import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
@@ -807,10 +807,14 @@ async function callToolHandler(request: any): Promise<any> {
         let branchHint = '';
         if (task.branchName) {
           try {
-            execSync(`git rev-parse --verify ${task.branchName}`, { stdio: 'ignore' });
-            const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim();
+            // execFileSync with an argument array, never a template literal in a
+            // shell: branchName is stored data, and this runs implicitly on every
+            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
+            // break out of the command. `--` stops it being read as an option.
+            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
+            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
             if (currentBranch !== task.branchName) {
-              execSync(`git checkout ${task.branchName}`, { stdio: 'ignore' });
+              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
               branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
             } else {
               branchHint = `\n🔀 Already on branch '${task.branchName}'.`;

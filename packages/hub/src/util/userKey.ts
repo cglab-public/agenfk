@@ -18,10 +18,34 @@ import { HubEvent } from '@agenfk/core';
 const INSTALLATION_PREFIX_LENGTH = 8;
 export const OS_USER_KEY_PREFIX = 'osuser:';
 
+/**
+ * Longest key we will even attempt to shape-check. RFC 5321 caps an address at
+ * 254 octets; the headroom is for namespaced variants. Anything longer is not a
+ * real identity and is rejected without being scanned.
+ */
+const MAX_EMAIL_SHAPED_KEY_LENGTH = 320;
+
+/**
+ * Dot-separated labels on both sides of a single `@`, with the dot excluded from
+ * the label class.
+ *
+ * The exclusion is the point. The previous pattern was
+ * `^[^@\s]+@[^@\s]+\.[^@\s]+$`, where `\.` was ALSO matched by `[^@\s]`, so the
+ * domain was ambiguous and the engine backtracked quadratically over it: a
+ * crafted key measured 96ms at 20KB, 2.4s at 100KB and 38s at 400KB. Because the
+ * hub is single-threaded, one such key stalled the service for every tenant.
+ * Keep `.` out of these classes — reintroducing it restores the blowup.
+ */
+const EMAIL_SHAPED = /^[^@\s.]+(?:\.[^@\s.]+)*@[^@\s.]+(?:\.[^@\s.]+)+$/;
+
 /** Is this key a real email address (rather than a username-derived one)? */
 export function isEmailShapedKey(key: string): boolean {
   if (key.startsWith(OS_USER_KEY_PREFIX)) return false;
-  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(key);
+  // Bound the length before the regex runs, not after. This is the belt to the
+  // pattern's braces: even a future edit that reintroduces ambiguity cannot be
+  // driven past a few hundred characters of input.
+  if (key.length > MAX_EMAIL_SHAPED_KEY_LENGTH) return false;
+  return EMAIL_SHAPED.test(key);
 }
 
 /**

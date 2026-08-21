@@ -234,8 +234,21 @@ const MAX_LOGS_PER_ITEM = 3;
 const PREVIEW_HEAD_BYTES = 1024;
 const PREVIEW_TAIL_BYTES = 1024;
 
+/**
+ * Item ids are server-generated uuids. Anything else must never reach a path
+ * segment: `../..` in an id would put log writes and the prune-by-mtime unlink
+ * outside the logs directory entirely.
+ */
+const SAFE_ITEM_ID = /^[A-Za-z0-9._-]{1,128}$/;
+function assertSafeItemId(itemId: string): string {
+  if (!SAFE_ITEM_ID.test(itemId) || itemId === '.' || itemId === '..') {
+    throw new Error(`Refusing to use '${itemId}' as a log path segment: not a valid item id.`);
+  }
+  return itemId;
+}
+
 const getItemLogDir = (itemId: string): string =>
-  path.join(path.dirname(dbPath), 'logs', itemId);
+  path.join(path.dirname(dbPath), 'logs', assertSafeItemId(itemId));
 
 const writeValidationLog = (itemId: string, testId: string, output: string): string => {
   const dir = getItemLogDir(itemId);
