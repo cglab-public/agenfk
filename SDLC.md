@@ -116,7 +116,7 @@ validate_progress({ itemId, command: "npm run build" })
 - If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
 - A comment is logged with the command output.
 
-**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)` to authorize the edit and confirm which step the item is on. Under MCP that response also carries the step's `exitCriteria`; the `agenfk` CLI reports only the step, so in CLI-only mode read the criteria from `get_flow` / `agenfk flow show`. Either way the agent must satisfy those criteria before advancing.
+**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)` — or `agenfk gatekeeper` on the CLI, which reports the same thing. The response authorizes the edit and carries the current step's `exitCriteria` plus the active flow's steps. The agent must satisfy those criteria before advancing.
 
 ### Project verifyCommand
 

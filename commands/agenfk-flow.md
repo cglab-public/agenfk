@@ -156,6 +156,6 @@ Run `agenfk flow delete <id>` (MCP: `delete_flow`).
 ## Notes
 
 - Flow names must be unique.
-- the `workflow_gatekeeper` MCP tool returns the active flow's steps automatically (the CLI reports only the current step, so read the flow with `agenfk flow show`) — all platforms benefit once a flow is activated.
+- the gatekeeper returns the active flow's steps automatically — all platforms benefit once a flow is activated.
 - To reset a project back to the default flow: `agenfk flow use "" --project <projectId>` (empty flowId) or `agenfk flow reset --project <projectId>`.
 - To share a flow with the community: `agenfk flow publish <flowId>`.

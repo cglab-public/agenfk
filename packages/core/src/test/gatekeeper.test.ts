@@ -175,3 +175,71 @@ describe('detectCrossProjectItem (B1: prefer in-project, avoid prefix-collision 
     expect(detectCrossProjectItem(all, 'x', undefined)).toBeNull();
   });
 });
+
+// ── CGLAB-83: the CLI must learn what the MCP tool already knew ──────────────
+// The gatekeeper receives the flow, so it can report the current step's exit
+// criteria and the flow's shape. It used to discard both, which forced every
+// shipped command to tell CLI-only agents to go fetch the criteria from a second
+// command — a documented workaround for a capability gap.
+
+const criteriaFlow: GatekeeperFlow = {
+  name: 'TDD Flow',
+  steps: [
+    { name: 'TODO', order: 0, isAnchor: true },
+    { name: 'DISCOVERY', order: 1, exitCriteria: 'Cards created and the user gave the go-ahead.' },
+    { name: 'CREATE_UNIT_TESTS', order: 2, exitCriteria: 'All tests written; they may fail.' },
+    { name: 'IN_PROGRESS', order: 3 },
+    { name: 'DONE', order: 4, isAnchor: true },
+  ],
+} as GatekeeperFlow;
+
+describe('decideGatekeeperAuthorization surfaces the step contract (CGLAB-83)', () => {
+  it('returns the current step exit criteria as a structured field', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'CREATE_UNIT_TESTS')], criteriaFlow, {});
+    expect(d.authorized).toBe(true);
+    expect(d.exitCriteria).toBe('All tests written; they may fail.');
+  });
+
+  it('puts the exit criteria in the message so a CLI-only agent sees them', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'DISCOVERY')], criteriaFlow, {});
+    expect(d.message).toContain('Cards created and the user gave the go-ahead.');
+  });
+
+  it('reports the criteria of the step the item is ON, not another step', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'DISCOVERY')], criteriaFlow, {});
+    expect(d.exitCriteria).toBe('Cards created and the user gave the go-ahead.');
+    expect(d.message).not.toContain('All tests written');
+  });
+
+  it('says explicitly that a step defines no criteria, instead of staying silent', () => {
+    // The shipped default flow defines no criteria at all (CGLAB-82), so silence
+    // here would read as "nothing is required".
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], criteriaFlow, {});
+    expect(d.exitCriteria).toBeUndefined();
+    expect(d.message).toMatch(/no exit criteria/i);
+  });
+
+  it('reports the active flow name and its real step names, not the defaults', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], criteriaFlow, {});
+    expect(d.activeFlow?.name).toBe('TDD Flow');
+    expect(d.activeFlow?.steps).toEqual(['TODO', 'DISCOVERY', 'CREATE_UNIT_TESTS', 'IN_PROGRESS', 'DONE']);
+    expect(d.message).toContain('CREATE_UNIT_TESTS');
+  });
+
+  it('names agenfk verify as the way to advance, never update --status', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'DISCOVERY')], criteriaFlow, {});
+    expect(d.message).toContain('agenfk verify');
+    expect(d.message).not.toMatch(/update\s+--status/);
+  });
+
+  it('matches the step case-insensitively, as the server does', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'discovery')], criteriaFlow, {});
+    expect(d.exitCriteria).toBe('Cards created and the user gave the go-ahead.');
+  });
+
+  it('carries no step contract when authorization is refused', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'TODO')], criteriaFlow, {});
+    expect(d.authorized).toBe(false);
+    expect(d.exitCriteria).toBeUndefined();
+  });
+});

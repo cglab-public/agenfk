@@ -10,7 +10,9 @@
  */
 
 export interface GatekeeperFlow {
-  steps: Array<{ name: string; order: number; isAnchor?: boolean }>;
+  /** Flow name, echoed back so the caller can see which flow is governing. */
+  name?: string;
+  steps: Array<{ name: string; order: number; isAnchor?: boolean; exitCriteria?: string }>;
 }
 
 export interface GatekeeperItem {
@@ -92,6 +94,15 @@ export interface GatekeeperDecision {
   task: GatekeeperItem | null;
   /** True when authorization failed because multiple tasks were active. */
   ambiguous?: boolean;
+  /**
+   * Exit criteria of the step the authorized item currently sits on, when that
+   * step defines any. Undefined on refusal, and undefined when the step has no
+   * criteria — the shipped default flow defines none, so callers must treat
+   * absence as "no stated bar", never as "nothing required".
+   */
+  exitCriteria?: string;
+  /** The governing flow, so a caller never has to guess the step names. */
+  activeFlow?: { name?: string; steps: string[] };
 }
 
 export interface GatekeeperDecisionOptions {
@@ -163,9 +174,30 @@ export function decideGatekeeperAuthorization(
     task = actionable[0];
   }
 
+  // Surface the step contract. The flow is already in hand here; discarding it
+  // is what forced CLI-only agents to fetch criteria from a second command, and
+  // what let the CLI and the MCP tool drift apart in the first place.
+  const sorted = flow?.steps ? [...flow.steps].sort((a, b) => a.order - b.order) : [];
+  const currentStep = sorted.find(s => s.name.toUpperCase() === task.status.toUpperCase());
+  const exitCriteria = currentStep?.exitCriteria?.trim() || undefined;
+
+  const activeFlow = sorted.length
+    ? { name: flow?.name, steps: sorted.map(s => s.name) }
+    : undefined;
+
+  const criteriaBlock = exitCriteria
+    ? `\n\nExit criteria for ${task.status}:\n${exitCriteria}\n→ Satisfy the above, then advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<how you satisfied them>"\`.`
+    : `\n\nStep ${task.status} defines no exit criteria. That is not the same as "nothing required" — do the work the step is for, then advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\`.`;
+
+  const flowBlock = activeFlow
+    ? `\n\nActive flow${activeFlow.name ? ` "${activeFlow.name}"` : ''}: ${activeFlow.steps.join(' → ')}`
+    : '';
+
   return {
     authorized: true,
     task,
-    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`,
+    exitCriteria,
+    activeFlow,
+    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${criteriaBlock}${flowBlock}`,
   };
 }

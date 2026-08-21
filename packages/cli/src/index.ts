@@ -3132,6 +3132,8 @@ program
           authorized: decision.authorized,
           message: decision.message,
           task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+          exitCriteria: decision.exitCriteria ?? null,
+          activeFlow: decision.activeFlow ?? null,
         }));
       } else {
         console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));

@@ -31,7 +31,7 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 **Step 4 — Handover**
 - Run `agenfk comment <id> "IMPLEMENTATION COMPLETE: ..."` to log the final summary of code changes.
 - Run `agenfk comment <id> "Implementation complete: code and self-verification finished."` to log the step completion.
-- Run `agenfk gatekeeper --item-id <id>` — confirms authorization and which step the item is on. (Under MCP the gatekeeper response carries the criteria; the CLI reports only the step, so in CLI-only mode read the criteria from the flow you loaded with `agenfk flow show --project <id> --json`.)
+- Run `agenfk gatekeeper --item-id <id>` — confirms authorization and reports the current step, its exit criteria, and the active flow's steps.
 - Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" "<build_command>"` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
 - **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
   - PR creation is the developer's responsibility — do NOT create a PR here.

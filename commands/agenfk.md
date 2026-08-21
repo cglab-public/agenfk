@@ -83,17 +83,15 @@ time. Run steps 1-6 below, then go back to 1 for the next step, until the item r
 defines none, so this is the common case — empty criteria never mean "no work". Criteria
 *add* to the default for a step; they do not replace it with nothing.
 
-1. **Read the step you are actually on.** Two different commands, because they carry
-   different things — do not expect either to do the other's job:
-   - `agenfk flow show --project <projectId> --json` gives you every step **with its
-     `exitCriteria`**. Load it once at session start (Initialization step 3 above) and keep it.
-     Under CLI-only — the default — this is the only place the criteria come from.
-   - `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` authorizes the edit and tells
-     you which step the item is **currently on**. The CLI form reports the step but not the
-     criteria; the `workflow_gatekeeper` MCP tool returns both. Either way, match the step it
-     reports against the flow you loaded.
+1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
+   It authorizes the edit and reports three things: the step the item is currently on, that
+   step's **exit criteria**, and the **active flow's steps**. If the step defines no criteria it
+   says so explicitly — that means "no stated bar", not "nothing required".
 
-   From that flow, identify two things before you start:
+   (`agenfk flow show --project <projectId> --json` gives the same flow with every step's
+   criteria at once, which is useful at session start to see the whole contract ahead of you.)
+
+   From the flow it reports, identify two things before you start:
    - the **coding step** — the first non-anchor step in the flow;
    - the **final step** — the step with no successor: the last step before the `DONE` anchor,
      or simply the last step in the flow if it has no anchor.

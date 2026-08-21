@@ -31,7 +31,7 @@ You are executing the `/agenfk-resume [id]` command. Follow these steps precisel
 **Step 4 — Continue the workflow**
 - Run `agenfk gatekeeper --intent "Resuming paused work" --item-id <id>` to authorize code changes (MCP: `workflow_gatekeeper`).
 - Follow the resume instructions to pick up where the previous agent left off.
-- Continue through the project's own flow, one step at a time: confirm the current step with `agenfk gatekeeper --item-id <id>` and read that step's exit criteria from `agenfk flow show --project <projectId> --json`, satisfy them, then advance with `agenfk verify <id> --evidence "<text>"`. Do not assume a fixed Code → Review → Test sequence — the flow defines the steps.
+- Continue through the project's own flow, one step at a time: read the current step and its exit criteria with `agenfk gatekeeper --item-id <id>`, satisfy them, then advance with `agenfk verify <id> --evidence "<text>"`. Do not assume a fixed Code → Review → Test sequence — the flow defines the steps.
 
 **Step 5 — Log progress**
 - Run `agenfk comment <id> "Resumed work from pause snapshot. Starting with: <first action>"` to record the handoff (MCP: `add_comment`).

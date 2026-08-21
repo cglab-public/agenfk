@@ -793,11 +793,15 @@ async function callToolHandler(request: any): Promise<any> {
           task = actionableItems[0];
         }
 
-        // Surface exit criteria for the current step
+        // Surface exit criteria for the current step. Resolved the same way the
+        // `agenfk gatekeeper` CLI does — see decideGatekeeperAuthorization in
+        // @agenfk/core. Keep these in step: a divergence here is what let the
+        // shipped docs claim the CLI returned criteria when it did not.
         const currentStep = sortedFlowSteps.find((s: any) => s.name.toUpperCase() === task.status.toUpperCase());
-        const exitCriteriaHint = currentStep?.exitCriteria
-          ? `\nExit criteria: "${currentStep.exitCriteria}"\n→ Satisfy the above before calling validate_progress.`
-          : '\n→ Call validate_progress(itemId, command?) to advance to the next step.';
+        const stepCriteria = (currentStep?.exitCriteria as string | undefined)?.trim() || undefined;
+        const exitCriteriaHint = stepCriteria
+          ? `\n\nExit criteria for ${task.status}:\n${stepCriteria}\n→ Satisfy the above, then call validate_progress(itemId, evidence).`
+          : `\n\nStep ${task.status} defines no exit criteria. That is not the same as "nothing required" — do the work the step is for, then call validate_progress(itemId, evidence).`;
 
         // Branch hint
         let branchHint = '';
