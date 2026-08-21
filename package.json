@@ -49,6 +49,13 @@
   "engines": {
     "node": ">=22.5.0"
   },
+  "overrides": {
+    "hono": "^4.12.34",
+    "@hono/node-server": "^1.19.15",
+    "fast-uri": "3.1.5",
+    "ip-address": "10.3.1",
+    "socket.io-parser": "4.2.7"
+  },
   "type": "module",
   "devDependencies": {
     "@testing-library/jest-dom": "^7.0.1",
