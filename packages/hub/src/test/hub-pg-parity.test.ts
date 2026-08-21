@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import supertest from 'supertest';
+import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
 import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
@@ -520,5 +521,155 @@ describe('PG parity: flow assignments listing (BUG ab9b39d3)', () => {
     const row = list.body.find((r: any) => r.scope === 'org');
     expect(row.flowId).toBe(f.id);
     expect(row.remoteUrl).toBeNull();
+  });
+});
+
+// Epic CGLAB-62 surfaces. Postgres is the backend that runs in production and
+// the one the SQLite suites never touch, so every new statement — the retire
+// transaction, the merge, the bounded recompute and the campaign lifecycle —
+// gets exercised through the dialect translator here.
+describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { await fx.db.close(); });
+
+  const seedInstall = (id: string, gitEmail: string | null) =>
+    fx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+       VALUES ($1, 'org', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, $2)`.replace(/\$\d/g, '?'),
+      [id, gitEmail],
+    );
+
+  it('retire revokes keys, cancels directive targets and filters the list', async () => {
+    await seedInstall('inst-pg', 'dev@acme.com');
+    const bound = await issueApiKey(fx.db, 'org', 'bound', { installationId: 'inst-pg' } as any);
+    expect(bound).toBeTruthy();
+    await fx.db.run(
+      `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type, scope_id)
+       VALUES ('dir-pg', 'org', '1.2.3', 'installation', 'inst-pg')`,
+    );
+    await fx.db.run(
+      `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
+       VALUES ('dir-pg', 'inst-pg', 'pending')`,
+    );
+
+    const r = await supertest(fx.app).post('/v1/admin/installations/inst-pg/retire').set('Cookie', fx.cookie);
+
+    expect(r.status).toBe(200);
+    expect(r.body.revokedApiKeys).toBe(1);
+    expect(r.body.cancelledDirectiveTargets).toBe(1);
+    const list = await supertest(fx.app).get('/v1/admin/installations').set('Cookie', fx.cookie);
+    expect(list.body.some((i: any) => i.id === 'inst-pg')).toBe(false);
+    const withRetired = await supertest(fx.app).get('/v1/admin/installations?includeRetired=1').set('Cookie', fx.cookie);
+    expect(withRetired.body.find((i: any) => i.id === 'inst-pg').retired).toBe(true);
+  });
+
+  it('backfills aliases on Postgres, including the conditional insert', async () => {
+    // The backfill's INSERT ... SELECT ... WHERE EXISTS ... ON CONFLICT is the
+    // one statement in it that could parse differently across engines, and it
+    // runs nowhere else. Only this suite would catch a PG-only break.
+    await fx.db.run(
+      `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, created_at)
+       VALUES ('bf-live', 'org', 'old@acme.com', 'new@acme.com', 1, '2026-08-01T00:00:00Z')`,
+    );
+    await fx.db.run(
+      `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, reverted_at, created_at)
+       VALUES ('bf-reverted', 'org', 'gone@acme.com', 'x@acme.com', 1, '2026-08-02T00:00:00Z', '2026-08-01T00:00:00Z')`,
+    );
+
+    const r = await backfillUserKeyAliases(fx.db, { force: true });
+
+    expect(r.aliasesWritten).toBe(1);
+    const rows = await fx.db.all<{ alias_key: string; canonical_key: string }>(
+      'SELECT alias_key, canonical_key FROM user_key_aliases WHERE org_id = ?', ['org'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].alias_key).toBe('old@acme.com');
+    // The reverted merge must not produce a row — that is the WHERE EXISTS.
+    expect(rows[0].canonical_key).toBe('new@acme.com');
+  });
+
+  it('merge moves events, sums same-day rollups and repairs history', async () => {
+    const ev = (id: string, key: string, day: string) => fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES (?, 'org', 'inst-pg', ?, ?, ?, 'item.created', '{}')`,
+      [id, key, `${day}T09:00:00Z`, `${day}T09:00:00Z`],
+    );
+    await ev('m1', 'dev', '2025-06-15');
+    await ev('m2', 'dev', '2026-02-01');
+    await ev('m3', 'dev@acme.com', '2026-02-01');
+
+    const r = await supertest(fx.app).post('/v1/admin/user-keys/merge')
+      .set('Cookie', fx.cookie).send({ from: 'dev', to: 'dev@acme.com' });
+
+    expect(r.status).toBe(200);
+    expect(r.body.eventsMoved).toBe(2);
+    const sameDay = await fx.db.get(
+      'SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ? AND day = ?',
+      ['org', 'dev@acme.com', '2026-02-01'],
+    );
+    expect(Number((sameDay as any).events_count)).toBe(2);
+    // date() translation must produce a comparable YYYY-MM-DD for the historical day.
+    const historical = await fx.db.get(
+      'SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ? AND day = ?',
+      ['org', 'dev@acme.com', '2025-06-15'],
+    );
+    expect(Number((historical as any).events_count)).toBe(1);
+    const stale = await fx.db.get(
+      'SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ?',
+      ['org', 'dev'],
+    );
+    expect(stale).toBeFalsy();
+  });
+
+  it('bounded recompute repairs a day behind the anchor', async () => {
+    await fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES ('r1', 'org', 'inst-pg', 'dev@acme.com', '2026-01-10T09:00:00Z', '2026-01-10T09:00:00Z', 'item.created', '{}')`,
+    );
+    await fx.db.run(
+      `INSERT INTO rollups_daily (org_id, user_key, day, events_count) VALUES ('org', 'anchor', '2026-03-20', 0)`,
+    );
+
+    const out = await recomputeRollups(fx.db, { since: '2026-01-01' });
+
+    expect(out.days).toBe(1);
+    const row = await fx.db.get(
+      'SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ? AND day = ?',
+      ['org', 'dev@acme.com', '2026-01-10'],
+    );
+    expect(Number((row as any).events_count)).toBe(1);
+  });
+
+  it('repoint campaign: open, serve the directive, verify the host, drain', async () => {
+    await seedInstall('inst-pg', 'dev@acme.com');
+    const bound = await issueApiKey(fx.db, 'org', 'bound', { installationId: 'inst-pg' } as any);
+
+    const c = await supertest(fx.app).post('/v1/admin/repoint')
+      .set('Cookie', fx.cookie).send({ targetUrl: 'https://hub.new.example' });
+    expect(c.status).toBe(201);
+
+    const d = await supertest(fx.app).get('/v1/repoint-directive').set('Authorization', `Bearer ${bound}`);
+    expect(d.body.campaignId).toBe(c.body.id);
+
+    const send = (host: string) => supertest(fx.app).post('/v1/events')
+      .set('Authorization', `Bearer ${bound}`)
+      .set('X-Installation-Id', 'inst-pg')
+      .set('X-Forwarded-Host', host)
+      .send({ events: [{
+        eventId: `pgev-${host}`, installationId: 'inst-pg', orgId: 'org',
+        occurredAt: new Date().toISOString(),
+        actor: { osUser: 'dev', gitName: null, gitEmail: 'dev@acme.com' },
+        type: 'hub:repoint:succeeded',
+        payload: { campaignId: c.body.id, url: 'https://hub.new.example' },
+      }] });
+
+    await send('hub.old.example');
+    expect((await supertest(fx.app).get('/v1/admin/repoint').set('Cookie', fx.cookie)).body.drained).toBe(false);
+
+    await send('hub.new.example');
+    const board = await supertest(fx.app).get('/v1/admin/repoint').set('Cookie', fx.cookie);
+    expect(board.body.drained).toBe(true);
+    expect(board.body.counts.succeeded).toBe(1);
   });
 });

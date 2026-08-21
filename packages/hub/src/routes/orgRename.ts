@@ -19,9 +19,12 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'flows',
   'hidden_users',
   'installations',
+  'repoint_campaigns',
   'rollups_daily',
   'upgrade_directives',
   'used_invites',
+  'user_key_aliases',
+  'user_key_merges',
   'users',
 ];
 

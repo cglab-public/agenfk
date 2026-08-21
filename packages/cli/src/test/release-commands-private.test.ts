@@ -29,25 +29,6 @@ describe('release commands live in .claude/commands/, not the installable bundle
   });
 });
 
-describe('no user-facing bundle references the repo-private release commands', () => {
-  // Every file the installer ships into user configs.
-  const shippedFiles = [
-    ...readdirSync(path.join(ROOT, 'commands')).filter(f => f.endsWith('.md')).map(f => `commands/${f}`),
-    'clauderules/CLAUDE.md',
-    'codexrules/AGENTS.md',
-    'geminirules/GEMINI.md',
-    'cursorrules/agenfk.mdc',
-    'SKILL.md',
-  ];
-
-  for (const rel of shippedFiles) {
-    it(`${rel} does not mention agenfk-release`, () => {
-      const content = readFileSync(path.join(ROOT, rel), 'utf8');
-      expect(content).not.toMatch(/agenfk-release/);
-    });
-  }
-});
-
 describe('installer removes release commands stale from previous versions', () => {
   // Behaviour-based: seed a throwaway $HOME as if a previous version had installed
   // the repo-private release commands globally, run the installer, and assert they

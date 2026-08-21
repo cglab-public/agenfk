@@ -65,6 +65,54 @@ describe('HubClient', () => {
   });
 });
 
+describe('HubClient.reloadConfig', () => {
+  it('adopts a token issued after construction', async () => {
+    // The whole point: a revoked credential is baked into the Flusher's axios
+    // instance at construction, so without this the outbox stays stranded until
+    // the server restarts even though a valid token is already on disk.
+    const client = new HubClient('install-1', { url: 'http://hub.test', token: 'old', orgId: 'org' });
+
+    const changed = client.reloadConfig(() => ({ url: 'http://hub.test', token: 'new', orgId: 'org' }));
+
+    expect(changed).toBe(true);
+    expect(client.hubConfig).toEqual({ url: 'http://hub.test', token: 'new', orgId: 'org' });
+  });
+
+  it('reports no change when the config on disk is identical', async () => {
+    const cfg = { url: 'http://hub.test', token: 't', orgId: 'org' };
+    const client = new HubClient('install-1', { ...cfg });
+
+    expect(client.reloadConfig(() => ({ ...cfg }))).toBe(false);
+  });
+
+  it('picks up a new url and org, not just the token', async () => {
+    const client = new HubClient('install-1', { url: 'http://old.test', token: 't', orgId: 'old-org' });
+
+    expect(client.reloadConfig(() => ({ url: 'http://new.test', token: 't', orgId: 'new-org' }))).toBe(true);
+    expect(client.hubConfig).toEqual({ url: 'http://new.test', token: 't', orgId: 'new-org' });
+  });
+
+  it('goes disabled when the config has been removed', async () => {
+    const client = new HubClient('install-1', { url: 'http://hub.test', token: 't', orgId: 'org' });
+
+    expect(client.reloadConfig(() => null)).toBe(true);
+    expect(client.isEnabled).toBe(false);
+    expect(client.hubConfig).toBeNull();
+  });
+
+  it('becomes enabled when a config appears for a previously unconfigured client', async () => {
+    const client = new HubClient('install-1', null);
+
+    expect(client.reloadConfig(() => ({ url: 'http://hub.test', token: 't', orgId: 'org' }))).toBe(true);
+    expect(client.isEnabled).toBe(true);
+  });
+
+  it('reports no change when there was and still is no config', async () => {
+    const client = new HubClient('install-1', null);
+    expect(client.reloadConfig(() => null)).toBe(false);
+  });
+});
+
 describe('loadHubConfig', () => {
   const originalEnv = { ...process.env };
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hubcfg-'));

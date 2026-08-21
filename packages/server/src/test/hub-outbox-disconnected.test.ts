@@ -152,7 +152,7 @@ describe('cap and flusher respect ownership of pending rows', () => {
     storage.hubOutboxAppend('pend-1', new Date().toISOString(), JSON.stringify({ orgId: '', type: 't', payload: {} }));
     const http = (axios as any).create();
     const posted: any[] = [];
-    http.post = async (_url: string, body: any) => { posted.push(body); return { status: 200, data: {} }; };
+    http.post = async (_url: string, body: any) => { posted.push(body); return { status: 200, data: { ingested: body?.events?.length ?? 0 } }; };
     const flusher = new Flusher(storage, { url: 'http://hub.test', token: 't', orgId: 'o' }, 'inst', 30_000, 500, http);
     await flusher.flush();
     expect(posted).toHaveLength(0);                 // nothing shipped

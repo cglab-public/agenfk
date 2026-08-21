@@ -23,6 +23,9 @@ export default defineConfig({
     // on different files run-to-run, producing pseudo-random failures.
     testTimeout: 30000,
     hookTimeout: 30000,
+    // Repairs `localStorage` for jsdom specs — Node's own undefined global
+    // clobbers jsdom's. See vitest.setup.ts.
+    setupFiles: ['./vitest.setup.ts'],
     include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
     exclude: [
       '**/dist/**',

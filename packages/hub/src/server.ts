@@ -15,6 +15,8 @@ import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { startRollupTimer } from './rollup.js';
+import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
+import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
 
@@ -195,6 +197,45 @@ export async function createHubApp(
   app.use('/v1/admin', orgRenameRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
+  // One-time rewrite of historical bare-osUser identity keys. Reported rather
+  // than silent: it can SPLIT a key that two machines shared, which changes what
+  // the dashboards show — deliberately, since those were never one person.
+  // Never fatal: a hub that cannot migrate must still serve.
+  migrateOsUserKeys(db)
+    .then((r) => {
+      if (r.skipped || r.eventsRewritten === 0) return;
+      console.log(
+        `[MIGRATION] Namespaced ${r.keysRewritten} OS-username identity key(s) across `
+        + `${r.eventsRewritten} event(s); ${r.identitiesSplit} were shared by more than one `
+        + `installation and have been split into separate people. `
+        + `Recomputed ${r.daysRecomputed} day(s) of rollups.`,
+      );
+    })
+    .catch((e) => console.error('[MIGRATION] osUser key migration failed:', (e as Error).message));
+
+  // Merges made before user_key_aliases existed carry no alias, so the guarantee
+  // that a machine waking after the liveness window cannot resurrect a retired
+  // key does not hold for them. Reconstructed from the merge journal and stamped
+  // with the originating merge, so a revert still removes exactly its own row.
+  // Never fatal, for the same reason as above.
+  backfillUserKeyAliases(db)
+    .then((r) => {
+      if (r.skipped || r.aliasesWritten === 0) return;
+      const notes = [
+        r.supersededSources > 0
+          ? `${r.supersededSources} source(s) had more than one live merge; the latest won`
+          : null,
+        r.canonicalised > 0
+          ? `${r.canonicalised} key(s) were normalised to the form ingest derives`
+          : null,
+      ].filter(Boolean);
+      console.log(
+        `[MIGRATION] Backfilled ${r.aliasesWritten} identity alias(es) from historical merges`
+        + `${notes.length ? ` (${notes.join('; ')})` : ''}.`,
+      );
+    })
+    .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
+
   startRollupTimer(db);
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in

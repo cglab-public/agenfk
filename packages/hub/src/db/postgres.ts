@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import type { HubDb, Params, RunResult } from './types';
 import { toPostgres } from './dialect';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
@@ -35,7 +36,10 @@ const SCHEMA_PG = `
     git_name TEXT,
     git_email TEXT,
     agenfk_version TEXT,
-    agenfk_version_updated_at TIMESTAMPTZ
+    agenfk_version_updated_at TIMESTAMPTZ,
+    retired_at TIMESTAMPTZ,
+    retired_by_user_id TEXT,
+    retired_by_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -93,6 +97,14 @@ const SCHEMA_PG = `
     org_id TEXT,
     token_hash TEXT,
     approved_at TIMESTAMPTZ,
+    -- Identity of the machine that started this code, so the token can be
+    -- BOUND when it is issued at approve time. Without it the device flow
+    -- produced an unbound key, and an unbound key is never handed a fleet
+    -- directive — the install went permanently invisible. (BUG 159360db.)
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -183,6 +195,76 @@ const SCHEMA_PG = `
   -- People hidden by an admin (CGLAB-31). See the SQLite schema for the
   -- full rationale — selection surfaces only, historical data untouched,
   -- reversible by row delete.
+  -- Audit trail for identity merges (CGLAB-65). A merge rewrites history, so
+  -- who did it, when, and how much moved must be recoverable afterwards.
+  -- Repoint campaigns (CGLAB-66). A hub can change DNS name without anyone
+  -- rejoining, because clients hold only {url, token, orgId} and keys are
+  -- org-scoped. What was missing is push-down: a campaign tells connected
+  -- installations to move, and the per-target rows are what make it safe to
+  -- drop the old name once every one of them has confirmed ON the new name.
+  CREATE TABLE IF NOT EXISTS repoint_campaigns (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    allowed_host TEXT NOT NULL,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    closed_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_repoint_campaigns_org ON repoint_campaigns(org_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS repoint_campaign_targets (
+    campaign_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    -- pending | succeeded | blocked_by_env | failed | cancelled
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempted_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    reported_url TEXT,
+    error_message TEXT,
+    PRIMARY KEY (campaign_id, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_rct_install_state ON repoint_campaign_targets(installation_id, state);
+
+  -- What each identity merge actually moved (BUG 098f8ba7). The audit row
+  -- recorded only counts, so a mistaken merge — attributing one person's work to
+  -- another — was permanent. A journal rather than a column on events, because a
+  -- single slot is overwritten by the next merge and a chain could then never be
+  -- unwound past one step.
+  CREATE TABLE IF NOT EXISTS user_key_merge_events (
+    merge_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    previous_user_key TEXT NOT NULL,
+    PRIMARY KEY (merge_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ukme_merge ON user_key_merge_events(merge_id);
+
+  CREATE TABLE IF NOT EXISTS user_key_merges (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    from_user_key TEXT NOT NULL,
+    to_user_key TEXT NOT NULL,
+    events_moved INTEGER NOT NULL DEFAULT 0,
+    merged_by_user_id TEXT,
+    merged_by_email TEXT,
+    reverted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  -- Where a merged-away identity went (CGLAB-72). See the SQLite schema for the
+  -- reasoning: ingest resolves through this so a machine waking after the
+  -- liveness window cannot resurrect a key its merge retired.
+  CREATE TABLE IF NOT EXISTS user_key_aliases (
+    org_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    merge_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, alias_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,
@@ -194,15 +276,25 @@ const SCHEMA_PG = `
 `;
 
 /**
- * Per-instance state held by PgAdapter so we can route queries that run inside
- * a transaction to a single dedicated client (PG transactions are tied to a
- * connection, not a pool).
+ * Per-instance state held by PgAdapter. The transaction client is deliberately
+ * NOT here: see txStorage.
  */
 interface PgState {
   pool: Pool;
-  /** Set during `transaction()`; null otherwise. */
-  txClient: PoolClient | null;
 }
+
+/**
+ * The client backing the transaction the CURRENT async context is inside, if
+ * any. A PG transaction is tied to a connection rather than a pool, so its
+ * statements must all use one client — but scoping that client to the adapter
+ * meant every concurrent request's statements joined whatever transaction
+ * happened to be open, and a rollback in an admin operation silently discarded
+ * unrelated event ingest that ran during it. (BUG c5e8b847.)
+ *
+ * AsyncLocalStorage propagates through the awaits inside the transaction
+ * callback and nowhere else, which is exactly the boundary we want.
+ */
+const txStorage = new AsyncLocalStorage<PoolClient>();
 
 class PgAdapter implements HubDb {
   constructor(private state: PgState) {}
@@ -210,8 +302,9 @@ class PgAdapter implements HubDb {
   private exec_(sql: string, params: Params): Promise<QueryResult<any>> {
     const text = toPostgres(sql);
     const values = params as unknown[];
-    return this.state.txClient
-      ? this.state.txClient.query(text, values)
+    const tx = txStorage.getStore();
+    return tx
+      ? tx.query(text, values)
       : this.state.pool.query(text, values);
   }
 
@@ -234,27 +327,29 @@ class PgAdapter implements HubDb {
     // Multi-statement DDL goes through pool.query directly without dialect
     // rewriting — schema bootstrap is already PG-flavoured. Raw exec callers
     // (the bootstrap and ad-hoc test helpers) own their dialect.
-    if (this.state.txClient) await this.state.txClient.query(sql);
+    const tx = txStorage.getStore();
+    if (tx) await tx.query(sql);
     else await this.state.pool.query(sql);
   }
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state.txClient) {
+    if (txStorage.getStore()) {
       // Nested transactions aren't supported in v1 — the hub doesn't use them.
       throw new Error('PgAdapter: nested transactions are not supported');
     }
     const client = await this.state.pool.connect();
-    this.state.txClient = client;
     try {
       await client.query('BEGIN');
-      const result = await fn();
+      // Run the callback INSIDE the async-context scope, so only its own
+      // statements reach this client. Concurrent work stays on the pool.
+      const result = await txStorage.run(client, fn);
       await client.query('COMMIT');
       return result;
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
       throw err;
     } finally {
-      this.state.txClient = null;
+      // Nothing to unset: the client's visibility ended with the async scope.
       client.release();
     }
   }
@@ -369,11 +464,36 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (!instHave.has('agenfk_version')) await adapter.exec("ALTER TABLE installations ADD COLUMN agenfk_version TEXT");
   if (!instHave.has('agenfk_version_updated_at')) await adapter.exec("ALTER TABLE installations ADD COLUMN agenfk_version_updated_at TIMESTAMPTZ");
 
+  // installations retirement columns — CGLAB-64. See the sqlite adapter for rationale.
+  if (!instHave.has('retired_at')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_at TIMESTAMPTZ");
+  if (!instHave.has('retired_by_user_id')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
+  if (!instHave.has('retired_by_email')) await adapter.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
+
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='api_keys'"
   );
   const akHave = new Set(akCols.map(c => c.column_name));
+  // user_key_merges.reverted_at — BUG 098f8ba7.
+  const ukmCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'user_key_merges'",
+  );
+  if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.column_name)).has('reverted_at')) {
+    await adapter.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TIMESTAMPTZ");
+  }
+
+  // device_codes identity columns — BUG 159360db. See the sqlite adapter.
+  const dcCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'device_codes'",
+  );
+  const dcHave = new Set(dcCols.map(c => c.column_name));
+  if (dcCols.length > 0) {
+    if (!dcHave.has('installation_id')) await adapter.exec("ALTER TABLE device_codes ADD COLUMN installation_id TEXT");
+    if (!dcHave.has('os_user'))         await adapter.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
+    if (!dcHave.has('git_name'))        await adapter.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
+    if (!dcHave.has('git_email'))       await adapter.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
+
   if (!akHave.has('installation_id')) await adapter.exec("ALTER TABLE api_keys ADD COLUMN installation_id TEXT");
   if (!akHave.has('os_user'))         await adapter.exec("ALTER TABLE api_keys ADD COLUMN os_user TEXT");
   if (!akHave.has('git_name'))        await adapter.exec("ALTER TABLE api_keys ADD COLUMN git_name TEXT");
@@ -416,13 +536,23 @@ export async function openPgDb(connectionString: string): Promise<HubDb> {
     await pool.end().catch(() => {});
     throw new Error(`Cannot connect to Postgres at ${redactDsn(connectionString)}: ${(err as Error).message}`);
   }
-  const state: PgState = { pool, txClient: null };
+  const state: PgState = { pool };
   const adapter = new PgAdapter(state);
   await bootstrap(adapter);
   return adapter;
 }
 
 /** Test-only entry point: spin up an in-process pg-mem instance. */
+/**
+ * Test-only: build an adapter over an arbitrary pool-shaped object, so the
+ * transaction ROUTING can be asserted directly. Proving isolation through
+ * pg-mem would not be faithful — it is one in-memory database with no
+ * per-connection snapshot.
+ */
+export function __createPgAdapterForTest(pool: unknown): HubDb {
+  return new PgAdapter({ pool: pool as Pool });
+}
+
 export async function openPgMemDb(): Promise<HubDb> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { newDb, DataType } = require('pg-mem') as typeof import('pg-mem');
@@ -430,7 +560,7 @@ export async function openPgMemDb(): Promise<HubDb> {
   registerPgMemPolyfills(memDb, DataType);
   const { Pool } = memDb.adapters.createPg();
   const pool = new Pool() as unknown as Pool;
-  const state: PgState = { pool, txClient: null };
+  const state: PgState = { pool };
   const adapter = new PgAdapter(state);
   await bootstrap(adapter);
   return adapter;

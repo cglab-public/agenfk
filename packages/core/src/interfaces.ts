@@ -122,6 +122,11 @@ export type HubEventType =
   | 'fleet:upgrade:started'
   | 'fleet:upgrade:succeeded'
   | 'fleet:upgrade:failed'
+  // Repoint campaign lifecycle (CGLAB-66). `succeeded` is only believed when
+  // it arrives on the campaign's target hostname — see routes/events.ts.
+  | 'hub:repoint:succeeded'
+  | 'hub:repoint:blocked'
+  | 'hub:repoint:failed'
   // PR registration events emitted by the spoke on register/update.
   | 'pr.opened'
   | 'pr.updated';

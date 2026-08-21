@@ -18,6 +18,11 @@ interface UpgradeTarget {
   finishedAt: string | null;
   resultVersion: string | null;
   errorMessage: string | null;
+  // Live identity from the installations row. Preferred over the api_key label,
+  // which is a snapshot from issue time and goes stale.
+  gitName?: string | null;
+  gitEmail?: string | null;
+  osUser?: string | null;
   agenfkVersion: string | null;
   agenfkVersionUpdatedAt: string | null;
 }
@@ -398,7 +403,11 @@ export function AdminUpgrades() {
                         className="text-ink-secondary truncate"
                         title={t.installationId}
                       >
-                        {installationDisplayName(apiKeysQ.data ?? [], t.installationId)}
+                        {installationDisplayName(apiKeysQ.data ?? [], t.installationId, {
+                          gitName: t.gitName ?? null,
+                          gitEmail: t.gitEmail ?? null,
+                          osUser: t.osUser ?? null,
+                        })}
                       </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {t.agenfkVersion && (

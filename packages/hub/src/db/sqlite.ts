@@ -35,7 +35,10 @@ const SCHEMA_SQLITE = `
     git_name TEXT,
     git_email TEXT,
     agenfk_version TEXT,
-    agenfk_version_updated_at TEXT
+    agenfk_version_updated_at TEXT,
+    retired_at TEXT,
+    retired_by_user_id TEXT,
+    retired_by_email TEXT
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -96,6 +99,14 @@ const SCHEMA_SQLITE = `
     org_id TEXT,
     token_hash TEXT,
     approved_at TEXT,
+    -- Identity of the machine that started this code, so the token can be
+    -- BOUND when it is issued at approve time. Without it the device flow
+    -- produced an unbound key, and an unbound key is never handed a fleet
+    -- directive — the install went permanently invisible. (BUG 159360db.)
+    installation_id TEXT,
+    os_user TEXT,
+    git_name TEXT,
+    git_email TEXT,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -201,6 +212,79 @@ const SCHEMA_SQLITE = `
   -- rollups_daily, dashboards) is deliberately untouched — the hide only
   -- affects go-forward behaviour and is fully reversible by deleting the
   -- row.
+  -- Audit trail for identity merges (CGLAB-65). A merge rewrites history, so
+  -- who did it, when, and how much moved must be recoverable afterwards.
+  -- Repoint campaigns (CGLAB-66). A hub can change DNS name without anyone
+  -- rejoining, because clients hold only {url, token, orgId} and keys are
+  -- org-scoped. What was missing is push-down: a campaign tells connected
+  -- installations to move, and the per-target rows are what make it safe to
+  -- drop the old name once every one of them has confirmed ON the new name.
+  CREATE TABLE IF NOT EXISTS repoint_campaigns (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_url TEXT NOT NULL,
+    allowed_host TEXT NOT NULL,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_repoint_campaigns_org ON repoint_campaigns(org_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS repoint_campaign_targets (
+    campaign_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    -- pending | succeeded | blocked_by_env | failed | cancelled
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempted_at TEXT,
+    finished_at TEXT,
+    reported_url TEXT,
+    error_message TEXT,
+    PRIMARY KEY (campaign_id, installation_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_rct_install_state ON repoint_campaign_targets(installation_id, state);
+
+  -- What each identity merge actually moved (BUG 098f8ba7). The audit row
+  -- recorded only counts, so a mistaken merge — attributing one person's work to
+  -- another — was permanent. A journal rather than a column on events, because a
+  -- single slot is overwritten by the next merge and a chain could then never be
+  -- unwound past one step.
+  CREATE TABLE IF NOT EXISTS user_key_merge_events (
+    merge_id TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    previous_user_key TEXT NOT NULL,
+    PRIMARY KEY (merge_id, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_ukme_merge ON user_key_merge_events(merge_id);
+
+  CREATE TABLE IF NOT EXISTS user_key_merges (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    from_user_key TEXT NOT NULL,
+    to_user_key TEXT NOT NULL,
+    events_moved INTEGER NOT NULL DEFAULT 0,
+    merged_by_user_id TEXT,
+    merged_by_email TEXT,
+    reverted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Where a merged-away identity went (CGLAB-72). The liveness guard only
+  -- blocks a merge while a machine is still active, so an installation dormant
+  -- past the window can wake later and re-derive a key that was merged away.
+  -- Ingest resolves through this table, so it lands on the merged identity
+  -- instead of starting a second one. Stamped with the merge that wrote it, so
+  -- a revert removes exactly its own rows.
+  CREATE TABLE IF NOT EXISTS user_key_aliases (
+    org_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    merge_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, alias_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,
@@ -327,6 +411,30 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   const instHave = new Set(instCols.map(c => c.name));
   if (!instHave.has('agenfk_version')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version TEXT");
   if (!instHave.has('agenfk_version_updated_at')) raw.exec("ALTER TABLE installations ADD COLUMN agenfk_version_updated_at TEXT");
+
+  // installations retirement columns — CGLAB-64. A retired install is a dead
+  // endpoint (wiped laptop, departed dev): it keeps its history but stops
+  // counting as a live target, so upgrade/repoint campaign boards can drain.
+  if (!instHave.has('retired_at')) raw.exec("ALTER TABLE installations ADD COLUMN retired_at TEXT");
+  if (!instHave.has('retired_by_user_id')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_user_id TEXT");
+  if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
+
+  // user_key_merges.reverted_at — BUG 098f8ba7.
+  const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
+  if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {
+    raw.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TEXT");
+  }
+
+  // device_codes identity columns — BUG 159360db. Older hubs created this table
+  // without them, and the device flow silently produced unbound keys.
+  const dcCols = raw.prepare("PRAGMA table_info(device_codes)").all() as Array<{ name: string }>;
+  const dcHave = new Set(dcCols.map(c => c.name));
+  if (dcCols.length > 0) {
+    if (!dcHave.has('installation_id')) raw.exec("ALTER TABLE device_codes ADD COLUMN installation_id TEXT");
+    if (!dcHave.has('os_user'))         raw.exec("ALTER TABLE device_codes ADD COLUMN os_user TEXT");
+    if (!dcHave.has('git_name'))        raw.exec("ALTER TABLE device_codes ADD COLUMN git_name TEXT");
+    if (!dcHave.has('git_email'))       raw.exec("ALTER TABLE device_codes ADD COLUMN git_email TEXT");
+  }
 
   // api_keys columns added when binding installation identity to magic-link tokens.
   const akCols = raw.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;

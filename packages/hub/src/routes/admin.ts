@@ -9,6 +9,34 @@ import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { recomputeRollups } from '../rollup.js';
+import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
+import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
+
+/**
+ * Hosts a repoint campaign may never target. Every installation in the org
+ * fetches the target with its live bearer token, so an internal address turns a
+ * campaign into a token-harvest and a host-enumeration probe run from every
+ * developer machine. Syntactic only — a public name resolving inward still gets
+ * through, so this complements network policy rather than replacing it.
+ */
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  if (h.endsWith('.internal') || h.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    if (a === 127 || a === 0 || a === 10) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+  }
+  return false;
+}
 
 interface AuthConfigRow {
   org_id: string;
@@ -104,6 +132,31 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.delete('/api-keys/:tokenHashPreview', guard, async (req: Request, res: Response) => {
     const preview = req.params.tokenHashPreview;
+    // The segment fed straight into LIKE, so DELETE /api-keys/% revoked every
+    // key in the org in one unconfirmed call — a fleet-wide kill switch nobody
+    // asked for. Token hashes are hex, so anything else is not a prefix of one
+    // and '%' / '_' can only be a wildcard. A minimum length keeps a one-char
+    // slip from matching a swathe of keys. (Security: CGLAB-75.)
+    if (!/^[0-9a-f]{8,64}$/i.test(preview)) {
+      res.status(400).json({
+        error: 'tokenHashPreview must be 8-64 hexadecimal characters — a prefix of the key hash, not a pattern.',
+      });
+      return;
+    }
+    // A prefix can match more than one hash. Vanishingly unlikely with hex, but
+    // the response reports a count, so revoking two keys would read as an
+    // ordinary success. Refuse and ask for more characters instead.
+    const matches = await ctx.db.all<{ token_hash: string }>(
+      'SELECT token_hash FROM api_keys WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL',
+      [req.session!.orgId, `${preview}%`],
+    );
+    if (matches.length > 1) {
+      res.status(409).json({
+        error: `"${preview}" matches ${matches.length} live keys. Use a longer prefix to name just one.`,
+        matches: matches.length,
+      });
+      return;
+    }
     const result = await ctx.db.run(
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
@@ -191,9 +244,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     // returns them flagged with hidden:true so the UI can render a
     // show-hidden toggle.
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
+    // CGLAB-64: retired installations are dead endpoints. They are hidden by
+    // default for the same reason hidden people are — they would otherwise sit
+    // in the upgrade picker and inflate campaign denominators forever.
+    const includeRetired = req.query.includeRetired === '1' || req.query.includeRetired === 'true';
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT i.id, i.agenfk_version, i.agenfk_version_updated_at, i.first_seen, i.last_seen,
               i.os_user, i.git_name, i.git_email,
+              i.retired_at, i.retired_by_email,
               CASE WHEN h.user_key IS NULL THEN 0 ELSE 1 END AS hidden
          FROM installations i
          LEFT JOIN hidden_users h
@@ -205,6 +263,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(
       rows
         .filter((r: any) => includeHidden || !r.hidden)
+        .filter((r: any) => includeRetired || !r.retired_at)
         .map((r: any) => ({
           id: r.id,
           agenfkVersion: r.agenfk_version ?? null,
@@ -215,8 +274,710 @@ export function adminRouter(ctx: HubServerContext): Router {
           gitName: r.git_name ?? null,
           gitEmail: r.git_email ?? null,
           hidden: !!r.hidden,
+          retired: !!r.retired_at,
+          retiredAt: r.retired_at ?? null,
+          retiredByEmail: r.retired_by_email ?? null,
         })),
     );
+  });
+
+  /**
+   * Manual rollup repair. The merge recomputes after its transaction commits
+   * and is not retried, so a crash or a proxy timeout between the two leaves
+   * historical rollups_daily permanently wrong — the periodic timer is
+   * forward-only by design and will never notice. This is the way back.
+   */
+  router.post('/rollups/recompute', guard, async (req: Request, res: Response) => {
+    const since = req.body?.since;
+    const full = req.body?.full === true;
+    if (!full && (typeof since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(since))) {
+      res.status(400).json({ error: 'Pass since as YYYY-MM-DD, or full: true' });
+      return;
+    }
+    const out = await recomputeRollups(ctx.db, {
+      ...(full ? { full: true } : { since }),
+      orgId: req.session!.orgId,
+    });
+    res.json({ days: out.days, since: full ? null : since, full });
+  });
+
+  // ── Identity hygiene (task 2b7a391b) ──────────────────────────────────────
+  //
+  // installation_id is immutable provenance, so the hub can infer that an
+  // install whose current git_email implies one user_key while its history
+  // carries another is a merge candidate.
+  //
+  // What it must NOT do is act on that alone. Historical keys predate the
+  // osUser namespacing, so a source key can still be a BARE username ('dev',
+  // 'ubuntu', 'runner') that belonged to several people at once; merging one
+  // into the first email seen would attribute one person's history to another.
+  // Hence the confidence split — conflated candidates are reported with their
+  // breakdown and are never offered as a single action. Merges are revertible
+  // now, but a revert an admin never realises they need is no protection.
+
+  router.get('/identity-suggestions', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const rows = await ctx.db.all<{
+      from_key: string; to_key: string; installation_id: string;
+      events: number; first_seen: string; last_seen: string;
+    }>(
+      `SELECT e.user_key AS from_key,
+              lower(i.git_email) AS to_key,
+              i.id AS installation_id,
+              COUNT(*) AS events,
+              MIN(e.occurred_at) AS first_seen,
+              MAX(e.occurred_at) AS last_seen
+         FROM events e
+         JOIN installations i ON i.id = e.installation_id
+        -- installations.id is a GLOBAL primary key, so without this predicate
+        -- an event naming another tenant's installation id leaks that org's
+        -- git_email and installation id into this org's suggestions.
+        WHERE e.org_id = ? AND i.org_id = e.org_id
+          AND i.git_email IS NOT NULL AND i.git_email <> ''
+          AND e.user_key <> lower(i.git_email)
+        GROUP BY e.user_key, lower(i.git_email), i.id`,
+      [orgId],
+    );
+    if (rows.length === 0) { res.json([]); return; }
+
+    // How many installations produced each source key, across the whole org —
+    // this is what separates "one person's old identity" from "a shared bucket".
+    const sourceSpread = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!sourceSpread.has(r.from_key)) sourceSpread.set(r.from_key, new Set());
+      sourceSpread.get(r.from_key)!.add(r.installation_id);
+    }
+    const targetsPerSource = new Map<string, Set<string>>();
+    for (const r of rows) {
+      if (!targetsPerSource.has(r.from_key)) targetsPerSource.set(r.from_key, new Set());
+      targetsPerSource.get(r.from_key)!.add(r.to_key);
+    }
+
+    // Installations that could still EMIT one of these keys: the merge endpoint
+    // 409s on those, so report it rather than letting the UI discover it by
+    // failing. Keyed on what each installation derives TODAY — asking only
+    // "did it ever produce this key and does it hold a live key?" blocked
+    // merges that were already safe, because a machine that has since acquired
+    // a git email can never re-derive its old osuser: key. (CGLAB-72.)
+    const blockers = await liveIdentityBlockers(ctx.db, orgId);
+
+    // Collapse per-installation rows into one suggestion per (from, to) pair.
+    const merged = new Map<string, {
+      from: string; to: string; events: number;
+      firstSeen: string; lastSeen: string; installations: string[];
+    }>();
+    for (const r of rows) {
+      const key = `${r.from_key}\u0000${r.to_key}`;
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          from: r.from_key, to: r.to_key, events: Number(r.events),
+          firstSeen: String(r.first_seen), lastSeen: String(r.last_seen),
+          installations: [r.installation_id],
+        });
+        continue;
+      }
+      existing.events += Number(r.events);
+      if (String(r.first_seen) < existing.firstSeen) existing.firstSeen = String(r.first_seen);
+      if (String(r.last_seen) > existing.lastSeen) existing.lastSeen = String(r.last_seen);
+      existing.installations.push(r.installation_id);
+    }
+
+    const out = [...merged.values()].map(m => {
+      const spread = sourceSpread.get(m.from)?.size ?? 1;
+      const targets = targetsPerSource.get(m.from)?.size ?? 1;
+      return {
+        ...m,
+        installations: m.installations.sort(),
+        sourceInstallationCount: spread,
+        targetCandidateCount: targets,
+        confidence: spread === 1 && targets === 1 ? 'unambiguous' : 'conflated',
+        blockedByLiveKey: blockersFor(blockers, m.from).length > 0,
+        blockingInstallations: blockersFor(blockers, m.from),
+      };
+    });
+    // Most history first: the biggest attribution errors are worth fixing first.
+    out.sort((a, b) => b.events - a.events);
+    res.json(out);
+  });
+
+  /**
+   * Undo one merge. Restores exactly the rows that merge moved, using the
+   * provenance stamped on them — a timestamp plus installation ids would be
+   * inexact whenever the target produced its own events in the same window.
+   *
+   * LIFO by construction: an event carries only its LAST merge, so reverting an
+   * older merge after a newer one claimed the same rows finds nothing. That is
+   * reported as zero-restored with a note, never as a silent success.
+   */
+  router.post('/user-keys/merges/:id/revert', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    const record = await ctx.db.get<{
+      id: string; from_user_key: string; to_user_key: string; reverted_at: string | null;
+    }>(
+      'SELECT id, from_user_key, to_user_key, reverted_at FROM user_key_merges WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+    if (!record) { res.status(404).json({ error: 'Unknown merge' }); return; }
+    if (record.reverted_at) { res.status(409).json({ error: 'This merge has already been reverted' }); return; }
+
+    // Oldest affected day BEFORE the restore, or the range is unrecoverable.
+    const span = await ctx.db.get<{ first_day: string | null }>(
+      `SELECT MIN(date(e.occurred_at)) AS first_day
+         FROM user_key_merge_events j
+         JOIN events e ON e.event_id = j.event_id
+        WHERE e.org_id = ? AND j.merge_id = ?`,
+      [orgId, id],
+    );
+
+    let eventsRestored = 0;
+    let aliasesRemoved = 0;
+    let aliasesRestored = 0;
+    await ctx.db.transaction(async () => {
+      // Only rows still sitting on this merge's target are ours to move: if a
+      // later merge took them onward, reverting here would corrupt the chain.
+      const restored = await ctx.db.run(
+        `UPDATE events
+            SET user_key = (
+              SELECT j.previous_user_key FROM user_key_merge_events j
+               WHERE j.merge_id = ? AND j.event_id = events.event_id
+            )
+          WHERE org_id = ?
+            AND lower(user_key) = lower(?)
+            AND event_id IN (SELECT event_id FROM user_key_merge_events WHERE merge_id = ?)`,
+        [id, orgId, record.to_user_key, id],
+      );
+      eventsRestored = restored.changes;
+      if (eventsRestored > 0) {
+        // Both identities change shape, so neither's stale rows may survive:
+        // the recompute only rebuilds groups that still have events.
+        await ctx.db.run(
+          'DELETE FROM rollups_daily WHERE org_id = ? AND user_key IN (?, ?)',
+          [orgId, record.from_user_key, record.to_user_key],
+        );
+        // Put the installation identity back too, or the next ingested event
+        // recreates the merged key and undoes this immediately.
+        await ctx.db.run(
+          'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
+          [record.from_user_key, orgId, record.to_user_key],
+        );
+        // Drop the alias this merge wrote, or the source key stays redirected
+        // and the revert is cosmetic. Only when the restore actually happened:
+        // on the superseded path a later merge has chained past this one, and
+        // deleting the alias there frees the source key to resurrect as a THIRD
+        // identity while we report having done nothing. Scoped by merge_id so a
+        // later merge that re-claimed the same alias_key keeps it.
+        // Capture the keys BEFORE deleting them. They were derived correctly
+        // when written — matching what ingest actually produces — so they are
+        // the only safe thing to hand back. Recomputing from
+        // user_key_merges.from_user_key would re-insert the raw value an admin
+        // typed: 'Old@CGLab.com' where ingest derives 'old@cglab.com', or a bare
+        // 'gcs' where it derives 'osuser:gcs@<prefix>'. That is an alias nothing
+        // can ever resolve, which is the bug this whole table exists to avoid.
+        const doomed = await ctx.db.all<{ alias_key: string }>(
+          'SELECT alias_key FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
+          [orgId, id],
+        );
+        const aliases = await ctx.db.run(
+          'DELETE FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
+          [orgId, id],
+        );
+        aliasesRemoved = aliases.changes;
+
+        // Two un-reverted merges can share a source in data written before the
+        // re-merge refusal existed, and only the latest carries the aliases.
+        // Deleting them would leave the older merge live with none at all — the
+        // unprotected state this table exists to eliminate. Hand protection back
+        // to the next most recent live merge on the same source, if any. Every
+        // key, not one: a bare source was a bucket, so it legitimately holds one
+        // alias per installation.
+        if (doomed.length > 0) {
+          const predecessor = await ctx.db.get<{ id: string; to_user_key: string }>(
+            `SELECT id, to_user_key FROM user_key_merges
+              WHERE org_id = ? AND id <> ? AND reverted_at IS NULL
+                AND lower(from_user_key) = lower(?)
+              ORDER BY created_at DESC, id DESC`,
+            [orgId, id, record.from_user_key],
+          );
+          if (predecessor) {
+            for (const d of doomed) {
+              const restored = await ctx.db.run(
+                `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(org_id, alias_key) DO NOTHING`,
+                [orgId, d.alias_key, predecessor.to_user_key, predecessor.id],
+              );
+              // Counted from rows actually written: DO NOTHING can insert none,
+              // and reporting a restore that did not happen is worse than none.
+              aliasesRestored += restored.changes;
+            }
+          }
+        }
+      }
+      await ctx.db.run(
+        "UPDATE user_key_merges SET reverted_at = datetime('now') WHERE id = ? AND org_id = ?",
+        [id, orgId],
+      );
+    });
+
+    let daysRecomputed = 0;
+    if (eventsRestored > 0) {
+      daysRecomputed = (await recomputeRollups(ctx.db, {
+        since: span?.first_day ?? undefined,
+        full: !span?.first_day,
+        orgId,
+      })).days;
+    }
+
+    res.json({
+      mergeId: id,
+      from: record.from_user_key,
+      to: record.to_user_key,
+      eventsRestored,
+      aliasesRemoved,
+      aliasesRestored,
+      daysRecomputed,
+      note: eventsRestored === 0
+        ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
+          + 'Revert the newer merge first.'
+        : null,
+    });
+  });
+
+  router.get('/user-keys/merges', guard, async (req: Request, res: Response) => {
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, reverted_at, created_at
+         FROM user_key_merges WHERE org_id = ? ORDER BY created_at DESC`,
+      [req.session!.orgId],
+    );
+    res.json(rows.map((r: any) => ({
+      id: r.id,
+      from: r.from_user_key,
+      to: r.to_user_key,
+      eventsMoved: Number(r.events_moved ?? 0),
+      mergedByEmail: r.merged_by_email ?? null,
+      revertedAt: r.reverted_at ?? null,
+      createdAt: r.created_at ?? null,
+    })));
+  });
+
+  // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
+  //
+  // Moving the hub to a new DNS name needs no rejoin: clients hold only
+  // {url, token, orgId} and api keys are org-scoped, not host-scoped. What is
+  // missing is push-down — /v1/ping cannot tell a connected install that the
+  // hub moved. A campaign is that push-down; its per-target rows are what make
+  // dropping the old name safe rather than hopeful.
+
+  /** The open campaign for an org, if any. */
+  async function openCampaign(orgId: string) {
+    return ctx.db.get<{ id: string; target_url: string; allowed_host: string; created_at: string }>(
+      `SELECT id, target_url, allowed_host, created_at
+         FROM repoint_campaigns
+        WHERE org_id = ? AND closed_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [orgId],
+    );
+  }
+
+  router.post('/repoint', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const raw = String(req.body?.targetUrl ?? '').trim().replace(/\/$/, '');
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      res.status(400).json({ error: 'targetUrl must be an absolute URL' });
+      return;
+    }
+    if (parsed.protocol !== 'https:') {
+      // A plaintext hub would ship org telemetry and a bearer token in clear,
+      // and the client refuses such a target anyway.
+      res.status(400).json({ error: 'targetUrl must use https' });
+      return;
+    }
+    if (parsed.username || parsed.password) {
+      res.status(400).json({ error: 'targetUrl must not carry userinfo' });
+      return;
+    }
+    if (isPrivateHostname(parsed.hostname)) {
+      // Every installation in the org would fetch this with its live bearer
+      // token. The client refuses these too; rejecting here means an admin
+      // finds out immediately instead of via a board full of failures.
+      res.status(400).json({
+        error: 'targetUrl must not be a private, loopback, link-local or internal address',
+      });
+      return;
+    }
+    if (await openCampaign(orgId)) {
+      res.status(409).json({ error: 'A repoint campaign is already open. Close it before starting another.' });
+      return;
+    }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    // Retired installations are excluded: they are never coming back, so
+    // counting them would keep the board from ever draining — which is exactly
+    // what makes an old DNS name undroppable.
+    const targets = await ctx.db.all<{ id: string }>(
+      'SELECT id FROM installations WHERE org_id = ? AND retired_at IS NULL',
+      [orgId],
+    );
+    const id = randomUUID();
+    await ctx.db.transaction(async () => {
+      await ctx.db.run(
+        `INSERT INTO repoint_campaigns (id, org_id, target_url, allowed_host, created_by_user_id, created_by_email)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, orgId, raw, parsed.hostname.toLowerCase(), req.session!.userId ?? null, actorEmail],
+      );
+      for (const t of targets) {
+        await ctx.db.run(
+          `INSERT INTO repoint_campaign_targets (campaign_id, installation_id, state) VALUES (?, ?, 'pending')`,
+          [id, t.id],
+        );
+      }
+    });
+    res.status(201).json({ id, targetUrl: raw, allowedHost: parsed.hostname.toLowerCase(), targeted: targets.length });
+  });
+
+  router.get('/repoint', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const campaign = await openCampaign(orgId);
+    if (!campaign) { res.json({ campaign: null, counts: {}, targets: [], drained: false }); return; }
+
+    // Retired installations drop out of the board entirely — retiring a wiped
+    // laptop is the documented way to finish a campaign it can never complete.
+    const rows = await ctx.db.all<Record<string, unknown>>(
+      `SELECT t.installation_id, t.state, t.attempted_at, t.finished_at, t.reported_url, t.error_message,
+              i.git_email, i.git_name, i.os_user, i.last_seen
+         FROM repoint_campaign_targets t
+         JOIN installations i ON i.id = t.installation_id
+        WHERE t.campaign_id = ? AND i.retired_at IS NULL
+        ORDER BY t.state ASC, i.last_seen DESC`,
+      [campaign.id],
+    );
+    const counts: Record<string, number> = { pending: 0, succeeded: 0, blocked_by_env: 0, failed: 0, cancelled: 0 };
+    for (const r of rows) {
+      const st = String((r as any).state);
+      counts[st] = (counts[st] ?? 0) + 1;
+    }
+    res.json({
+      campaign: {
+        id: campaign.id,
+        targetUrl: campaign.target_url,
+        allowedHost: campaign.allowed_host,
+        createdAt: campaign.created_at,
+      },
+      counts,
+      // Drained means nothing non-retired is left un-moved: either every
+      // remaining installation confirmed on the new hostname, or the stragglers
+      // were retired. Requiring rows.length > 0 would invert the documented
+      // escape hatch — retiring the LAST install would wedge the campaign
+      // permanently instead of finishing it.
+      drained: rows.every((r: any) => r.state === 'succeeded'),
+      targets: rows.map((r: any) => ({
+        installationId: r.installation_id,
+        state: r.state,
+        attemptedAt: r.attempted_at ?? null,
+        finishedAt: r.finished_at ?? null,
+        reportedUrl: r.reported_url ?? null,
+        errorMessage: r.error_message ?? null,
+        gitEmail: r.git_email ?? null,
+        gitName: r.git_name ?? null,
+        osUser: r.os_user ?? null,
+        lastSeen: r.last_seen ?? null,
+      })),
+    });
+  });
+
+  router.post('/repoint/:id/close', guard, async (req: Request, res: Response) => {
+    const r = await ctx.db.run(
+      "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
+      [req.params.id, req.session!.orgId],
+    );
+    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
+    res.json({ id: req.params.id, closed: true });
+  });
+
+  // ── Identity merge (CGLAB-65) ─────────────────────────────────────────────
+  //
+  // Dashboards and rollups_daily are keyed on user_key — the lowercased git
+  // email, falling back to the OS username (routes/events.ts userKeyFor) — never
+  // on installation_id. So re-attributing a person's history is a user_key
+  // merge, not an installation_id rewrite: installation_id is immutable
+  // provenance and stays put. Two real cases: a developer's git email changed,
+  // or an install with no git config created a phantom osUser identity sitting
+  // beside the real person.
+
+  router.post('/user-keys/merge', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    // Preserve case: userKeyFor lowercases gitEmail only, so an osUser-derived
+    // key ('Daniel', 'DPolistchuck' on Windows) is stored as-is. Lowercasing the
+    // input made those keys unaddressable — the UPDATE matched nothing and the
+    // endpoint answered 200 with eventsMoved 0, a silent no-op reported as
+    // success. Self-merge is still compared case-insensitively.
+    const typedFrom = String(req.body?.from ?? '').trim();
+    const requestedTo = String(req.body?.to ?? '').trim();
+    if (!typedFrom || !requestedTo) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+
+    // Match what ingest actually writes, not what the admin typed. See
+    // canonicaliseSourceKey: a case-mismatched source used to answer 200 with
+    // nothing moved and leave a dead alias behind.
+    const from = await canonicaliseSourceKey(ctx.db, orgId, typedFrom);
+
+    // Merging ONTO a key that has itself been merged away would split the
+    // identity: history would land on the stale target while ingest, which
+    // resolves aliases, kept sending new events onward to the real one. The
+    // admin typed a name they saw somewhere; follow it to the same place ingest
+    // would. Reported back as `to` so the response never misstates what it did.
+    const aliasMap = await loadAliasMap(ctx.db, orgId);
+    const to = resolveAliasKey(requestedTo, aliasMap);
+
+    // Re-merging a source that was already merged away moved nothing while
+    // re-stamping its alias row with the new merge id, so reverting the ORIGINAL
+    // merge then removed no alias and left the identity permanently split.
+    //
+    // Repeating the SAME merge stays a no-op success — that is a documented
+    // guarantee, and retrying after a dropped connection must not be an error.
+    // It returns the original merge id rather than recording a second one, so
+    // the alias keeps pointing at the merge that can actually revert it.
+    const already = aliasMap.get(from);
+    if (already) {
+      if (already.toLowerCase() === to.toLowerCase()) {
+        const prior = await ctx.db.get<{ id: string }>(
+          `SELECT id FROM user_key_merges
+            WHERE org_id = ? AND lower(from_user_key) = lower(?) AND lower(to_user_key) = lower(?)
+              AND reverted_at IS NULL
+            ORDER BY created_at DESC`,
+          [orgId, from, to],
+        );
+        res.json({
+          mergeId: prior?.id ?? null, from, to,
+          eventsMoved: 0, daysRecomputed: 0, sourceWasHidden: false, alreadyMerged: true,
+        });
+        return;
+      }
+      res.status(409).json({
+        error: `"${from}" has already been merged into "${already}". Revert that merge first, `
+             + `or merge "${already}" onward to "${to}" instead.`,
+        canonical: already,
+      });
+      return;
+    }
+    if (from.toLowerCase() === to.toLowerCase()) {
+      res.status(400).json({ error: 'Cannot merge a user key onto itself' });
+      return;
+    }
+
+    // Ordering guard. Merging while the source can still ingest means new events
+    // keep landing under the old key behind us, so the repair silently undoes
+    // itself. Retire the installation (or revoke its key) first.
+    //
+    // Shared with the Identities tab's advisory flag, and deliberately asks what
+    // each installation derives TODAY. The previous guard compared os_user to
+    // the bare username, but keys are namespaced (osuser:<user>@<prefix>) and
+    // the migration rewrote the historical bare ones — so the branch written for
+    // exactly this case matched nothing and let the merge through. (CGLAB-72.)
+    //
+    // Only recently-seen machines block: a laptop dormant for weeks would
+    // otherwise hold a repair hostage forever. What stops it resurrecting the
+    // key when it does wake is the alias recorded below, not this guard.
+    const blocking = blockersFor(await liveIdentityBlockers(ctx.db, orgId), from);
+    if (blocking.length > 0) {
+      res.status(409).json({
+        error: `Refusing to merge: ${blocking.length} active installation(s) with a live api key still `
+             + `report as "${from}". Retire those installations (or revoke their keys) first, `
+             + 'otherwise new events keep arriving under the old key after the merge.',
+        installations: blocking,
+      });
+      return;
+    }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    // Oldest affected day, captured BEFORE the rewrite — afterwards these rows
+    // no longer match the source key and the range would be unrecoverable.
+    const span = await ctx.db.get<{ first_day: string | null }>(
+      `SELECT MIN(date(occurred_at)) AS first_day FROM events WHERE org_id = ? AND user_key = ?`,
+      [orgId, from],
+    );
+    const sourceHidden = await ctx.db.get(
+      'SELECT 1 AS x FROM hidden_users WHERE org_id = ? AND user_key = ?',
+      [orgId, from],
+    );
+    const sourceWasHidden = !!sourceHidden;
+
+    let eventsMoved = 0;
+    const mergeId = randomUUID();
+    await ctx.db.transaction(async () => {
+      // Journal exactly which rows move, BEFORE moving them: counts alone made
+      // a mistaken merge permanent, and the Identities tab makes merging one
+      // click. Recorded per merge rather than as a column on events, so a chain
+      // can be unwound step by step instead of one slot being overwritten.
+      await ctx.db.run(
+        `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key)
+         SELECT ?, event_id, user_key FROM events WHERE org_id = ? AND user_key = ?`,
+        [mergeId, orgId, from],
+      );
+      const moved = await ctx.db.run(
+        'UPDATE events SET user_key = ? WHERE org_id = ? AND user_key = ?',
+        [to, orgId, from],
+      );
+      eventsMoved = moved.changes;
+
+      // The recompute can never remove these: with no events left carrying the
+      // source key, its upsert produces no group and the stale per-day rows
+      // would keep the retired identity on the dashboard forever.
+      await ctx.db.run('DELETE FROM rollups_daily WHERE org_id = ? AND user_key = ?', [orgId, from]);
+
+      // Without this the next ingested event rebuilds the old key from the
+      // installation's git_email and the merge undoes itself. Only reaches
+      // email-derived sources — an osuser: key has no git_email to repoint,
+      // which is what the alias below covers.
+      await ctx.db.run(
+        'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
+        [to, orgId, from],
+      );
+
+      // Where this identity went, so a machine waking after the liveness window
+      // resolves onto the merged key instead of starting a second identity.
+      // Chains are NOT flattened here — resolveAliasKey walks them transitively
+      // instead, which keeps revert exact (each row belongs to one merge) at the
+      // cost of a bounded walk at ingest.
+      await ctx.db.run(
+        `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(org_id, alias_key) DO UPDATE SET
+           canonical_key = excluded.canonical_key,
+           merge_id = excluded.merge_id`,
+        [orgId, from, to, mergeId],
+      );
+
+      // Deliberately NOT inherited by the target: a merge asserts the two keys
+      // are the same human, and silently hiding an active developer would stop
+      // their ingest. Reported instead, so an admin can re-hide on purpose.
+      if (sourceWasHidden) {
+        await ctx.db.run('DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?', [orgId, from]);
+      }
+
+      await ctx.db.run(
+        `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, merged_by_user_id, merged_by_email)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [mergeId, orgId, from, to, eventsMoved, req.session!.userId ?? null, actorEmail],
+      );
+    });
+
+    // Outside the transaction: recompute is idempotent and re-runnable, and
+    // holding a write transaction across a full-history scan would block ingest.
+    let daysRecomputed = 0;
+    if (eventsMoved > 0) {
+      daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day, orgId })).days;
+    }
+
+    res.json({
+      mergeId, from, to, eventsMoved, daysRecomputed, sourceWasHidden,
+      // Only differs when the requested target had itself been merged away.
+      requestedTo: requestedTo === to ? undefined : requestedTo,
+    });
+  });
+
+  // ── Installation retirement (CGLAB-64) ────────────────────────────────────
+  //
+  // Retiring is the soft, reversible counterpart to hidden-users, applied to a
+  // machine rather than a person: a wiped laptop or a departed dev's install
+  // keeps every event it ever sent (history is attributed by user_key, not
+  // installation_id) but stops counting as a live target. Without the directive
+  // cancellation below, retiring would be cosmetic — an upgrade or repoint
+  // campaign board would still wait forever on a machine that is never coming
+  // back, which is precisely what makes an old hub DNS name undroppable.
+
+  /** Look up an installation inside the caller's org, or null. */
+  async function findInstallation(orgId: string, id: string) {
+    return ctx.db.get<{ id: string; retired_at: string | null }>(
+      'SELECT id, retired_at FROM installations WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+  }
+
+  router.post('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    const existing = await findInstallation(orgId, id);
+    if (!existing) { res.status(404).json({ error: 'Unknown installation' }); return; }
+
+    let actorEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      actorEmail = u?.email ?? null;
+    }
+
+    let revokedApiKeys = 0;
+    let cancelledDirectiveTargets = 0;
+    let retiredAt = existing.retired_at;
+
+    // One transaction: a retire that revoked keys but failed to cancel
+    // directives (or vice versa) would leave a half-dead installation that
+    // still blocks campaigns while being unable to report progress.
+    await ctx.db.transaction(async () => {
+      // Idempotent: re-retiring must not move the original timestamp.
+      if (!existing.retired_at) {
+        await ctx.db.run(
+          `UPDATE installations
+              SET retired_at = ?, retired_by_user_id = ?, retired_by_email = ?
+            WHERE id = ? AND org_id = ?`,
+          [new Date().toISOString(), req.session!.userId ?? null, actorEmail, id, orgId],
+        );
+      }
+      const revoked = await ctx.db.run(
+        `UPDATE api_keys SET revoked_at = datetime('now')
+          WHERE org_id = ? AND installation_id = ? AND revoked_at IS NULL`,
+        [orgId, id],
+      );
+      revokedApiKeys = revoked.changes;
+      // Only in-flight work is cancelled; a finished target keeps its verdict.
+      const cancelled = await ctx.db.run(
+        `UPDATE upgrade_directive_targets
+            SET state = 'cancelled', finished_at = ?
+          WHERE installation_id = ?
+            AND state IN ('pending', 'in_progress')
+            AND directive_id IN (SELECT id FROM upgrade_directives WHERE org_id = ?)`,
+        [new Date().toISOString(), id, orgId],
+      );
+      cancelledDirectiveTargets = cancelled.changes;
+    });
+
+    if (!retiredAt) {
+      const fresh = await findInstallation(orgId, id);
+      retiredAt = fresh?.retired_at ?? null;
+    }
+    res.json({ id, retired: true, retiredAt, revokedApiKeys, cancelledDirectiveTargets });
+  });
+
+  router.delete('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const id = req.params.id;
+    if (!(await findInstallation(orgId, id))) {
+      res.status(404).json({ error: 'Unknown installation' });
+      return;
+    }
+    await ctx.db.run(
+      `UPDATE installations SET retired_at = NULL, retired_by_user_id = NULL, retired_by_email = NULL
+        WHERE id = ? AND org_id = ?`,
+      [id, orgId],
+    );
+    // Deliberately asymmetric, matching hidden-users: revocation is permanent,
+    // so the machine re-joins rather than silently regaining a live token.
+    res.json({ id, retired: false });
   });
 
   router.get('/users', guard, async (req: Request, res: Response) => {
@@ -766,9 +1527,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (scope.type === 'all') {
       // CGLAB-31: fleet-wide directives skip hidden people's installations —
       // a departed user's machine must not receive upgrade pushes.
+      // CGLAB-64: and retired installations. Their keys were revoked when they
+      // were retired, so they can never poll or report — targeting them hangs
+      // the upgrade board on machines that are never coming back, which is the
+      // exact failure retirement exists to prevent.
       installations = await ctx.db.all<Inst>(
         `SELECT i.id, i.agenfk_version FROM installations i
           WHERE i.org_id = ?
+            AND i.retired_at IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM hidden_users h
                WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
@@ -814,6 +1580,20 @@ export function adminRouter(ctx: HubServerContext): Router {
         return res.status(409).json({
           error: 'One or more installations belong to a hidden person. Unhide them first to target their installations.',
           hidden: hiddenTargets.map(t => t.id),
+        });
+      }
+      // Same treatment for retired installations: scope=all skips them, an
+      // explicit name is a deliberate act we refuse rather than silently queue
+      // work a revoked key can never collect. (CGLAB-64.)
+      const retiredTargets = await ctx.db.all<{ id: string }>(
+        `SELECT id FROM installations
+          WHERE org_id = ? AND retired_at IS NOT NULL AND id IN (${placeholders})`,
+        [orgId, ...ids],
+      );
+      if (retiredTargets.length > 0) {
+        return res.status(409).json({
+          error: 'One or more installations are retired. Restore them first to target them.',
+          retired: retiredTargets.map(t => t.id),
         });
       }
     }
@@ -917,14 +1697,20 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const out: any[] = [];
     for (const d of directives) {
+      // Identity comes from the installations row, which ingest refreshes from
+      // every event's actor. The api_key label the UI used to prefer is a
+      // snapshot from issue time and goes stale — an install that had no git
+      // email when it redeemed its invite kept showing invite:<osuser> forever.
       const targets = await ctx.db.all<{
         installation_id: string; state: string;
         attempted_at: string | null; finished_at: string | null;
         result_version: string | null; error_message: string | null;
         agenfk_version: string | null; agenfk_version_updated_at: string | null;
+        git_name: string | null; git_email: string | null; os_user: string | null;
       }>(
         `SELECT t.installation_id, t.state, t.attempted_at, t.finished_at, t.result_version, t.error_message,
-                i.agenfk_version, i.agenfk_version_updated_at
+                i.agenfk_version, i.agenfk_version_updated_at,
+                i.git_name, i.git_email, i.os_user
          FROM upgrade_directive_targets t
          LEFT JOIN installations i ON i.id = t.installation_id
          WHERE t.directive_id = ?`,
@@ -953,6 +1739,9 @@ export function adminRouter(ctx: HubServerContext): Router {
           errorMessage: t.error_message,
           agenfkVersion: t.agenfk_version,
           agenfkVersionUpdatedAt: t.agenfk_version_updated_at,
+          gitName: t.git_name ?? null,
+          gitEmail: t.git_email ?? null,
+          osUser: t.os_user ?? null,
         })),
       });
     }

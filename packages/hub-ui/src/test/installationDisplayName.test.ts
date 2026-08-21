@@ -56,3 +56,64 @@ describe('installationDisplayName', () => {
     expect(out).toBe('current · aaaaaaaa…');
   });
 });
+
+// Live identity must win over the frozen api_key label (task 8b857d4f).
+//
+// api_keys.label is a snapshot taken when the key was issued and is never
+// refreshed. Observed in production: two installs that had no git email at
+// invite-redeem time were labelled 'invite:<osuser>' and still showed that on
+// the fleet board months later, while the Installations tab — which reads the
+// installations row that ingest refreshes from every event — showed their real
+// addresses.
+describe('installationDisplayName with live installation identity', () => {
+  const staleKey = [{
+    installationId: 'inst-1',
+    label: 'invite:jonatansporn',
+    gitName: null,
+    gitEmail: null,
+    osUser: null,
+  }];
+
+  it('prefers the live installation identity over a stale label', () => {
+    const out = installationDisplayName(staleKey, 'inst-1', {
+      gitName: 'Jonatan Sporn', gitEmail: 'jonatan.sporn@cglab.com', osUser: 'jonatansporn',
+    });
+
+    expect(out).toContain('jonatan.sporn@cglab.com');
+    expect(out).not.toContain('invite:');
+  });
+
+  it('labels an install that has no api_key row at all', () => {
+    // The device-code flow used to issue unbound keys, so the board showed a
+    // bare GUID even though the hub knew exactly who it was.
+    const out = installationDisplayName([], 'inst-2', {
+      gitName: 'guilhermecarlossiqueira', gitEmail: null, osUser: 'gcsiqueira',
+    });
+
+    expect(out).toContain('guilhermecarlossiqueira');
+  });
+
+  it('falls back to os user when the installation has neither name nor email', () => {
+    const out = installationDisplayName([], 'inst-3', { gitName: null, gitEmail: null, osUser: 'someuser' });
+    expect(out).toContain('someuser');
+  });
+
+  it('falls back to the api_key label when the installation row has no identity', () => {
+    const out = installationDisplayName(staleKey, 'inst-1', { gitName: null, gitEmail: null, osUser: null });
+    expect(out).toContain('invite:jonatansporn');
+  });
+
+  it('falls back to the api_key label when no installation row is supplied', () => {
+    // Callers that have not been updated keep working.
+    expect(installationDisplayName(staleKey, 'inst-1')).toContain('invite:jonatansporn');
+  });
+
+  it('still shows the bare GUID when nothing at all is known', () => {
+    expect(installationDisplayName([], 'abcdef1234')).toBe('abcdef12…');
+  });
+
+  it('keeps the GUID suffix so rows stay identifiable', () => {
+    const out = installationDisplayName([], 'inst-2abc', { gitName: null, gitEmail: 'x@y.com', osUser: null });
+    expect(out).toBe('x@y.com · inst-2ab…');
+  });
+});

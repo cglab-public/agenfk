@@ -23,7 +23,9 @@ function makeHttp(impl?: (url: string, body: any) => Promise<any>) {
   const http: any = {
     post: async (url: string, body: any) => {
       posted.push({ url, body });
-      return impl ? impl(url, body) : { status: 200, data: {} };
+      // Mirrors the real POST /v1/events ack — the flusher refuses to delete
+      // a batch unless the response carries the hub's {ingested} shape.
+      return impl ? impl(url, body) : { status: 200, data: { ingested: body?.events?.length ?? 0 } };
     },
   };
   return { http, posted };

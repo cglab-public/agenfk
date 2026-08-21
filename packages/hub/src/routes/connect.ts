@@ -44,6 +44,32 @@ function publicHubUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * Sanitise the identity payload a CLI sends about itself. Each field is a
+ * string-or-null; anything else is dropped rather than stored, since it lands in
+ * admin UI and api_key labels.
+ */
+function sanitiseIdentity(raw: unknown): {
+  installationId: string | null; osUser: string | null; gitName: string | null; gitEmail: string | null;
+} {
+  const inst = (raw ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return {
+    installationId: str(inst.installationId),
+    osUser: str(inst.osUser),
+    gitName: str(inst.gitName),
+    gitEmail: str(inst.gitEmail),
+  };
+}
+
+/**
+ * Human-readable api_key label. Prefer the git email so an admin can tell keys
+ * apart at a glance; fall back through os user to the opaque discriminator.
+ */
+function identityLabel(prefix: string, id: { gitEmail: string | null; osUser: string | null }, fallback: string): string {
+  return `${prefix}:${id.gitEmail ?? id.osUser ?? fallback}`;
+}
+
 function signInviteToken(payload: { orgId: string; nonce: string; exp: number }, secret: string): string {
   const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const sig = createHmac('sha256', secret).update(body).digest('base64url');
@@ -102,9 +128,16 @@ export function connectRouter(ctx: HubServerContext): Router {
       if (!exists) break;
       code = userCode();
     }
+    // Persist the caller's identity alongside the pending code, so the token can
+    // be BOUND to the installation when it is issued at approve time. An unbound
+    // key is never handed a fleet directive, which made device-onboarded installs
+    // permanently invisible to upgrades and repoints. (BUG 159360db.)
+    const ident = sanitiseIdentity((req.body as any)?.installation);
     await ctx.db.run(
-      `INSERT INTO device_codes (device_code, user_code, expires_at) VALUES (?, ?, ?)`,
-      [deviceCode, code, isoPlus(DEVICE_CODE_TTL_S)],
+      `INSERT INTO device_codes (device_code, user_code, expires_at, installation_id, os_user, git_name, git_email)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [deviceCode, code, isoPlus(DEVICE_CODE_TTL_S),
+       ident.installationId, ident.osUser, ident.gitName, ident.gitEmail],
     );
     res.json({
       deviceCode,
@@ -144,11 +177,19 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/device/approve', guard, async (req: Request, res: Response) => {
+  // adminGuard, not guard: approving mints a live bearer token via issueApiKey
+  // below, exactly like /invite/create. /device/start needs no auth at all, so a
+  // merely-signed-in viewer could otherwise start a code, approve it, redeem it,
+  // and escalate read-only access to ingest-and-fleet-write. (Security: CGLAB-75.)
+  router.post('/device/approve', adminGuard, async (req: Request, res: Response) => {
     const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
     if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
-    const row = await ctx.db.get<{ device_code: string; expires_at: string; approved_at: string | null }>(
-      'SELECT device_code, expires_at, approved_at FROM device_codes WHERE user_code = ?',
+    const row = await ctx.db.get<{
+      device_code: string; expires_at: string; approved_at: string | null;
+      installation_id: string | null; os_user: string | null; git_name: string | null; git_email: string | null;
+    }>(
+      `SELECT device_code, expires_at, approved_at, installation_id, os_user, git_name, git_email
+         FROM device_codes WHERE user_code = ?`,
       [userCodeIn],
     );
     if (!row) { res.status(404).json({ error: 'unknown user code' }); return; }
@@ -156,7 +197,18 @@ export function connectRouter(ctx: HubServerContext): Router {
     if (row.approved_at) { res.status(409).json({ error: 'code already approved' }); return; }
 
     const orgId = req.session!.orgId;
-    const token = await issueApiKey(ctx.db, orgId, `device:${userCodeIn}`);
+    const bind = {
+      installationId: row.installation_id,
+      osUser: row.os_user,
+      gitName: row.git_name,
+      gitEmail: row.git_email,
+    };
+    // Older CLIs send no identity: bind stays all-null and the label keeps its
+    // previous device:<code> form, so an existing fleet is not disturbed.
+    const label = bind.installationId || bind.gitEmail || bind.osUser
+      ? identityLabel('device', bind, userCodeIn)
+      : `device:${userCodeIn}`;
+    const token = await issueApiKey(ctx.db, orgId, label, bind);
     await ctx.db.run(
       `UPDATE device_codes SET org_id = ?, token_hash = 'issued', approved_at = datetime('now') WHERE device_code = ?`,
       [orgId, row.device_code],
@@ -167,7 +219,17 @@ export function connectRouter(ctx: HubServerContext): Router {
     if (!(ctx as any)._deviceTokens) (ctx as any)._deviceTokens = new Map<string, string>();
     (ctx as any)._deviceTokens.set(row.device_code, token);
 
-    res.json({ ok: true, orgId });
+    res.json({
+      ok: true,
+      orgId,
+      // Approving a bare code tells an admin nothing about what they let in.
+      installation: {
+        installationId: bind.installationId,
+        osUser: bind.osUser,
+        gitName: bind.gitName,
+        gitEmail: bind.gitEmail,
+      },
+    });
   });
 
   // ── Magic-link invite ─────────────────────────────────────────────────────
@@ -199,18 +261,13 @@ export function connectRouter(ctx: HubServerContext): Router {
     // Bind the issued token to the redeeming installation when the CLI
     // supplied one, so admins can see who's behind the key and revoke it
     // surgically. Each field is sanitised to a string-or-null.
-    const inst = (req.body?.installation ?? {}) as Record<string, unknown>;
-    const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
-    const bind = {
-      installationId: str(inst.installationId),
-      osUser: str(inst.osUser),
-      gitName: str(inst.gitName),
-      gitEmail: str(inst.gitEmail),
-    };
-    // Use the most identifying field we have for the human-readable label,
-    // so admins can tell tokens apart at a glance in the UI.
-    const ident = bind.gitEmail ?? bind.osUser ?? bind.installationId;
-    const label = ident ? `invite:${ident}` : 'invite';
+    const bind = sanitiseIdentity(req.body?.installation);
+    // Most identifying field available, so admins can tell tokens apart at a
+    // glance. Note this is a SNAPSHOT: it is never refreshed, so fleet views
+    // prefer the live installations row over it (task 8b857d4f).
+    const label = bind.gitEmail ?? bind.osUser ?? bind.installationId
+      ? identityLabel('invite', bind, bind.installationId ?? '')
+      : 'invite';
 
     const token = await issueApiKey(ctx.db, parsed.orgId, label, bind);
     await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);

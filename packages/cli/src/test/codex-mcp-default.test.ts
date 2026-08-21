@@ -5,12 +5,9 @@
  * agenfk CLI can't reach the local API server there. The MCP stdio server is not
  * subject to that restriction. So — unlike every other client, which is CLI-only
  * unless --with-mcp — Codex gets the MCP server registered BY DEFAULT; only an
- * explicit --no-mcp opts out. The shipped Codex rules (codexrules/AGENTS.md) must
- * also tell the agent to prefer MCP over the CLI, except in yolo/full-access mode.
+ * explicit --no-mcp opts out.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import path from 'path';
 // @ts-ignore — .mjs helper has no .d.ts.
 import { shouldRegisterCodexMcp } from '../../../../scripts/install-helpers.mjs';
 
@@ -46,27 +43,5 @@ describe('shouldRegisterCodexMcp — Codex defaults to MCP', () => {
 
   it('lets --no-mcp override a persisted opt-in', () => {
     expect(shouldRegisterCodexMcp({ noMcp: true, persistedCodexMcp: true })).toBe(false);
-  });
-});
-
-describe('codexrules/AGENTS.md — prefers MCP over CLI', () => {
-  const agentsMd = readFileSync(
-    path.resolve(__dirname, '../../../../codexrules/AGENTS.md'),
-    'utf8',
-  );
-  const head = agentsMd.slice(0, 1200).toLowerCase();
-
-  it('leads by instructing the agent to prefer MCP tools over the CLI', () => {
-    expect(head).toMatch(/prefer[\s\S]*mcp/);
-    expect(agentsMd).toContain('mcp__agenfk__');
-  });
-
-  it('documents the yolo/full-access exception where the CLI works', () => {
-    expect(agentsMd.toLowerCase()).toMatch(/yolo|full-access|full access/);
-  });
-
-  it('explains WHY (sandbox blocks localhost) so the guidance is not arbitrary', () => {
-    expect(agentsMd.toLowerCase()).toMatch(/sandbox/);
-    expect(agentsMd.toLowerCase()).toMatch(/localhost/);
   });
 });

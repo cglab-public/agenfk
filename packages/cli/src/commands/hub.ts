@@ -17,6 +17,22 @@ function readGitConfig(key: string): string | null {
   }
 }
 
+/**
+ * Warn when this machine has no git email. The hub attributes events with
+ * `gitEmail || osUser`, so without one the person's entire history is filed
+ * under an OS username — and setting user.email later creates a SECOND identity
+ * that an admin has to merge. Cheap to fix now, awkward to fix later.
+ */
+function warnIfNoGitEmail(identity: { osUser: string; gitEmail: string | null }): void {
+  if (identity.gitEmail) return;
+  console.log();
+  console.log(chalk.yellow('⚠ No git email configured on this machine.'));
+  console.log(chalk.gray(`  Your work will be attributed to the OS username "${identity.osUser}" instead of you,`));
+  console.log(chalk.gray('  and setting it later creates a second identity an admin has to merge.'));
+  console.log(chalk.gray('  Fix it first with: git config --global user.email "you@company.com"'));
+  console.log();
+}
+
 function localInstallationIdentity(): { installationId: string; osUser: string; gitName: string | null; gitEmail: string | null } {
   return {
     installationId: getInstallationId(),
@@ -73,6 +89,28 @@ async function stampPendingOutbox(orgId: string): Promise<void> {
   } catch { /* best-effort — boot-time stamping covers this */ }
 }
 
+
+/**
+ * Ask the running API server to adopt the hub.json we just wrote. Without this
+ * the Flusher keeps presenting the credential it was constructed with, so a
+ * re-login left the outbox stranded until a restart. Best-effort: if the server
+ * is not running, the next `agenfk up` reads the file anyway.
+ */
+async function reloadServerHubConfig(): Promise<'reloaded' | 'unchanged' | 'unavailable'> {
+  const token = readVerifyToken();
+  if (!token) return 'unavailable';
+  try {
+    const { data } = await axios.post(
+      `${getApiUrl()}/internal/hub/reload`,
+      {},
+      { headers: { 'x-agenfk-internal': token }, timeout: 5000 },
+    );
+    return data?.changed ? 'reloaded' : 'unchanged';
+  } catch {
+    return 'unavailable';
+  }
+}
+
 export function registerHubCommands(program: Command): void {
   const hub = program.command('hub').description('Corporate Hub: forward events to a self-hosted fleet metrics server');
 
@@ -105,14 +143,26 @@ export function registerHubCommands(program: Command): void {
         }
         writeHubConfig(cfg);
         await stampPendingOutbox(cfg.orgId);
-        console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+        const applied = await reloadServerHubConfig();
+        console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
+        console.log(applied === 'unavailable'
+          ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
+          : chalk.gray('  Running server is now pushing events with this config.'));
         return;
       }
 
       // Device-code flow.
+      warnIfNoGitEmail(localInstallationIdentity());
       let start;
       try {
-        start = (await axios.post(`${url}/hub/device/start`, {}, { timeout: 10_000 })).data;
+        // Send who we are: the hub binds this onto the issued key, and an
+        // unbound key is never handed a fleet directive — that made
+        // device-onboarded installs invisible to upgrades and repoints.
+        start = (await axios.post(
+          `${url}/hub/device/start`,
+          { installation: localInstallationIdentity() },
+          { timeout: 10_000 },
+        )).data;
       } catch (e: any) {
         console.error(chalk.red(`Could not reach ${url}: ${e?.message ?? 'unknown'}`));
         console.error(chalk.gray('Tip: pass --token <key> --org <id> to skip the browser flow.'));
@@ -140,7 +190,11 @@ export function registerHubCommands(program: Command): void {
             const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
             writeHubConfig(cfg);
             await stampPendingOutbox(cfg.orgId);
-            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}). Restart the API server to begin pushing events.`));
+            const applied = await reloadServerHubConfig();
+            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
+            console.log(applied === 'unavailable'
+              ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
+              : chalk.gray('  Running server is now pushing events with this config.'));
             return;
           }
           if (data.status === 'expired') {
@@ -171,6 +225,8 @@ export function registerHubCommands(program: Command): void {
       // One-arg form: `hub join <token>` falls back to AGENFK_HUB_URL or existing hub.json.
       const hasUrlArg = typeof token === 'string' && token.length > 0;
       const inviteToken = hasUrlArg ? (token as string) : urlOrToken;
+
+      warnIfNoGitEmail(localInstallationIdentity());
 
       const existing = readHubConfig();
       const candidates: string[] = [];
@@ -259,7 +315,13 @@ export function registerHubCommands(program: Command): void {
         console.log(`Outbox:    ${data.outboxDepth} pending`);
         console.log(`Last flush: ${data.lastFlushAt ?? 'never'}`);
         console.log(`Last error: ${data.lastError ?? 'none'}`);
-        console.log(`Halted:    ${data.halted ? 'YES (4xx threshold reached)' : 'no'}`);
+        console.log(`Halted:    ${data.halted ? 'YES (hub rejected us repeatedly)' : 'no'}`);
+        console.log(`Failures:  ${data.consecutiveFailures ?? 0} consecutive`);
+        if (data.nextRetryAt) console.log(`Next retry: ${data.nextRetryAt}`);
+        if (!data.halted && Number(data.consecutiveFailures) > 0) {
+          // Not halted but not delivering either — the case that used to be silent.
+          console.log(chalk.yellow('  Events are queued and retrying. If the hub moved, run `agenfk hub repoint --url <hub>`.'));
+        }
       } catch (e: any) {
         console.log(chalk.gray(`  (API server not reachable: ${e?.message ?? 'unknown error'})`));
       }
@@ -363,6 +425,13 @@ export function registerHubCommands(program: Command): void {
 
       if (opts.restart === false) {
         console.log(chalk.gray('Skipping restart per --no-restart. Run `agenfk down && agenfk up` when convenient.'));
+        return;
+      }
+      // Prefer an in-place reload: it swaps the hub subsystems onto the new
+      // config without dropping the API server, which a full down/up does.
+      const applied = await reloadServerHubConfig();
+      if (applied !== 'unavailable') {
+        console.log(chalk.green('✓ Running server adopted the new hub config (no restart needed).'));
         return;
       }
       let servicesRunning = false;

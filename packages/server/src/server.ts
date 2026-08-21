@@ -10,6 +10,7 @@ import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
+import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
 import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
@@ -92,6 +93,7 @@ let flowSyncHandle: FlowSyncHandle | null = null;
 // so the two never re-fetch the same unchanged flow.
 const flowSyncEtagCache = new Map<string, string>();
 let upgradeSyncHandle: UpgradeSyncHandle | null = null;
+let repointSyncHandle: RepointSyncHandle | null = null;
 
 // recordHubEvent is a thin wrapper kept at module scope so the many existing
 // io.emit('items_updated', ...) sites can be augmented with one line.
@@ -528,110 +530,160 @@ const initStorage = async () => {
     }
   }
 
-  // Attach the corporate-hub outbox to the storage layer and start the flusher
-  // when configured. No-op when ~/.agenfk/hub.json is absent.
-  //
-  // Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
-  // in tests (each setup calls it), and without these stops every re-entry
-  // would leak a setInterval timer holding a stale storage reference, which
-  // races against the live test's writes and causes hard-to-diagnose flakes
-  // (item.id undefined, GET /flows 500, etc).
-  hubFlusher?.stop();
-  flowSyncHandle?.stop();
-  upgradeSyncHandle?.stop();
-  hubClient.attachStorage(storage as SQLiteStorageProvider);
-  if (hubClient.isEnabled && hubClient.hubConfig) {
-    // Stamp events queued while disconnected (pending-org sentinel '') with
-    // the real orgId BEFORE the flusher starts, so pre-login history delivers
-    // instead of being rejected on orgId mismatch.
-    try {
-      const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId(PENDING_ORG, hubClient.hubConfig.orgId);
-      if (stamped > 0) console.log(`[HUB] Stamped ${stamped} pre-login outbox event(s) with org=${hubClient.hubConfig.orgId}`);
-    } catch (e: any) {
-      console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
-    }
-    hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
-    hubFlusher.start();
-    console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
-
-    // Start pulling the org-assigned flow from the Hub. Poll interval can be
-    // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
-    const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
-    flowSyncHandle = startFlowSync({
-      storage: storage as SQLiteStorageProvider,
-      hubConfig: hubClient.hubConfig,
-      intervalMs,
-      etagCache: flowSyncEtagCache,
-      emit: (event, payload) => io.emit(event, payload),
-      resolveRepo: resolveProjectRepo,
-    });
-    console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
-
-    // Story 3 — fleet upgrade reconciler.
-    const dbDir = path.dirname(dbPath);
-    const installationId = getInstallationId();
-    const currentVersion: string = (() => {
-      try {
-        const pkg = JSON.parse(require('fs').readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'));
-        return typeof pkg?.version === 'string' ? pkg.version : '0.0.0';
-      } catch { return '0.0.0'; }
-    })();
-    const recordEvent = (e: { installationId: string; type: any; payload: any; occurredAt?: string }) => {
-      hubClient.recordEvent({
-        installationId: e.installationId,
-        orgId: hubClient.hubConfig!.orgId,
-        type: e.type,
-        payload: e.payload,
-        occurredAt: e.occurredAt,
-      } as any);
-    };
-    // Boot-time replay: a previous run may have spawned an upgrade that killed
-    // this very process before its outcome event drained. Reconcile by
-    // comparing currentVersion to the directive's intent and emit accordingly.
-    replayPendingUpgradeOutcome({
-      dbDir,
-      currentVersion,
-      installationId,
-      recordEvent,
-    }).catch((e) => console.error('[HUB_UPGRADE_SYNC] replay failed:', (e as Error).message));
-
-    const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
-    upgradeSyncHandle = startUpgradeSync({
-      dbDir,
-      currentVersion,
-      installationId,
-      hubUrl: hubClient.hubConfig.url,
-      hubToken: hubClient.hubConfig.token,
-      intervalMs: upgradeIntervalMs,
-      fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
-        const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
-          headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
-          timeout: 10_000,
-          validateStatus: (s) => s < 500,
-        });
-        return { status: r.status, json: async () => r.data };
-      },
-      recordEvent,
-      flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
-      // Async spawn keeps the API event loop responsive while `agenfk
-      // upgrade` runs. spawnSync would block every probe (the CLI's own
-      // `is the server running?` curl, install.mjs's pre-install probe)
-      // so all of them would falsely report "not running" and skip the
-      // down/up restart — leaving the upgrade landed on disk while the
-      // in-memory process keeps executing the old code.
-      spawnImpl: (cmd, args) => new Promise((resolve) => {
-        const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-        let stdout = '';
-        child.stdout?.on('data', (d) => { stdout += d.toString(); });
-        child.stderr?.on('data', () => { /* ignore — agenfk upgrade --json puts everything on stdout */ });
-        child.on('exit', (code) => resolve({ exitCode: code, stdout }));
-        child.on('error', () => resolve({ exitCode: 1, stdout }));
-      }),
-    });
-    console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
-
-  }
+  startHubSubsystems();
 };
+
+/**
+ * (Re)start every hub subsystem against whatever config HubClient currently
+ * holds. Extracted from initStorage so `POST /internal/hub/reload` can adopt a
+ * freshly-written ~/.agenfk/hub.json without a server restart: the Flusher and
+ * both reconcilers capture their credential and base URL at construction, so
+ * after `agenfk hub login` issues a replacement token the old objects would
+ * keep presenting the revoked one forever. Safe to call repeatedly — it stops
+ * the previous handles first.
+ */
+const startHubSubsystems = (): void => {
+// Attach the corporate-hub outbox to the storage layer and start the flusher
+// when configured. No-op when ~/.agenfk/hub.json is absent.
+//
+// Stop any pre-existing flusher / flow-sync first. initStorage is re-entrant
+// in tests (each setup calls it), and without these stops every re-entry
+// would leak a setInterval timer holding a stale storage reference, which
+// races against the live test's writes and causes hard-to-diagnose flakes
+// (item.id undefined, GET /flows 500, etc).
+hubFlusher?.stop();
+flowSyncHandle?.stop();
+upgradeSyncHandle?.stop();
+repointSyncHandle?.stop();
+hubClient.attachStorage(storage as SQLiteStorageProvider);
+if (hubClient.isEnabled && hubClient.hubConfig) {
+  // Stamp events queued while disconnected (pending-org sentinel '') with
+  // the real orgId BEFORE the flusher starts, so pre-login history delivers
+  // instead of being rejected on orgId mismatch.
+  try {
+    const stamped = (storage as SQLiteStorageProvider).hubOutboxRewriteOrgId(PENDING_ORG, hubClient.hubConfig.orgId);
+    if (stamped > 0) console.log(`[HUB] Stamped ${stamped} pre-login outbox event(s) with org=${hubClient.hubConfig.orgId}`);
+  } catch (e: any) {
+    console.error('[HUB] Failed to stamp pre-login outbox events:', e?.message || e);
+  }
+  hubFlusher = new Flusher(storage as SQLiteStorageProvider, hubClient.hubConfig, getInstallationId());
+  hubFlusher.start();
+  console.log(`[HUB] Configured: pushing events to ${hubClient.hubConfig.url} (org=${hubClient.hubConfig.orgId})`);
+
+  // Start pulling the org-assigned flow from the Hub. Poll interval can be
+  // tuned via AGENFK_HUB_FLOW_SYNC_INTERVAL_MS (default 5min).
+  const intervalMs = Number(process.env.AGENFK_HUB_FLOW_SYNC_INTERVAL_MS) || undefined;
+  flowSyncHandle = startFlowSync({
+    storage: storage as SQLiteStorageProvider,
+    hubConfig: hubClient.hubConfig,
+    intervalMs,
+    etagCache: flowSyncEtagCache,
+    emit: (event, payload) => io.emit(event, payload),
+    resolveRepo: resolveProjectRepo,
+  });
+  console.log(`[HUB] Flow reconciler running against ${hubClient.hubConfig.url}/v1/flows/active`);
+
+  // Story 3 — fleet upgrade reconciler.
+  const dbDir = path.dirname(dbPath);
+  const installationId = getInstallationId();
+  const currentVersion: string = (() => {
+    try {
+      const pkg = JSON.parse(require('fs').readFileSync(path.resolve(__dirname, '../package.json'), 'utf8'));
+      return typeof pkg?.version === 'string' ? pkg.version : '0.0.0';
+    } catch { return '0.0.0'; }
+  })();
+  const recordEvent = (e: { installationId: string; type: any; payload: any; occurredAt?: string }) => {
+    hubClient.recordEvent({
+      installationId: e.installationId,
+      orgId: hubClient.hubConfig!.orgId,
+      type: e.type,
+      payload: e.payload,
+      occurredAt: e.occurredAt,
+    } as any);
+  };
+  // Boot-time replay: a previous run may have spawned an upgrade that killed
+  // this very process before its outcome event drained. Reconcile by
+  // comparing currentVersion to the directive's intent and emit accordingly.
+  replayPendingUpgradeOutcome({
+    dbDir,
+    currentVersion,
+    installationId,
+    recordEvent,
+  }).catch((e) => console.error('[HUB_UPGRADE_SYNC] replay failed:', (e as Error).message));
+
+  // CGLAB-66 — repoint campaign reconciler. Applies an admin-issued move to
+  // a new hub DNS name, after re-verifying the target's identity locally.
+  repointSyncHandle = startRepointSync({
+    hubUrl: hubClient.hubConfig.url,
+    hubToken: hubClient.hubConfig.token,
+    orgId: hubClient.hubConfig.orgId,
+    installationId,
+    // AGENFK_HUB_URL overrides hub.json, so a rewrite would be a no-op here;
+    // the reconciler reports blocked_by_env instead of a false success.
+    envHubUrl: process.env.AGENFK_HUB_URL ?? null,
+    intervalMs: Number(process.env.AGENFK_HUB_REPOINT_SYNC_INTERVAL_MS) || undefined,
+    writeConfigImpl: (cfg) => {
+      const target = path.join(os.homedir(), '.agenfk', 'hub.json');
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+      try { fs.chmodSync(target, 0o600); } catch { /* best effort */ }
+    },
+    // Swap the live transport in-process. The Flusher bakes its baseURL and
+    // bearer token in at construction and nothing re-reads hub.json, so
+    // without this the confirmation would be POSTed to the OLD host — where
+    // the hub correctly refuses it and resets the target to pending, forever.
+    // The outbox is in SQLite, not in the Flusher, so the pending
+    // confirmation survives the swap.
+    rebuildTransportImpl: async (cfg) => {
+      const previous = hubFlusher;
+      previous?.stop();
+      const next = new Flusher(storage as SQLiteStorageProvider, cfg, getInstallationId());
+      next.start();
+      hubFlusher = next;
+      console.log(`[HUB_REPOINT_SYNC] Repointed to ${cfg.url}; transport rebuilt.`);
+    },
+    recordEvent,
+    flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
+  });
+
+  const upgradeIntervalMs = Number(process.env.AGENFK_HUB_UPGRADE_SYNC_INTERVAL_MS) || undefined;
+  upgradeSyncHandle = startUpgradeSync({
+    dbDir,
+    currentVersion,
+    installationId,
+    hubUrl: hubClient.hubConfig.url,
+    hubToken: hubClient.hubConfig.token,
+    intervalMs: upgradeIntervalMs,
+    fetchImpl: async ({ hubUrl, hubToken, installationId }) => {
+      const r = await axios.get(`${hubUrl}/v1/upgrade-directive`, {
+        headers: { Authorization: `Bearer ${hubToken}`, 'X-Installation-Id': installationId },
+        timeout: 10_000,
+        validateStatus: (s) => s < 500,
+      });
+      return { status: r.status, json: async () => r.data };
+    },
+    recordEvent,
+    flushNow: (timeoutMs) => hubFlusher!.flushNow(timeoutMs),
+    // Async spawn keeps the API event loop responsive while `agenfk
+    // upgrade` runs. spawnSync would block every probe (the CLI's own
+    // `is the server running?` curl, install.mjs's pre-install probe)
+    // so all of them would falsely report "not running" and skip the
+    // down/up restart — leaving the upgrade landed on disk while the
+    // in-memory process keeps executing the old code.
+    spawnImpl: (cmd, args) => new Promise((resolve) => {
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      child.stdout?.on('data', (d) => { stdout += d.toString(); });
+      child.stderr?.on('data', () => { /* ignore — agenfk upgrade --json puts everything on stdout */ });
+      child.on('exit', (code) => resolve({ exitCode: code, stdout }));
+      child.on('error', () => resolve({ exitCode: 1, stdout }));
+    }),
+  });
+  console.log(`[HUB] Upgrade reconciler running against ${hubClient.hubConfig.url}/v1/upgrade-directive`);
+
+}
+};
+
 
 // ── Error handler wrapper ────────────────────────────────────────────────────
 
@@ -2668,6 +2720,29 @@ app.post('/internal/hub/flush', asyncHandler(async (req: any, res: any) => {
   }
   await hubFlusher.flush();
   res.json(hubFlusher.getStatus());
+}));
+
+// ── Hub config reload (used by `agenfk hub login` / `join` / `repoint`) ──────
+// The Flusher and both reconcilers capture their credential and base URL when
+// they are constructed, so a freshly-written ~/.agenfk/hub.json had no effect
+// until the server restarted. That made a halted flusher unrecoverable in the
+// one case that actually happens — a revoked token — because its recovery probe
+// kept presenting the same dead credential. Re-read the file and restart the
+// hub subsystems in place; the outbox lives in SQLite, so nothing is lost.
+app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: 'Forbidden: hub reload requires internal token.' });
+  }
+  const changed = hubClient.reloadConfig();
+  if (changed) startHubSubsystems();
+  res.json({
+    ok: true,
+    changed,
+    enabled: hubClient.isEnabled,
+    url: hubClient.hubConfig?.url ?? null,
+    orgId: hubClient.hubConfig?.orgId ?? null,
+    status: hubFlusher ? hubFlusher.getStatus() : { enabled: false },
+  });
 }));
 
 app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
