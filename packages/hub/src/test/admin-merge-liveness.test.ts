@@ -666,6 +666,71 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       expect(rows[0].merge_id).toBe(older.body.mergeId);
     });
 
+    it('hands back a key ingest can actually resolve, not the raw journal value', async () => {
+      // The journal stores what an admin typed. Re-inserting that verbatim
+      // writes an alias ingest never derives — the dead-alias bug, reopened on
+      // the revert path. The keys being deleted were already derived correctly
+      // when written, so they are the ones to hand back.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
+      const older = await merge('Old@CGLab.com', 'b@cglab.com');
+      expect((await aliases())[0].alias_key).toBe('old@cglab.com');
+
+      await ctx.db.run(
+        `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, created_at)
+         VALUES ('m-newer', 'org-a', 'Old@CGLab.com', 'c@cglab.com', 1, '2026-08-20T00:00:00Z')`,
+      );
+      await ctx.db.run(
+        `UPDATE user_key_aliases SET canonical_key = 'c@cglab.com', merge_id = 'm-newer'
+          WHERE org_id = 'org-a' AND alias_key = 'old@cglab.com'`,
+      );
+      await ctx.db.run("UPDATE events SET user_key = 'c@cglab.com' WHERE event_id = 'e1'");
+      await ctx.db.run(
+        `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key)
+         VALUES ('m-newer', 'e1', 'b@cglab.com')`,
+      );
+
+      const rev = await supertest(app).post('/v1/admin/user-keys/merges/m-newer/revert')
+        .set('Cookie', cookie).send({});
+
+      expect(rev.body.aliasesRestored).toBe(1);
+      const rows = await aliases();
+      // Lowercased — what userKeyFor derives — not the typed 'Old@CGLab.com'.
+      expect(rows[0].alias_key).toBe('old@cglab.com');
+      expect(rows[0].canonical_key).toBe('b@cglab.com');
+      expect(rows[0].merge_id).toBe(older.body.mergeId);
+    });
+
+    it('hands back every alias when the source spanned several machines', async () => {
+      // A bare key was a bucket, so one source can legitimately hold one alias
+      // per installation. Restoring a single row leaves the rest unprotected.
+      await ctx.db.run(
+        `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, created_at)
+         VALUES ('m-older', 'org-a', 'dev', 'team@cglab.com', 2, '2026-08-01T00:00:00Z'),
+                ('m-newer', 'org-a', 'dev', 'other@cglab.com', 2, '2026-08-20T00:00:00Z')`,
+      );
+      for (const [k, inst] of [['osuser:dev@aaaaaaaa', 'aaaaaaaa-1'], ['osuser:dev@bbbbbbbb', 'bbbbbbbb-1']]) {
+        await ctx.db.run(
+          `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+           VALUES ('org-a', ?, 'other@cglab.com', 'm-newer')`, [k],
+        );
+        await event(`ev-${inst}`, inst, 'other@cglab.com');
+        await ctx.db.run(
+          `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key)
+           VALUES ('m-newer', ?, 'team@cglab.com')`, [`ev-${inst}`],
+        );
+      }
+
+      const rev = await supertest(app).post('/v1/admin/user-keys/merges/m-newer/revert')
+        .set('Cookie', cookie).send({});
+
+      expect(rev.body.aliasesRemoved).toBe(2);
+      expect(rev.body.aliasesRestored).toBe(2);
+      const rows = await aliases();
+      expect(rows.map(r => r.alias_key)).toEqual(['osuser:dev@aaaaaaaa', 'osuser:dev@bbbbbbbb']);
+      expect(rows.every(r => r.canonical_key === 'team@cglab.com' && r.merge_id === 'm-older')).toBe(true);
+    });
+
     it('leaves the source bare when no other live merge covers it', async () => {
       await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');

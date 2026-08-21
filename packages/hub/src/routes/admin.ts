@@ -143,6 +143,20 @@ export function adminRouter(ctx: HubServerContext): Router {
       });
       return;
     }
+    // A prefix can match more than one hash. Vanishingly unlikely with hex, but
+    // the response reports a count, so revoking two keys would read as an
+    // ordinary success. Refuse and ask for more characters instead.
+    const matches = await ctx.db.all<{ token_hash: string }>(
+      'SELECT token_hash FROM api_keys WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL',
+      [req.session!.orgId, `${preview}%`],
+    );
+    if (matches.length > 1) {
+      res.status(409).json({
+        error: `"${preview}" matches ${matches.length} live keys. Use a longer prefix to name just one.`,
+        matches: matches.length,
+      });
+      return;
+    }
     const result = await ctx.db.run(
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
@@ -454,6 +468,17 @@ export function adminRouter(ctx: HubServerContext): Router {
         // deleting the alias there frees the source key to resurrect as a THIRD
         // identity while we report having done nothing. Scoped by merge_id so a
         // later merge that re-claimed the same alias_key keeps it.
+        // Capture the keys BEFORE deleting them. They were derived correctly
+        // when written — matching what ingest actually produces — so they are
+        // the only safe thing to hand back. Recomputing from
+        // user_key_merges.from_user_key would re-insert the raw value an admin
+        // typed: 'Old@CGLab.com' where ingest derives 'old@cglab.com', or a bare
+        // 'gcs' where it derives 'osuser:gcs@<prefix>'. That is an alias nothing
+        // can ever resolve, which is the bug this whole table exists to avoid.
+        const doomed = await ctx.db.all<{ alias_key: string }>(
+          'SELECT alias_key FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
+          [orgId, id],
+        );
         const aliases = await ctx.db.run(
           'DELETE FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
           [orgId, id],
@@ -461,11 +486,13 @@ export function adminRouter(ctx: HubServerContext): Router {
         aliasesRemoved = aliases.changes;
 
         // Two un-reverted merges can share a source in data written before the
-        // re-merge refusal existed, and only the latest carries the alias.
-        // Deleting it would leave the older merge live with no alias at all —
-        // the unprotected state this table exists to eliminate. Hand protection
-        // back to the next most recent live merge on the same source, if any.
-        if (aliasesRemoved > 0) {
+        // re-merge refusal existed, and only the latest carries the aliases.
+        // Deleting them would leave the older merge live with none at all — the
+        // unprotected state this table exists to eliminate. Hand protection back
+        // to the next most recent live merge on the same source, if any. Every
+        // key, not one: a bare source was a bucket, so it legitimately holds one
+        // alias per installation.
+        if (doomed.length > 0) {
           const predecessor = await ctx.db.get<{ id: string; to_user_key: string }>(
             `SELECT id, to_user_key FROM user_key_merges
               WHERE org_id = ? AND id <> ? AND reverted_at IS NULL
@@ -474,13 +501,17 @@ export function adminRouter(ctx: HubServerContext): Router {
             [orgId, id, record.from_user_key],
           );
           if (predecessor) {
-            await ctx.db.run(
-              `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(org_id, alias_key) DO NOTHING`,
-              [orgId, record.from_user_key, predecessor.to_user_key, predecessor.id],
-            );
-            aliasesRestored = 1;
+            for (const d of doomed) {
+              const restored = await ctx.db.run(
+                `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(org_id, alias_key) DO NOTHING`,
+                [orgId, d.alias_key, predecessor.to_user_key, predecessor.id],
+              );
+              // Counted from rows actually written: DO NOTHING can insert none,
+              // and reporting a restore that did not happen is worse than none.
+              aliasesRestored += restored.changes;
+            }
           }
         }
       }

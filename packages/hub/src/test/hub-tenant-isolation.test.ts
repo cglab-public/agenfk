@@ -142,6 +142,24 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       expect(await liveCount()).toBe(3);
     });
 
+    it('refuses an ambiguous prefix rather than revoking several keys as one', async () => {
+      // LIKE 'prefix%' can match more than one hash. Astronomically unlikely
+      // with hex, but the endpoint reports a count, so a multi-revoke would read
+      // as an ordinary success.
+      await ctx.db.run(
+        `INSERT INTO api_keys (token_hash, org_id, label) VALUES ('abcdef0011', 'org-a', 'one')`,
+      );
+      await ctx.db.run(
+        `INSERT INTO api_keys (token_hash, org_id, label) VALUES ('abcdef0022', 'org-a', 'two')`,
+      );
+
+      const r = await supertest(app).delete('/v1/admin/api-keys/abcdef00')
+        .set('Cookie', adminCookie);
+
+      expect(r.status).toBe(409);
+      expect(await liveCount()).toBe(2);
+    });
+
     it('still revokes exactly the key matching a real hash prefix', async () => {
       await seedKeys();
       const rows = await ctx.db.all<{ token_hash: string }>(
