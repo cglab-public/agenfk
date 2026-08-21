@@ -1,5 +1,5 @@
 import { DB } from '../db.js';
-import { namespacedOsUserKey } from './userKey.js';
+import { userKeyFor } from './userKey.js';
 
 /**
  * Who is still allowed to undo an identity merge (CGLAB-72).
@@ -52,14 +52,17 @@ export interface InstallationIdentityRow {
 /**
  * The user_key this installation would produce right now.
  *
- * This MUST track `userKeyFor` in util/userKey.ts. When the two drift, the guard
- * stops matching the keys ingest actually writes and silently permits the merges
- * it exists to refuse — which is exactly how the namespacing change broke it.
+ * Delegates to `userKeyFor` rather than reimplementing it. A second copy of the
+ * derivation is what broke the guard in the first place: namespacing changed one
+ * and not the other, so the guard compared a bare username against keys ingest
+ * no longer writes and matched nothing. Routing both through one function makes
+ * that drift impossible instead of merely discouraged.
  */
 export function derivedUserKeyForInstallation(row: InstallationIdentityRow): string {
-  const email = row.git_email?.trim();
-  if (email) return email.toLowerCase();
-  return namespacedOsUserKey(row.os_user?.trim() ?? '', row.id);
+  return userKeyFor(
+    { osUser: row.os_user ?? '', gitName: null, gitEmail: row.git_email },
+    row.id,
+  );
 }
 
 /**
