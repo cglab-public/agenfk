@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -424,6 +424,55 @@ async function validateParentAssignment(
   return null;
 }
 
+/**
+ * Apply a flow-migration plan, refusing any mapping that would land an item on
+ * the target flow's exit anchor.
+ *
+ * migrateCardsToFlow maps POSITIONALLY, so a flow whose first step is named DONE
+ * moved every TODO item straight onto it — project-wide, in a single request,
+ * with no evidence and no exit criteria. Flows arrive from a community registry
+ * and from org-wide hub pushes, so that was the cheapest bypass in the codebase.
+ * Migration may reshuffle items between working steps; it may never complete
+ * their work for them.
+ */
+async function applyMigrationPlan(
+  plan: Array<{ itemId: string; oldStatus: string; newStatus: string }>,
+  targetFlow: { steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean }> },
+): Promise<Array<{ itemId: string; newStatus: string }>> {
+  const real = [...targetFlow.steps]
+    .sort((a, b) => a.order - b.order)
+    .filter(st => !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
+  const exitName = real[real.length - 1]?.name?.toUpperCase();
+  const entryName = real[0]?.name;
+  const refused: Array<{ itemId: string; newStatus: string }> = [];
+
+  for (const step of plan) {
+    if (step.oldStatus === step.newStatus) continue;
+    let target = step.newStatus;
+    const landsOnExit = String(target).toUpperCase() === exitName
+      || String(target).toUpperCase() === Status.DONE;
+    if (landsOnExit && String(step.oldStatus).toUpperCase() !== Status.DONE) {
+      refused.push({ itemId: step.itemId, newStatus: target });
+      // Fall back to the entry step — unless the entry step is ITSELF the exit or
+      // is named DONE, which happens on exactly the pathological flow this guard
+      // exists for (first step named DONE). Then leave the item where it is:
+      // there is nowhere safe to put it, and not moving it is always safe.
+      const fallback = entryName;
+      const fallbackUnsafe = !fallback
+        || String(fallback).toUpperCase() === Status.DONE
+        || String(fallback).toUpperCase() === exitName;
+      if (fallbackUnsafe) continue;
+      target = fallback;
+      if (target === step.oldStatus) continue;
+    }
+    await storage.updateItem(step.itemId, { status: target as Status });
+  }
+  if (refused.length) {
+    console.warn(`[FLOW_MIGRATION] Refused to migrate ${refused.length} item(s) onto the flow's final step; anchored them at '${entryName}' instead.`);
+  }
+  return refused;
+}
+
 const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
@@ -439,25 +488,33 @@ const syncParentStatus = async (parentId: string) => {
   // allDone -> DONE case worked, because DONE is an anchor every flow has.
   const parentProject = await storage.getProject(parent.projectId);
   const parentFlow = getActiveFlow((parentProject as any)?.flowId, await storage.listFlows());
-  const ordered = [...parentFlow.steps].sort((a, b) => a.order - b.order);
+  // Real workflow steps only. Nothing here may write a platform status onto a
+  // parent: a flow is free to name a step BLOCKED, and driving a parent there
+  // would archive or block it outside the routes that record previousStatus.
+  const ordered = [...parentFlow.steps]
+    .sort((a, b) => a.order - b.order)
+    .filter(st => !(st as any).isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
   const orderOf = (name: string) => {
     const i = ordered.findIndex(st => st.name.toUpperCase() === String(name).toUpperCase());
     return i === -1 ? null : i;
   };
 
-  // A child on a platform status (PAUSED/BLOCKED/...) has no position in the
-  // flow, so it cannot hold the parent back or push it forward.
+  // A child on a platform status has no position in the flow, so it neither
+  // holds the parent back nor pushes it forward — it is simply skipped.
   const positioned = children
     .map(c => orderOf(c.status))
     .filter((n): n is number => n !== null);
 
   let newStatus: Status | null = null;
 
-  if (positioned.length === children.length && positioned.length > 0) {
-    // The parent may advance to the LEAST advanced child's step — never past it.
+  if (positioned.length > 0) {
+    // The parent may advance to the LEAST advanced positioned child's step, and
+    // only FORWARD. Moving it backward is not propagation: it would un-pause a
+    // parent that someone deliberately paused, and the pre-existing behaviour
+    // never moved a parent back.
     const laggard = Math.min(...positioned);
     const parentIdx = orderOf(parent.status);
-    if (parentIdx === null || laggard > parentIdx) {
+    if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
   }
@@ -756,9 +813,15 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
   // anchors when the flag is absent.
   const realSteps = sorted.filter(st =>
     !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
-  const entryStep = (realSteps.find(st => st.isAnchor) ?? realSteps[0])?.name;
-  const codingStep = (realSteps.find(st => !st.isAnchor && st.name !== entryStep)
-    ?? realSteps[1] ?? realSteps[0])?.name;
+  const entryStep = realSteps[0]?.name;
+  // The step immediately AFTER the entry — positional on purpose. Using
+  // `find(!isAnchor)` instead offered the first non-anchor step at ANY depth, so
+  // a flow whose early steps are anchors (TODO/PLAN/SPEC anchored, then IMPL)
+  // let PAUSED reach IMPL and skip PLAN and SPEC. And the exit anchor is never a
+  // valid target, or a two-step flow {TODO, DONE} would sanction PAUSED -> DONE.
+  const exitStep = realSteps[realSteps.length - 1];
+  const adjacent = realSteps[1];
+  const codingStep = (adjacent && adjacent !== exitStep) ? adjacent.name : undefined;
   const firstAnchor = entryStep;
 
   // Coming FROM a platform status. This used to allow every step, which made
@@ -995,11 +1058,7 @@ app.post("/projects/:id/flow", asyncHandler(async (req: any, res: any) => {
       ? (await storage.getFlow((project as any).flowId)) ?? DEFAULT_FLOW
       : DEFAULT_FLOW;
     const migrationPlan = migrateCardsToFlow(items, oldFlow, activeFlow);
-    for (const plan of migrationPlan) {
-      if (plan.oldStatus !== plan.newStatus) {
-        await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
-      }
-    }
+    await applyMigrationPlan(migrationPlan, activeFlow);
   }
 
   io.emit('flow:updated', { projectId: req.params.id, flowId: flowId || null });
@@ -1108,11 +1167,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
       const oldFlow = (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW;
       const items = await storage.listItems({ projectId: req.params.id });
       const migrationPlan = migrateCardsToFlow(items, oldFlow, DEFAULT_FLOW);
-      for (const plan of migrationPlan) {
-        if (plan.oldStatus !== plan.newStatus) {
-          await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
-        }
-      }
+      await applyMigrationPlan(migrationPlan, DEFAULT_FLOW);
       await storage.updateProject(req.params.id, { flowId: undefined });
     }
     io.emit("flow:updated", { projectId: req.params.id, flowId: null });
@@ -1150,11 +1205,7 @@ app.post("/projects/:id/flow/select-org", asyncHandler(async (req: any, res: any
     const newFlow = getActiveFlow(newFlowId, flows);
     const oldFlow = oldFlowId ? (await storage.getFlow(oldFlowId)) ?? DEFAULT_FLOW : DEFAULT_FLOW;
     const migrationPlan = migrateCardsToFlow(items, oldFlow, newFlow);
-    for (const plan of migrationPlan) {
-      if (plan.oldStatus !== plan.newStatus) {
-        await storage.updateItem(plan.itemId, { status: plan.newStatus as Status });
-      }
-    }
+    await applyMigrationPlan(migrationPlan, newFlow);
   }
   const activeFlow = newFlowId ? getActiveFlow(newFlowId, flows) : DEFAULT_FLOW;
   io.emit("flow:updated", { projectId: req.params.id, flowId: newFlowId });
@@ -1471,38 +1522,11 @@ function flowStepsError(steps: any): string | null {
  * publishable — without breaking the callers that never sent ids.
  */
 function normalizeSteps(steps: any): any {
-  if (!Array.isArray(steps)) return steps;
-  const seen = new Set<string>();
-  return steps.map((s: any) => {
-    if (!s || typeof s !== 'object') return s;
-    // Missing OR duplicated ids both get a fresh one: two steps sharing an id
-    // collide on React's key={step.id} in the flow editor, which silently drops
-    // a column from the UI.
-    const id = typeof s.id === 'string' ? s.id : '';
-    const resolvedId = (!id || seen.has(id)) ? uuidv4() : id;
-    seen.add(resolvedId);
-    return { ...pickStepFields(s), id: resolvedId };
-  });
+  // Canonical implementation lives in @agenfk/core so every persisting path —
+  // this route, the registry install, and the hub sync — shares one whitelist.
+  return normalizeFlowSteps(steps, () => uuidv4());
 }
 
-/**
- * Keep only the fields FlowStep declares. Flows arrive from a community
- * registry and from an org-wide hub push, so their steps are untrusted input:
- * spreading them wholesale persisted anything a flow author cared to add,
- * including `command`. Nothing reads that today, which is the only reason a
- * hostile flow cannot execute — the field was simply never honoured. Storing it
- * leaves a loaded gun for whoever next writes `step.command`, so drop it at the
- * door instead. Adding a field here is a deliberate act; a `command` must never
- * be one of them.
- */
-const FLOW_STEP_FIELDS = ['id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial'] as const;
-function pickStepFields(step: any): any {
-  const out: any = {};
-  for (const k of FLOW_STEP_FIELDS) {
-    if (step[k] !== undefined) out[k] = step[k];
-  }
-  return out;
-}
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps } = req.body;
@@ -1895,6 +1919,20 @@ app.post("/projects/:id/flow/migrate", asyncHandler(async (req: any, res: any) =
     if (!item) continue;
 
     if (plan.oldStatus !== plan.newStatus) {
+      // Same rule as applyMigrationPlan: a migration may reshuffle items between
+      // working steps, but it may never land one on the flow's exit anchor and
+      // thereby complete the work without evidence. Positional mapping made this
+      // reachable with a flow whose first step is simply named DONE.
+      const migRealSteps = [...newFlow.steps]
+        .sort((a: any, b: any) => a.order - b.order)
+        .filter((st: any) => !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
+      const migExit = migRealSteps[migRealSteps.length - 1]?.name?.toUpperCase();
+      const target = String(plan.newStatus).toUpperCase();
+      if ((target === migExit || target === Status.DONE)
+          && String(plan.oldStatus).toUpperCase() !== Status.DONE) {
+        console.warn(`[FLOW_MIGRATION] Refused to migrate ${plan.itemId} onto '${plan.newStatus}'.`);
+        continue;
+      }
       const migrationComment = {
         id: uuidv4(),
         author: 'FlowMigration',
@@ -1986,6 +2024,38 @@ app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
   res.json(item);
 }));
 
+/**
+ * Statuses an item may be CREATED with.
+ *
+ * Being born partway through a flow is legitimate — importing from JIRA or
+ * GitHub brings items in whatever state they are already in, and parking an item
+ * in a working step is normal. Being born FINISHED is not: `status` used to be
+ * accepted raw here, so create_item({status:'DONE'}) was advertised on the MCP
+ * surface and free, which is the same hole just closed on update_item one
+ * function away. Completion is the one state that has to be earned through
+ * validate_progress.
+ *
+ * Anything unrecognised anchors at TODO rather than failing the create: callers
+ * legitimately pass a status they inherited, and refusing the whole creation
+ * would be worse than starting the item where every item starts.
+ */
+function sanitizeCreateStatus(status: any, flow: { steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean }> }): Status {
+  if (status === undefined || status === null || status === '') return Status.TODO;
+  const upper = String(status).toUpperCase();
+  if (PLATFORM_STATUSES.has(upper as Status)) return upper as Status;
+
+  const real = [...flow.steps]
+    .sort((a, b) => a.order - b.order)
+    .filter(st => !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
+  const exitName = real[real.length - 1]?.name?.toUpperCase();
+
+  // Never born complete, whatever the exit step is called.
+  if (upper === Status.DONE || (exitName && upper === exitName)) return Status.TODO;
+
+  const match = real.find(st => st.name.toUpperCase() === upper);
+  return match ? (match.name as Status) : Status.TODO;
+}
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -2000,6 +2070,12 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
 
   // A brand-new id can have no descendants, so pass itemId=null: existence and
   // project-match still apply, the cycle walk is skipped as impossible.
+  // Resolve the project's flow so a create cannot mint a completed item.
+  const createFlowForStatus = getActiveFlow(
+    (await storage.getProject(projectId) as any)?.flowId,
+    await storage.listFlows(),
+  );
+
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
 
@@ -2009,7 +2085,12 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     type: type as ItemType,
     title,
     description: description || "",
-    status: (status as Status) || Status.TODO,
+    // An item is born at the flow's entry step, never mid-flow. `status` used to
+    // be accepted raw here, so create_item({status:'DONE'}) was documented on the
+    // MCP surface and free — the same hole that was just closed on update_item,
+    // one function away. A platform status is allowed (BLOCKED/IDEAS are valid
+    // things to create into); a working step is not.
+    status: sanitizeCreateStatus(status, createFlowForStatus),
     parentId: parentId,
     implementationPlan: implementationPlan || "",
     createdAt: new Date(),
@@ -2917,6 +2998,33 @@ app.post("/items/:id/resume", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "No pause snapshot found for this item." });
   }
 
+  // A snapshot is a one-shot ticket back to where you paused, and it must be
+  // spent here. Snapshots used to survive resume, and `PUT status=PAUSED`
+  // reaches PAUSED without creating one — so any step an item had ever paused at
+  // became a permanent teleport token: pause once at the last step, walk back,
+  // set PAUSED directly, resume, and you are at the end again with no evidence.
+  // Restoring is still allowed to move the item forward, which is why the ticket
+  // has to be consumed rather than merely gated.
+  const restoreTarget = snapshot.status;
+  const currentFlow = getActiveFlow(
+    (await storage.getProject(item.projectId) as any)?.flowId,
+    await storage.listFlows(),
+  );
+  const restoreAllowed = buildAllowedTransitions(item.status, currentFlow);
+  const restorable = currentFlow.steps.some(
+    st => st.name.toUpperCase() === String(restoreTarget).toUpperCase());
+  if (!restorable && !restoreAllowed.has(restoreTarget as Status)) {
+    return res.status(400).json({
+      error: `Cannot resume to '${restoreTarget}': it is not a step of the project's active flow.`,
+    });
+  }
+
+  if (snapshot.resumedAt) {
+    return res.status(400).json({
+      error: "This pause snapshot has already been resumed. Pause again to create a new one.",
+    });
+  }
+
   // Restore item to its pre-pause status
   const comments = [...(item.comments || []), {
     id: uuidv4(),
@@ -2927,7 +3035,9 @@ app.post("/items/:id/resume", asyncHandler(async (req: any, res: any) => {
 
   await storage.updateItem(req.params.id, { status: snapshot.status, comments });
 
-  // Mark snapshot as resumed
+  // Mark the snapshot resumed AND spent. createSnapshot replaces the row for
+  // this item, so writing resumedAt keeps the audit trail; the guard below is
+  // what stops it being redeemed twice.
   snapshot.resumedAt = new Date();
   await storage.createSnapshot(snapshot);
 

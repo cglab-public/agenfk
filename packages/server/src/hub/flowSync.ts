@@ -11,6 +11,7 @@
 import { randomUUID } from 'crypto';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
+import { normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
@@ -124,7 +125,12 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
     name: remote.name,
     description: remote.description ?? '',
     version: existing?.version ?? '1.0.0',
-    steps: remote.steps ?? [],
+    // Through the SAME whitelist as POST /flows. This path used to take
+    // remote.steps verbatim, so an org-wide hub push bypassed normalizeSteps
+    // entirely — which meant the flow-step field whitelist did not cover the one
+    // channel whose untrustworthiness is the whole reason it exists. Duplicate
+    // step ids and empty names got through here too.
+    steps: normalizeFlowSteps(remote.steps ?? [], () => randomUUID()),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     source: 'hub',

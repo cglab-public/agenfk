@@ -90,11 +90,18 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     expect(res.body.status).toBe('IN_PROGRESS');
   });
 
-  it('refuses to reach DONE through a plain status write', async () => {
+  it('refuses to reach DONE through a plain status write, from any step', async () => {
+    // The plain-PUT guard predates this work, so asserting only that would be
+    // vacuous. What changed is that there is no longer a step from which DONE is
+    // reachable without validate_progress — including the last one before it,
+    // which used to be the sanctioned launderer.
     const id = await newItem();
-    await request(app).put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
-    const res = await request(app).put(`/items/${id}`).send({ status: 'DONE' });
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    for (const s of ['IN_PROGRESS', 'REVIEW', 'TEST']) {
+      await request(app).put(`/items/${id}`).send({ status: s });
+    }
+    const fromFinal = await request(app).put(`/items/${id}`).send({ status: 'DONE' });
+    expect(fromFinal.status).toBeGreaterThanOrEqual(400);
+    expect((await request(app).get(`/items/${id}`)).body.status).toBe('TEST');
   });
 
   it('cannot launder a jump through PAUSED', async () => {
@@ -111,11 +118,10 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     const res = await request(app).post('/items/bulk').send({
       items: [{ id, updates: { status: 'TEST' } }],
     });
-    const body = JSON.stringify(res.body);
-    // Either the whole call is rejected, or the entry is reported as skipped —
-    // what must NOT happen is the item silently landing on TEST.
+    // What must NOT happen is the item silently landing on TEST, and the caller
+    // must be TOLD rather than left to assume it worked.
     const after = await request(app).get(`/items/${id}`);
     expect(after.body.status).not.toBe('TEST');
-    expect(body).toBeTruthy();
+    expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
   });
 });
