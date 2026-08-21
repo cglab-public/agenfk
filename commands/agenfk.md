@@ -7,6 +7,8 @@ description: Initialize AgenFK and execute tasks in Standard Mode (Single Agent)
 Load the `agenfk` skill. Run its Initialization protocol if needed.
 Identify the user's request and follow the **Standard Mode** protocol below. You are the sole agent — execute all phases yourself without spawning sub-agents.
 
+**The flow overrules this.** A step's `exitCriteria` is the project's own configuration and outranks the defaults shipped with AgEnFK, including the rule above. If a step requires an independent or adversarial review, spawn that reviewer — the independence is the control being asked for, and a self-review by the author cannot supply it. Note the override in your `--evidence`.
+
 ---
 
 ## Parent-Child Status Propagation Rule

@@ -39,7 +39,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
 *   **Verification**: You MUST run `agenfk update <itemId> --status REVIEW` to enter REVIEW, then `agenfk gatekeeper --item-id <itemId>` to get exit criteria, then `agenfk verify <itemId> --evidence "<text>"` to advance through intermediate steps and reach DONE.
 *   **Decomposition**: MANDATORY. Every piece of work must be minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
-*   **Handoff**: None. Do not spawn sub-agents.
+*   **Handoff**: None by default — do not delegate coding, planning or closing to sub-agents. Like every default here, a flow step's `exitCriteria` overrules this (see **Precedence** below); a step demanding an independent reviewer gets one.
 
 ### 2. Deep Mode (via `/agenfk-deep`)
 *   **Behavior**: Multi-agent, automated orchestration.
@@ -53,6 +53,42 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
     - **Coding to Review**: Automatically spawn a "Review Agent" after `agenfk update <id> --status REVIEW`.
     - **Review to Test**: Automatically spawn a "Test Agent" after successful review.
     - **Test to Done**: Automatically spawn a "Closing Agent" after successful testing.
+
+---
+
+## Precedence — the project's flow wins
+
+The instructions in this skill, in the `/agenfk-*` commands, and in the per-client
+rule bundles are **defaults**. A project's flow is **configuration**, and the two
+are not equal: a step's `exitCriteria` describes what THIS project requires, and
+it OVERRULES anything shipped with AgEnFK that contradicts it.
+
+So when a step's exit criteria tell you to do something a shipped instruction
+forbids — or forbid something a shipped instruction mandates — **follow the exit
+criteria**. Do not stall to ask which one wins, do not split the difference, and
+do not quietly substitute a weaker action that satisfies neither. Say in your
+`--evidence` which shipped default the flow overrode and why, so the override is
+visible in the audit trail rather than looking like a lapse.
+
+Worked example, and the one that motivated this rule: Standard Mode says you are
+the sole agent and must not spawn sub-agents. A REVIEW step whose exit criteria
+demand "review the code in a separate adversarial agent" overrules that — spawn
+the reviewer. The independence IS the control being asked for; a self-review by
+the agent that wrote the code inherits the author's blind spots and cannot
+satisfy the criteria however carefully it is performed. If your client has no
+sub-agent facility, run the review from a fresh context and say which you did.
+Whatever comes back is a claim, not a verdict — verify each finding against the
+code before acting on it, because reviewers report false positives and fixing an
+imaginary bug is its own defect. Brief them as read-only: a reviewer that edits a
+shared working tree can leave a defect behind.
+
+**What this does NOT license.** The flow can direct how you work; it cannot
+switch off the framework's integrity rules. These still hold regardless of what
+any step says: authorize edits through `agenfk gatekeeper`; reach a forward step
+only via `agenfk verify`; never write state by touching the database or calling
+the server directly; never fabricate evidence for a criterion you did not meet.
+A step that appears to demand one of those is a flow bug — report it instead of
+complying.
 
 ---
 

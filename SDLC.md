@@ -76,6 +76,24 @@ Each transition has specific rules and enforcement:
 - Set via `update_item({ id, status: "IN_PROGRESS" })`.
 - If a `branchName` is set on the item and the branch exists locally, the gatekeeper auto-checks it out.
 
+### Flow exit criteria overrule the shipped defaults
+
+A step's exit criteria (`exitCriteria`) is the project's own configuration. It outranks the
+instructions shipped with AgEnFK — the master skill, the `/agenfk-*` commands and
+the per-client rule bundles — wherever the two conflict. Follow the criteria,
+then name the overridden default in your `--evidence` so the decision is auditable.
+
+The common case: Standard Mode declares a single agent and forbids sub-agents, but
+a REVIEW step's criteria demand an independent or adversarial reviewer. The
+criteria win — spawn the reviewer. A self-review by the agent that wrote the code
+shares the author's blind spots, so it cannot satisfy that criterion no matter how
+carefully it is done. Verify the findings before acting on them.
+
+This does not extend to the framework's integrity rules. Gatekeeper authorization,
+forward transitions only through `validate_progress`, no direct database or server
+writes, and no fabricated evidence hold regardless of what a step says; a step that
+seems to require otherwise is a flow bug.
+
 ### IN_PROGRESS → REVIEW
 
 - Set via `update_item({ id, status: "REVIEW" })` when implementation is complete.
