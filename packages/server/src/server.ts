@@ -639,7 +639,24 @@ flowSyncHandle?.stop();
 upgradeSyncHandle?.stop();
 repointSyncHandle?.stop();
 hubClient.attachStorage(storage as SQLiteStorageProvider);
-if (hubClient.isEnabled && hubClient.hubConfig) {
+
+// Never start the outbound hub machinery under a test runner.
+//
+// initStorage() is called directly by the suite — often in beforeEach, so many
+// times per file — and the NODE_ENV guard further down only wraps the
+// auto-listen path. That meant every test run stood up a Flusher plus the flow
+// and upgrade reconcilers pointed at the PRODUCTION hub using the real token in
+// ~/.agenfk/hub.json, never stopped them, and accumulated sockets and timers
+// across the whole run. That is the source of the intermittent `read ECONNRESET`
+// that moved between files run to run: it was a real remote connection being
+// reset, not a supertest artifact. It also meant test runs could push events
+// into production. Set AGENFK_TEST_ENABLE_HUB=1 in the rare test that wants it.
+const hubDisabledForTests = (process.env.NODE_ENV === 'test' || !!process.env.VITEST)
+  && !process.env.AGENFK_TEST_ENABLE_HUB;
+
+if (hubDisabledForTests) {
+  hubFlusher = null;
+} else if (hubClient.isEnabled && hubClient.hubConfig) {
   // Stamp events queued while disconnected (pending-org sentinel '') with
   // the real orgId BEFORE the flusher starts, so pre-login history delivers
   // instead of being rejected on orgId mismatch.
