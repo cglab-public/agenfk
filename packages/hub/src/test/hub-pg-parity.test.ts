@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import supertest from 'supertest';
+import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
 import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
@@ -561,6 +562,31 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(list.body.some((i: any) => i.id === 'inst-pg')).toBe(false);
     const withRetired = await supertest(fx.app).get('/v1/admin/installations?includeRetired=1').set('Cookie', fx.cookie);
     expect(withRetired.body.find((i: any) => i.id === 'inst-pg').retired).toBe(true);
+  });
+
+  it('backfills aliases on Postgres, including the conditional insert', async () => {
+    // The backfill's INSERT ... SELECT ... WHERE EXISTS ... ON CONFLICT is the
+    // one statement in it that could parse differently across engines, and it
+    // runs nowhere else. Only this suite would catch a PG-only break.
+    await fx.db.run(
+      `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, created_at)
+       VALUES ('bf-live', 'org', 'old@acme.com', 'new@acme.com', 1, '2026-08-01T00:00:00Z')`,
+    );
+    await fx.db.run(
+      `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, reverted_at, created_at)
+       VALUES ('bf-reverted', 'org', 'gone@acme.com', 'x@acme.com', 1, '2026-08-02T00:00:00Z', '2026-08-01T00:00:00Z')`,
+    );
+
+    const r = await backfillUserKeyAliases(fx.db, { force: true });
+
+    expect(r.aliasesWritten).toBe(1);
+    const rows = await fx.db.all<{ alias_key: string; canonical_key: string }>(
+      'SELECT alias_key, canonical_key FROM user_key_aliases WHERE org_id = ?', ['org'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].alias_key).toBe('old@acme.com');
+    // The reverted merge must not produce a row — that is the WHERE EXISTS.
+    expect(rows[0].canonical_key).toBe('new@acme.com');
   });
 
   it('merge moves events, sums same-day rollups and repairs history', async () => {

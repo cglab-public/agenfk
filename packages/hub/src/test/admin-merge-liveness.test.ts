@@ -630,6 +630,54 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
     });
   });
 
+  describe('reverting a merge restores an older merge\'s protection', () => {
+    it('reinstates the previous live merge\'s alias rather than leaving the source bare', async () => {
+      // Two un-reverted merges can share a source in data written before the
+      // re-merge refusal existed. Only the latest gets an alias, so reverting
+      // IT used to leave the older one live with no alias at all — the exact
+      // unprotected state the alias table exists to eliminate.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const older = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+      // Simulate the historical shape: a second live merge on the same source.
+      await ctx.db.run(
+        `INSERT INTO user_key_merges (id, org_id, from_user_key, to_user_key, events_moved, created_at)
+         VALUES ('m-newer', 'org-a', 'osuser:dev@aaaaaaaa', 'c@cglab.com', 1, '2026-08-20T00:00:00Z')`,
+      );
+      await ctx.db.run(
+        `UPDATE user_key_aliases SET canonical_key = 'c@cglab.com', merge_id = 'm-newer'
+          WHERE org_id = 'org-a' AND alias_key = 'osuser:dev@aaaaaaaa'`,
+      );
+      await ctx.db.run("UPDATE events SET user_key = 'c@cglab.com' WHERE event_id = 'e1'");
+      // A real merge journals the rows it moves; the revert restores from that.
+      await ctx.db.run(
+        `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key)
+         VALUES ('m-newer', 'e1', 'b@cglab.com')`,
+      );
+
+      const rev = await supertest(app)
+        .post('/v1/admin/user-keys/merges/m-newer/revert')
+        .set('Cookie', cookie).send({});
+      expect(rev.status).toBe(200);
+
+      const rows = await aliases();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].canonical_key).toBe('b@cglab.com');
+      expect(rows[0].merge_id).toBe(older.body.mergeId);
+    });
+
+    it('leaves the source bare when no other live merge covers it', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const only = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+
+      await supertest(app).post(`/v1/admin/user-keys/merges/${only.body.mergeId}/revert`)
+        .set('Cookie', cookie).send({});
+
+      expect(await aliases()).toEqual([]);
+    });
+  });
+
   describe('reverting a merge removes the alias it created', () => {
     it('lets the old identity exist again after a revert', async () => {
       await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));

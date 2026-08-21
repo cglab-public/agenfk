@@ -223,6 +223,17 @@ export function eventsRouter(ctx: HubServerContext): Router {
     // machine comes with us, and its row is repointed once per batch. An unbound
     // org-wide key proves nothing about any particular machine and is still
     // refused. (CGLAB-75 / CGLAB-76 follow-up.)
+    //
+    // DELIBERATE TRADE-OFF, stated because it weakens tenant isolation: an admin
+    // of org-B who approves a machine presenting org-A's installation id moves
+    // that row OUT of org-A, which loses it from its fleet along with its
+    // identity fields. Org-A keeps every event it already stored — those carry
+    // their own org_id — but future ones follow the machine. We accept that
+    // because the alternative is destroying a legitimately-moved machine's data,
+    // and because claiming a foreign id still requires an admin of the receiving
+    // org to approve an onboarding. The remaining gap is the unbound case above:
+    // a genuinely-moved machine whose org issued only org-wide keys is still
+    // refused, now loudly rather than silently.
     if (keyInstallation && foreignInstalls.has(keyInstallation)) {
       const moved = await ctx.db.run(
         'UPDATE installations SET org_id = ? WHERE id = ? AND org_id <> ?',
@@ -234,6 +245,17 @@ export function eventsRouter(ctx: HubServerContext): Router {
           `[HUB] Installation ${keyInstallation} adopted into org ${orgId}: its key is bound to it, `
           + 'so an admin of that org onboarded this machine.',
         );
+      } else {
+        // Zero rows changed does NOT mean "still foreign". Two batches in
+        // flight both snapshot the foreign set before either UPDATE commits;
+        // the first adopts, and the second's UPDATE matches nothing because the
+        // org already moved. Treating that as a refusal rejects the whole second
+        // batch, which the client then deletes — the silent loss this path
+        // exists to remove, inside the window it targets. Re-read instead.
+        const current = await ctx.db.get<{ org_id: string }>(
+          'SELECT org_id FROM installations WHERE id = ?', [keyInstallation],
+        );
+        if (current?.org_id === orgId) foreignInstalls.delete(keyInstallation);
       }
     }
 

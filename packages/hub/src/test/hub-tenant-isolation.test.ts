@@ -110,6 +110,54 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
     });
   });
 
+  describe('revoking api keys by hash prefix', () => {
+    const seedKeys = async () => {
+      await issueApiKey(ctx.db, 'org-a', 'one');
+      await issueApiKey(ctx.db, 'org-a', 'two');
+      await issueApiKey(ctx.db, 'org-a', 'three');
+    };
+    const liveCount = async () => (await ctx.db.all(
+      'SELECT token_hash FROM api_keys WHERE org_id = ? AND revoked_at IS NULL', ['org-a'],
+    )).length;
+
+    it('does not let a wildcard revoke the whole fleet', async () => {
+      // The path segment fed straight into LIKE, so DELETE /api-keys/%
+      // revoked every key in the org in one unconfirmed call.
+      await seedKeys();
+
+      // %25 is how a wildcard actually arrives: a bare '%' is a malformed
+      // escape Express rejects before the handler, so it proves nothing.
+      const r = await supertest(app).delete('/v1/admin/api-keys/%25')
+        .set('Cookie', adminCookie);
+
+      expect(r.status).toBe(400);
+      expect(await liveCount()).toBe(3);
+    });
+
+    it('does not treat an underscore as a single-character wildcard either', async () => {
+      await seedKeys();
+      const r = await supertest(app).delete('/v1/admin/api-keys/_')
+        .set('Cookie', adminCookie);
+      expect(r.status).toBe(400);
+      expect(await liveCount()).toBe(3);
+    });
+
+    it('still revokes exactly the key matching a real hash prefix', async () => {
+      await seedKeys();
+      const rows = await ctx.db.all<{ token_hash: string }>(
+        'SELECT token_hash FROM api_keys WHERE org_id = ? ORDER BY token_hash', ['org-a'],
+      );
+      const prefix = (rows[0] as any).token_hash.slice(0, 12);
+
+      const r = await supertest(app).delete(`/v1/admin/api-keys/${prefix}`)
+        .set('Cookie', adminCookie);
+
+      expect(r.status).toBe(200);
+      expect(r.body.revoked).toBe(1);
+      expect(await liveCount()).toBe(2);
+    });
+  });
+
   // ── Boundary 2: an org-wide key stops at its own tenant ──────────────────
 
   describe('an org-wide key cannot reach another tenant', () => {
@@ -235,6 +283,12 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       const row = await ctx.db.get('SELECT org_id FROM installations WHERE id = ?', ['moving-inst']);
       expect((row as any).org_id).toBe('org-a');
     });
+
+    // NOT covered by a test: two batches whose foreign-set snapshots both
+    // predate either adoption UPDATE. supertest serialises the request work, so
+    // Promise.all does not interleave the database calls and any test written
+    // for it passes against the broken code too. The guard in events.ts handles
+    // it by re-reading the row when the UPDATE is a no-op; see the comment there.
 
     it('still refuses an unbound org-wide key naming that same machine', async () => {
       // The attack case: no admin approved this machine into this org.

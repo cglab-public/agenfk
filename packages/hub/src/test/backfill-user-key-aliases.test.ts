@@ -193,6 +193,25 @@ describe('user_key_aliases backfill', () => {
       expect((await aliases())[0].alias_key).toBe('osuser:gcs@d13762b1');
     });
 
+    it('writes one alias per machine when a bare key was a shared bucket', async () => {
+      // Bare usernames were buckets, not people — 'dev', 'ubuntu', 'runner' on
+      // several machines at once. Picking one installation arbitrarily leaves
+      // the others unprotected, and the winner is nondeterministic.
+      await merge('m1', 'dev', 'team@cglab.com');
+      await journalEvent('m1', 'ev-1', 'aaaaaaaa-1111-2222', 'team@cglab.com');
+      await journalEvent('m1', 'ev-2', 'bbbbbbbb-3333-4444', 'team@cglab.com');
+
+      const r = await backfillUserKeyAliases(db);
+
+      expect(r.aliasesWritten).toBe(2);
+      const rows = await aliases();
+      expect(rows.map(x => x.alias_key).sort()).toEqual(
+        ['osuser:dev@aaaaaaaa', 'osuser:dev@bbbbbbbb'],
+      );
+      expect(rows.every(x => x.canonical_key === 'team@cglab.com')).toBe(true);
+      expect(rows.every(x => x.merge_id === 'm1')).toBe(true);
+    });
+
     it('writes nothing when a bare username cannot be traced to a machine', async () => {
       // Merges older than the journal itself leave no way to know which
       // installation the key came from. A guess would be a dead alias.

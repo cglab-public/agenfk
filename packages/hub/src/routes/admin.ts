@@ -132,6 +132,17 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.delete('/api-keys/:tokenHashPreview', guard, async (req: Request, res: Response) => {
     const preview = req.params.tokenHashPreview;
+    // The segment fed straight into LIKE, so DELETE /api-keys/% revoked every
+    // key in the org in one unconfirmed call — a fleet-wide kill switch nobody
+    // asked for. Token hashes are hex, so anything else is not a prefix of one
+    // and '%' / '_' can only be a wildcard. A minimum length keeps a one-char
+    // slip from matching a swathe of keys. (Security: CGLAB-75.)
+    if (!/^[0-9a-f]{8,64}$/i.test(preview)) {
+      res.status(400).json({
+        error: 'tokenHashPreview must be 8-64 hexadecimal characters — a prefix of the key hash, not a pattern.',
+      });
+      return;
+    }
     const result = await ctx.db.run(
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
@@ -408,6 +419,7 @@ export function adminRouter(ctx: HubServerContext): Router {
 
     let eventsRestored = 0;
     let aliasesRemoved = 0;
+    let aliasesRestored = 0;
     await ctx.db.transaction(async () => {
       // Only rows still sitting on this merge's target are ours to move: if a
       // later merge took them onward, reverting here would corrupt the chain.
@@ -447,6 +459,30 @@ export function adminRouter(ctx: HubServerContext): Router {
           [orgId, id],
         );
         aliasesRemoved = aliases.changes;
+
+        // Two un-reverted merges can share a source in data written before the
+        // re-merge refusal existed, and only the latest carries the alias.
+        // Deleting it would leave the older merge live with no alias at all —
+        // the unprotected state this table exists to eliminate. Hand protection
+        // back to the next most recent live merge on the same source, if any.
+        if (aliasesRemoved > 0) {
+          const predecessor = await ctx.db.get<{ id: string; to_user_key: string }>(
+            `SELECT id, to_user_key FROM user_key_merges
+              WHERE org_id = ? AND id <> ? AND reverted_at IS NULL
+                AND lower(from_user_key) = lower(?)
+              ORDER BY created_at DESC, id DESC`,
+            [orgId, id, record.from_user_key],
+          );
+          if (predecessor) {
+            await ctx.db.run(
+              `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(org_id, alias_key) DO NOTHING`,
+              [orgId, record.from_user_key, predecessor.to_user_key, predecessor.id],
+            );
+            aliasesRestored = 1;
+          }
+        }
       }
       await ctx.db.run(
         "UPDATE user_key_merges SET reverted_at = datetime('now') WHERE id = ? AND org_id = ?",
@@ -469,6 +505,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       to: record.to_user_key,
       eventsRestored,
       aliasesRemoved,
+      aliasesRestored,
       daysRecomputed,
       note: eventsRestored === 0
         ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
