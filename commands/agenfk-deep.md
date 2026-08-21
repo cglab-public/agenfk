@@ -12,7 +12,8 @@ Load the `agenfk` skill. Run its Initialization protocol if needed.
 
 Identify the user's request and follow the **Deep Mode** protocol in the skill:
 1. Decompose the request into sub-items.
-   - **MANDATORY**: For **EPICs** and **STORIES**, you **MUST** decompose the request into all constituent child items (using `agenfk create <TYPE> "<title>" --project <id> --parent <parentId>`) **BEFORE** starting work on the first task.
+   - **MANDATORY**: For **EPICs**, you **MUST** decompose the request into all child **stories** (using `agenfk create <TYPE> "<title>" --project <id> --parent <parentId>`) **BEFORE** starting work on the first story. An EPIC is never worked directly.
+   - **For STORIES**: decompose into **tasks** only when the story is large (multiple distinct deliverables, several packages, or more than one focused implementation pass) — the agent's judgement. When you do, create all tasks before starting work.
 2. Identify independent tasks that can be performed in parallel.
 3. PAUSE for human approval of the plan.
 4. Upon approval, begin walking the project's flow by spawning specialized sub-agents — one per step, matched to what that step's exit criteria ask for. Read the steps and their criteria from `agenfk flow show --project <projectId> --json`; do not assume a Code -> Review -> Test -> Close sequence.
@@ -35,7 +36,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from `agenfk flow show --project <projectId> --json`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names. On a custom flow the parent will lag, so advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from `agenfk flow show --project <projectId> --json`, not from a fixed pipeline. The server auto-rolls a parent forward on ANY flow — by position in the active flow, up to the step of the least-advanced live child, forward only. If the parent is nonetheless left behind (for example after a manual rollback), advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`.
 
 ## Sibling Propagation Rule
 
