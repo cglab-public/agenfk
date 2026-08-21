@@ -23,5 +23,5 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 - Run `agenfk comment <id> "I have proposed the following decomposition: ..."` to log your reasoning on the parent item.
 
 **Step 4 — Finalize**
-- Run `agenfk comment <id> "Phase Plan complete: Decomposed into sub-tasks."` to log the phase completion.
+- Run `agenfk comment <id> "Planning complete: decomposed into sub-tasks."` to log the step completion.
 - PAUSE and ask the user: "I have decomposed item <id> into sub-tasks. Please review them on the Kanban board. Should I proceed or would you like to make changes?"

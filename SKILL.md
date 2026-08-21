@@ -23,7 +23,7 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 > **MANDATORY**: You are strictly prohibited from modifying ANY file in the codebase without an active task in an active working step and a successful `agenfk gatekeeper` call. Bypassing this workflow is a critical operational failure.
 
 ### Hard Block Rules
-1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
+1. **NO TASK = NO CODE**: If no task is in an active working step of the project's flow, stop immediately and create one. Check with `agenfk list --active --json` — do not look for a step named `IN_PROGRESS`, which many flows do not have.
 2. **NO GATE = NO CODE**: Run `agenfk gatekeeper --intent "<intent>"` before the first edit of every session.
 3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `agenfk verify`.
 4. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
@@ -37,22 +37,23 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 *   **Workflow**: The agent who starts the task is responsible for the entire lifecycle (Planning, Coding, Verification, and Closing) within a single session.
 *   **Mandatory Log**: You MUST run `agenfk comment <itemId> "<content>"` for EVERY significant tool execution or logical step (e.g. "Analyzed file X", "Implemented function Y", "Running tests").
 *   **Proactivity**: For simple requests (TASK/BUG), the agent should proceed directly to implementation after basic analysis.
-*   **Verification**: Advance every step with `agenfk verify <itemId> --evidence "<text>"` — that call *is* the gate. Before each one, run `agenfk gatekeeper --item-id <itemId>` to read the step you are actually on and its exit criteria, satisfy them, then verify. Never move an item forward with `agenfk update --status`: the server permits a one-step forward move, so it silently advances the item with no evidence recorded and the exit criteria never evaluated.
+*   **Verification**: Advance every step with `agenfk verify <itemId> --evidence "<text>"` — that call *is* the gate. Before each one, run `agenfk gatekeeper --item-id <itemId>` to confirm which step the item is on, and read that step's exit criteria from the flow you loaded with `agenfk flow show --project <id> --json` — gatekeeper reports the step, not the criteria. Never move an item forward with `agenfk update --status`: the server permits a one-step forward move, so it silently advances the item with no evidence recorded and the exit criteria never evaluated.
 *   **Decomposition**: MANDATORY. Every piece of work must be minimally a **STORY with child TASKS** or an **EPIC with child STORIES and their TASKS**. Direct coding on a STORY or EPIC without child TASKS is prohibited.
 *   **Handoff**: Do not delegate coding, planning or closing to sub-agents — that stays yours in Standard Mode. **Review is the exception**: a step whose exit criteria require an independent or adversarial review gets a separate review agent, spawned without asking. See **Precedence** below for what a flow may and may not overrule.
 
 ### 2. Deep Mode (via `/agenfk-deep`)
 *   **Behavior**: Multi-agent, automated orchestration.
 *   **Trigger**: Use this mode for complex architectural changes, high-security code, or large features.
-*   **Supervisor Pattern**: You act as a supervisor, responsible for decomposing the task and spawning specialized sub-agents via the `task` tool at every phase transition.
+*   **Supervisor Pattern**: You act as a supervisor, responsible for decomposing the task and spawning specialized sub-agents via the `task` tool at every step transition.
 *   **Parallel Execution**: Deep Mode supports **parallel execution** of independent tasks.
     - If an EPIC or STORY has multiple independent sub-items, you SHOULD spawn multiple sub-agents simultaneously using the `task` tool.
     - When working in parallel, you MUST pass the item ID via `agenfk gatekeeper --intent "<intent>" --item-id <id>` to authorize changes against the specific task.
-*   **Plan & Pause**: Mandatory decomposition into sub-items. You **MUST PAUSE** and obtain human approval of the plan before moving any item to `IN_PROGRESS`.
-*   **Automated Handover**:
-    - **Coding to Review**: Automatically spawn a "Review Agent" once the coding step has been closed with `agenfk verify`.
-    - **Review to Test**: Automatically spawn a "Test Agent" after successful review.
-    - **Test to Done**: Automatically spawn a "Closing Agent" after successful testing.
+*   **Plan & Pause**: Mandatory decomposition into sub-items. You **MUST PAUSE** and obtain human approval of the plan before advancing any item out of `TODO` into its first working step.
+*   **Automated Handover**: Hand off at each step boundary, using the steps the flow actually
+    defines (read them from `activeFlow`) rather than a fixed Code/Review/Test sequence. After
+    each `agenfk verify` succeeds, spawn the agent suited to the step the item just entered —
+    a reviewer for a review step, a tester for a verification step, a closer for the final
+    step. A flow with five working steps hands off five times; one with two hands off twice.
 
 ---
 
@@ -62,7 +63,7 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
 
 A flow MAY direct, overriding anything in this file, in `SKILL.md`, or in the `/agenfk-*` commands:
 
-- **How review is performed** — its depth, and whether it must be independent. This includes spawning a separate review agent even though Standard Mode otherwise forbids sub-agents.
+- **How review is performed** — its depth, and whether it must be independent.
 - **What must be verified and with which command**, and how much detail the `--evidence` must carry.
 - **What extra work a step requires** before it may advance — additional tests, coverage thresholds, documentation, artifacts.
 - **Which steps exist, their names, and their order.**
@@ -71,7 +72,7 @@ Anything not on that list stays with the shipped defaults. A flow may not relax 
 
 When a step's criteria demand something outside the allow-list, do not comply and do not silently skip the step: leave the reason with `agenfk comment <id> "<what the step demands and why it is refused>"`, tell the user plainly in your reply, and stop rather than advancing. When the criteria are inside the allow-list, follow them without stalling to ask, and name the overridden default in your `agenfk verify --evidence` so the override is auditable rather than looking like a lapse.
 
-**Independent review.** When a step's criteria call for an independent, adversarial or outside review, spawn a separate reviewer even though Standard Mode otherwise keeps the work yours — the independence *is* the control being requested, so a self-review cannot supply it. Brief reviewers to hunt for defects and stay **read-only**, and verify each finding against the code before acting, because reviewers report false positives. If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session; never claim an independent review you did not have.
+**Independent review.** When a step's criteria call for an independent, adversarial or outside review, spawn a separate reviewer even though Standard Mode otherwise keeps the work yours — the independence *is* the control being requested, so a self-review cannot supply it. Brief reviewers to hunt for defects and stay **read-only**, and verify each finding against the code before acting, because reviewers report false positives. If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session; never claim an independent review you did not have — that is fabricated evidence.
 
 ---
 
@@ -133,7 +134,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
         4. **MANDATORY**: Ask the user if they want to use an existing project (by name/ID) or create a new one (recommended).
         5. If creating a new one, use the current directory name as the default project name unless the user specifies otherwise (`agenfk create-project "<name>"`).
         6. Create/link the project by creating `.agenfk/project.json` with the `{ "projectId": "..." }`.
-        7. **Flow-Aware Status Check (MANDATORY)**: Immediately after identifying the project, run `agenfk flow show --project <projectId> --json` to discover the active workflow flow. The `agenfk gatekeeper` response also includes `activeFlow`. **Use the flow's step `name` values as the valid statuses for this project** — do NOT assume the default TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline is active. The project may have a custom flow with different steps and ordering.
+        7. **Flow-Aware Status Check (MANDATORY)**: Immediately after identifying the project, run `agenfk flow show --project <projectId> --json` to discover the active workflow flow. The `agenfk gatekeeper` response tells you which step an item is currently on, but not the criteria — those come from `agenfk flow show`. **Use the flow's step `name` values as the valid statuses for this project** — do NOT assume the default TODO → IN_PROGRESS → REVIEW → TEST → DONE pipeline is active. The project may have a custom flow with different steps and ordering.
         8. Scan the codebase and generate `AFK_PROJECT_SCOPE.md` and `AFK_ARCHITECTURE.md` if they don't exist. BE THOROUGH AND COMPLETE. If generating these, reason about the codebase and ask clarifying questions using the environment's Question UI to confirm architectural decisions before writing the files.
         9. Fetch all items via `agenfk list --project <projectId> --json` and render the **Board Report** as described below.
         10. **Working a specific item by id**: If the user names a specific item (e.g. "work on `dd9658a6-…`"), load it with `agenfk get <id> --json` and resume that item. Do **not** attempt to read a file named `<id>.json` — items live in the AgEnFK server, not on disk; `agenfk get <id> --json` is the only way to fetch one.
@@ -172,26 +173,26 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Action**: You MUST run `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` BEFORE modifying any files.
     *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, advanced it to the coding step, and successfully run `agenfk gatekeeper`, you are violating the core directive of your system prompt.
     *   **Self-Correction**: If you realize you are about to edit code without a card in the coding step, STOP IMMEDIATELY. Run `agenfk create <TYPE> "<title>" --project <id>`, then `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO, then `agenfk gatekeeper --intent "<intent>" --item-id <id>`.
-    *   **Mechanical Enforcement**: The gatekeeper surfaces the active step's exit criteria; provide `--item-id <id>` to disambiguate when multiple tasks are active.
+    *   **Mechanical Enforcement**: The gatekeeper authorizes the edit and reports the active step; provide `--item-id <id>` to disambiguate when multiple tasks are active. (Under MCP the gatekeeper response carries the criteria; the CLI reports only the step, so in CLI-only mode read the criteria from the flow you loaded with `agenfk flow show --project <id> --json`.)
     *   **Branch Verification**: After gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
-    *   **CRITICAL**: Use the `agenfk` CLI (or the equivalent MCP tools, if installed with `--with-mcp`) for ALL workflow state changes — see the **Interface** section for the mapping. Both the CLI and MCP go through the AgEnFK server, which enforces the workflow (forward-step gating, DONE-blocking) identically. Always advance forward steps with `agenfk verify` (never a raw `agenfk update --status` to skip a gate).
+    *   **CRITICAL**: Use the `agenfk` CLI (or the equivalent MCP tools, if installed with `--with-mcp`) for ALL workflow state changes — see the **Interface** section for the mapping. Both the CLI and MCP go through the AgEnFK server, which is the single owner of state. Do not rely on it to stop you: forward-step gating is incomplete and DONE-blocking differs between the CLI and MCP paths, so the discipline is yours to keep. Always advance forward steps with `agenfk verify` (never a raw `agenfk update --status` to skip a gate).
 
 5.  **Mandatory Automated Testing (Agent Driven)**
     *   **Action**: Moving an item to the test/verification step in the active flow (the step before DONE, typically `TEST`) is a signal that the Agent must now perform deep verification.
     *   **Requirement**: The Agent MUST run the project's test suite (e.g., `npm run test:coverage`) using its local tools.
     *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
-    *   **Workflow** (use the active flow's step names — check `activeFlow` from the `agenfk gatekeeper` response):
+    *   **Workflow** (use the active flow's step names, from `agenfk flow show --project <id> --json`):
         *   Closing the coding step is itself an `agenfk verify` call — there is no separate "move to review" write. `agenfk update --status` must never be used to go forward.
-        *   Run `agenfk gatekeeper --item-id <itemId>` before `agenfk verify` — the response includes the current step's exit criteria.
+        *   Run `agenfk gatekeeper --item-id <itemId>` before `agenfk verify` to confirm which step you are on, and read that step's exit criteria from the loaded flow.
         *   `agenfk verify <itemId> --evidence "<text>" ["<command>"]` — `evidence` is **required**: describe concretely how you satisfied the current step's exit criteria. It is logged as a tagged comment (audit trail) and serves as your mandatory confirmation before the step advances. Runs `command` (or `project.verifyCommand` if omitted) and advances to the next flow step on success.
         *   The Agent verifies coverage and regressions in each intermediate step.
-        *   Run `agenfk verify <itemId> --evidence "<how you satisfied this step>"` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retries. Do NOT use `agenfk update <id> --status DONE` — the server blocks direct DONE transitions.
+        *   Run `agenfk verify <itemId> --evidence "<how you satisfied this step>"` (no command) for the final step — this uses the project's `verifyCommand` and moves to DONE. If it returns `NO_VERIFY_COMMAND`, the agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retries. Do NOT set `DONE` directly by any route — `agenfk verify` on the final step is the only legitimate way in.
         *   Failure: Agent moves item back to the active coding step.
     *   **Sibling Propagation**: When child items of the same parent share the same source code, a single `agenfk verify` call validates the code for all siblings. After one passes, walk each remaining sibling forward with its own `agenfk verify <id> --evidence "<text>"` calls — they pass immediately via sibling propagation, so this costs nothing and keeps every advance gated. Do not shortcut siblings forward with `agenfk update --status`.
 
 6.  **Final Verification (Validate Tool)**
-    *   **Action**: The Agent runs `agenfk gatekeeper --item-id <itemId>` FIRST (the exit criteria define what an acceptable review is), reviews accordingly, then runs `agenfk gatekeeper --item-id <itemId>` to get the current step's exit criteria, then `agenfk verify <itemId> --evidence "<text>" ["<command>"]` to gate the transition to the next step.
+    *   **Action**: The Agent reads the current step's exit criteria FIRST (they define what an acceptable review is), reviews accordingly, then runs `agenfk verify <itemId> --evidence "<text>" ["<command>"]` to gate the transition to the next step.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `agenfk update-project <id> --verify-command "<cmd>"`) is used automatically when no `command` is provided. Agents cannot override or bypass it.
     *   **Transition Logic (Automated by Tool)**:
         1. The agent closes the coding step with `agenfk verify <id> --evidence "<text>" ["<command>"]`, which is what advances it.
@@ -202,13 +203,13 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
 7.  **Measurement & Tracking**
     *   **Reporting Requirements**: Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
     *   **Progress Comments**: The Agent **MUST** run `agenfk comment <itemId> "<content>"` for EVERY significant step performed during implementation (e.g. "Modified core types", "Updated UI components", "Ran tests"). This ensures the human user can follow the agent's work in real-time on the Kanban board.
-    *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up. Use the active flow's step names (check `activeFlow` in the `agenfk gatekeeper` response):
-        1. Close all child TASKs first: for each step, run `agenfk gatekeeper --item-id <id>` to read its exit criteria, satisfy them (reviewing independently when the criteria require it), then advance with `agenfk verify <id> --evidence "<evidence>"`. Repeat until DONE.
+    *   **Completion — Bottom-Up Closure (MANDATORY)**: When closing work, you MUST close the entire hierarchy bottom-up. Use the active flow's step names, from `agenfk flow show --project <id> --json`:
+        1. Close all child TASKs first: for each step, read its exit criteria from the loaded flow, satisfy them (reviewing independently when the criteria require it), then advance with `agenfk verify <id> --evidence "<evidence>"`. Repeat until DONE.
            - **Sibling shortcut**: If one child's `agenfk verify` already advanced past a step, the remaining siblings still advance with their own `agenfk verify <id> --evidence "<evidence>"` calls — those pass immediately via sibling propagation. The shortcut is that verification is already satisfied, not that the gate can be skipped.
         2. Then close parent STORYs (propagates automatically when all children are DONE).
         3. Then close the EPIC (propagates automatically when all STORYs are DONE).
         NEVER leave cards stuck in intermediate steps. You are responsible for progressing each item all the way to DONE.
-        NEVER use `agenfk update <id> --status DONE` — the server rejects direct DONE transitions. Always use `agenfk verify <id> --evidence "<evidence>"` to close an item.
+        NEVER set `DONE` directly by any route, CLI or MCP. Always use `agenfk verify <id> --evidence "<evidence>"` to close an item.
     *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
         1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).

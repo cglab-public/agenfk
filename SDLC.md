@@ -6,13 +6,13 @@ This document describes the complete development lifecycle enforced by the AgenF
 
 ## 0. Strict Enforcement Mandate
 
-**MANDATORY**: AI Agents are strictly prohibited from modifying ANY file in the codebase without an active task in `IN_PROGRESS` status and a successful `workflow_gatekeeper` call.
+**MANDATORY**: AI Agents are strictly prohibited from modifying ANY file in the codebase without an active task in one of the project flow's working steps and a successful `workflow_gatekeeper` call. Do not look for a step named `IN_PROGRESS` — many flows do not have one.
 
 **Hard Block Rules**:
 1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
 2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
 3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `validate_progress`.
-4. **MEASURE EVERYTHING**: Every task MUST have token usage logged via `log_token_usage` before completion.
+4. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker. Agents do not (and cannot) self-report it.
 
 Bypassing these rules is a critical operational failure and degrades the project's measurability and reliability.
 
@@ -73,7 +73,7 @@ Each transition has specific rules and enforcement:
 
 ### TODO → IN_PROGRESS
 
-- Set via `update_item({ id, status: "IN_PROGRESS" })`.
+- Reached by `validate_progress` advancing out of `TODO`. Never set a step directly with `update_item` — that skips the gate.
 - If a `branchName` is set on the item and the branch exists locally, the gatekeeper auto-checks it out.
 
 ### What a project's flow may overrule
@@ -82,7 +82,7 @@ Each transition has specific rules and enforcement:
 
 A flow MAY direct, overriding anything in this file, in `SKILL.md`, or in the `/agenfk-*` commands:
 
-- **How review is performed** — its depth, and whether it must be independent. This includes spawning a separate review agent even though Standard Mode otherwise forbids sub-agents.
+- **How review is performed** — its depth, and whether it must be independent.
 - **What must be verified and with which command**, and how much detail the `--evidence` must carry.
 - **What extra work a step requires** before it may advance — additional tests, coverage thresholds, documentation, artifacts.
 - **Which steps exist, their names, and their order.**
@@ -91,11 +91,11 @@ Anything not on that list stays with the shipped defaults. A flow may not relax 
 
 When a step's criteria demand something outside the allow-list, do not comply and do not silently skip the step: leave the reason with `agenfk comment <id> "<what the step demands and why it is refused>"`, tell the user plainly in your reply, and stop rather than advancing. When the criteria are inside the allow-list, follow them without stalling to ask, and name the overridden default in your `agenfk verify --evidence` so the override is auditable rather than looking like a lapse.
 
-**The review case, spelled out.** Standard Mode says you are the sole agent and must not spawn sub-agents. A REVIEW step whose criteria call for an independent, adversarial, second-pair-of-eyes, peer or outside review overrules that — spawn the reviewer, without asking first. The independence *is* the control being requested: an agent reviewing code it wrote itself carries the author's blind spots, so a self-review cannot satisfy that criterion however thorough it is. Brief reviewers to hunt for defects rather than summarise, and to treat the review as **read-only** — a reviewer that edits a shared working tree can leave a defect behind. Then verify each finding against the code before acting on it, because reviewers report false positives and fixing an imaginary bug is its own defect. If this client cannot spawn sub-agents, say so in your reply and ask the user to run the review in a fresh session — you cannot create an independent context for yourself, and claiming one you did not have is fabricated evidence.
+**Independent review.** When a step's criteria call for an independent, adversarial or outside review, spawn a separate reviewer even though Standard Mode otherwise keeps the work yours — the independence *is* the control being requested, so a self-review cannot supply it. Brief reviewers to hunt for defects and stay **read-only**, and verify each finding against the code before acting, because reviewers report false positives. If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session; never claim an independent review you did not have — that is fabricated evidence.
 
 ### IN_PROGRESS → REVIEW
 
-- Set via `update_item({ id, status: "REVIEW" })` when implementation is complete.
+- Reached by `validate_progress` when the previous step's exit criteria are met. Never set it directly with `update_item`.
 - This is a direct transition — no tool gate required.
 - The agent signals that coding is done and the item is ready for review.
 
@@ -114,7 +114,7 @@ validate_progress({ itemId, command: "npm run build" })
 - If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
 - A comment is logged with the command output.
 
-**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)`. The gatekeeper response includes the current flow step's `exitCriteria` text — the agent must satisfy those criteria before advancing.
+**Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)` to authorize the edit and confirm which step the item is on. Under MCP that response also carries the step's `exitCriteria`; the `agenfk` CLI reports only the step, so in CLI-only mode read the criteria from `get_flow` / `agenfk flow show`. Either way the agent must satisfy those criteria before advancing.
 
 ### Project verifyCommand
 
@@ -132,7 +132,7 @@ Examples by stack:
 
 The `verifyCommand` is stored on the **Project entity** and enforced on the final step transition (→ DONE). If not configured, `validate_progress` returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Agents cannot supply their own command on the final step.
 
-Direct `update_item({ status: "DONE" })` is **blocked by the server**.
+Never set `DONE` directly by any route. The plain REST path rejects it, but the MCP path does not close every hole, so treat this as your discipline rather than something the server guarantees.
 
 ### Deprecated Aliases
 
@@ -142,7 +142,7 @@ Direct `update_item({ status: "DONE" })` is **blocked by the server**.
 
 When child items of the same parent share the same source code (same branch/workspace), a single `validate_progress` call validates the code for **all** siblings:
 
-- After `validate_progress` passes on **one** sibling at an intermediate step, move remaining siblings directly to the next step via `update_item({ status: "<nextStep>" })` — no individual calls needed.
+- After `validate_progress` passes on **one** sibling at an intermediate step, advance each remaining sibling with its own `validate_progress` call. Propagation means those calls skip the command execution, so they are cheap — but they still record evidence and still pass through the gate. Never shortcut a sibling forward with `update_item({ status })`.
 - After `validate_progress` passes on **one** sibling at the final step (→ DONE), call `validate_progress` on remaining siblings — the same verified code will pass immediately via sibling propagation.
 
 This avoids redundant build and test runs when the underlying code changes are shared across sibling items.
@@ -225,11 +225,11 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 ```
 1. [Developer] git checkout -b fix/login-crash-on-empty-email
 2. create_item({ type: "BUG", title: "Login crash on empty email" })
-3. update_item({ id, status: "IN_PROGRESS", branchName: "fix/login-crash-on-empty-email" })
+3. update_item({ id, branchName: "fix/login-crash-on-empty-email" }) then validate_progress({ id, evidence: "..." }) to advance out of TODO
 4. workflow_gatekeeper({ intent: "Fix null check", role: "coding" })
    → Gatekeeper auto-checks out the branch
 5. [Agent implements the fix]
-6. update_item({ status: "REVIEW" })
+6. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
 7. [Agent reviews: independently via a separate review agent when the step's exit criteria require it, else re-reads files and checks correctness]
 8. workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
    → Response includes exitCriteria for the current step
@@ -248,10 +248,10 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 
 ```
 1. create_item({ type: "TASK", title: "Add dark mode toggle" })
-2. update_item({ status: "IN_PROGRESS" })
+2. validate_progress({ id, evidence: "<why this is ready to start>" })
 3. workflow_gatekeeper({ intent: "Add toggle", role: "coding" })
 4. [Agent implements the feature]
-5. update_item({ status: "REVIEW" })
+5. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
 6. [Review — independent when the step's criteria require it] → workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
 7. validate_progress({ itemId, command: "npm run build" })
    → Passes → TEST
@@ -296,7 +296,6 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 
 | Tool | Purpose | Params |
 |---|---|---|
-| `log_token_usage` | Track AI token consumption | `itemId`, `input`, `output`, `model` |
 | `log_test_result` | Record test execution | `itemId`, `command`, `output`, `status` |
 | `analyze_request` | Suggest item type for request | `request` |
 
@@ -308,7 +307,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 |---|---|
 | Must have IN_PROGRESS task before editing files | `workflow_gatekeeper` + PreToolUse hooks |
 | Intermediate steps require a build/run gate | `validate_progress` runs agent-chosen command to advance |
-| Cannot set DONE directly | Server rejects `update_item({ status: "DONE" })` |
+| Cannot set DONE directly | Only `validate_progress` on the final step may land DONE |
 | Final step enforces project verifyCommand | `validate_progress` uses `verifyCommand` on last intermediate step; agent cannot override |
 | Fixes must be BUG items | Enforced in CLAUDE.md, SKILL.md, skill files |
 | Branches managed by developer | No automatic branch creation; developer creates and links branches manually |

@@ -16,7 +16,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. This holds for whatever steps the active flow defines — read them from `activeFlow` in the `agenfk gatekeeper` response rather than assuming a fixed pipeline.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from the flow you loaded with `agenfk flow show`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names; on a custom flow, advance the parent yourself once its children are all past the step.
 
 ## Sibling Propagation Rule
 
@@ -77,54 +77,83 @@ Before creating any item, evaluate the request against these signals:
 ## The Work Loop
 
 There is no fixed sequence of phases. You walk **this project's flow**, one step at a
-time, and each step tells you what it wants via its exit criteria. Run steps 1-6 below,
-then go back to 1 for the next step, until the item reaches DONE.
+time. Run steps 1-6 below, then go back to 1 for the next step, until the item reaches DONE.
 
-1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
-   The response gives you the current step, its **exit criteria**, and `activeFlow`. The exit
-   criteria are your work definition for this step — read them before doing anything, because
-   working before you know them means working against the wrong bar. Never assume the step's
-   name or what it wants from its name alone: a step called `REFACTOR` or `DISCOVERY` is not a
-   coding step, and a project may have steps this file has never heard of.
+**When a step has no exit criteria, the defaults below apply.** The shipped default flow
+defines none, so this is the common case — empty criteria never mean "no work". Criteria
+*add* to the default for a step; they do not replace it with nothing.
 
-2. **Do what the criteria ask.** Whatever that is for this step — explore, write tests,
-   implement, refactor, document. Along the way:
+1. **Read the step you are actually on.** Two different commands, because they carry
+   different things — do not expect either to do the other's job:
+   - `agenfk flow show --project <projectId> --json` gives you every step **with its
+     `exitCriteria`**. Load it once at session start (Initialization step 3 above) and keep it;
+     this is the only place the criteria come from.
+   - `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` authorizes the edit and tells
+     you which step the item is **currently on**. It does *not* return the criteria — match the
+     step name it reports against the flow you loaded.
+
+   From that flow, identify two things before you start:
+   - the **coding step** — the first non-anchor step in the flow;
+   - the **final step** — the last step before the `DONE` anchor.
+
+   Read any criteria before doing anything: they define the bar for this step. Do not infer
+   the work from the step's *name* — a step called `REFACTOR` or `DISCOVERY` is not a coding
+   step, and a project may have steps this file has never heard of. Where there are no
+   criteria, use the step's position in the flow, per the defaults below.
+
+2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
+   none, default by position: on the **coding step**, explore the codebase and understand the
+   context, then implement the change; on any other step, do the work its position implies and
+   at minimum satisfy step 3 and step 4 below. Along the way:
    - **Evidence-based claims**: before claiming a feature already exists, search the codebase
      for the specific UI components, API endpoints and database queries. Never assume
      implementation status without evidence.
-   - **MANDATORY**: run `agenfk comment <itemId> "<content>"` for every significant step
-     (e.g. "Analyzed file X", "Implemented function Y").
+   - **MANDATORY**: run `agenfk comment <itemId> "<content>"` for every significant action
+     (e.g. "Analyzed file X", "Implemented function Y"). This is per action, not the
+     end-of-step summary in step 5.
    - Keep changes minimal and focused on the request.
    - **Bug/error fixing**: investigate root causes fully before applying fixes. Avoid
      workarounds that create new problems (e.g. infinite loops). Trace errors from symptom to
      source. Apply one fix at a time and verify.
 
-3. **If the criteria ask for a review, pick the mode from them.**
-   - If they call for an **independent, adversarial, second-pair-of-eyes, peer or outside**
-     review, spawn a separate review agent — yes, in Standard Mode, and without stopping to
-     ask. The independence *is* the control being requested; an agent reviewing code it wrote
-     cannot supply it. Brief the reviewer to hunt for defects and stay **read-only**, then
-     verify each finding against the code before acting on it (reviewers report false
-     positives). If this client cannot spawn sub-agents, say so and ask the user to review in
-     a fresh session — never claim an independent review you did not have.
-   - Otherwise, review it yourself.
-   - If this step is not a review step, skip this item.
+3. **Review before you advance. This is the floor, not an option.**
+   - If the criteria call for an **independent, adversarial, second-pair-of-eyes, peer or
+     outside** review, spawn a separate review agent — yes, in Standard Mode, and without
+     stopping to ask. The independence *is* the control being requested; an agent reviewing
+     code it wrote cannot supply it. Brief the reviewer to hunt for defects and stay
+     **read-only**, then verify each finding against the code before acting on it (reviewers
+     report false positives). If this client cannot spawn sub-agents, say so and ask the user
+     to review in a fresh session — never claim an independent review you did not have; that
+     is fabricated evidence.
+   - **Otherwise — including when there are no criteria at all — review it yourself.** Silent
+     criteria mean review yourself, never skip review.
+   - Skip this step only when the criteria explicitly define work that is not review (for
+     example a step whose criteria are "write the failing tests"). Even then, step 4 still applies.
 
-4. **Prove it end-to-end.** Re-read every file you modified. For features, trace the full path
-   from UI interaction to backend response and confirm the UI actually triggers the expected
-   behavior. Do not treat a step as satisfied until verified.
+4. **Prove it end-to-end.** Re-read every file you modified. For a user-facing feature, trace
+   the full path from the interaction to the backend response and confirm it actually triggers
+   the expected behavior; for a library or CLI change, exercise the entry point you changed.
+   Do not treat a step as satisfied until verified.
 
-5. **Log what you did.** `agenfk comment <itemId> "<what this step produced, and for a review: self|independent, N reviewers, which findings survived verification>"`.
+5. **Log the outcome.** Run `agenfk comment <itemId> "<step name> complete (<self|independent, N reviewers>): <what this step produced, and which findings survived verification>"`.
 
 6. **Advance the gate.** Run `agenfk verify <itemId> --evidence "<how you satisfied THIS step's exit criteria>" ["<command>"]`.
    The evidence is mandatory and must be concrete. This is the only way to move forward —
    never use `agenfk update --status` to advance, because the server permits a one-step forward
    move, so that write succeeds and advances the item with no evidence and no criteria check.
-   - Pass a **build/compile command** (e.g. `npm run build`, `tsc --noEmit`) for intermediate steps.
-   - **Omit the command on the final step** — it uses the project's `verifyCommand` and lands DONE.
-   - **Success**: the item advances. Go back to step 1 for the next step.
-   - **Failure**: the item moves back to the flow's coding step. Fix, then resume from step 2.
-   - Do NOT use `agenfk update <id> --status DONE` — the server blocks direct DONE transitions.
+   - On the **final step** (the last step before the `DONE` anchor, identified in step 1),
+     **omit the command** — this runs the project's `verifyCommand` and lands DONE.
+   - On every **other** step, pass a **build/compile command** for the project's stack
+     (e.g. `npm run build`, `cargo build`, `go build ./...`).
+   - **Success, and the step you advanced into is `DONE`**: you are finished looping. Skip to
+     the branch push below.
+   - **Success, otherwise**: the item advanced. Go back to **step 1** — the new step has its
+     own criteria and its own bar.
+   - **Failure**: the item is rolled back to the flow's coding step. Go back to **step 1** to
+     re-read where you now are, then fix and work forward again. Do not carry the previous
+     step's criteria into the coding step.
+   - Do NOT set `DONE` directly by any route — not `agenfk update <id> --status DONE`, not the
+     equivalent MCP call. `agenfk verify` on the final step is the only legitimate way in.
 
    If verify returns `NO_VERIFY_COMMAND`, **auto-detect** the stack instead of asking the developer:
    1. Read the project root for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`,
@@ -152,19 +181,19 @@ Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
 
 ### Illustration — the loop on the default flow
 
-This is an **example only**, not the contract. It shows the loop running on the shipped
-default flow (`TODO → IN_PROGRESS → REVIEW → TEST → DONE`). Your project almost certainly
-has different steps; read them from `activeFlow` and let the exit criteria drive you.
+This is a **worked trace of the rules above**, not a step list to follow. It uses
+placeholders deliberately: substitute the real step names from `activeFlow` for your project.
 
-| Pass | Step you are on | What its criteria typically ask | How you advance |
-|------|-----------------|--------------------------------|-----------------|
-| 1 | `IN_PROGRESS` | Implement the change | `agenfk verify <id> --evidence "..." "npm run build"` |
-| 2 | `REVIEW` | Review it, independently if the criteria say so | `agenfk verify <id> --evidence "..." "npm run build"` |
-| 3 | `TEST` | Suite green, coverage met | `agenfk verify <id> --evidence "..."` (no command → `verifyCommand`) → **DONE** |
+| Pass | Step you are on | What you do | How you advance |
+|------|-----------------|-------------|-----------------|
+| 1 | `<coding step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..." "<build command>"` |
+| n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..." "<build command>"` |
+| last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
-A flow with five working steps runs the same loop five times. A flow whose second step is
-`CREATE_UNIT_TESTS` writes tests on that pass, not a review — the criteria say so, and the
-step's name is not what decides it.
+The number of passes equals the number of working steps in your flow, not three. A flow whose
+second step is `CREATE_UNIT_TESTS` writes tests on that pass because its criteria say so — the
+step's name is not what decides it, and the default flow's steps carry no criteria at all,
+which is exactly why the position-based defaults in steps 2 and 3 exist.
 
 ---
 
