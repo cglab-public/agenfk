@@ -23,6 +23,7 @@ import {
   isWithinWindow,
 } from '../util/mergeLiveness';
 import { resolveAliasKey } from '../util/userKeyAlias';
+import { userKeyFor, namespacedOsUserKey } from '../util/userKey';
 
 describe('derivedUserKeyForInstallation', () => {
   // This must track userKeyFor exactly. When it drifts, the guard silently
@@ -57,6 +58,73 @@ describe('derivedUserKeyForInstallation', () => {
     });
     expect(key).not.toBe('ubuntu');
     expect(key.startsWith('osuser:')).toBe(true);
+  });
+});
+
+describe('userKeyFor rejects an implausible identity (CGLAB-77)', () => {
+  // Production held `osuser:=@5d686242` — a first-class identity whose OS
+  // username was literally '='. Forensics showed one six-hour episode, between
+  // a valid session and git_email being configured, never repeated. The machine
+  // was not broken; the defect is that nothing validated the value, so a blip
+  // became a PERMANENT identity that needed an admin merge to clean up.
+  const key = (osUser: string | null, gitEmail: string | null, id = 'inst-aabbccdd') =>
+    userKeyFor({ osUser: osUser ?? '', gitName: null, gitEmail }, id);
+
+  it('falls back to unknown for a punctuation-only username', () => {
+    expect(key('=', null)).toBe('osuser:unknown@aabbccdd');
+  });
+
+  it('falls back for other punctuation artifacts, not just the observed one', () => {
+    for (const junk of ['-', '--', '.', '...', '@', '#!', '  =  ']) {
+      expect(key(junk, null)).toBe('osuser:unknown@aabbccdd');
+    }
+  });
+
+  // The rule is deliberately weak. Usernames vary wildly and rejecting a real
+  // person is worse than accepting an odd-looking one: the fallback loses
+  // attribution, which is the harm this whole epic exists to repair.
+  it('accepts the awkward shapes real accounts actually have', () => {
+    expect(key('ec2-user', null)).toBe('osuser:ec2-user@aabbccdd');
+    expect(key('svc_build$', null)).toBe('osuser:svc_build$@aabbccdd');
+    expect(key('daniel.polistchuck', null)).toBe('osuser:daniel.polistchuck@aabbccdd');
+    expect(key('DPolistchuck', null)).toBe('osuser:DPolistchuck@aabbccdd');
+    expect(key('用户', null)).toBe('osuser:用户@aabbccdd');
+    expect(key('a', null)).toBe('osuser:a@aabbccdd');
+  });
+
+  // Worse on this branch than the osUser one: an email key is NOT namespaced by
+  // installation, so junk pools across every machine that reports it — the
+  // shared-bucket problem namespacing was introduced to remove.
+  it('ignores a git email that cannot be an address', () => {
+    expect(key('dev', '=')).toBe('osuser:dev@aabbccdd');
+    expect(key('dev', '...')).toBe('osuser:dev@aabbccdd');
+    expect(key('dev', 'nobody')).toBe('osuser:dev@aabbccdd');
+  });
+
+  it('still prefers a real git email over the username', () => {
+    expect(key('dev', 'Dev@CGLab.com')).toBe('dev@cglab.com');
+    expect(key('dev', 'a@b.co')).toBe('a@b.co');
+  });
+
+  it('accepts an address without a dotted domain, which internal hosts use', () => {
+    expect(key('dev', 'root@localhost')).toBe('root@localhost');
+  });
+
+  it('falls back to unknown when both values are junk', () => {
+    expect(key('=', '=')).toBe('osuser:unknown@aabbccdd');
+  });
+
+  // namespacedOsUserKey is reachable WITHOUT going through userKeyFor: the alias
+  // backfill calls it directly with a raw value out of the merge journal. So the
+  // guard has to live there too, not only at the userKeyFor call site.
+  it('guards namespacedOsUserKey directly, for callers that bypass userKeyFor', () => {
+    expect(namespacedOsUserKey('=', 'inst-aabbccdd')).toBe('osuser:unknown@aabbccdd');
+    expect(namespacedOsUserKey('--', 'inst-aabbccdd')).toBe('osuser:unknown@aabbccdd');
+    expect(namespacedOsUserKey('gcs', 'inst-aabbccdd')).toBe('osuser:gcs@aabbccdd');
+  });
+
+  it('keeps the empty-installation branch consistent', () => {
+    expect(userKeyFor({ osUser: '=', gitName: null, gitEmail: null }, '')).toBe('unknown');
   });
 });
 
