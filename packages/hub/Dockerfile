@@ -20,7 +20,7 @@
 #
 
 # ── builder ─────────────────────────────────────────────────────────────────
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /repo
 
 # Manifests first so dependency-install layer caches across source changes.
@@ -59,7 +59,7 @@ RUN npm prune --omit=dev --workspaces --include-workspace-root \
  || npm prune --omit=dev
 
 # ── runtime ─────────────────────────────────────────────────────────────────
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 # tini for proper signal handling (Ctrl-C, SIGTERM from orchestrators).
 RUN apk add --no-cache tini wget
