@@ -342,16 +342,28 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       expect(r.body.hiddenDropped).toBe(1);
     });
 
-    it('keeps aliases per org', async () => {
+    it('writes the alias into the acting org, leaving a pre-existing foreign one alone', async () => {
+      // The previous version of this created org-b, wrote nothing to it, and
+      // asserted org-b was empty — true for any implementation. Seed the other
+      // org first so the assertion can actually fail.
       await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
+      await ctx.db.run(
+        `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+         VALUES ('org-b', 'osuser:dev@aaaaaaaa', 'theirs@otherco.com', 'm-b')`,
+      );
       await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
       await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
 
-      const other = await ctx.db.all(
-        'SELECT alias_key FROM user_key_aliases WHERE org_id = ?', ['org-b'],
+      const ours = await aliases();
+      expect(ours).toHaveLength(1);
+      expect(ours[0].canonical_key).toBe('dana@cglab.com');
+
+      const theirs = await ctx.db.all(
+        'SELECT canonical_key FROM user_key_aliases WHERE org_id = ?', ['org-b'],
       );
-      expect(other).toEqual([]);
+      expect(theirs).toHaveLength(1);
+      expect((theirs[0] as any).canonical_key).toBe('theirs@otherco.com');
     });
   });
 
@@ -381,6 +393,240 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       const r = await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
       expect(r.body.to).toBe('dana@cglab.com');
       expect(r.body.requestedTo).toBeUndefined();
+    });
+  });
+
+  // ── CGLAB-74: defects found by adversarial review of the above ───────────
+
+  describe('a revert that restores nothing must not destroy the alias', () => {
+    it('keeps the earlier merge\'s alias when a later merge superseded it', async () => {
+      // a -> b -> c, then revert the FIRST. It correctly refuses to move events
+      // ("revert the newer merge first"), but it used to delete the a -> b alias
+      // anyway, freeing 'a' to resurrect as a third identity.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const m1 = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+      await merge('b@cglab.com', 'c@cglab.com');
+
+      const rev = await supertest(app)
+        .post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
+        .set('Cookie', cookie).send({});
+
+      expect(rev.body.eventsRestored).toBe(0);
+      expect(rev.body.aliasesRemoved).toBe(0);
+      const keys = (await aliases()).map((r: any) => r.alias_key);
+      expect(keys).toContain('osuser:dev@aaaaaaaa');
+    });
+
+    it('still lets the machine resolve to the end of the chain afterwards', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const m1 = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+      await merge('b@cglab.com', 'c@cglab.com');
+      await supertest(app).post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
+        .set('Cookie', cookie).send({});
+
+      await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${ingestToken}`)
+        .send({ events: [{
+          eventId: 'woken-chain', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
+          orgId: 'org-a', occurredAt: '2026-08-20T10:00:00Z',
+          actor: { osUser: 'dev', gitName: null, gitEmail: null },
+          type: 'item.created', payload: {},
+        }] });
+
+      const stored = await ctx.db.get('SELECT user_key FROM events WHERE event_id = ?', ['woken-chain']);
+      expect((stored as any).user_key).toBe('c@cglab.com');
+    });
+  });
+
+  describe('ingest must not resurrect a merged-away git email', () => {
+    it('leaves the installation on the merged identity after it reports the old address', async () => {
+      // The upsert COALESCEd the old git_email back over the merge's repoint, so
+      // /identity-suggestions then advised undoing the repair — permanently, and
+      // the suggestion 400d when clicked.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com', 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
+      expect((await merge('old@cglab.com', 'new@cglab.com')).status).toBe(200);
+
+      await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${ingestToken}`)
+        .send({ events: [{
+          eventId: 'stale-email', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
+          orgId: 'org-a', occurredAt: '2026-08-20T10:00:00Z',
+          actor: { osUser: 'dev', gitName: null, gitEmail: 'old@cglab.com' },
+          type: 'item.created', payload: {},
+        }] });
+
+      const inst = await ctx.db.get(
+        'SELECT git_email FROM installations WHERE id = ?', ['aaaaaaaa-1111-2222-3333-444455556666'],
+      );
+      expect((inst as any).git_email).toBe('new@cglab.com');
+    });
+
+    it('stops offering the inverted suggestion that undoes the repair', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com', 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
+      await merge('old@cglab.com', 'new@cglab.com');
+      await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${ingestToken}`)
+        .send({ events: [{
+          eventId: 'stale-email-2', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
+          orgId: 'org-a', occurredAt: '2026-08-20T10:00:00Z',
+          actor: { osUser: 'dev', gitName: null, gitEmail: 'old@cglab.com' },
+          type: 'item.created', payload: {},
+        }] });
+
+      const inverted = (await suggestions()).body
+        .find((s: any) => s.from === 'new@cglab.com' && s.to === 'old@cglab.com');
+      expect(inverted).toBeUndefined();
+    });
+  });
+
+  describe('a merge that moves nothing changes nothing', () => {
+    it('stays a no-op success when the SAME merge is repeated', async () => {
+      // Retrying after a dropped connection must not be an error, and must not
+      // record a second merge — the alias has to keep pointing at the merge that
+      // can actually revert it.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const first = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+
+      const again = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+      expect(again.status).toBe(200);
+      expect(again.body.eventsMoved).toBe(0);
+      expect(again.body.alreadyMerged).toBe(true);
+      expect(again.body.mergeId).toBe(first.body.mergeId);
+
+      const rows = await aliases();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].merge_id).toBe(first.body.mergeId);
+    });
+
+    it('lets the original merge still be reverted after a repeat', async () => {
+      // The re-stamp bug made this impossible: the alias belonged to the second
+      // merge, so reverting the first removed nothing.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const first = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+      await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+
+      const rev = await supertest(app)
+        .post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)
+        .set('Cookie', cookie).send({});
+      expect(rev.body.eventsRestored).toBe(1);
+      expect(rev.body.aliasesRemoved).toBe(1);
+      expect(await aliases()).toEqual([]);
+    });
+
+    it('refuses to re-merge a source that has already been merged away', async () => {
+      // It used to answer 200 / eventsMoved 0 while re-stamping the alias row
+      // with the new merge id, so reverting the original removed no alias and
+      // left the identity permanently split.
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      const first = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
+
+      const second = await merge('osuser:dev@aaaaaaaa', 'z@cglab.com');
+      expect(second.status).toBe(409);
+
+      const rows = await aliases();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].canonical_key).toBe('b@cglab.com');
+      expect(rows[0].merge_id).toBe(first.body.mergeId);
+    });
+  });
+
+  describe('the source key is canonicalised the way ingest derives it', () => {
+    it('writes an alias ingest can actually hit when the case differs', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com', 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
+
+      // An admin copies the address out of a mail client.
+      const r = await merge('Old@CGLab.com', 'new@cglab.com');
+      expect(r.status).toBe(200);
+      expect(r.body.eventsMoved).toBe(1);
+
+      const rows = await aliases();
+      expect(rows[0].alias_key).toBe('old@cglab.com');
+    });
+
+    it('blocks a case-mismatched merge whose installation is live', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'DPolistchuck');
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:DPolistchuck@aaaaaaaa');
+      await liveKey('hash-live', 'aaaaaaaa-1111-2222-3333-444455556666');
+
+      expect((await merge('OSUSER:DPOLISTCHUCK@AAAAAAAA', 'dana@cglab.com')).status).toBe(409);
+    });
+  });
+
+  describe('tenant isolation', () => {
+    it('does not suggest a merge onto another org\'s installation', async () => {
+      // installations.id is a global primary key, so the suggestions join needs
+      // its own org predicate or it leaks another tenant's git email.
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
+      await ctx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+         VALUES ('foreign-1111-2222-3333-444455556666', 'org-b', '2026-01-01T00:00:00Z', ?, 'dev', null, 'victim@otherco.com')`,
+        [hoursAgo(1)],
+      );
+      // An org-wide key in org-a can name any installation id on an event.
+      await event('e1', 'foreign-1111-2222-3333-444455556666', 'osuser:dev@foreign');
+
+      const leaked = (await suggestions()).body.find((s: any) => s.to === 'victim@otherco.com');
+      expect(leaked).toBeUndefined();
+    });
+
+    it('never resolves an alias belonging to another org at ingest', async () => {
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
+      await ctx.db.run(
+        `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+         VALUES ('org-b', 'osuser:dev@aaaaaaaa', 'wrong@otherco.com', 'm-b')`,
+      );
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev');
+
+      await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${ingestToken}`)
+        .send({ events: [{
+          eventId: 'cross-org', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
+          orgId: 'org-a', occurredAt: '2026-08-20T10:00:00Z',
+          actor: { osUser: 'dev', gitName: null, gitEmail: null },
+          type: 'item.created', payload: {},
+        }] });
+
+      const stored = await ctx.db.get('SELECT user_key FROM events WHERE event_id = ?', ['cross-org']);
+      expect((stored as any).user_key).toBe('osuser:dev@aaaaaaaa');
+    });
+
+    it('does not let another org\'s live key block a merge', async () => {
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
+      await ctx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+         VALUES ('bbbbbbbb-1111-2222-3333-444455556666', 'org-b', '2026-01-01T00:00:00Z', ?, 'dev', null, null)`,
+        [hoursAgo(1)],
+      );
+      await ctx.db.run(
+        `INSERT INTO api_keys (token_hash, org_id, label, installation_id) VALUES ('hash-b', 'org-b', 'k', 'bbbbbbbb-1111-2222-3333-444455556666')`,
+      );
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+
+      // org-b's machine derives osuser:dev@bbbbbbbb, not ours, but a missing
+      // org predicate on either side of the join would surface it anyway.
+      expect((await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com')).status).toBe(200);
+    });
+  });
+
+  describe('one installation counts once, however many keys it holds', () => {
+    it('reports a single blocker for an installation with two live keys', async () => {
+      await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev');
+      await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
+      await liveKey('hash-1', 'aaaaaaaa-1111-2222-3333-444455556666');
+      await liveKey('hash-2', 'aaaaaaaa-1111-2222-3333-444455556666');
+
+      const r = await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
+      expect(r.status).toBe(409);
+      expect(r.body.installations).toEqual(['aaaaaaaa-1111-2222-3333-444455556666']);
     });
   });
 

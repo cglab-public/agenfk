@@ -4,6 +4,7 @@ import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
+import { isEmailShapedKey } from '../util/userKey.js';
 
 
 
@@ -200,6 +201,19 @@ export function eventsRouter(ctx: HubServerContext): Router {
         // merged-away key must not be a hole in the rule.
         const userKey = resolveAliasKey(userKeyFor(e.actor, e.installationId), aliasMap);
         if (hiddenUserKeys.has(userKey)) { hiddenDropped++; continue; }
+        // The installation row has to follow the identity too. The upsert below
+        // COALESCEs the reported git_email over whatever is stored, so a machine
+        // still configured with a merged-away address used to overwrite the
+        // repoint the merge performed — leaving an inverted suggestion that
+        // advised undoing the repair, and 400d when clicked. Only substitute an
+        // email-shaped target: an osuser: canonical is not a git address.
+        const reportedEmail = e.actor.gitEmail?.trim();
+        if (reportedEmail) {
+          const resolved = resolveAliasKey(reportedEmail.toLowerCase(), aliasMap);
+          if (resolved !== reportedEmail.toLowerCase() && isEmailShapedKey(resolved)) {
+            e.actor = { ...e.actor, gitEmail: resolved };
+          }
+        }
         seenInstallations.add(e.installationId);
         const itemType = (e as any).itemType
           ?? (e.payload && typeof (e.payload as any).itemType === 'string' ? (e.payload as any).itemType : null);

@@ -1,4 +1,5 @@
 import { DB } from '../db.js';
+import { isEmailShapedKey } from './userKey.js';
 
 /**
  * Identity aliases: a merged-away key cannot come back (CGLAB-72).
@@ -51,4 +52,26 @@ export async function loadAliasMap(db: DB, orgId: string): Promise<Map<string, s
     [orgId],
   );
   return new Map(rows.map(r => [r.alias_key, r.canonical_key]));
+}
+
+/**
+ * The exact key ingest would have written, for a value a human typed.
+ *
+ * `from` is deliberately not lowercased wholesale: `userKeyFor` lowercases
+ * emails only, so an osUser key keeps its case ('DPolistchuck' on Windows) and
+ * force-lowercasing made those keys unaddressable. But leaving the input raw was
+ * just as bad in the other direction — an admin who typed `Old@CGLab.com` got a
+ * 200 with nothing moved, and an alias row under a key ingest can never derive,
+ * so the anti-resurrection protection was silently absent.
+ *
+ * So: normalise emails the way userKeyFor does, and for anything else adopt the
+ * casing of the key that actually exists in this org.
+ */
+export async function canonicaliseSourceKey(db: DB, orgId: string, typed: string): Promise<string> {
+  if (isEmailShapedKey(typed)) return typed.toLowerCase();
+  const existing = await db.get<{ user_key: string }>(
+    'SELECT user_key FROM events WHERE org_id = ? AND lower(user_key) = lower(?) LIMIT 1',
+    [orgId, typed],
+  );
+  return existing?.user_key ?? typed;
 }

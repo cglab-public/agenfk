@@ -28,17 +28,24 @@ import { userKeyFor } from './userKey.js';
 
 export const DEFAULT_LIVE_INSTALL_WINDOW_HOURS = 48;
 
+/** Below this a machine mid-batch would read as dormant; above it, nothing ever merges. */
+export const MIN_LIVE_INSTALL_WINDOW_HOURS = 0.25;
+export const MAX_LIVE_INSTALL_WINDOW_HOURS = 24 * 365;
+
 /**
  * How recently an installation must have been seen to count as live.
  *
  * A bad value falls back to the default rather than to zero: a typo must not
  * silently become permission to merge over a machine that is still ingesting.
+ * Valid-but-absurd values are clamped for the same reason — `0.0001` parses
+ * fine and yields a sub-second window, which is the typo dressed as a number.
  */
 export function liveInstallWindowMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS;
   const hours = raw === undefined ? NaN : Number(raw);
-  const valid = Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_LIVE_INSTALL_WINDOW_HOURS;
-  return valid * 60 * 60 * 1000;
+  if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_LIVE_INSTALL_WINDOW_HOURS * 60 * 60 * 1000;
+  const clamped = Math.min(Math.max(hours, MIN_LIVE_INSTALL_WINDOW_HOURS), MAX_LIVE_INSTALL_WINDOW_HOURS);
+  return clamped * 60 * 60 * 1000;
 }
 
 export interface InstallationIdentityRow {

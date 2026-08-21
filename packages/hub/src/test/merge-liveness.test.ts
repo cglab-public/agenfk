@@ -16,6 +16,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_LIVE_INSTALL_WINDOW_HOURS,
+  MIN_LIVE_INSTALL_WINDOW_HOURS,
+  MAX_LIVE_INSTALL_WINDOW_HOURS,
   liveInstallWindowMs,
   derivedUserKeyForInstallation,
   isWithinWindow,
@@ -108,6 +110,18 @@ describe('liveInstallWindowMs', () => {
     expect(liveInstallWindowMs({ AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS: '0.5' })).toBe(30 * 60 * 1000);
   });
 
+  // A valid tiny number is the typo the fallback above cannot catch: 0.0001
+  // parses fine and yields a 0.36s window, i.e. nothing ever blocks a merge.
+  it('clamps an absurdly small window up to the floor', () => {
+    expect(liveInstallWindowMs({ AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS: '0.0001' }))
+      .toBe(MIN_LIVE_INSTALL_WINDOW_HOURS * 60 * 60 * 1000);
+  });
+
+  it('clamps an absurdly large window down to the ceiling', () => {
+    expect(liveInstallWindowMs({ AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS: '1e9' }))
+      .toBe(MAX_LIVE_INSTALL_WINDOW_HOURS * 60 * 60 * 1000);
+  });
+
   // A malformed value must not silently become "block nothing": that would turn
   // a typo into permission to merge over a machine that is still ingesting.
   it('falls back to the default when the override is not a positive number', () => {
@@ -143,9 +157,14 @@ describe('resolveAliasKey', () => {
     expect(['a', 'b']).toContain(resolveAliasKey('a', aliases));
   });
 
-  it('stops after a bounded number of hops', () => {
+  // not.toThrow() passed for any implementation, including one that returned
+  // its input. What matters is WHICH key a too-long chain lands on.
+  it('stops after a bounded number of hops, landing on a real chain link', () => {
     const aliases = new Map<string, string>();
     for (let i = 0; i < 100; i++) aliases.set(`k${i}`, `k${i + 1}`);
-    expect(() => resolveAliasKey('k0', aliases)).not.toThrow();
+    const out = resolveAliasKey('k0', aliases);
+    expect(out).toMatch(/^k\d+$/);
+    expect(out).not.toBe('k0');
+    expect(Number(out.slice(1))).toBeLessThanOrEqual(100);
   });
 });

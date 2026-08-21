@@ -11,7 +11,7 @@ import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
-import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
+import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -304,7 +304,10 @@ export function adminRouter(ctx: HubServerContext): Router {
               MAX(e.occurred_at) AS last_seen
          FROM events e
          JOIN installations i ON i.id = e.installation_id
-        WHERE e.org_id = ?
+        -- installations.id is a GLOBAL primary key, so without this predicate
+        -- an event naming another tenant's installation id leaks that org's
+        -- git_email and installation id into this org's suggestions.
+        WHERE e.org_id = ? AND i.org_id = e.org_id
           AND i.git_email IS NOT NULL AND i.git_email <> ''
           AND e.user_key <> lower(i.git_email)
         GROUP BY e.user_key, lower(i.git_email), i.id`,
@@ -433,17 +436,18 @@ export function adminRouter(ctx: HubServerContext): Router {
           'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
           [record.from_user_key, orgId, record.to_user_key],
         );
+        // Drop the alias this merge wrote, or the source key stays redirected
+        // and the revert is cosmetic. Only when the restore actually happened:
+        // on the superseded path a later merge has chained past this one, and
+        // deleting the alias there frees the source key to resurrect as a THIRD
+        // identity while we report having done nothing. Scoped by merge_id so a
+        // later merge that re-claimed the same alias_key keeps it.
+        const aliases = await ctx.db.run(
+          'DELETE FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
+          [orgId, id],
+        );
+        aliasesRemoved = aliases.changes;
       }
-      // Drop the alias this merge wrote, or the source key stays permanently
-      // redirected and the revert is cosmetic. Scoped by merge_id, so a newer
-      // merge that claimed the same alias keeps it — the same LIFO rule the
-      // event restore follows above.
-      const aliases = await ctx.db.run(
-        'DELETE FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
-        [orgId, id],
-      );
-      aliasesRemoved = aliases.changes;
-
       await ctx.db.run(
         "UPDATE user_key_merges SET reverted_at = datetime('now') WHERE id = ? AND org_id = ?",
         [id, orgId],
@@ -650,16 +654,54 @@ export function adminRouter(ctx: HubServerContext): Router {
     // input made those keys unaddressable — the UPDATE matched nothing and the
     // endpoint answered 200 with eventsMoved 0, a silent no-op reported as
     // success. Self-merge is still compared case-insensitively.
-    const from = String(req.body?.from ?? '').trim();
+    const typedFrom = String(req.body?.from ?? '').trim();
     const requestedTo = String(req.body?.to ?? '').trim();
-    if (!from || !requestedTo) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+    if (!typedFrom || !requestedTo) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+
+    // Match what ingest actually writes, not what the admin typed. See
+    // canonicaliseSourceKey: a case-mismatched source used to answer 200 with
+    // nothing moved and leave a dead alias behind.
+    const from = await canonicaliseSourceKey(ctx.db, orgId, typedFrom);
 
     // Merging ONTO a key that has itself been merged away would split the
     // identity: history would land on the stale target while ingest, which
     // resolves aliases, kept sending new events onward to the real one. The
     // admin typed a name they saw somewhere; follow it to the same place ingest
     // would. Reported back as `to` so the response never misstates what it did.
-    const to = resolveAliasKey(requestedTo, await loadAliasMap(ctx.db, orgId));
+    const aliasMap = await loadAliasMap(ctx.db, orgId);
+    const to = resolveAliasKey(requestedTo, aliasMap);
+
+    // Re-merging a source that was already merged away moved nothing while
+    // re-stamping its alias row with the new merge id, so reverting the ORIGINAL
+    // merge then removed no alias and left the identity permanently split.
+    //
+    // Repeating the SAME merge stays a no-op success — that is a documented
+    // guarantee, and retrying after a dropped connection must not be an error.
+    // It returns the original merge id rather than recording a second one, so
+    // the alias keeps pointing at the merge that can actually revert it.
+    const already = aliasMap.get(from);
+    if (already) {
+      if (already.toLowerCase() === to.toLowerCase()) {
+        const prior = await ctx.db.get<{ id: string }>(
+          `SELECT id FROM user_key_merges
+            WHERE org_id = ? AND lower(from_user_key) = lower(?) AND lower(to_user_key) = lower(?)
+              AND reverted_at IS NULL
+            ORDER BY created_at DESC`,
+          [orgId, from, to],
+        );
+        res.json({
+          mergeId: prior?.id ?? null, from, to,
+          eventsMoved: 0, daysRecomputed: 0, sourceWasHidden: false, alreadyMerged: true,
+        });
+        return;
+      }
+      res.status(409).json({
+        error: `"${from}" has already been merged into "${already}". Revert that merge first, `
+             + `or merge "${already}" onward to "${to}" instead.`,
+        canonical: already,
+      });
+      return;
+    }
     if (from.toLowerCase() === to.toLowerCase()) {
       res.status(400).json({ error: 'Cannot merge a user key onto itself' });
       return;
@@ -741,8 +783,9 @@ export function adminRouter(ctx: HubServerContext): Router {
 
       // Where this identity went, so a machine waking after the liveness window
       // resolves onto the merged key instead of starting a second identity.
-      // Any alias that pointed AT the source follows it, so ingest never has to
-      // walk a chain that outlives its own hop cap.
+      // Chains are NOT flattened here — resolveAliasKey walks them transitively
+      // instead, which keeps revert exact (each row belongs to one merge) at the
+      // cost of a bounded walk at ingest.
       await ctx.db.run(
         `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
          VALUES (?, ?, ?, ?)
