@@ -432,21 +432,34 @@ const syncParentStatus = async (parentId: string) => {
   const children = allChildren.filter(c => c.status !== Status.TRASHED && c.status !== Status.ARCHIVED);
   if (children.length === 0) return;
 
-  const allDone = children.every(c => c.status === Status.DONE);
-  const allTestOrFurther = children.every(c => c.status === Status.TEST || c.status === Status.DONE);
-  const allReviewOrFurther = children.every(c => c.status === Status.REVIEW || c.status === Status.TEST || c.status === Status.DONE);
-  const anyInProgress = children.some(c => c.status === Status.IN_PROGRESS || c.status === Status.TEST || c.status === Status.REVIEW || c.status === Status.DONE);
+  // Compare children by their ORDER in the active flow, not by hardcoded step
+  // names. The previous version tested Status.IN_PROGRESS/REVIEW/TEST/DONE
+  // literally, so on any custom flow none of the intermediate branches could
+  // fire and a parent lagged behind its children indefinitely — only the
+  // allDone -> DONE case worked, because DONE is an anchor every flow has.
+  const parentProject = await storage.getProject(parent.projectId);
+  const parentFlow = getActiveFlow((parentProject as any)?.flowId, await storage.listFlows());
+  const ordered = [...parentFlow.steps].sort((a, b) => a.order - b.order);
+  const orderOf = (name: string) => {
+    const i = ordered.findIndex(st => st.name.toUpperCase() === String(name).toUpperCase());
+    return i === -1 ? null : i;
+  };
+
+  // A child on a platform status (PAUSED/BLOCKED/...) has no position in the
+  // flow, so it cannot hold the parent back or push it forward.
+  const positioned = children
+    .map(c => orderOf(c.status))
+    .filter((n): n is number => n !== null);
 
   let newStatus: Status | null = null;
 
-  if (allDone) {
-    if (parent.status !== Status.DONE) newStatus = Status.DONE;
-  } else if (allTestOrFurther) {
-    if (parent.status !== Status.TEST) newStatus = Status.TEST;
-  } else if (allReviewOrFurther) {
-    if (parent.status !== Status.REVIEW) newStatus = Status.REVIEW;
-  } else if (anyInProgress) {
-    if (parent.status !== Status.IN_PROGRESS) newStatus = Status.IN_PROGRESS;
+  if (positioned.length === children.length && positioned.length > 0) {
+    // The parent may advance to the LEAST advanced child's step — never past it.
+    const laggard = Math.min(...positioned);
+    const parentIdx = orderOf(parent.status);
+    if (parentIdx === null || laggard > parentIdx) {
+      newStatus = ordered[laggard].name as Status;
+    }
   }
 
   if (newStatus) {
@@ -727,7 +740,7 @@ const PLATFORM_STATUSES = new Set([
  *  - TODO (order 0, anchor) → first non-anchor step is always allowed.
  *  - Last non-anchor step → DONE (highest order, anchor) is always allowed.
  */
-function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> }): Set<string> {
+export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> }): Set<string> {
   const allowed = new Set<string>();
 
   // Platform statuses are always reachable from any step
@@ -735,21 +748,39 @@ function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name
     allowed.add(s);
   }
 
-  // If coming from a platform status, allow transitioning to any flow step
+  const sorted = [...flow.steps].sort((a, b) => a.order - b.order);
+
+  // Real workflow steps only. Older flows list the platform statuses AS steps
+  // marked `isSpecial` and never set `isAnchor`, so anchors cannot be found by
+  // that flag alone — treat the first and last real step as the entry and exit
+  // anchors when the flag is absent.
+  const realSteps = sorted.filter(st =>
+    !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
+  const entryStep = (realSteps.find(st => st.isAnchor) ?? realSteps[0])?.name;
+  const codingStep = (realSteps.find(st => !st.isAnchor && st.name !== entryStep)
+    ?? realSteps[1] ?? realSteps[0])?.name;
+  const firstAnchor = entryStep;
+
+  // Coming FROM a platform status. This used to allow every step, which made
+  // `--status PAUSED` then `--status <final step>` two legal writes that skipped
+  // every gate in between. Only offer somewhere workable: the entry anchor and
+  // the coding step. Genuine resumption goes through POST /items/:id/resume,
+  // which restores the snapshot status via storage directly and does not pass
+  // through this table.
   if (PLATFORM_STATUSES.has(fromStatus as Status)) {
-    for (const step of flow.steps) {
-      allowed.add(step.name);
-    }
+    if (firstAnchor) allowed.add(firstAnchor);
+    if (codingStep) allowed.add(codingStep);
     return allowed;
   }
 
-  // Sort flow steps by order
-  const sorted = [...flow.steps].sort((a, b) => a.order - b.order);
   const currentIdx = sorted.findIndex(s => s.name === fromStatus);
 
   if (currentIdx === -1) {
-    // Unknown status in this flow: allow all steps
-    for (const step of sorted) allowed.add(step.name);
+    // Status not in this flow — e.g. the project's flow changed under the item.
+    // Previously this allowed EVERY step, so an unknown status was a free jump
+    // to the last one. Allow recovery only.
+    if (firstAnchor) allowed.add(firstAnchor);
+    if (codingStep) allowed.add(codingStep);
     return allowed;
   }
 
@@ -1448,14 +1479,29 @@ function normalizeSteps(steps: any): any {
     // collide on React's key={step.id} in the flow editor, which silently drops
     // a column from the UI.
     const id = typeof s.id === 'string' ? s.id : '';
-    if (!id || seen.has(id)) {
-      const fresh = uuidv4();
-      seen.add(fresh);
-      return { ...s, id: fresh };
-    }
-    seen.add(id);
-    return { ...s };
+    const resolvedId = (!id || seen.has(id)) ? uuidv4() : id;
+    seen.add(resolvedId);
+    return { ...pickStepFields(s), id: resolvedId };
   });
+}
+
+/**
+ * Keep only the fields FlowStep declares. Flows arrive from a community
+ * registry and from an org-wide hub push, so their steps are untrusted input:
+ * spreading them wholesale persisted anything a flow author cared to add,
+ * including `command`. Nothing reads that today, which is the only reason a
+ * hostile flow cannot execute — the field was simply never honoured. Storing it
+ * leaves a loaded gun for whoever next writes `step.command`, so drop it at the
+ * door instead. Adding a field here is a deliberate act; a `command` must never
+ * be one of them.
+ */
+const FLOW_STEP_FIELDS = ['id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial'] as const;
+function pickStepFields(step: any): any {
+  const out: any = {};
+  for (const k of FLOW_STEP_FIELDS) {
+    if (step[k] !== undefined) out[k] = step[k];
+  }
+  return out;
 }
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
@@ -2018,7 +2064,26 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
     const { title, description, status, parentId, context, implementationPlan, reviews, comments, sortOrder } = bodyUpdates;
 
-    if (!isInternalVerify && status === Status.DONE) continue;
+    if (!isInternalVerify && status === Status.DONE) {
+      skipped.push({ id, error: 'Cannot set DONE directly. Use validate_progress on the final step.' });
+      continue;
+    }
+
+    // The bulk route applied NO flow validation, so it was a way around the
+    // per-item gate: one request could move any number of items any distance
+    // forward. Same rule as PUT /items/:id, reported per entry rather than
+    // failing the whole batch.
+    if (!isInternalVerify && status !== undefined && status !== currentItem.status
+        && !PLATFORM_STATUSES.has(status as Status)) {
+      const bulkProject = await storage.getProject(currentItem.projectId);
+      const bulkFlows = await storage.listFlows();
+      const bulkFlow = getActiveFlow((bulkProject as any)?.flowId, bulkFlows);
+      const bulkAllowed = buildAllowedTransitions(currentItem.status, bulkFlow);
+      if (!bulkAllowed.has(status)) {
+        skipped.push({ id, error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in flow '${bulkFlow.name}'.` });
+        continue;
+      }
+    }
 
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
@@ -2107,20 +2172,20 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     });
   }
 
-  // Flow-aware transition validation (only active when a custom flow is assigned)
+  // Flow-aware transition validation. This runs for EVERY project, not only
+  // those with a custom flow assigned: the previous `if (projectFlowId)` guard
+  // meant a project on the shipped default flow — the majority — got no
+  // validation at all, so `--status TEST` straight from TODO was accepted.
+  // getActiveFlow falls back to DEFAULT_FLOW when no custom flow is set.
   if (status !== undefined && status !== currentItem.status && !isInternalVerify) {
     const project = await storage.getProject(currentItem.projectId);
-    const projectFlowId = (project as any)?.flowId as string | undefined;
-    // Only enforce flow transitions when a custom (non-default) flow is set
-    if (projectFlowId) {
-      const projectFlows = await storage.listFlows();
-      const activeFlow = getActiveFlow(projectFlowId, projectFlows);
-      const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
-      if (!allowed.has(status)) {
-        return res.status(400).json({
-          error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}.`
-        });
-      }
+    const projectFlows = await storage.listFlows();
+    const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
+    const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
+    if (!allowed.has(status)) {
+      return res.status(400).json({
+        error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}. Forward transitions go through validate_progress, which records evidence and checks the step's exit criteria.`
+      });
     }
   }
 

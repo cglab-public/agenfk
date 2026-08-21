@@ -885,25 +885,21 @@ async function callToolHandler(request: any): Promise<any> {
         // Fetch current item to check status for state machine transitions
         const { data: currentItem } = await api.get(`/items/${id}`);
 
-        // Enforce workflow: block direct transitions to DONE — must use test_changes
+        // DONE is reachable ONLY through validate_progress, which records evidence
+        // and evaluates the step's exit criteria.
+        //
+        // This branch used to re-issue the PUT carrying x-agenfk-internal:
+        // VERIFY_TOKEN, the header that makes the server treat a request as an
+        // internal verify and skip BOTH the DONE guard and the flow guard. That
+        // made `update_item({ status: "DONE" })` land DONE from any working step
+        // with no evidence recorded and no command run — a hole in the framework's
+        // central guarantee, reachable by any MCP client. Never mint that token
+        // here: it exists so validate_progress can write its own result.
         if (updates.status === "DONE") {
-          // Fetch active flow to determine valid pre-DONE steps
-          let preDoneSteps = new Set(['IN_PROGRESS', 'REVIEW', 'TEST']);
-          try {
-            const { data: itemFlow } = await api.get(`/projects/${currentItem.projectId}/flow`).catch(() => ({ data: null }));
-            if (itemFlow?.steps) {
-              preDoneSteps = new Set(itemFlow.steps.filter((s: any) => !s.isAnchor).map((s: any) => (s.name as string).toUpperCase()));
-            }
-          } catch { /* use defaults */ }
-          if (!preDoneSteps.has(currentItem.status.toUpperCase())) {
-            return {
-              isError: true,
-              content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly from ${currentItem.status}. Use test_changes(itemId) to run the project's test suite and advance to DONE.` }],
-            };
-          }
-          // Allow TEST -> DONE, using verify token to bypass server guard
-          const { data } = await api.put(`/items/${id}`, updates, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
-          return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+          return {
+            isError: true,
+            content: [{ type: "text", text: `❌ WORKFLOW VIOLATION: Cannot set status to DONE directly (currently ${currentItem.status}). DONE is only reachable through validate_progress on the flow's final step, which records your evidence and runs the project's verify command.` }],
+          };
         }
 
         const { data } = await api.put(`/items/${id}`, updates);

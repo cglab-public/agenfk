@@ -215,12 +215,22 @@ describe('PUT /items/:id workflow guards', () => {
     expect(res.status).toBe(403);
   });
 
-  it('allows setting REVIEW directly', async () => {
+  // Re-pointed by CGLAB-81. This used to assert that TODO -> REVIEW succeeded,
+  // which was the bypass: transition validation ran only when a CUSTOM flow was
+  // assigned, so default-flow projects could jump any distance forward with no
+  // evidence and no exit-criteria check. The suite contradicted itself — see
+  // 'rejects invalid skip transition (TODO -> REVIEW, skipping IN_PROGRESS)',
+  // which asserted the opposite for a custom-flow project. Both now agree.
+  it('rejects setting REVIEW directly, skipping the coding step', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
     const res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('REVIEW');
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
+    // The legitimate one-step move this test also used to cover still works.
+    const ok = await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.status).toBe('IN_PROGRESS');
   });
 
   it('returns 404 for unknown item', async () => {
@@ -1286,7 +1296,11 @@ describe('POST /items/bulk - branch coverage', () => {
     expect(res.body.results).toHaveLength(0);
   });
 
-  it('allows REVIEW status without internal token', async () => {
+  // Re-pointed by CGLAB-81. The bulk route applied no flow validation at all,
+  // so it was a way around the per-item gate: one request could move any number
+  // of items any distance forward. It now applies the same rule, reporting the
+  // rejection per entry rather than failing the whole batch.
+  it('reports a skipping transition as skipped instead of applying it', async () => {
     const p = (await request(app).post('/projects').send({ name: 'P' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
 
@@ -1295,7 +1309,16 @@ describe('POST /items/bulk - branch coverage', () => {
     });
     expect(res.status).toBe(200);
     const updated = (await request(app).get(`/items/${item.id}`)).body;
-    expect(updated.status).toBe('REVIEW');
+    expect(updated.status).not.toBe('REVIEW');
+    expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
+
+    // A legitimate one-step bulk move still applies, which is what this test
+    // was really guarding: that the route works without the internal token.
+    const ok = await request(app).post('/items/bulk').send({
+      items: [{ id: item.id, updates: { status: 'IN_PROGRESS' } }]
+    });
+    expect(ok.status).toBe(200);
+    expect((await request(app).get(`/items/${item.id}`)).body.status).toBe('IN_PROGRESS');
   });
 
   it('syncs parent after bulk update with parentId', async () => {

@@ -340,3 +340,41 @@ describe('the gatekeeper resolves the coding and final steps itself (F6)', () =>
     expect(d.message).not.toContain('Cards created.');
   });
 });
+
+// ── CGLAB-82: the shipped default flow must state what each step wants ──────
+// DEFAULT_STEPS defined no exitCriteria at all, so on a default install every
+// criteria-driven instruction in the framework evaluated to nothing. That is
+// why the de-prescribed work loop needed position-based fallbacks.
+describe('the shipped default flow states its exit criteria (CGLAB-82)', () => {
+  it('reports real criteria for the coding step rather than the no-criteria fallback', async () => {
+    const { DEFAULT_FLOW } = await import('../defaultFlow');
+    const d = decideGatekeeperAuthorization(
+      [item('a', 'IN_PROGRESS')],
+      DEFAULT_FLOW as unknown as GatekeeperFlow,
+      {},
+    );
+    expect(d.criteriaState).toBe('present');
+    expect(d.exitCriteria).toBeTruthy();
+    expect(d.message).not.toMatch(/defines no exit criteria/i);
+  });
+
+  it('gives every non-anchor default step criteria, so no step is silent', async () => {
+    const { DEFAULT_FLOW } = await import('../defaultFlow');
+    const working = DEFAULT_FLOW.steps.filter((s: any) => !s.isAnchor);
+    expect(working.length).toBeGreaterThan(0);
+    for (const step of working) {
+      const d = decideGatekeeperAuthorization(
+        [item('a', step.name)],
+        DEFAULT_FLOW as unknown as GatekeeperFlow,
+        {},
+      );
+      expect(d.criteriaState, `${step.name} has no criteria`).toBe('present');
+    }
+  });
+
+  it('leaves the anchors alone — TODO and DONE are not worked steps', async () => {
+    const { DEFAULT_FLOW } = await import('../defaultFlow');
+    const anchors = DEFAULT_FLOW.steps.filter((s: any) => s.isAnchor);
+    for (const a of anchors) expect((a as any).exitCriteria ?? '').toBe('');
+  });
+});
