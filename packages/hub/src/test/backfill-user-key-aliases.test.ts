@@ -35,6 +35,19 @@ describe('user_key_aliases backfill', () => {
     [id, opts.org ?? 'org-a', from, to, opts.revertedAt ?? null, opts.createdAt ?? '2026-08-01T00:00:00Z'],
   );
 
+  /** A row in the merge journal, plus the event it points at. */
+  const journalEvent = async (mergeId: string, eventId: string, installationId: string, nowKey: string, org = 'org-a') => {
+    await db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES (?, ?, ?, ?, '2026-02-01T09:00:00Z', '2026-02-01T09:00:00Z', 'item.created', '{}')`,
+      [eventId, org, installationId, nowKey],
+    );
+    await db.run(
+      `INSERT INTO user_key_merge_events (merge_id, event_id, previous_user_key) VALUES (?, ?, ?)`,
+      [mergeId, eventId, 'gcs'],
+    );
+  };
+
   const aliases = () => db.all<{ alias_key: string; canonical_key: string; merge_id: string; org_id: string }>(
     'SELECT org_id, alias_key, canonical_key, merge_id FROM user_key_aliases ORDER BY org_id, alias_key',
   );
@@ -96,6 +109,34 @@ describe('user_key_aliases backfill', () => {
       expect(rows[0].merge_id).toBe('m-new');
     });
 
+    it('breaks an exact created_at tie deterministically, not by row order', async () => {
+      // SQLite's datetime('now') has one-second resolution, so two merges
+      // seconds apart tie exactly; Postgres now() is transaction time, so two
+      // in one transaction tie too. Row order must not decide the identity.
+      await merge('m-aaa', 'a@x.com', 'first@x.com', { createdAt: '2026-08-01T00:00:00Z' });
+      await merge('m-zzz', 'a@x.com', 'second@x.com', { createdAt: '2026-08-01T00:00:00Z' });
+
+      await backfillUserKeyAliases(db);
+
+      const rows = await aliases();
+      expect(rows[0].merge_id).toBe('m-zzz');
+      expect(rows[0].canonical_key).toBe('second@x.com');
+    });
+
+    it('counts superseded SOURCES, not the extra merge rows', async () => {
+      // Three merges of one source is one superseded source; the boot log says
+      // "source(s)", so counting rows misreports exactly the case it exists for.
+      await merge('m1', 'a@x.com', 'one@x.com', { createdAt: '2026-08-01T00:00:00Z' });
+      await merge('m2', 'a@x.com', 'two@x.com', { createdAt: '2026-08-02T00:00:00Z' });
+      await merge('m3', 'a@x.com', 'three@x.com', { createdAt: '2026-08-03T00:00:00Z' });
+
+      const r = await backfillUserKeyAliases(db);
+
+      expect(r.supersededSources).toBe(1);
+      expect(r.aliasesWritten).toBe(1);
+      expect((await aliases())[0].canonical_key).toBe('three@x.com');
+    });
+
     it('still picks the latest when the rows arrive newest-first', async () => {
       // Guards against the answer depending on row order rather than on time.
       await merge('m-new', 'a@x.com', 'current@x.com', { createdAt: '2026-08-05T00:00:00Z' });
@@ -116,17 +157,52 @@ describe('user_key_aliases backfill', () => {
       const r = await backfillUserKeyAliases(db);
 
       expect(r.canonicalised).toBe(1);
-      const rows = await aliases();
-      expect(rows[0].alias_key).toBe('old@cglab.com');
-      expect(rows[0].canonical_key).toBe('new@cglab.com');
+      expect((await aliases())[0].alias_key).toBe('old@cglab.com');
     });
 
-    it('preserves osUser case, because Windows accounts are named that way', async () => {
+    it('leaves the TARGET exactly as the merge wrote it', async () => {
+      // The historical merge ran UPDATE events SET user_key = <raw to>.
+      // Normalising it here would point the alias at a third identity that
+      // holds no events — the very split the alias exists to prevent.
+      await merge('m1', 'old@x.com', 'New@X.com');
+
+      await backfillUserKeyAliases(db);
+
+      expect((await aliases())[0].canonical_key).toBe('New@X.com');
+    });
+
+    it('preserves an already-namespaced osUser key, case and all', async () => {
       await merge('m1', 'osuser:DPolistchuck@aaaabbbb', 'daniel@cglab.com');
 
       await backfillUserKeyAliases(db);
 
       expect((await aliases())[0].alias_key).toBe('osuser:DPolistchuck@aaaabbbb');
+    });
+
+    // Merges old enough to predate the alias table also predate the osUser
+    // namespacing migration — which rewrote events.user_key but never touched
+    // this journal. A bare username written verbatim aliases a key ingest can
+    // no longer produce: the dead-alias bug, recreated by the backfill.
+    it('namespaces a bare username to the key ingest now derives', async () => {
+      await merge('m1', 'gcs', 'guilherme@cglab.com');
+      await journalEvent('m1', 'ev-1', 'd13762b1-aaaa-bbbb-cccc-dddd', 'guilherme@cglab.com');
+
+      const r = await backfillUserKeyAliases(db);
+
+      expect(r.canonicalised).toBe(1);
+      expect((await aliases())[0].alias_key).toBe('osuser:gcs@d13762b1');
+    });
+
+    it('writes nothing when a bare username cannot be traced to a machine', async () => {
+      // Merges older than the journal itself leave no way to know which
+      // installation the key came from. A guess would be a dead alias.
+      await merge('m1', 'gcs', 'guilherme@cglab.com');
+
+      const r = await backfillUserKeyAliases(db);
+
+      expect(r.unresolvable).toBe(1);
+      expect(r.aliasesWritten).toBe(0);
+      expect(await aliases()).toEqual([]);
     });
 
     it('treats two case-variant merges of one identity as the same source', async () => {
@@ -137,6 +213,12 @@ describe('user_key_aliases backfill', () => {
 
       expect(r.aliasesWritten).toBe(1);
       expect((await aliases())[0].canonical_key).toBe('b@x.com');
+    });
+
+    it('still writes no self-alias when source and target match exactly', async () => {
+      await merge('m1', 'dev@x.com', 'dev@x.com');
+      const r = await backfillUserKeyAliases(db);
+      expect(r.aliasesWritten).toBe(0);
     });
 
     it('writes no self-alias when the two keys differ only by case', async () => {

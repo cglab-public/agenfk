@@ -113,6 +113,7 @@ export class Flusher {
       outboxDepth: storage.hubOutboxCount(),
       halted: false,
       consecutiveFailures: 0,
+      rejectedByHub: 0,
     };
   }
 
@@ -241,6 +242,20 @@ export class Flusher {
         // A 2xx from something that is not the hub. Keep the batch and back off
         // rather than deleting events into a captive portal.
         throw new Error('Response was not an agenfk-hub ingest acknowledgement');
+      }
+      // The hub can accept the request and still refuse individual events (a
+      // foreign installation id, a hidden user, a malformed payload). Deleting
+      // them is correct — a retry is refused identically — but it must not be
+      // silent, because the count is the only evidence the events existed.
+      const refused = Number((resp?.data as { rejected?: unknown })?.rejected ?? 0);
+      if (Number.isFinite(refused) && refused > 0) {
+        this.status.rejectedByHub += refused;
+        this.status.lastRejectionAt = new Date().toISOString();
+        console.warn(
+          `[HUB] The hub refused ${refused} event(s) in this batch; they have been discarded. `
+          + `${this.status.rejectedByHub} refused in total. This usually means the installation `
+          + 'is registered to a different organisation — re-run `agenfk hub login` to re-onboard it.',
+        );
       }
       this.storage.hubOutboxDelete(ids);
       this.status.lastFlushAt = new Date().toISOString();

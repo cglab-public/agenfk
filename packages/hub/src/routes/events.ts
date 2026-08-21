@@ -211,6 +211,32 @@ export function eventsRouter(ctx: HubServerContext): Router {
       for (const r of rows) foreignInstalls.add(r.id);
     }
 
+    // An installation id is machine-local and is NEVER regenerated, so a machine
+    // re-onboarded into a different org keeps its id while the installations row
+    // still names the old one. Rejecting those events would destroy them: the
+    // flusher deletes a batch on any 200, so a legitimate tenant would lose data
+    // silently and permanently.
+    //
+    // A BOUND key is the proof that separates a move from the attack. Binding
+    // happens only when an ADMIN of this org approves this exact machine, and a
+    // bound key can name no other installation (checked per event below). So the
+    // machine comes with us, and its row is repointed once per batch. An unbound
+    // org-wide key proves nothing about any particular machine and is still
+    // refused. (CGLAB-75 / CGLAB-76 follow-up.)
+    if (keyInstallation && foreignInstalls.has(keyInstallation)) {
+      const moved = await ctx.db.run(
+        'UPDATE installations SET org_id = ? WHERE id = ? AND org_id <> ?',
+        [orgId, keyInstallation, orgId],
+      );
+      if (moved.changes > 0) {
+        foreignInstalls.delete(keyInstallation);
+        console.log(
+          `[HUB] Installation ${keyInstallation} adopted into org ${orgId}: its key is bound to it, `
+          + 'so an admin of that org onboarded this machine.',
+        );
+      }
+    }
+
     await ctx.db.transaction(async () => {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
@@ -418,6 +444,15 @@ export function eventsRouter(ctx: HubServerContext): Router {
       }
     });
 
+    if (rejected > 0) {
+      // Rejections used to be invisible on both sides: the client treats any 200
+      // as delivered and deletes the batch, so a systematic rejection destroys
+      // events leaving no trace anywhere.
+      console.warn(
+        `[HUB] Rejected ${rejected} event(s) from org ${orgId}`
+        + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
+      );
+    }
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader });
   });
 

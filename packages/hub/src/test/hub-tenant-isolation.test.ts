@@ -192,6 +192,63 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
     });
   });
 
+  describe('a machine legitimately moving orgs is adopted, not black-holed', () => {
+    // installationId lives in ~/.agenfk/installation-id and is NEVER regenerated,
+    // so a machine re-onboarded into another org keeps its id while the
+    // installations row still names the old org. Rejecting those events destroys
+    // them: the flusher deletes a batch on any 200, so a legitimate tenant loses
+    // data permanently and silently. A BOUND key is the proof that an admin of
+    // this org approved this exact machine — an unbound one proves nothing.
+    beforeEach(async () => {
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
+      await ctx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)
+         VALUES ('moving-inst', 'org-b', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'dev', 'dev@old.com')`,
+      );
+    });
+
+    const moveEvent = (id: string) => ({
+      eventId: id, installationId: 'moving-inst', orgId: 'org-a',
+      occurredAt: '2026-08-21T10:00:00Z',
+      actor: { osUser: 'dev', gitName: 'Dev', gitEmail: 'dev@cglab.com' },
+      type: 'item.created', payload: {},
+    });
+
+    it('ingests events from a machine whose key is bound to it', async () => {
+      const bound = await issueApiKey(ctx.db, 'org-a', 'onboarded', { installationId: 'moving-inst' });
+
+      const r = await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${bound}`).send({ events: [moveEvent('moved-1')] });
+
+      expect(r.body.ingested).toBe(1);
+      expect(r.body.rejected).toBe(0);
+      const stored = await ctx.db.get('SELECT org_id FROM events WHERE event_id = ?', ['moved-1']);
+      expect((stored as any).org_id).toBe('org-a');
+    });
+
+    it('repoints the installation to the org that onboarded it', async () => {
+      const bound = await issueApiKey(ctx.db, 'org-a', 'onboarded', { installationId: 'moving-inst' });
+
+      await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${bound}`).send({ events: [moveEvent('moved-2')] });
+
+      const row = await ctx.db.get('SELECT org_id FROM installations WHERE id = ?', ['moving-inst']);
+      expect((row as any).org_id).toBe('org-a');
+    });
+
+    it('still refuses an unbound org-wide key naming that same machine', async () => {
+      // The attack case: no admin approved this machine into this org.
+      const orgWide = await issueApiKey(ctx.db, 'org-a', 'org-wide');
+
+      const r = await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${orgWide}`).send({ events: [moveEvent('attack-1')] });
+
+      expect(r.body.ingested).toBe(0);
+      const row = await ctx.db.get('SELECT org_id FROM installations WHERE id = ?', ['moving-inst']);
+      expect((row as any).org_id).toBe('org-b');
+    });
+  });
+
   // ── Boundary 2b: within one org, an unattributable key cannot speak for a machine ──
 
   describe('an unattributable org-wide key cannot transition a fleet upgrade', () => {
