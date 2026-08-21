@@ -26,7 +26,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 
 **Step 4 — Close Children First (Bottom-Up)**
 - If the item has children (EPIC with STORYs, STORY with TASKs), run `agenfk list --project <id> --json` (filter by parent) to check their status.
-- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>"` — if no command is provided, the project's verifyCommand runs automatically. The server blocks direct DONE transitions via `agenfk update --status`.
+- Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>" "<build command>"` once per remaining step. Pass a command on every intermediate step — omitting it advances **without running anything**; `verifyCommand` is substituted only on the final step. Never set `DONE` directly by any route.
 - **Sibling propagation**: If one child's `agenfk verify` already reached DONE, remaining siblings will pass immediately (same verified code). Run `agenfk verify <id> --evidence "<evidence>"` on each — the server skips execution via sibling propagation.
 - Any child still sitting in the flow's coding step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
 - Only proceed to Step 5 once ALL children are DONE.

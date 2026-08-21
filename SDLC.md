@@ -9,7 +9,7 @@ This document describes the complete development lifecycle enforced by the AgenF
 **MANDATORY**: AI Agents are strictly prohibited from modifying ANY file in the codebase without an active task in one of the project flow's working steps and a successful `workflow_gatekeeper` call. Do not look for a step named `IN_PROGRESS` — many flows do not have one.
 
 **Hard Block Rules**:
-1. **NO TASK = NO CODE**: If no task is `IN_PROGRESS`, stop immediately and create one.
+1. **NO TASK = NO CODE**: If no task is in one of the flow's working steps, stop immediately and create one. Find it with `list_items({ active: true })` / `agenfk list --active`, not by looking for a step named `IN_PROGRESS`.
 2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
 3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `validate_progress`.
 4. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker. Agents do not (and cannot) self-report it.
@@ -67,6 +67,8 @@ If the item has a `branchName` that exists locally, the **workflow gatekeeper** 
 
 ```
 TODO → IN_PROGRESS → REVIEW → TEST → DONE
+
+**This is the shipped DEFAULT flow, shown as an example.** A project may activate any flow with any step names and ordering; `TODO` and `DONE` are the only anchors always present. The sections below use the default names for illustration — read the real steps from `get_flow` / `agenfk flow show`.
 ```
 
 Each transition has specific rules and enforcement:
@@ -158,8 +160,8 @@ workflow_gatekeeper({ intent, role, itemId })
 ```
 
 The gatekeeper:
-1. Verifies an active task exists in `IN_PROGRESS`.
-2. Validates the agent's role matches the phase (e.g., `coding` requires `IN_PROGRESS`).
+1. Verifies an active task exists in one of the flow's working steps (any non-anchor step).
+2. Records the agent's role. The role is advisory — it never gates on a hardcoded status.
 3. If the item has a `branchName` that exists locally, auto-checks it out.
 4. If the branch is set but does not exist locally, warns the agent to create it manually.
 5. Rejects coding on EPIC/STORY items (must decompose first).
@@ -234,7 +236,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 8. workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
    → Response includes exitCriteria for the current step
 9. validate_progress({ itemId, command: "npm run build" })
-   → Passes → item moves to TEST
+   → Passes → item moves to the next step in the flow
 10. validate_progress({ itemId })
    → Runs project verifyCommand (npm run build && npm test)
    → Passes → item moves to DONE, auto-git-commit triggered
@@ -254,7 +256,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 5. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
 6. [Review — independent when the step's criteria require it] → workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
 7. validate_progress({ itemId, command: "npm run build" })
-   → Passes → TEST
+   → Passes → the next step in the flow
 8. validate_progress({ itemId })
    → Passes → DONE
 ```
@@ -305,10 +307,10 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 
 | Rule | Enforced by |
 |---|---|
-| Must have IN_PROGRESS task before editing files | `workflow_gatekeeper` + PreToolUse hooks |
+| Must have an active task in a working step before editing files | `workflow_gatekeeper` + PreToolUse hooks |
 | Intermediate steps require a build/run gate | `validate_progress` runs agent-chosen command to advance |
 | Cannot set DONE directly | Only `validate_progress` on the final step may land DONE |
 | Final step enforces project verifyCommand | `validate_progress` uses `verifyCommand` on last intermediate step; agent cannot override |
 | Fixes must be BUG items | Enforced in CLAUDE.md, SKILL.md, skill files |
 | Branches managed by developer | No automatic branch creation; developer creates and links branches manually |
-| MCP-first, not CLI | PreToolUse hooks block direct DB/API access |
+| State only through the `agenfk` CLI or MCP | PreToolUse hooks block direct DB/API access |

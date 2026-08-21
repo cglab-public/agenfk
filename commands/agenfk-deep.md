@@ -35,7 +35,7 @@ Identify the user's request and follow the **Deep Mode** protocol in the skill:
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from `agenfk flow show --project <projectId> --json`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names; on a custom flow, advance the parent yourself.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from `agenfk flow show --project <projectId> --json`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names. On a custom flow the parent will lag, so advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`.
 
 ## Sibling Propagation Rule
 

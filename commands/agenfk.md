@@ -16,7 +16,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from the flow you loaded with `agenfk flow show`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names; on a custom flow, advance the parent yourself once its children are all past the step.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from the flow you loaded with `agenfk flow show`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names. On a custom flow the parent will lag, so advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`, which is the forward route the safeguard list forbids.
 
 ## Sibling Propagation Rule
 
@@ -86,15 +86,17 @@ defines none, so this is the common case — empty criteria never mean "no work"
 1. **Read the step you are actually on.** Two different commands, because they carry
    different things — do not expect either to do the other's job:
    - `agenfk flow show --project <projectId> --json` gives you every step **with its
-     `exitCriteria`**. Load it once at session start (Initialization step 3 above) and keep it;
-     this is the only place the criteria come from.
+     `exitCriteria`**. Load it once at session start (Initialization step 3 above) and keep it.
+     Under CLI-only — the default — this is the only place the criteria come from.
    - `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` authorizes the edit and tells
-     you which step the item is **currently on**. It does *not* return the criteria — match the
-     step name it reports against the flow you loaded.
+     you which step the item is **currently on**. The CLI form reports the step but not the
+     criteria; the `workflow_gatekeeper` MCP tool returns both. Either way, match the step it
+     reports against the flow you loaded.
 
    From that flow, identify two things before you start:
    - the **coding step** — the first non-anchor step in the flow;
-   - the **final step** — the last step before the `DONE` anchor.
+   - the **final step** — the step with no successor: the last step before the `DONE` anchor,
+     or simply the last step in the flow if it has no anchor.
 
    Read any criteria before doing anything: they define the bar for this step. Do not infer
    the work from the step's *name* — a step called `REFACTOR` or `DISCOVERY` is not a coding
@@ -103,8 +105,9 @@ defines none, so this is the common case — empty criteria never mean "no work"
 
 2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
    none, default by position: on the **coding step**, explore the codebase and understand the
-   context, then implement the change; on any other step, do the work its position implies and
-   at minimum satisfy step 3 and step 4 below. Along the way:
+   context, then implement the change; on the **final step**, get the project's test suite
+   green; on any **other** step, verify what the previous steps produced — at minimum satisfy
+   step 3 and step 4 below. Along the way:
    - **Evidence-based claims**: before claiming a feature already exists, search the codebase
      for the specific UI components, API endpoints and database queries. Never assume
      implementation status without evidence.
@@ -127,8 +130,10 @@ defines none, so this is the common case — empty criteria never mean "no work"
      is fabricated evidence.
    - **Otherwise — including when there are no criteria at all — review it yourself.** Silent
      criteria mean review yourself, never skip review.
-   - Skip this step only when the criteria explicitly define work that is not review (for
-     example a step whose criteria are "write the failing tests"). Even then, step 4 still applies.
+   - **Skip only when you changed nothing on this step** — a planning or discovery pass that
+     produced no code has nothing to review. If you touched a file, you review it. Criteria
+     describing non-review work ("implement the change", "write the failing tests") tell you
+     what to *do* on this step; they never remove the review of what you did.
 
 4. **Prove it end-to-end.** Re-read every file you modified. For a user-facing feature, trace
    the full path from the interaction to the backend response and confirm it actually triggers
@@ -141,8 +146,9 @@ defines none, so this is the common case — empty criteria never mean "no work"
    The evidence is mandatory and must be concrete. This is the only way to move forward —
    never use `agenfk update --status` to advance, because the server permits a one-step forward
    move, so that write succeeds and advances the item with no evidence and no criteria check.
-   - On the **final step** (the last step before the `DONE` anchor, identified in step 1),
-     **omit the command** — this runs the project's `verifyCommand` and lands DONE.
+   - On the **final step** (identified in step 1), **omit the command** — this runs the
+     project's `verifyCommand` and lands DONE. This is the *only* step where omitting the
+     command substitutes `verifyCommand`.
    - On every **other** step, pass a **build/compile command** for the project's stack
      (e.g. `npm run build`, `cargo build`, `go build ./...`).
    - **Success, and the step you advanced into is `DONE`**: you are finished looping. Skip to
@@ -182,7 +188,8 @@ Use the item's `branchName` if set, otherwise `git push -u origin HEAD`.
 ### Illustration — the loop on the default flow
 
 This is a **worked trace of the rules above**, not a step list to follow. It uses
-placeholders deliberately: substitute the real step names from `activeFlow` for your project.
+placeholders deliberately: substitute the real step names from the flow you loaded with
+`agenfk flow show --project <projectId> --json`.
 
 | Pass | Step you are on | What you do | How you advance |
 |------|-----------------|-------------|-----------------|

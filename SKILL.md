@@ -50,7 +50,8 @@ AgenFK supports two distinct operation modes based on the slash command invoked:
     - When working in parallel, you MUST pass the item ID via `agenfk gatekeeper --intent "<intent>" --item-id <id>` to authorize changes against the specific task.
 *   **Plan & Pause**: Mandatory decomposition into sub-items. You **MUST PAUSE** and obtain human approval of the plan before advancing any item out of `TODO` into its first working step.
 *   **Automated Handover**: Hand off at each step boundary, using the steps the flow actually
-    defines (read them from `activeFlow`) rather than a fixed Code/Review/Test sequence. After
+    defines (read them from `agenfk flow show --project <id> --json`) rather than a fixed
+    Code/Review/Test sequence. After
     each `agenfk verify` succeeds, spawn the agent suited to the step the item just entered —
     a reviewer for a review step, a tester for a verification step, a closer for the final
     step. A flow with five working steps hands off five times; one with two hands off twice.
