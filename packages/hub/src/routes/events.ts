@@ -3,6 +3,7 @@ import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
+import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 
 
 
@@ -182,13 +183,22 @@ export function eventsRouter(ctx: HubServerContext): Router {
     );
     const hiddenUserKeys = new Set(hiddenRows.map(r => r.user_key));
 
+    // CGLAB-72: an identity merged away must not come back. The liveness guard
+    // only refuses a merge while the machine is active, so one dormant past the
+    // window can wake and re-derive its old key; resolving through the alias map
+    // lands it on the merged identity instead of starting a second one. Loaded
+    // once per batch, like the hidden set above.
+    const aliasMap = await loadAliasMap(ctx.db, orgId);
+
     await ctx.db.transaction(async () => {
       for (const e of events) {
         if (!isValidEvent(e)) { rejected++; continue; }
         if (e.orgId !== orgId) { rejected++; continue; }
         if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
-        const userKey = userKeyFor(e.actor, e.installationId);
+        // Resolve BEFORE the hidden check: hiding applies to the person, so a
+        // merged-away key must not be a hole in the rule.
+        const userKey = resolveAliasKey(userKeyFor(e.actor, e.installationId), aliasMap);
         if (hiddenUserKeys.has(userKey)) { hiddenDropped++; continue; }
         seenInstallations.add(e.installationId);
         const itemType = (e as any).itemType

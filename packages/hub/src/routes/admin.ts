@@ -10,6 +10,8 @@ import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubRe
 import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
+import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
+import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -280,12 +282,13 @@ export function adminRouter(ctx: HubServerContext): Router {
   // install whose current git_email implies one user_key while its history
   // carries another is a merge candidate.
   //
-  // What it must NOT do is act on that alone. userKeyFor falls back to a BARE
-  // osUser with no namespacing, so 'dev', 'ubuntu', 'runner' and 'ec2-user' are
-  // buckets rather than people: merging one into the first email seen would
-  // attribute one person's history to another, and there is no unmerge. Hence
-  // the confidence split — conflated candidates are reported with their
-  // breakdown and are never offered as a single action.
+  // What it must NOT do is act on that alone. Historical keys predate the
+  // osUser namespacing, so a source key can still be a BARE username ('dev',
+  // 'ubuntu', 'runner') that belonged to several people at once; merging one
+  // into the first email seen would attribute one person's history to another.
+  // Hence the confidence split — conflated candidates are reported with their
+  // breakdown and are never offered as a single action. Merges are revertible
+  // now, but a revert an admin never realises they need is no protection.
 
   router.get('/identity-suggestions', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
@@ -322,14 +325,13 @@ export function adminRouter(ctx: HubServerContext): Router {
       targetsPerSource.get(r.from_key)!.add(r.to_key);
     }
 
-    // Live keys bound to any installation producing the source key: the merge
-    // endpoint 409s on these, so report it instead of letting the UI fail.
-    const liveRows = await ctx.db.all<{ installation_id: string }>(
-      `SELECT DISTINCT installation_id FROM api_keys
-        WHERE org_id = ? AND revoked_at IS NULL AND installation_id IS NOT NULL`,
-      [orgId],
-    );
-    const liveInstalls = new Set(liveRows.map(r => r.installation_id));
+    // Installations that could still EMIT one of these keys: the merge endpoint
+    // 409s on those, so report it rather than letting the UI discover it by
+    // failing. Keyed on what each installation derives TODAY — asking only
+    // "did it ever produce this key and does it hold a live key?" blocked
+    // merges that were already safe, because a machine that has since acquired
+    // a git email can never re-derive its old osuser: key. (CGLAB-72.)
+    const blockers = await liveIdentityBlockers(ctx.db, orgId);
 
     // Collapse per-installation rows into one suggestion per (from, to) pair.
     const merged = new Map<string, {
@@ -362,8 +364,8 @@ export function adminRouter(ctx: HubServerContext): Router {
         sourceInstallationCount: spread,
         targetCandidateCount: targets,
         confidence: spread === 1 && targets === 1 ? 'unambiguous' : 'conflated',
-        blockedByLiveKey: (sourceSpread.get(m.from) ? [...sourceSpread.get(m.from)!] : [])
-          .some(id => liveInstalls.has(id)),
+        blockedByLiveKey: blockersFor(blockers, m.from).length > 0,
+        blockingInstallations: blockersFor(blockers, m.from),
       };
     });
     // Most history first: the biggest attribution errors are worth fixing first.
@@ -402,6 +404,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
 
     let eventsRestored = 0;
+    let aliasesRemoved = 0;
     await ctx.db.transaction(async () => {
       // Only rows still sitting on this merge's target are ours to move: if a
       // later merge took them onward, reverting here would corrupt the chain.
@@ -431,6 +434,16 @@ export function adminRouter(ctx: HubServerContext): Router {
           [record.from_user_key, orgId, record.to_user_key],
         );
       }
+      // Drop the alias this merge wrote, or the source key stays permanently
+      // redirected and the revert is cosmetic. Scoped by merge_id, so a newer
+      // merge that claimed the same alias keeps it — the same LIFO rule the
+      // event restore follows above.
+      const aliases = await ctx.db.run(
+        'DELETE FROM user_key_aliases WHERE org_id = ? AND merge_id = ?',
+        [orgId, id],
+      );
+      aliasesRemoved = aliases.changes;
+
       await ctx.db.run(
         "UPDATE user_key_merges SET reverted_at = datetime('now') WHERE id = ? AND org_id = ?",
         [id, orgId],
@@ -451,6 +464,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       from: record.from_user_key,
       to: record.to_user_key,
       eventsRestored,
+      aliasesRemoved,
       daysRecomputed,
       note: eventsRestored === 0
         ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
@@ -637,38 +651,40 @@ export function adminRouter(ctx: HubServerContext): Router {
     // endpoint answered 200 with eventsMoved 0, a silent no-op reported as
     // success. Self-merge is still compared case-insensitively.
     const from = String(req.body?.from ?? '').trim();
-    const to = String(req.body?.to ?? '').trim();
-    if (!from || !to) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+    const requestedTo = String(req.body?.to ?? '').trim();
+    if (!from || !requestedTo) { res.status(400).json({ error: 'Both from and to are required' }); return; }
+
+    // Merging ONTO a key that has itself been merged away would split the
+    // identity: history would land on the stale target while ingest, which
+    // resolves aliases, kept sending new events onward to the real one. The
+    // admin typed a name they saw somewhere; follow it to the same place ingest
+    // would. Reported back as `to` so the response never misstates what it did.
+    const to = resolveAliasKey(requestedTo, await loadAliasMap(ctx.db, orgId));
     if (from.toLowerCase() === to.toLowerCase()) {
       res.status(400).json({ error: 'Cannot merge a user key onto itself' });
       return;
     }
 
-    // Ordering guard. Merging while the source can still ingest means new
-    // events keep landing under the old key behind us, so the repair silently
-    // undoes itself. Retire the installation (or revoke its key) first.
-    // Mirror userKeyFor: an installation with no git email produces its
-    // os_user as the key. Matching only lower(git_email) left exactly the
-    // phantom-identity installs this endpoint exists for invisible to the
-    // guard, so the merge committed and their next event recreated the key.
-    const live = await ctx.db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM api_keys
-        WHERE org_id = ? AND revoked_at IS NULL
-          AND installation_id IN (
-            SELECT id FROM installations
-             WHERE org_id = ?
-               AND (
-                 (git_email IS NOT NULL AND git_email <> '' AND lower(git_email) = lower(?))
-                 OR ((git_email IS NULL OR git_email = '') AND os_user = ?)
-               )
-          )`,
-      [orgId, orgId, from, from],
-    );
-    if (live && Number(live.n) > 0) {
+    // Ordering guard. Merging while the source can still ingest means new events
+    // keep landing under the old key behind us, so the repair silently undoes
+    // itself. Retire the installation (or revoke its key) first.
+    //
+    // Shared with the Identities tab's advisory flag, and deliberately asks what
+    // each installation derives TODAY. The previous guard compared os_user to
+    // the bare username, but keys are namespaced (osuser:<user>@<prefix>) and
+    // the migration rewrote the historical bare ones — so the branch written for
+    // exactly this case matched nothing and let the merge through. (CGLAB-72.)
+    //
+    // Only recently-seen machines block: a laptop dormant for weeks would
+    // otherwise hold a repair hostage forever. What stops it resurrecting the
+    // key when it does wake is the alias recorded below, not this guard.
+    const blocking = blockersFor(await liveIdentityBlockers(ctx.db, orgId), from);
+    if (blocking.length > 0) {
       res.status(409).json({
-        error: `Refusing to merge: ${live.n} live api key(s) still bound to "${from}". `
-             + 'Retire those installations (or revoke the keys) first, otherwise new events '
-             + 'keep arriving under the old key after the merge.',
+        error: `Refusing to merge: ${blocking.length} active installation(s) with a live api key still `
+             + `report as "${from}". Retire those installations (or revoke their keys) first, `
+             + 'otherwise new events keep arriving under the old key after the merge.',
+        installations: blocking,
       });
       return;
     }
@@ -715,10 +731,25 @@ export function adminRouter(ctx: HubServerContext): Router {
       await ctx.db.run('DELETE FROM rollups_daily WHERE org_id = ? AND user_key = ?', [orgId, from]);
 
       // Without this the next ingested event rebuilds the old key from the
-      // installation's git_email and the merge undoes itself.
+      // installation's git_email and the merge undoes itself. Only reaches
+      // email-derived sources — an osuser: key has no git_email to repoint,
+      // which is what the alias below covers.
       await ctx.db.run(
         'UPDATE installations SET git_email = ? WHERE org_id = ? AND lower(git_email) = lower(?)',
         [to, orgId, from],
+      );
+
+      // Where this identity went, so a machine waking after the liveness window
+      // resolves onto the merged key instead of starting a second identity.
+      // Any alias that pointed AT the source follows it, so ingest never has to
+      // walk a chain that outlives its own hop cap.
+      await ctx.db.run(
+        `INSERT INTO user_key_aliases (org_id, alias_key, canonical_key, merge_id)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(org_id, alias_key) DO UPDATE SET
+           canonical_key = excluded.canonical_key,
+           merge_id = excluded.merge_id`,
+        [orgId, from, to, mergeId],
       );
 
       // Deliberately NOT inherited by the target: a merge asserts the two keys
@@ -742,7 +773,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       daysRecomputed = (await recomputeRollups(ctx.db, { since: span?.first_day ?? undefined, full: !span?.first_day, orgId })).days;
     }
 
-    res.json({ mergeId, from, to, eventsMoved, daysRecomputed, sourceWasHidden });
+    res.json({
+      mergeId, from, to, eventsMoved, daysRecomputed, sourceWasHidden,
+      // Only differs when the requested target had itself been merged away.
+      requestedTo: requestedTo === to ? undefined : requestedTo,
+    });
   });
 
   // ── Installation retirement (CGLAB-64) ────────────────────────────────────

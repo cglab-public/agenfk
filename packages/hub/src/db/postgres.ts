@@ -252,6 +252,19 @@ const SCHEMA_PG = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
+  -- Where a merged-away identity went (CGLAB-72). See the SQLite schema for the
+  -- reasoning: ingest resolves through this so a machine waking after the
+  -- liveness window cannot resurrect a key its merge retired.
+  CREATE TABLE IF NOT EXISTS user_key_aliases (
+    org_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    merge_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, alias_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,

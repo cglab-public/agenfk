@@ -44,11 +44,14 @@ describe('user_key merge admin API', () => {
       [id, installationId, userKey, `${day}T09:00:00Z`, `${day}T09:00:00Z`],
     );
 
-  const seedInstallation = (id: string, gitEmail: string | null) =>
+  // last_seen is 'now' by default: the guard only blocks on installations seen
+  // inside the liveness window, so a seeded machine has to look active for the
+  // live-key tests to exercise the path they describe. (CGLAB-72.)
+  const seedInstallation = (id: string, gitEmail: string | null, lastSeen?: string) =>
     ctx.db.run(
       `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-       VALUES (?, 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, ?)`,
-      [id, gitEmail],
+       VALUES (?, 'org-a', '2026-01-01T00:00:00Z', ?, 'dev', null, ?)`,
+      [id, lastSeen ?? new Date().toISOString(), gitEmail],
     );
 
   const seedApiKey = (tokenHash: string, installationId: string) =>
@@ -177,33 +180,48 @@ describe('user_key merge admin API', () => {
       expect(await eventKeys()).toEqual(['dev@acme.com']);
     });
 
-    it('refuses while an installation with no git email still holds a live key', async () => {
-      // Its user_key comes from os_user, so a guard matching only on
-      // lower(git_email) cannot see it — and the machine recreates the key on
-      // its very next event, silently undoing the merge.
-      await ctx.db.run(
-        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-         VALUES ('inst-noemail', 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, null)`,
-      );
-      await seedApiKey('hash-live', 'inst-noemail');
-      await addEvent('e1', 'dev', '2026-02-01');
+    // A no-git-email machine derives 'osuser:<user>@<installation-prefix>', so
+    // that — not the bare username — is the key the guard has to recognise. The
+    // guard used to compare os_user to the bare form, matched nothing, and let
+    // through exactly the merge it existed to refuse. (CGLAB-72.)
+    const noEmailInstall = (lastSeen: string) => ctx.db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
+       VALUES ('aaaabbbb-1111-2222-3333', 'org-a', '2026-01-01T00:00:00Z', ?, 'dev', null, null)`,
+      [lastSeen],
+    );
+    const recently = () => new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const longAgo = () => new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const NAMESPACED = 'osuser:dev@aaaabbbb';
 
-      const r = await merge('dev', 'dev@acme.com');
+    it('refuses while an active installation with no git email still holds a live key', async () => {
+      await noEmailInstall(recently());
+      await seedApiKey('hash-live', 'aaaabbbb-1111-2222-3333');
+      await addEvent('e1', NAMESPACED, '2026-02-01');
+
+      const r = await merge(NAMESPACED, 'dev@acme.com');
 
       expect(r.status).toBe(409);
-      expect(await eventKeys()).toEqual(['dev']); // nothing moved
+      expect(await eventKeys()).toEqual([NAMESPACED]); // nothing moved
     });
 
     it('proceeds for a no-git-email installation once its key is revoked', async () => {
-      await ctx.db.run(
-        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-         VALUES ('inst-noemail', 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', 'dev', null, null)`,
-      );
-      await seedApiKey('hash-live', 'inst-noemail');
+      await noEmailInstall(recently());
+      await seedApiKey('hash-live', 'aaaabbbb-1111-2222-3333');
       await ctx.db.run("UPDATE api_keys SET revoked_at = datetime('now') WHERE token_hash = 'hash-live'");
-      await addEvent('e1', 'dev', '2026-02-01');
+      await addEvent('e1', NAMESPACED, '2026-02-01');
 
-      expect((await merge('dev', 'dev@acme.com')).status).toBe(200);
+      expect((await merge(NAMESPACED, 'dev@acme.com')).status).toBe(200);
+    });
+
+    it('proceeds once that installation has been dormant past the liveness window', async () => {
+      // A laptop nobody has opened in a week must not hold a repair hostage.
+      // The alias written by the merge is what stops it resurrecting the key.
+      await noEmailInstall(longAgo());
+      await seedApiKey('hash-live', 'aaaabbbb-1111-2222-3333');
+      await addEvent('e1', NAMESPACED, '2026-02-01');
+
+      expect((await merge(NAMESPACED, 'dev@acme.com')).status).toBe(200);
+      expect(await eventKeys()).toEqual(['dev@acme.com']);
     });
   });
 

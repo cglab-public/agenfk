@@ -146,6 +146,7 @@ server (the UI, CLI, install script) reads that file rather than assuming
 | `AGENFK_HUB_PUBLIC_URL` | no | Origin used in OIDC redirects + magic-link emails. |
 | `AGENFK_HUB_INITIAL_ADMIN_EMAIL` / `_PASSWORD` | no | Bootstraps the first admin without the `/setup` wizard. |
 | `AGENFK_HUB_UI_DIR` | no | Override for the SPA bundle path (auto-detected). |
+| `AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS` | no | How recently an installation must have reported to block an identity merge (default `48`). A machine dormant longer stops blocking; the alias the merge records is what prevents it resurrecting the key. |
 
 For staging deployments, secrets typically live in AWS Secrets Manager (or
 equivalent) under `agenfk-hub-<env>/{pg-url,hub-secret-key,hub-session-secret}`

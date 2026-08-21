@@ -51,6 +51,22 @@ describe('mergeBlockedReason', () => {
     expect(reason.toLowerCase()).toMatch(/more than one|several|different people|another/);
   });
 
+  it('names how many installations block, so the admin knows the scope', () => {
+    const reason = mergeBlockedReason(s({
+      blockedByLiveKey: true, blockingInstallations: ['inst-1', 'inst-2'],
+    })) ?? '';
+    expect(reason).toContain('2');
+    expect(reason).toMatch(/those installations|their keys/);
+  });
+
+  it('stays singular for a single blocking installation', () => {
+    const reason = mergeBlockedReason(s({
+      blockedByLiveKey: true, blockingInstallations: ['inst-1'],
+    })) ?? '';
+    expect(reason).toMatch(/that installation|its key/);
+    expect(reason).not.toMatch(/those installations|their keys/);
+  });
+
   it('reports the live key first when both apply, since it blocks server-side', () => {
     const reason = mergeBlockedReason(s({ confidence: 'conflated', blockedByLiveKey: true })) ?? '';
     expect(reason).toMatch(/live/i);

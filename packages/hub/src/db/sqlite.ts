@@ -269,6 +269,22 @@ const SCHEMA_SQLITE = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Where a merged-away identity went (CGLAB-72). The liveness guard only
+  -- blocks a merge while a machine is still active, so an installation dormant
+  -- past the window can wake later and re-derive a key that was merged away.
+  -- Ingest resolves through this table, so it lands on the merged identity
+  -- instead of starting a second one. Stamped with the merge that wrote it, so
+  -- a revert removes exactly its own rows.
+  CREATE TABLE IF NOT EXISTS user_key_aliases (
+    org_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    canonical_key TEXT NOT NULL,
+    merge_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, alias_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,

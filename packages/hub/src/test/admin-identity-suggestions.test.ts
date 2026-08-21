@@ -5,10 +5,10 @@
 //
 // installation_id is immutable provenance, so an installation whose current
 // git_email implies one user_key while its history carries another is a
-// candidate. What the hub must NOT do is act on that alone: userKeyFor falls
-// back to a bare osUser with no namespacing, so 'dev', 'ubuntu' and 'runner' are
-// buckets rather than people. Merging a bucket into the first email seen would
-// attribute one person's history to another, and there is no unmerge.
+// candidate. What the hub must NOT do is act on that alone: historical keys
+// predate the osUser namespacing, so a source key can still be a bare 'dev',
+// 'ubuntu' or 'runner' that was a bucket rather than a person. Merging a bucket
+// into the first email seen would attribute one person's history to another.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -37,7 +37,7 @@ describe('identity-merge suggestions', () => {
   const install = (id: string, gitEmail: string | null, osUser = 'dev') =>
     ctx.db.run(
       `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_name, git_email)
-       VALUES (?, 'org-a', '2026-01-01T00:00:00Z', '2026-05-06T00:00:00Z', ?, null, ?)`,
+       VALUES (?, 'org-a', '2026-01-01T00:00:00Z', datetime('now'), ?, null, ?)`,
       [id, osUser, gitEmail],
     );
 
@@ -197,23 +197,57 @@ describe('identity-merge suggestions', () => {
   });
 
   describe('live-key blocking', () => {
-    it('flags a suggestion whose source installation still holds a live key', async () => {
-      // The merge endpoint 409s here; the UI must pre-empt that rather than
-      // letting an admin discover it by failing.
+    // The flag mirrors the merge endpoint's 409, so the UI pre-empts it rather
+    // than letting an admin discover it by failing. It asks what an
+    // installation derives TODAY: holding a live key is not enough, because a
+    // machine that has since acquired a git email can never re-emit its old
+    // key and the merge is already safe. (CGLAB-72.)
+    it('does not flag a source key its installation can no longer produce', async () => {
+      // inst-1 now reports guilherme@cglab.com, so 'gcs' cannot come back.
       await install('inst-1', 'guilherme@cglab.com', 'gcs');
       await event('e1', 'inst-1', 'gcs');
       await liveKey('hash-live', 'inst-1');
 
-      expect((await suggestions()).body[0].blockedByLiveKey).toBe(true);
+      expect((await suggestions()).body[0].blockedByLiveKey).toBe(false);
+    });
+
+    it('flags a suggestion whose source key a live installation still reports', async () => {
+      // Mid email change: the old machine is still on old@ and still ingesting.
+      await install('inst-1', 'old@cglab.com', 'dev');
+      await install('inst-2', 'new@cglab.com', 'dev');
+      await event('e1', 'inst-1', 'old@cglab.com');
+      await event('e2', 'inst-2', 'old@cglab.com');
+      await liveKey('hash-live', 'inst-1');
+
+      const row = (await suggestions()).body.find((s: any) => s.from === 'old@cglab.com');
+      expect(row.blockedByLiveKey).toBe(true);
     });
 
     it('does not flag it once the key is revoked', async () => {
-      await install('inst-1', 'guilherme@cglab.com', 'gcs');
-      await event('e1', 'inst-1', 'gcs');
+      await install('inst-1', 'old@cglab.com', 'dev');
+      await install('inst-2', 'new@cglab.com', 'dev');
+      await event('e1', 'inst-1', 'old@cglab.com');
+      await event('e2', 'inst-2', 'old@cglab.com');
       await liveKey('hash-live', 'inst-1');
       await ctx.db.run("UPDATE api_keys SET revoked_at = datetime('now') WHERE token_hash = 'hash-live'");
 
-      expect((await suggestions()).body[0].blockedByLiveKey).toBe(false);
+      const row = (await suggestions()).body.find((s: any) => s.from === 'old@cglab.com');
+      expect(row.blockedByLiveKey).toBe(false);
+    });
+
+    it('does not flag it once that installation has gone dormant', async () => {
+      await install('inst-1', 'old@cglab.com', 'dev');
+      await install('inst-2', 'new@cglab.com', 'dev');
+      await ctx.db.run(
+        "UPDATE installations SET last_seen = ? WHERE id = 'inst-1'",
+        [new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()],
+      );
+      await event('e1', 'inst-1', 'old@cglab.com');
+      await event('e2', 'inst-2', 'old@cglab.com');
+      await liveKey('hash-live', 'inst-1');
+
+      const row = (await suggestions()).body.find((s: any) => s.from === 'old@cglab.com');
+      expect(row.blockedByLiveKey).toBe(false);
     });
   });
 

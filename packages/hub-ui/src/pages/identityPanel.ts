@@ -1,10 +1,16 @@
 // Decision logic for the Admin → Identities tab (task f78c0849).
 //
-// A merge rewrites history and cannot be undone, so this module's job is to be
-// conservative about which suggestions are offered as a single action. The hub
-// derives candidates from immutable installation provenance, but `userKeyFor`
-// falls back to a BARE osUser with no namespacing — so keys like 'dev',
-// 'ubuntu' and 'runner' can be several people at once.
+// A merge rewrites history, so this module's job is to be conservative about
+// which suggestions are offered as a single action. The hub derives candidates
+// from immutable installation provenance, but historical keys predate the osUser
+// namespacing — so a source key like 'dev', 'ubuntu' or 'runner' can still be
+// several people at once. Merges are revertible, but a revert an admin never
+// realises they need is no protection.
+//
+// `blockedByLiveKey` means an installation reports this key TODAY and is still
+// ingesting; a machine dormant past the hub's liveness window does not block,
+// because the merge records an alias that stops it resurrecting the key.
+// (CGLAB-72.)
 
 export type Confidence = 'unambiguous' | 'conflated';
 
@@ -19,6 +25,8 @@ export interface SuggestionLike {
   targetCandidateCount: number;
   confidence: Confidence;
   blockedByLiveKey: boolean;
+  /** Installations that still report `from`; present when blockedByLiveKey. */
+  blockingInstallations?: string[];
 }
 
 /**
@@ -37,9 +45,13 @@ export function canMergeInOneClick(sug: SuggestionLike): boolean {
  */
 export function mergeBlockedReason(sug: SuggestionLike): string | null {
   if (sug.blockedByLiveKey) {
+    const n = sug.blockingInstallations?.length ?? 0;
+    const many = n > 1;
     return (
-      `"${sug.from}" still has a live API key, so new events would keep arriving under it after ` +
-      `the merge. Retire that installation, or revoke its key, first.`
+      `${many ? `${n} active installations still report` : 'An active installation still reports'} ` +
+      `"${sug.from}" and ${many ? 'hold live API keys' : 'holds a live API key'}, so new events would ` +
+      `keep arriving under it after the merge. Retire ${many ? 'those installations' : 'that installation'}, ` +
+      `or revoke ${many ? 'their keys' : 'its key'}, first.`
     );
   }
   if (sug.confidence === 'conflated') {
