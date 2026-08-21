@@ -16,7 +16,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 
 ## Parent-Child Status Propagation Rule
 
-**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from the flow you loaded with `agenfk flow show`, not from a fixed pipeline. Note that the server only auto-rolls a parent forward for the default step names. On a custom flow the parent will lag, so advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`, which is the forward route the safeguard list forbids.
+**MANDATORY**: A parent item (EPIC or STORY) can ONLY move forward to a step once **ALL** of its child items have reached that step or gone past it. Read the steps from the flow you loaded with `agenfk flow show`, not from a fixed pipeline. The server auto-rolls a parent forward on ANY flow — by position in the active flow, up to the step of the least-advanced live child, forward only. If the parent is nonetheless left behind (for example after a manual rollback), advance it with `agenfk verify <parentId> --evidence "<all children are past this step>"` once its children are — never with `agenfk update --status`, which is the forward route the safeguard list forbids.
 
 ## Sibling Propagation Rule
 
