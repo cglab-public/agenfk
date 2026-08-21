@@ -24,6 +24,34 @@ export function isEmailShapedKey(key: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(key);
 }
 
+/**
+ * Could this string plausibly name a person or a machine account?
+ *
+ * Deliberately weak: one letter or digit anywhere. Usernames are wildly varied —
+ * unicode, dots, dashes, underscores, a trailing `$` on Windows service accounts
+ * — and rejecting a real person is worse than accepting an odd-looking one,
+ * because the fallback costs them their attribution, which is the exact harm the
+ * identity work exists to repair. This only has to catch values that cannot
+ * name anyone at all. (CGLAB-77.)
+ */
+function namesSomeone(value: string): boolean {
+  return /[\p{L}\p{N}]/u.test(value);
+}
+
+/**
+ * Is this a usable git email?
+ *
+ * NOT `isEmailShapedKey`, which demands a dotted domain: `root@localhost` is a
+ * real address on internal hosts and rejecting it would silently downgrade those
+ * machines to an osUser identity. This asks only for an `@` with something
+ * nameable on each side.
+ */
+function usableGitEmail(value: string): boolean {
+  const at = value.indexOf('@');
+  if (at <= 0 || at === value.length - 1) return false;
+  return namesSomeone(value.slice(0, at)) && namesSomeone(value.slice(at + 1));
+}
+
 /** Is this key already scoped to an installation by us? */
 export function isNamespacedOsUserKey(key: string): boolean {
   return key.startsWith(OS_USER_KEY_PREFIX);
@@ -35,7 +63,12 @@ export function isNamespacedOsUserKey(key: string): boolean {
  * readable in a table cell.
  */
 export function namespacedOsUserKey(osUser: string, installationId: string): string {
-  const who = osUser.trim() || 'unknown';
+  const trimmed = osUser.trim();
+  // A value that cannot name anyone becomes the unknown identity rather than a
+  // person. Production minted `osuser:=@5d686242` from a six-hour glitch on one
+  // machine, and it took an admin merge to undo — a transient blip must not
+  // create a permanent identity. (CGLAB-77.)
+  const who = namesSomeone(trimmed) ? trimmed : 'unknown';
   return `${OS_USER_KEY_PREFIX}${who}@${installationId.replace(/^inst-/, '').slice(0, INSTALLATION_PREFIX_LENGTH)}`;
 }
 
@@ -47,11 +80,15 @@ export function namespacedOsUserKey(osUser: string, installationId: string): str
  * Windows `DPolistchuck` is how the account is actually named.
  */
 export function userKeyFor(actor: HubEvent['actor'], installationId: string): string {
+  // Junk here is worse than junk in osUser: an email key is NOT namespaced by
+  // installation, so it pools across every machine reporting it — the shared
+  // bucket that namespacing exists to prevent. (CGLAB-77.)
   const email = actor.gitEmail?.trim();
-  if (email) return email.toLowerCase();
+  if (email && usableGitEmail(email)) return email.toLowerCase();
   const osUser = actor.osUser?.trim() ?? '';
+  const who = namesSomeone(osUser) ? osUser : '';
   // No installation to scope by — an event this malformed is better keyed
   // honestly than given an invented scope.
-  if (!installationId) return osUser || 'unknown';
-  return namespacedOsUserKey(osUser, installationId);
+  if (!installationId) return who || 'unknown';
+  return namespacedOsUserKey(who, installationId);
 }
