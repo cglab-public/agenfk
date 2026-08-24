@@ -86,6 +86,14 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
 - **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
 
+### Long-running commands — async execution MANDATORY
+
+Codex's shell tool yields after a bounded window (the default `yield_time_ms` is ~30s). AgEnFK commands that run a full test suite — the project test command behind `agenfk log-test <id> --command "..."` — and the final-step `agenfk verify <id> --evidence "..."` (which runs the project's verify command to land DONE) routinely exceed it. A synchronously-truncated tool call never sees the completed result, so for any command expected to outlast the yield window:
+
+- Run it as an async task: pass `yield_time_ms` (e.g. 30000) in the shell tool call so it yields with the process still running instead of being cut off, then **wait** — poll the running process (an empty `write_stdin` write polls without sending input) until it **completes**, and read its final output and exit status.
+- Only once the process has finished, log the result (`agenfk log-test <id> ... --status PASSED|FAILED`) or advance the step (`agenfk verify ...`). A suite that was still running when you stopped waiting has NOT passed: never log PASSED on an incomplete run, and never land DONE without the completed verify output in hand.
+- Short commands (gatekeeper, comments, item reads, status checks) stay synchronous as usual — this rule targets the slow ones: full test runs, the final-step verify, heavy builds.
+
 ### STRICTLY FORBIDDEN shortcuts
 
 **NEVER** bypass the `agenfk` CLI/server by using these shortcuts:

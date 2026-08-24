@@ -37,11 +37,22 @@ describe('buildDirective', () => {
     });
   });
 
-  it('codex: emits decision/reason envelope', () => {
+  // CGLAB-86: Codex 0.149.0 rejects the old {decision:'continue',reason}
+  // envelope with "hook returned invalid post-tool-use JSON output" —
+  // `continue` is a field of the Stop-family output, not a PostToolUse
+  // decision value. Verified empirically against codex-cli 0.149.0: the old
+  // shape prints "hook: PostToolUse Failed", the hookSpecificOutput shape
+  // prints "hook: PostToolUse Completed". The valid nudge shape mirrors
+  // Claude Code's hookSpecificOutput envelope (PostToolUseHookSpecificOutput
+  // wire struct: hookEventName / additionalContext / updatedMCPToolOutput).
+  it('codex: emits the valid PostToolUse hookSpecificOutput envelope', () => {
     expect(buildDirective('codex', message)).toEqual({
-      decision: 'continue',
-      reason: message,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message },
     });
+  });
+
+  it('codex: never emits a top-level decision field (only `block` is a valid PostToolUse decision)', () => {
+    expect(buildDirective('codex', message)).not.toHaveProperty('decision');
   });
 
   it('gemini: emits context injection', () => {
@@ -90,6 +101,47 @@ describe('runtime command extraction', () => {
 
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('update_pr_sizing');
+  });
+
+  // CGLAB-86 regression: the exact payload shape Codex pipes to PostToolUse
+  // hooks (captured from a live codex-cli 0.149.0 session) must produce
+  // schema-valid JSON on stdout for the codex client.
+  it('emits valid PostToolUse JSON for a real Codex push payload', () => {
+    const codexPayload = {
+      session_id: '01a03454-b72d-7f92-bab5-d5fe4b3db16c',
+      turn_id: '01a03454-b756-7051-8081-97f92946ed1f',
+      hook_event_name: 'PostToolUse',
+      model: 'gpt-5.6-terra',
+      permission_mode: 'bypassPermissions',
+      tool_name: 'Bash',
+      tool_input: { command: 'git add -A && git commit -m x && git push -u origin HEAD' },
+      tool_response: 'ok\n',
+      tool_use_id: 'exec-44ec5461-ccbb-41d9-b2ab-dcd6e6e909d0',
+    };
+    const res = spawnSync(process.execPath, [hookPath, '--client', 'codex'], {
+      input: JSON.stringify(codexPayload),
+      encoding: 'utf8',
+    });
+
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout);
+    expect(out).not.toHaveProperty('decision'); // `decision: continue` is what codex rejected
+    expect(out.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    // `git push -u origin HEAD` must resolve to the real branch (the hook runs
+    // git in the test process cwd = repo root), not the literal symbolic
+    // 'HEAD' — unless the repo is genuinely detached, in which case 'HEAD'
+    // is the honest answer.
+    const actualBranch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    expect(out.hookSpecificOutput.additionalContext).toContain(`pushed to '${actualBranch}'`);
+  });
+
+  it('emits nothing (valid no-op) when no trigger is present', () => {
+    const res = spawnSync(process.execPath, [hookPath, '--client', 'codex'], {
+      input: JSON.stringify({ tool_input: { command: 'npm test' } }),
+      encoding: 'utf8',
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('');
   });
 });
 
