@@ -2310,10 +2310,17 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     if (!validTypes.includes(type)) {
       return res.status(400).json({ error: `Invalid type '${type}'. Must be one of: ${validTypes.join(', ')}` });
     }
-    // Prevent type change on items with children
-    const children = await storage.listChildren(req.params.id);
-    if (children.length > 0 && type !== currentItem.type) {
-      return res.status(400).json({ error: `Cannot change type of item with children. Remove or reassign children first.` });
+    if (type !== currentItem.type) {
+      // With sub-items, the ONLY allowed type change is EPIC -> STORY: an
+      // epic's children are stories, so demoting the parent to a story keeps
+      // the EPIC -> STORY -> TASK hierarchy coherent. Every other transition
+      // on an item that has children would break the shape the board relies
+      // on, so it stays blocked (CGLAB-86).
+      const children = await storage.listChildren(req.params.id);
+      const epicToStory = currentItem.type === ItemType.EPIC && type === ItemType.STORY;
+      if (children.length > 0 && !epicToStory) {
+        return res.status(400).json({ error: `Cannot change type of an item with children. Only EPIC -> STORY is allowed when the item has sub-items; for any other transition, remove or reassign the children first.` });
+      }
     }
   }
 

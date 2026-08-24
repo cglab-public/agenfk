@@ -106,7 +106,15 @@ export function buildDirective(client, message) {
     case 'claude-code':
       return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message } };
     case 'codex':
-      return { decision: 'continue', reason: message };
+      // CGLAB-86: the old { decision: 'continue', reason } envelope was REJECTED
+      // by Codex with "hook returned invalid post-tool-use JSON output" —
+      // `continue` is a field of the Stop-family hook output, not a PostToolUse
+      // decision value. Verified empirically against codex-cli 0.149.0: the old
+      // shape => "hook: PostToolUse Failed"; the hookSpecificOutput envelope
+      // below => "hook: PostToolUse Completed" (its wire struct carries
+      // hookEventName / additionalContext / updatedMCPToolOutput; the only
+      // valid top-level decision is `block`, which this nudge never wants).
+      return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message } };
     case 'gemini':
       return { decision: 'continue', context: message };
     case 'cursor':
