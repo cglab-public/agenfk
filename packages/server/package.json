@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/server",
-  "version": "1.1.15",
+  "version": "1.1.16-beta.3",
   "description": "MCP Server for AgenFK Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,9 +12,9 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@agenfk/core": "1.1.15",
-    "@agenfk/storage-sqlite": "1.1.15",
-    "@agenfk/telemetry": "1.1.15",
+    "@agenfk/core": "1.1.16-beta.3",
+    "@agenfk/storage-sqlite": "1.1.16-beta.3",
+    "@agenfk/telemetry": "1.1.16-beta.3",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "axios": "^1.19.0",
     "body-parser": "^2.3.0",
