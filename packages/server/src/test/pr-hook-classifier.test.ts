@@ -126,10 +126,13 @@ describe('runtime command extraction', () => {
     expect(res.status).toBe(0);
     const out = JSON.parse(res.stdout);
     expect(out).not.toHaveProperty('decision'); // `decision: continue` is what codex rejected
-    expect(out.hookSpecificOutput).toEqual({
-      hookEventName: 'PostToolUse',
-      additionalContext: expect.stringContaining("'HEAD'"),
-    });
+    expect(out.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+    // `git push -u origin HEAD` must resolve to the real branch (the hook runs
+    // git in the test process cwd = repo root), not the literal symbolic
+    // 'HEAD' — unless the repo is genuinely detached, in which case 'HEAD'
+    // is the honest answer.
+    const actualBranch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    expect(out.hookSpecificOutput.additionalContext).toContain(`pushed to '${actualBranch}'`);
   });
 
   it('emits nothing (valid no-op) when no trigger is present', () => {

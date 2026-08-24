@@ -2,17 +2,19 @@
  * CGLAB-86 — "The CJS build of Vite's Node API is deprecated."
  *
  * That warning was emitted by Vite 5/6 whenever Vite's Node API was loaded
- * through a CJS require of the `vite` package. The repo no longer has that failure mode:
- * both UI workspaces are ESM (`"type": "module"`, so their `vite.config.ts`
- * is loaded as ESM) and the locked Vite is >= 7, where the CJS Node entry —
- * and therefore the deprecation warning — no longer exists.
+ * through a CJS require of the `vite` package. The repo no longer has that
+ * failure mode: both UI workspaces are ESM (`"type": "module"`, so their
+ * `vite.config.ts` is loaded as ESM) and the locked Vite is >= 7, where the
+ * CJS Node entry — and therefore the deprecation warning — no longer exists.
  *
  * This suite pins that invariant so the warning cannot creep back in:
  *   - a downgrade of the locked Vite below 7 (back to a CJS-capable build),
  *   - a workspace losing `"type": "module"` while keeping a vite config,
- *   - any source file reintroducing a CJS require of Vite's Node API (see the
- *     CJS_REQUIRE_VITE pattern below — deliberately built from parts so this
- *     file cannot flag itself).
+ *   - any source file reintroducing a CJS load of Vite's Node API
+ *     (require('vite') incl. spaced/commented forms, TS import-equals).
+ * The file scan skips this file itself (its mutation test cases contain the
+ * very literals it hunts for); the matcher is unit-tested against those
+ * forms directly below.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
@@ -20,9 +22,16 @@ import path from 'path';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 
-// Built from parts so the pattern's own source text never contains the
-// literal it hunts for (a doc comment mentioning it would self-flag).
-const CJS_REQUIRE_VITE = new RegExp(`require\\(\\s*['"]vite['"]\\s*\\)`);
+// CJS loads of the vite package: require('vite'), require ('vite'),
+// require(/* c */ 'vite'), require( 'vite'), and TS import-equals
+// (import x = require('vite')). Exact package name only — 'vite-plugin-x'
+// does NOT match, and neither do ESM forms (import ... from 'vite',
+// dynamic import('vite')). Single line on purpose: in non-`v` regexes
+// literal whitespace is significant, so a multi-line pattern would demand
+// the indentation as part of the match.
+const CJS_LOAD_VITE = new RegExp(
+  String.raw`(?:require\s*(?:/\*[\s\S]*?\*/)?\s*\(|import\s+[\w$]+\s*=\s*require\s*(?:/\*[\s\S]*?\*/)?\s*\()\s*(?:/\*[\s\S]*?\*/)?\s*['"]vite['"]`
+);
 const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git']);
 
 /** Collect source files (js/ts/mjs/cjs/cts/mts) under dir, skipping ignored dirs. */
@@ -41,6 +50,28 @@ function collectSourceFiles(dir: string): string[] {
 }
 
 describe('CGLAB-86 — Vite CJS Node API deprecation guard', () => {
+  it('the matcher catches CJS load forms and does not false-positive on ESM', () => {
+    const bad = [
+      "require('vite')",
+      'require ("vite")',
+      "require/* load */('vite')",
+      "require(/* load */ 'vite')",
+      "require( 'vite')",
+      "require (/* x */'vite')",
+      "import vite = require('vite')",
+    ];
+    for (const s of bad) expect(CJS_LOAD_VITE.test(s), `should flag: ${s}`).toBe(true);
+
+    const good = [
+      "import { defineConfig } from 'vite';",
+      "const vite = await import('vite');",
+      "import('vite')",
+      "require('vite-plugin-react')",
+      "require('vitest')",
+    ];
+    for (const s of good) expect(CJS_LOAD_VITE.test(s), `should not flag: ${s}`).toBe(false);
+  });
+
   it('both UI workspaces are ESM so their vite configs load through the ESM Node API', () => {
     for (const ws of ['packages/ui', 'packages/hub-ui']) {
       const pkg = JSON.parse(readFileSync(path.join(ROOT, ws, 'package.json'), 'utf8'));
@@ -55,23 +86,24 @@ describe('CGLAB-86 — Vite CJS Node API deprecation guard', () => {
   });
 
   it('no source file loads Vite\'s Node API via CJS require', () => {
+    const SELF = path.join(__dirname, 'vite-cjs-deprecation.test.ts');
     const offenders: string[] = [];
+    const scanFile = (file: string) => {
+      if (file === SELF) return; // this file's mutation cases contain the literals by design
+      if (CJS_LOAD_VITE.test(readFileSync(file, 'utf8'))) offenders.push(path.relative(ROOT, file));
+    };
     const scan = (dir: string) => {
-      for (const file of collectSourceFiles(dir)) {
-        const text = readFileSync(file, 'utf8');
-        if (CJS_REQUIRE_VITE.test(text)) offenders.push(path.relative(ROOT, file));
-      }
+      for (const file of collectSourceFiles(dir)) scanFile(file);
     };
     scan(path.join(ROOT, 'packages'));
     scan(path.join(ROOT, 'scripts'));
     scan(path.join(ROOT, 'bin'));
     // root-level config files (vite/vitest configs at the monorepo root)
     for (const f of readdirSync(ROOT)) {
-      if (/\.(js|mjs|cjs|ts)$/.test(f) && CJS_REQUIRE_VITE.test(readFileSync(path.join(ROOT, f), 'utf8'))) {
-        offenders.push(f);
-      }
+      const full = path.join(ROOT, f);
+      if (full !== SELF && /\.(js|mjs|cjs|ts)$/.test(f)) scanFile(full);
     }
-    expect(offenders, `CJS require of Vite's Node API found in: ${offenders.join(', ')}`).toHaveLength(0);
+    expect(offenders, `CJS load of Vite's Node API found in: ${offenders.join(', ')}`).toHaveLength(0);
   });
 
   it('the locked Vite is >= 7 (CJS Node entry and the deprecation warning were removed)', () => {

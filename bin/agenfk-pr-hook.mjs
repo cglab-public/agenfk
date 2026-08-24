@@ -196,7 +196,13 @@ async function main() {
   }
 
   // push trigger: only nudge if the branch already has a registered PR.
-  const branch = trigger.branch || getCurrentBranch();
+  // `HEAD` is a symbolic push SOURCE ("push the current branch"), not a branch
+  // name — `git push -u origin HEAD` is the form the workflow itself recommends
+  // ("push your branch"), so resolve it to the real branch instead of nudging
+  // with the literal 'HEAD' (independent review finding, CGLAB-86). The
+  // classifier stays a pure string parser; git resolution happens here.
+  const branch =
+    trigger.branch && trigger.branch !== 'HEAD' ? trigger.branch : getCurrentBranch();
   if (!branch) process.exit(0);
   // We don't currently index PRs by branch, but the agent can still answer the
   // "did I add items to this PR?" question itself. Emit the directive
