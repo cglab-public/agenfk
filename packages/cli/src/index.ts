@@ -3356,6 +3356,42 @@ branchCmd
     }
   });
 
+branchCmd
+  .command('link <itemId> <branchName>')
+  .description('Link an existing local git branch to an item')
+  .action(async (itemId, branchName) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+        return;
+      }
+
+      // Validate branch name to prevent shell injection
+      if (/[^a-zA-Z0-9\-_./]/.test(branchName)) {
+        console.error(chalk.red(`❌ Invalid branch name: '${branchName}'. Branch names may only contain letters, digits, hyphens, underscores, dots, and forward slashes.`));
+        process.exit(1);
+        return;
+      }
+
+      // Verify the branch exists locally
+      try {
+        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore' });
+      } catch {
+        console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally.`));
+        process.exit(1);
+        return;
+      }
+
+      await axios.put(`${API_URL}/items/${itemId}`, { branchName });
+      console.log(chalk.green(`✅ Branch '${branchName}' linked to item [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
 // ── PR commands ───────────────────────────────────────────────────────────────
 
 function checkGhCli(): boolean {
