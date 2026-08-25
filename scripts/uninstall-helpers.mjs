@@ -62,3 +62,49 @@ export function summarizeResults(results = []) {
     exitCode: failed.length > 0 ? 1 : 0,
   };
 }
+
+// --- macOS metadata guards (CGLAB-94 / issue #163) -------------------------
+//
+// Releases packaged on macOS shipped an AppleDouble `._<name>` twin for every
+// file carrying an extended attribute, and the sync steps installed the ones
+// named `._agenfk*.md` into every platform's skills/commands dir. Uninstall
+// used to miss them entirely: its filters match names that START WITH
+// "agenfk", and "._agenfk" does not — so removing agenfk left the garbage
+// skills behind, still polluting every agent session.
+//
+// Scope matters here. These directories are SHARED with other tools, so we may
+// only claim our own litter: an AppleDouble twin is named after the file it
+// shadows, so ours are exactly `._agenfk*`. A bare `._*` test would also delete
+// another tool's twin and any `.DS_Store` — files whose data we do not own.
+
+// True for macOS resource-fork / Finder metadata of any origin.
+export function isMacMetadata(name) {
+  return typeof name === 'string' && (name.startsWith('._') || name === '.DS_Store');
+}
+
+// The name an AppleDouble twin shadows: `._agenfk.md` -> `agenfk.md`.
+function shadowedName(name) {
+  return name.startsWith('._') ? name.slice(2) : name;
+}
+
+// True for an entry uninstall should remove from a SHARED skills/commands dir:
+// one of ours, or the AppleDouble twin of one of ours. Never a third party's.
+export function isAgenfkOwnedEntry(name) {
+  return typeof name === 'string' && shadowedName(name).startsWith('agenfk');
+}
+
+// Same, restricted to a given extension (flat command files). The extension is
+// checked on the shadowed name, so `._agenfk.json` is not swept by a `.md` site.
+export function isAgenfkOwnedFile(name, ext) {
+  if (typeof name !== 'string') return false;
+  const shadowed = shadowedName(name);
+  return shadowed.startsWith('agenfk') && shadowed.endsWith(ext);
+}
+
+// True for a macOS metadata artifact that shadows one of OUR files. Commands
+// dirs can hold AppleDouble *directories* (`._agenfk-calc-tokens/`, the twin of
+// a skill dir), which carry no extension and so are not matched by
+// isAgenfkOwnedFile — they still have to go.
+export function isAgenfkOwnedArtifact(name) {
+  return isMacMetadata(name) && isAgenfkOwnedEntry(name);
+}

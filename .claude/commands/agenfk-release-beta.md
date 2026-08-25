@@ -45,7 +45,11 @@ Run `git push` and show the output to the user.
 - Ask for a release title (default: same as tag).
 - Offer to auto-generate release notes from git log: run `git log $(git describe --tags --abbrev=0)..HEAD --oneline` and summarise the commits as bullet points.
 - Confirm the notes with the user, allow edits.
-- **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists.
+- **Package Distributable**: Run `node scripts/package-dist.mjs` and verify `agenfk-dist.tar.gz` exists. Then verify it carries no macOS metadata — **do not use `tar -tzf`**, which on macOS silently merges AppleDouble entries into their parent and reports a clean archive (this is how CGLAB-94 shipped in every release from v1.1.13 to v1.1.16-beta.4):
+  ```bash
+  node -e "const{gunzipSync}=require('zlib'),{readFileSync}=require('fs');const b=gunzipSync(readFileSync('agenfk-dist.tar.gz'));let o=0,n=[];while(o+512<=b.length){const f=b.subarray(o,o+100),i=f.indexOf(0),m=f.subarray(0,i===-1?100:i).toString();if(!m){o+=512;continue}n.push(m);o+=512+Math.ceil((parseInt(b.subarray(o+124,o+136).toString('ascii').replace(/\0.*$/,'').trim(),8)||0)/512)*512}const bad=n.filter(x=>(x.replace(/\/$/,'').split('/').pop()||'').startsWith('._')||x.endsWith('.DS_Store'));console.log(bad.length?'DIRTY: '+bad.length+' macOS metadata entries':'CLEAN: '+n.length+' members');process.exit(bad.length?1:0)"
+  ```
+  Abort the release if it reports `DIRTY`.
 - **Tag & Push**: Run `git tag <tag>` to create the tag locally on the version-bump commit, then run `git push origin HEAD --tags` to push both the commit and the tag to the remote.
 - **Create Beta Release**: Run `gh release create <tag> agenfk-dist.tar.gz --prerelease --title "<title>" --notes "<notes>"`.
 - Show the release URL returned by `gh`.

@@ -109,3 +109,42 @@ export function shellSourceHint({ rcModified, shell } = {}) {
     default: return 'source your shell rc file';
   }
 }
+
+// --- macOS metadata guards (CGLAB-94 / issue #163) -------------------------
+//
+// Releases cut on macOS shipped an AppleDouble `._<name>` companion for every
+// file carrying an extended attribute. Those entries look like ordinary files
+// to every consumer: `._agenfk.md` satisfies an `endsWith('.md')` filter, so
+// the skills/commands sync copied them into ~/.claude/skills et al, where each
+// `._agenfk-*` directory was surfaced as a skill whose description is mojibake
+// binary — injected into the system prompt of every agent session.
+//
+// Packaging is fixed at the source (scripts/package-helpers.mjs), but these
+// guards must stay: a user upgrading from a polluted release still has the
+// artifacts on disk, and the installer must neither propagate nor preserve them.
+
+// True for macOS resource-fork / Finder metadata: never install it, and sweep it
+// when a previous (polluted) release left it in a skills/commands dir.
+// Deliberately matches any `._*` entry, not just `._agenfk*` — the AppleDouble
+// twin of a real agenfk skill is named after the skill.
+export function isMacMetadata(name) {
+  return typeof name === 'string' && (name.startsWith('._') || name === '.DS_Store');
+}
+
+// Filter for source files a sync step may install: real payload only.
+export function isInstallableMarkdown(name) {
+  return typeof name === 'string' && name.endsWith('.md') && !isMacMetadata(name);
+}
+
+// The name an AppleDouble twin shadows: `._agenfk.md` -> `agenfk.md`.
+function shadowedName(name) {
+  return name.startsWith('._') ? name.slice(2) : name;
+}
+
+// True for an entry we own in a SHARED skills/commands dir: one of ours, or the
+// AppleDouble twin of one of ours. Deliberately mirrored in uninstall-helpers.mjs
+// rather than imported: the uninstaller must keep working on a partial install
+// where this module may be missing, which is exactly when it gets run.
+export function isAgenfkOwnedEntry(name) {
+  return typeof name === 'string' && shadowedName(name).startsWith('agenfk');
+}
