@@ -4,7 +4,7 @@ import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
-import { execSync, spawn, spawnSync } from 'child_process';
+import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -3272,7 +3272,7 @@ const branchCmd = program
 branchCmd
   .command('create <itemId>')
   .description('Create a git branch for an item (--name is used verbatim; generated as feature/<slug>, fix/<slug> for BUG when omitted). Stores branch name on the item.')
-  .option('--name <name>', 'Branch name to use verbatim (no prefix is added or stripped)')
+  .option('--name <name>', 'Branch name to use verbatim (no prefix is added or stripped; surrounding whitespace is trimmed)')
   .action(async (itemId, options) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
@@ -3280,8 +3280,9 @@ branchCmd
         console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
         process.exit(1);
       }
-      const explicitName = options.name;
-      if (explicitName !== undefined && explicitName.trim() === '') {
+      const explicitName = options.name !== undefined ? options.name.trim() : undefined;
+      // trimmed above: '' here catches empty and whitespace-only; undefined falls through to generation
+      if (explicitName === '') {
         console.error(chalk.red('❌ --name must not be empty or whitespace.'));
         process.exit(1);
       }
@@ -3291,7 +3292,10 @@ branchCmd
 
       console.log(chalk.blue(`Creating branch: ${branchName}`));
       try {
-        execSync(`git checkout -b ${branchName}`, { stdio: 'inherit' });
+        // No shell: the name must reach git as exactly one argument (no word-splitting,
+        // no shell injection). Git validates the refname itself and rejects invalid names
+        // (leading dash, embedded space) with a clean error.
+        execFileSync('git', ['checkout', '-b', branchName], { stdio: 'inherit' });
       } catch {
         console.error(chalk.red(`Failed to create branch. Does it already exist? Try: git checkout ${branchName}`));
         process.exit(1);
