@@ -20,3 +20,8 @@ coverage/
 !/.claude/commands/
 tmp.*.json
 *-test-db.json
+
+# Mutation testing artifacts (StrykerJS — MUTATION_TESTS flow step)
+/reports/
+.stryker-tmp/
+stryker.log

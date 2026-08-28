@@ -343,7 +343,10 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('step-name-1'));
     expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('in_review');
     expect((screen.getByTestId('step-label-1') as HTMLInputElement).value).toBe('In Review');
-    expect((screen.getByTestId('step-exit-criteria-1') as HTMLTextAreaElement).value).toBe('Ticket refined');
+    // CGLAB-109: the inline field is now a summary trigger (button) showing the
+    // current criteria; the popup is the only editor. The value check moved to
+    // the popup block below.
+    expect(screen.getByTestId('step-exit-criteria-1').textContent).toContain('Ticket refined');
   });
 
   it('adds a blank step when Add Step is clicked', async () => {
@@ -601,7 +604,7 @@ describe('FlowEditorModal', () => {
     expect(container.className).toMatch(/scrollbar-none|scrollbar-hide|\[&::-webkit-scrollbar\]/);
   });
 
-  it('exit criteria textarea has enough rows for comfortable editing (>= 5)', async () => {
+  it('exit criteria popup editor is a full-height markdown surface (>= 14 rows)', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
@@ -609,8 +612,12 @@ describe('FlowEditorModal', () => {
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
     await waitFor(() => screen.getByTestId('step-exit-criteria-1'));
-    const textarea = screen.getByTestId('step-exit-criteria-1') as HTMLTextAreaElement;
-    expect(Number(textarea.rows)).toBeGreaterThanOrEqual(5);
+    // The inline field is a compact summary; the comfortable-editing surface is
+    // the popup's markdown editor (CGLAB-109 replaced the inline textarea).
+    fireEvent.click(screen.getByTestId('step-exit-criteria-1'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+    const textarea = screen.getByTestId('exit-criteria-editor') as HTMLTextAreaElement;
+    expect(Number(textarea.rows)).toBeGreaterThanOrEqual(14);
   });
 
   // ── Anchor color swatch ────────────────────────────────────────────────────
@@ -1527,5 +1534,176 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
 
     await waitFor(() => expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true));
     expect(api.updateFlow).not.toHaveBeenCalled();
+  });
+});
+
+// ── CGLAB-109: Exit Criteria popup editor (markdown + preview + tokens) ─────
+// The flow builder's exit criteria were a short inline textarea. The new
+// contract: the inline field is a compact summary + trigger; clicking it opens
+// a popped-up editor with a full markdown source field, a rendered preview,
+// and a token count estimate under the editor. Save commits; Cancel/Escape
+// discard. Both the middle steps and the TODO anchor column open the popup.
+describe('Exit criteria popup editor (CGLAB-109)', () => {
+  const HUB_FLOW: Flow = {
+    id: 'flow-hub',
+    name: 'Hub Flow',
+    description: 'owned by the hub',
+    source: 'hub',
+    steps: [
+      { id: 'h1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+      { id: 'h2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: 'hub criteria' },
+      { id: 'h3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
+    ],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  const openStep1Popup = async () => {
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-exit-criteria-1'));
+    fireEvent.click(screen.getByTestId('step-exit-criteria-1'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, HUB_FLOW]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  const renderEditor = (onClose: () => void = () => {}) =>
+    render(
+      <FlowEditorModal isOpen={true} onClose={onClose} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+  it('opens the popup from the summary field with the current criteria loaded', async () => {
+    renderEditor();
+    await openStep1Popup();
+    const editor = screen.getByTestId('exit-criteria-editor') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Ticket refined');
+    // The preview shows the current criteria as rendered markdown.
+    expect(screen.getByTestId('exit-criteria-preview').textContent).toContain('Ticket refined');
+    // A token estimate is shown under the editor.
+    expect(screen.getByTestId('exit-criteria-token-count').textContent).toMatch(/tokens?/i);
+  });
+
+  it('renders markdown in the preview and updates the token count live', async () => {
+    renderEditor();
+    await openStep1Popup();
+    const before = screen.getByTestId('exit-criteria-token-count').textContent ?? '';
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'All tests passing:\n\n- **fast** and *fresh*\n- [proof](https://example.com)' },
+    });
+    const preview = screen.getByTestId('exit-criteria-preview');
+    expect(preview.querySelector('strong')?.textContent).toBe('fast');
+    expect(preview.querySelector('em')?.textContent).toBe('fresh');
+    expect(preview.querySelector('a')?.getAttribute('href')).toBe('https://example.com');
+    const after = screen.getByTestId('exit-criteria-token-count').textContent ?? '';
+    expect(after).not.toBe(before);
+    expect(Number((after.match(/~?(\d+)/) ?? [])[1])).toBeGreaterThan(
+      Number((before.match(/~?(\d+)/) ?? [])[1])
+    );
+  });
+
+  it('Save commits the edited criteria and the summary reflects it', async () => {
+    renderEditor();
+    await openStep1Popup();
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'All tests green\n\n- evidence attached' },
+    });
+    fireEvent.click(screen.getByTestId('exit-criteria-save'));
+    // Popup closes and the inline summary shows the new first line.
+    await waitFor(() => expect(screen.queryByTestId('exit-criteria-editor')).toBeNull());
+    expect(screen.getByTestId('step-exit-criteria-1').textContent).toContain('All tests green');
+    // Reopening shows the committed value — the popup edits local state until Save.
+    fireEvent.click(screen.getByTestId('step-exit-criteria-1'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+    expect((screen.getByTestId('exit-criteria-editor') as HTMLTextAreaElement).value).toBe(
+      'All tests green\n\n- evidence attached'
+    );
+  });
+
+  it('Cancel discards the edit — the summary keeps the original criteria', async () => {
+    renderEditor();
+    await openStep1Popup();
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'should not stick around' },
+    });
+    fireEvent.click(screen.getByTestId('exit-criteria-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('exit-criteria-editor')).toBeNull());
+    expect(screen.getByTestId('step-exit-criteria-1').textContent).toContain('Ticket refined');
+    fireEvent.click(screen.getByTestId('step-exit-criteria-1'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+    expect((screen.getByTestId('exit-criteria-editor') as HTMLTextAreaElement).value).toBe('Ticket refined');
+  });
+
+  it('Escape closes the popup without saving — and does NOT close the flow editor', async () => {
+    const hostClose = vi.fn();
+    renderEditor(hostClose);
+    await openStep1Popup();
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'escaped' },
+    });
+    fireEvent.keyDown(screen.getByTestId('exit-criteria-editor'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('exit-criteria-editor')).toBeNull());
+    // CGLAB-109 review F1: the parent modal has its own window Escape
+    // listener; the popup must own the keypress (capture + stopPropagation)
+    // or Escape would unmount the whole flow editor and silently discard
+    // every unsaved step edit. The host onClose staying uncalled is the
+    // production contract (KanbanBoard/AdminFlows close on it).
+    expect(screen.getByTestId('flow-editor-modal')).toBeDefined();
+    expect(hostClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('step-exit-criteria-1').textContent).toContain('Ticket refined');
+  });
+
+  it('the preview never executes raw HTML (rendered markdown, not raw)', async () => {
+    // CGLAB-109 review F3: pins the sanitisation contract — no rehype-raw,
+    // so HTML in the source stays literal text. Keeps a future 'realism'
+    // change from silently enabling a (self-)XSS vector.
+    renderEditor();
+    await openStep1Popup();
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'plain <img src=x onerror=alert(1)> and <script>evil()</script> text' },
+    });
+    const preview = screen.getByTestId('exit-criteria-preview');
+    expect(preview.querySelector('img')).toBeNull();
+    expect(preview.querySelector('script')).toBeNull();
+    expect(preview.textContent).toContain('<img');
+  });
+
+  it('the TODO anchor column opens the same popup and saves from it', async () => {
+    renderEditor();
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('step-exit-criteria-0'));
+    // TODO anchor starts with no criteria — the trigger shows the empty state.
+    expect(screen.getByTestId('step-exit-criteria-0').textContent).toMatch(/no exit criteria/i);
+    fireEvent.click(screen.getByTestId('step-exit-criteria-0'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+    expect((screen.getByTestId('exit-criteria-editor') as HTMLTextAreaElement).value).toBe('');
+    fireEvent.change(screen.getByTestId('exit-criteria-editor'), {
+      target: { value: 'Cards created and the user gave the go-ahead.' },
+    });
+    fireEvent.click(screen.getByTestId('exit-criteria-save'));
+    await waitFor(() => expect(screen.queryByTestId('exit-criteria-editor')).toBeNull());
+    expect(screen.getByTestId('step-exit-criteria-0').textContent).toContain('Cards created');
+  });
+
+  it('a hub-owned (read-only) flow cannot open the editor', async () => {
+    renderEditor();
+    await waitFor(() => screen.getByTestId('flow-item-flow-hub'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-hub'));
+    await waitFor(() => screen.getByTestId('step-exit-criteria-1'));
+    const trigger = screen.getByTestId('step-exit-criteria-1') as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+    fireEvent.click(trigger);
+    expect(screen.queryByTestId('exit-criteria-editor')).toBeNull();
   });
 });

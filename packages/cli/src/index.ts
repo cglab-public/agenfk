@@ -3113,9 +3113,10 @@ program
       }
 
       // Fetch the project's active flow so authorization is flow-aware: any
-      // TASK/BUG in a non-anchor working step is authorizable, regardless of
-      // whether the step is literally named IN_PROGRESS. Falls back to default
-      // TODO/DONE anchors when no flow is resolvable.
+      // STORY/TASK/BUG in a non-anchor working step is authorizable (an EPIC is
+      // never worked directly — CGLAB-110), regardless of whether the step is
+      // literally named IN_PROGRESS. Falls back to default TODO/DONE anchors
+      // when no flow is resolvable.
       let activeFlow: any = null;
       let flowFetchFailed = false;
       if (projectId) {

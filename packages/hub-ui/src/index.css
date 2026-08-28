@@ -8,6 +8,13 @@
  * packages/ui/src/index.css. Edit values only in packages/brand/tokens.css. */
 @import "../../brand/tokens.css";
 
+/* @import statements must precede all other statements (besides @charset or
+ * an empty @layer) per the CSS spec — @plugin/@source below silently broke
+ * every @import that followed them (PostCSS dropped fonts + design tokens
+ * from the compiled CSS without erroring at runtime). Keep all @import lines
+ * first. */
+@plugin "@tailwindcss/typography";
+
 /* Tailwind v4 only auto-scans the importing package's source by default.
  * The shared @agenfk/flow-editor workspace package contains JIT utilities
  * (w-[calc(100vw-2rem)], h-[90vh], w-64, flex-1, etc.) that need to land in

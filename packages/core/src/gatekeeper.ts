@@ -205,9 +205,12 @@ export interface GatekeeperDecisionOptions {
 
 /**
  * Decide whether work is authorized, mirroring the server's workflow_gatekeeper
- * semantics: work may only proceed on a TASK or BUG that sits in an active
- * working step of the project's active flow. The `role` is advisory — it never
- * gates on a hardcoded status, so custom flows are honored.
+ * semantics: work may proceed on a TASK, BUG, or STORY that sits in an active
+ * working step of the project's active flow. Only an EPIC is never worked
+ * directly (CGLAB-110: the shipped protocol decomposes EPICs into stories but
+ * explicitly waives story→task decomposition — "A small story goes straight to
+ * its first working step"). The `role` is advisory — it never gates on a
+ * hardcoded status, so custom flows are honored.
  */
 export function decideGatekeeperAuthorization(
   items: GatekeeperItem[],
@@ -218,17 +221,17 @@ export function decideGatekeeperAuthorization(
   const role = (opts.role || 'coding').toLowerCase();
 
   const workingItems = getActiveStepItems(items, flow);
-  const actionable = workingItems.filter(i => i.type === 'TASK' || i.type === 'BUG');
+  const actionable = workingItems.filter(i => i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY');
 
   if (actionable.length === 0) {
-    const stuck = workingItems.find(i => i.type === 'STORY' || i.type === 'EPIC');
+    const stuck = workingItems.find(i => i.type === 'EPIC');
     const hint = stuck
-      ? ` "${stuck.title}" (${stuck.type}) is at step ${stuck.status}, but work must be authorized on a TASK or BUG. Create or advance a TASK or BUG within that ${stuck.type} to an active step first.`
-      : ' Create or advance a TASK or BUG to an active step first.';
+      ? ` "${stuck.title}" (${stuck.type}) is at step ${stuck.status}, but an EPIC is never worked directly. Create or advance a STORY, TASK or BUG within that EPIC to an active step first.`
+      : ' Create or advance a STORY, TASK or BUG to an active step first.';
     return {
       authorized: false,
       task: null,
-      message: `❌ WORKFLOW BREACH: No TASK or BUG is in an active working step.${hint}`,
+      message: `❌ WORKFLOW BREACH: No STORY, TASK or BUG is in an active working step.${hint}`,
     };
   }
 
@@ -242,11 +245,11 @@ export function decideGatekeeperAuthorization(
         message: `❌ WORKFLOW BREACH: Item [${opts.itemId}] is not in an active working step.`,
       };
     }
-    if (task.type === 'EPIC' || task.type === 'STORY') {
+    if (task.type === 'EPIC') {
       return {
         authorized: false,
         task: null,
-        message: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type} [${task.id.substring(0, 8)}] "${task.title}". Create or advance a TASK or BUG within this ${task.type} to an active step first.`,
+        message: `❌ WORKFLOW BREACH: Cannot authorize work directly on an EPIC [${task.id.substring(0, 8)}] "${task.title}". An EPIC is never worked directly — create or advance a STORY, TASK or BUG within it to an active step first.`,
       };
     }
   } else if (actionable.length > 1) {
@@ -257,7 +260,7 @@ export function decideGatekeeperAuthorization(
       authorized: false,
       ambiguous: true,
       task: null,
-      message: `⚠️ AMBIGUOUS: Multiple tasks are in an active step. Provide --item-id to disambiguate:\n${list}`,
+      message: `⚠️ AMBIGUOUS: Multiple items are in an active step. Provide --item-id to disambiguate:\n${list}`,
     };
   } else {
     task = actionable[0];
