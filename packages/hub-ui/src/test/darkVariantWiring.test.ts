@@ -21,6 +21,17 @@ const UI_INDEX_CSS = path.resolve(HUB_UI_SRC, '../../ui/src/index.css');
 const readCss = () => fs.readFileSync(INDEX_CSS, 'utf8');
 
 describe('hub-ui dark variant wiring', () => {
+  it('loads the Tailwind typography plugin for rendered markdown (CGLAB-109)', () => {
+    // The shared flow-editor popup renders markdown with `prose` utilities;
+    // without this plugin line the hub preview would fall back to browser-
+    // default styling while the ui app looks correct. Static-source
+    // assertion, same style as the @variant checks below.
+    const css = readCss();
+    expect(css, 'expected @plugin "@tailwindcss/typography" in hub-ui/src/index.css').toContain(
+      '@plugin "@tailwindcss/typography"'
+    );
+  });
+
   it('declares an @variant dark override so `dark:` follows the explicit class', () => {
     const css = readCss();
     const variantLine = css

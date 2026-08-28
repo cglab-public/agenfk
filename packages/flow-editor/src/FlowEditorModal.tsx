@@ -4,6 +4,8 @@ import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
+import { estimateTokenCount } from './estimateTokens';
 
 // ── Host injection ─────────────────────────────────────────────────────────
 // The editor accepts its data layer (server REST + community registry) and
@@ -137,6 +139,45 @@ function makeBlankStep(order: number): FlowStep {
   };
 }
 
+// ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
+// The inline field that used to be a short-text textarea is now a compact,
+// read-only summary: first line of the criteria (or an empty state) plus the
+// token estimate. Clicking it opens the full popup editor
+// (ExitCriteriaEditorModal) — the only place criteria are edited.
+interface ExitCriteriaSummaryProps {
+  index: number;
+  value: string;
+  disabled: boolean;
+  onEdit: () => void;
+}
+
+const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value, disabled, onEdit }) => {
+  const trimmed = value.trim();
+  const firstLine = trimmed.split('\n').find(l => l.trim()) ?? '';
+  const tokens = estimateTokenCount(trimmed);
+  return (
+    <button
+      data-testid={`step-exit-criteria-${index}`}
+      type="button"
+      disabled={disabled}
+      onClick={onEdit}
+      title={disabled ? undefined : 'Edit exit criteria (markdown)'}
+      className="w-full text-left px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-h-[52px]"
+    >
+      {firstLine ? (
+        <span className="block text-xs text-slate-600 dark:text-slate-300 truncate">{firstLine}</span>
+      ) : (
+        <span className="block text-xs italic text-slate-400 dark:text-slate-500">
+          No exit criteria — click to add
+        </span>
+      )}
+      <span className="block text-[10px] tabular-nums text-slate-400 dark:text-slate-500 mt-0.5">
+        ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : ' · edit'}
+      </span>
+    </button>
+  );
+};
+
 // ── Inner editor component (right panel) ──────────────────────────────────────
 
 interface EditorPanelProps {
@@ -178,6 +219,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
   const [openIconPickerIndex, setOpenIconPickerIndex] = useState<number | null>(null);
+  // CGLAB-109: which step's exit criteria are open in the popup editor.
+  const [exitCriteriaEditIndex, setExitCriteriaEditIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (flow) {
@@ -621,14 +664,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
                           Exit Criteria
                         </label>
-                        <textarea
-                          data-testid={`step-exit-criteria-${index}`}
+                        <ExitCriteriaSummary
+                          index={index}
                           value={step.exitCriteria ?? ''}
-                          onChange={e => updateStep(index, { exitCriteria: e.target.value })}
-                          rows={5}
-                          placeholder="What must be true before leaving this step?"
                           disabled={isReadOnly}
-                          className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
+                          onEdit={() => setExitCriteriaEditIndex(index)}
                         />
                       </div>
                     )}
@@ -679,19 +719,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
                         </div>
-                        {/* Exit criteria */}
+                        {/* Exit criteria (CGLAB-109): compact summary — the
+                            popup is the full markdown editor. */}
                         <div>
                           <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
                             Exit Criteria
                           </label>
-                          <textarea
-                            data-testid={`step-exit-criteria-${index}`}
+                          <ExitCriteriaSummary
+                            index={index}
                             value={step.exitCriteria ?? ''}
-                            onChange={e => updateStep(index, { exitCriteria: e.target.value })}
-                            rows={5}
-                            placeholder="What must be true before leaving this step?"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand resize-none disabled:opacity-60 min-h-[80px]"
+                            onEdit={() => setExitCriteriaEditIndex(index)}
                           />
                         </div>
                       </>
@@ -824,6 +862,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
           {publishFeedback}
         </div>
+      )}
+
+      {/* Exit criteria popup (CGLAB-109) — nested above this modal's z-50. */}
+      {exitCriteriaEditIndex !== null && steps[exitCriteriaEditIndex] && (
+        <ExitCriteriaEditorModal
+          stepLabel={steps[exitCriteriaEditIndex].label || steps[exitCriteriaEditIndex].name}
+          initialValue={steps[exitCriteriaEditIndex].exitCriteria ?? ''}
+          onSave={v => {
+            // The popup's Save commits a step field — mark the panel dirty so
+            // the footer's "Saved" badge doesn't claim a clean state (F2,
+            // CGLAB-109 review: the popup button is literally labelled Save).
+            updateStep(exitCriteriaEditIndex, { exitCriteria: v });
+            setSaved(false);
+            setExitCriteriaEditIndex(null);
+          }}
+          onClose={() => setExitCriteriaEditIndex(null)}
+        />
       )}
     </div>
   );
