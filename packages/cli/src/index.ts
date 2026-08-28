@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, slugifyTitle, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
+import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -3271,8 +3271,8 @@ const branchCmd = program
 
 branchCmd
   .command('create <itemId>')
-  .description('Create a git branch for an item (BUG → fix/, others → feature/). Stores branch name on the item.')
-  .option('--name <name>', 'Override the generated branch name (prefix is still enforced)')
+  .description('Create a git branch for an item (--name is used verbatim; generated as feature/<slug>, fix/<slug> for BUG when omitted). Stores branch name on the item.')
+  .option('--name <name>', 'Branch name to use verbatim (no prefix is added or stripped)')
   .action(async (itemId, options) => {
     try {
       const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
@@ -3280,9 +3280,14 @@ branchCmd
         console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
         process.exit(1);
       }
-      const prefix = item.type === 'BUG' ? 'fix' : 'feature';
-      const slug = options.name ? options.name.replace(/^(feature|fix)\//, '') : slugifyTitle(item.title);
-      const branchName = `${prefix}/${slug}`;
+      const explicitName = options.name;
+      if (explicitName !== undefined && explicitName.trim() === '') {
+        console.error(chalk.red('❌ --name must not be empty or whitespace.'));
+        process.exit(1);
+      }
+      const branchName = explicitName !== undefined
+        ? explicitName
+        : buildBranchName(item.type, item.title);
 
       console.log(chalk.blue(`Creating branch: ${branchName}`));
       try {

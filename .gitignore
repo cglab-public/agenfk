@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+/.stryker-tmp/
+/reports/
 .agenfk/
 *.log
 .DS_Store
