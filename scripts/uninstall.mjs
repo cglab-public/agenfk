@@ -10,6 +10,9 @@ import {
     stripAgenfkHookEntries,
     resolveConfirmation,
     summarizeResults,
+  isAgenfkOwnedEntry,
+  isAgenfkOwnedFile,
+  isAgenfkOwnedArtifact,
 } from './uninstall-helpers.mjs';
 
 const RED = '\x1b[31m';
@@ -211,8 +214,12 @@ async function run() {
         if (existsSync(claudeCommandsDir)) {
             const files = await fs.readdir(claudeCommandsDir);
             for (const file of files) {
-                if (file.startsWith('agenfk') && file.endsWith('.md')) {
-                    await fs.unlink(path.join(claudeCommandsDir, file));
+                if (isAgenfkOwnedFile(file, '.md') || isAgenfkOwnedArtifact(file)) {
+                    // rm, not unlink: an AppleDouble artifact may be a *directory*
+                    // (`._agenfk-calc-tokens/`), and unlink throws on those — which
+                    // used to abort the whole loop before the sibling files were
+                    // reached (CGLAB-94 / issue #163).
+                    await fs.rm(path.join(claudeCommandsDir, file), { recursive: true, force: true });
                     console.log(`  Removed: ${path.join(claudeCommandsDir, file)}`);
                     removed = true;
                 }
@@ -229,8 +236,12 @@ async function run() {
         if (existsSync(opencodeCommandsDir)) {
             const files = await fs.readdir(opencodeCommandsDir);
             for (const file of files) {
-                if (file.startsWith('agenfk') && file.endsWith('.md')) {
-                    await fs.unlink(path.join(opencodeCommandsDir, file));
+                if (isAgenfkOwnedFile(file, '.md') || isAgenfkOwnedArtifact(file)) {
+                    // rm, not unlink: an AppleDouble artifact may be a *directory*
+                    // (`._agenfk-calc-tokens/`), and unlink throws on those — which
+                    // used to abort the whole loop before the sibling files were
+                    // reached (CGLAB-94 / issue #163).
+                    await fs.rm(path.join(opencodeCommandsDir, file), { recursive: true, force: true });
                     console.log(`  Removed: ${path.join(opencodeCommandsDir, file)}`);
                     removed = true;
                 }
@@ -278,7 +289,7 @@ async function run() {
             if (!existsSync(dir)) continue;
             const entries = await fs.readdir(dir);
             for (const entry of entries) {
-                if (entry.startsWith('agenfk')) {
+                if (isAgenfkOwnedEntry(entry)) {
                     await fs.rm(path.join(dir, entry), { recursive: true, force: true });
                     console.log(`  Removed: ${path.join(dir, entry)}`);
                     removed = true;

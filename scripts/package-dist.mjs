@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createTarball } from './package-helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -71,8 +72,7 @@ async function run() {
 
     // 4. Create the archive
     console.log(`  Creating ${distFile}...`);
-    const includeStr = include.join(' ');
-    execSync(`tar -czf ${distFile} ${includeStr}`, { cwd: rootDir, stdio: 'inherit' });
+    createTarball({ cwd: rootDir, outFile: distFile, include });
 
     console.log(`✨ Distributable created: ${path.join(rootDir, distFile)}`);
 }

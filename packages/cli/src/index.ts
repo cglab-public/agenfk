@@ -606,7 +606,10 @@ program
         log(chalk.gray(`Downloading pre-built binary for ${resolvedTag}...`));
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
         log(chalk.gray('Extracting update...'));
-        execSync(`tar -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
+        // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
+        // AppleDouble (`._*`) entries; never let them into the install dir
+        // (CGLAB-94 / issue #163).
+        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
       } catch (e: any) {
         log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
       } finally {
@@ -2399,7 +2402,7 @@ function removeLegacyCommands(): void {
     const dir = dirFn();
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir)) {
-      if (!entry.startsWith('agenfk')) continue;
+      if (!isAgenfkOwnedEntry(entry)) continue;
       const full = path.join(dir, entry);
       try {
         const stat = fs.statSync(full);
@@ -2462,10 +2465,58 @@ const GEMINI_TOML_PLATFORMS: Array<{
   },
 ];
 
+// --- macOS metadata guards (CGLAB-94 / issue #163) -------------------------
+//
+// Releases packaged on macOS carried an AppleDouble `._<name>` twin for every
+// file with an extended attribute. `._agenfk.md` satisfies `endsWith('.md')`,
+// so the sync steps below used to install them into ~/.claude/skills et al,
+// where each `._agenfk-*` directory is surfaced as a skill whose description is
+// mojibake binary — in the system prompt of every agent session. The removal
+// steps used to miss them, because `._agenfk` does not start with `agenfk`.
+
+/** macOS resource-fork / Finder metadata of any origin. */
+function isMacMetadata(name: string): boolean {
+  return name.startsWith('._') || name === '.DS_Store';
+}
+
+/** Source files a sync step may install: real payload only. */
+function isInstallableMarkdown(name: string): boolean {
+  return name.endsWith('.md') && !isMacMetadata(name);
+}
+
+/** The name an AppleDouble twin shadows: `._agenfk.md` -> `agenfk.md`. */
+function shadowedName(name: string): string {
+  return name.startsWith('._') ? name.slice(2) : name;
+}
+
+// Removal is scoped to what we own. These dirs are SHARED with other tools, and
+// an AppleDouble twin is named after the file it shadows, so ours are exactly
+// `._agenfk*`. A bare `._*` test would delete another tool's twin too.
+
+/** Entries a removal step owns: ours, or the AppleDouble twin of one of ours. */
+function isAgenfkOwnedEntry(name: string): boolean {
+  return shadowedName(name).startsWith('agenfk');
+}
+
+/** Same, restricted to a given extension, checked on the shadowed name. */
+function isAgenfkOwnedFile(name: string, ext: string): boolean {
+  const shadowed = shadowedName(name);
+  return shadowed.startsWith('agenfk') && shadowed.endsWith(ext);
+}
+
+/**
+ * A macOS metadata artifact shadowing one of OUR files. Commands dirs can hold
+ * AppleDouble *directories* (`._agenfk-calc-tokens/`, the twin of a skill dir),
+ * which carry no extension and so are not matched by isAgenfkOwnedFile.
+ */
+function isAgenfkOwnedArtifact(name: string): boolean {
+  return isMacMetadata(name) && isAgenfkOwnedEntry(name);
+}
+
 /** Install commands as flat .md files (for OpenCode slash commands) */
 function syncCommandsFlat(srcDir: string, destDir: string, platformKey?: string): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
   const installed: string[] = [];
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
@@ -2487,7 +2538,7 @@ function syncCommandsFlat(srcDir: string, destDir: string, platformKey?: string)
 function removeAgenfkFlatFromDir(dir: string): void {
   if (!fs.existsSync(dir)) return;
   for (const entry of fs.readdirSync(dir) as string[]) {
-    if (entry.startsWith('agenfk') && entry.endsWith('.md')) {
+    if (isAgenfkOwnedFile(entry, '.md') || isAgenfkOwnedArtifact(entry)) {
       try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
     }
   }
@@ -2496,7 +2547,7 @@ function removeAgenfkFlatFromDir(dir: string): void {
 /** Generate Gemini TOML slash commands from commands/*.md files */
 function syncCommandsToml(srcDir: string, destDir: string): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
   const installed: string[] = [];
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
@@ -2521,7 +2572,7 @@ function syncCommandsToml(srcDir: string, destDir: string): string[] {
 function removeAgenfkTomlFromDir(dir: string): void {
   if (!fs.existsSync(dir)) return;
   for (const entry of fs.readdirSync(dir) as string[]) {
-    if (entry.startsWith('agenfk') && entry.endsWith('.toml')) {
+    if (isAgenfkOwnedFile(entry, '.toml') || isAgenfkOwnedArtifact(entry)) {
       try { fs.unlinkSync(path.join(dir, entry)); } catch { /* ignore */ }
     }
   }
@@ -2535,7 +2586,7 @@ function syncCommandsToDir(
   platformKey?: string
 ): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
   const installed: string[] = [];
   for (const file of files) {
     let src = path.join(srcDir, file);
@@ -2567,7 +2618,7 @@ function removeCommandsFromDir(
   transform?: (filename: string) => string
 ): void {
   if (!fs.existsSync(srcDir) || !fs.existsSync(destDir)) return;
-  const files = (fs.readdirSync(srcDir) as string[]).filter((f: string) => f.endsWith('.md'));
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
   for (const file of files) {
     const relDest = transform ? transform(file) : file;
     const dest = path.join(destDir, relDest);
@@ -2589,17 +2640,13 @@ function removeCommandsFromDir(
 function removeAgenfkSkillsFromDir(destDir: string): void {
   if (!fs.existsSync(destDir)) return;
   for (const entry of fs.readdirSync(destDir) as string[]) {
-    if (!entry.startsWith('agenfk')) continue;
+    if (!isAgenfkOwnedEntry(entry)) continue;
     const full = path.join(destDir, entry);
     // Remove SKILL.md inside the skill dir, then the dir itself
-    const skillFile = path.join(full, 'SKILL.md');
-    if (fs.existsSync(skillFile)) {
-      fs.unlinkSync(skillFile);
-    } else if (fs.existsSync(full)) {
-      // Plain file (old flat format)
-      try { fs.unlinkSync(full); } catch { /* ignore */ }
-    }
-    try { fs.rmdirSync(full); } catch { /* ignore — not empty or doesn't exist */ }
+    // Recursive: a skill dir may hold more than SKILL.md (and an AppleDouble
+    // twin dir holds arbitrary metadata), in which case rmdirSync throws into a
+    // swallowed catch and the dir survives. Mirrors scripts/uninstall.mjs.
+    try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
   }
   // Remove destDir itself if now empty, then try the parent too
   try {
@@ -3376,6 +3423,42 @@ branchCmd
       } catch {
         console.log(`Remote: ${chalk.dim('(not in a git repo)')}`);
       }
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+branchCmd
+  .command('link <itemId> <branchName>')
+  .description('Link an existing local git branch to an item')
+  .action(async (itemId, branchName) => {
+    try {
+      const { data: item } = await axios.get(`${API_URL}/items/${itemId}`);
+      if (item.parentId) {
+        console.error(chalk.red(`❌ Branches are tracked on top-level items only. Item [${itemId.substring(0, 8)}] is a child of [${item.parentId.substring(0, 8)}]. Run this command on the parent item instead.`));
+        process.exit(1);
+        return;
+      }
+
+      // Validate branch name to prevent shell injection
+      if (/[^a-zA-Z0-9\-_./]/.test(branchName)) {
+        console.error(chalk.red(`❌ Invalid branch name: '${branchName}'. Branch names may only contain letters, digits, hyphens, underscores, dots, and forward slashes.`));
+        process.exit(1);
+        return;
+      }
+
+      // Verify the branch exists locally
+      try {
+        execSync(`git rev-parse --verify --end-of-options ${branchName}`, { stdio: 'ignore' });
+      } catch {
+        console.error(chalk.red(`❌ Branch '${branchName}' does not exist locally.`));
+        process.exit(1);
+        return;
+      }
+
+      await axios.put(`${API_URL}/items/${itemId}`, { branchName });
+      console.log(chalk.green(`✅ Branch '${branchName}' linked to item [${itemId.substring(0, 8)}].`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
