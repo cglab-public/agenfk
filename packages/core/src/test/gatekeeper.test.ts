@@ -4,6 +4,7 @@ import {
   decideGatekeeperAuthorization,
   findItemAcrossProjects,
   detectCrossProjectItem,
+  INACTIVE_STATUSES,
   type GatekeeperFlow,
   type GatekeeperItem,
 } from '../gatekeeper';
@@ -77,11 +78,13 @@ describe('decideGatekeeperAuthorization', () => {
     expect(d.message).toContain('WORKFLOW BREACH');
   });
 
-  it('hints to advance a TASK/BUG when only a STORY/EPIC is active', () => {
-    const d = decideGatekeeperAuthorization([item('s1', 'IN_PROGRESS', 'STORY', 'My Story')], tddFlow, {});
+  it('still hints to create a child item when only an EPIC is active', () => {
+    // CGLAB-110: a lone STORY is directly actionable, so this refusal now only
+    // fires for an EPIC — and the advice must name the child types.
+    const d = decideGatekeeperAuthorization([item('e1', 'IN_PROGRESS', 'EPIC', 'My Epic')], tddFlow, {});
     expect(d.authorized).toBe(false);
-    expect(d.message).toContain('My Story');
-    expect(d.message).toMatch(/TASK or BUG/);
+    expect(d.message).toContain('My Epic');
+    expect(d.message).toMatch(/STORY, TASK or BUG/);
   });
 
   it('is AMBIGUOUS when multiple tasks are active and no item id is given', () => {
@@ -107,10 +110,72 @@ describe('decideGatekeeperAuthorization', () => {
     expect(d.message).toContain('t2');
   });
 
-  it('refuses to authorize work directly on an EPIC/STORY even when targeted by id', () => {
+  it('refuses to authorize work directly on an EPIC even when targeted by id', () => {
+    // CGLAB-110: only EPICs refuse direct work. A STORY targeted by id is
+    // authorized — pinned in the CGLAB-110 block below.
     const d = decideGatekeeperAuthorization([item('e1', 'IN_PROGRESS', 'EPIC', 'Epic X')], tddFlow, { itemId: 'e1' });
     expect(d.authorized).toBe(false);
     expect(d.message).toContain('EPIC');
+  });
+});
+
+// ── CGLAB-110: a STORY is directly actionable; only an EPIC refuses ──────────
+// The shipped Standard Mode protocol decomposes EPICs into stories but says
+// "Decomposing a story into tasks is not mandatory ... A small story goes
+// straight to its first working step." The gatekeeper nonetheless deadlocked
+// every STORY with a WORKFLOW BREACH (observed 2026-08-28 on CGLAB-109),
+// forcing the decomposition the protocol waived. Fix: STORY joins the
+// actionable set; EPIC alone still refuses direct authorization.
+describe('a STORY is directly actionable, only an EPIC refuses (CGLAB-110)', () => {
+  it('authorizes a STORY in an active step when targeted by id', () => {
+    const d = decideGatekeeperAuthorization([item('s1', 'IN_PROGRESS', 'STORY', 'My Story')], tddFlow, { itemId: 's1' });
+    expect(d.authorized).toBe(true);
+    expect(d.task?.id).toBe('s1');
+    expect(d.message).toContain('AUTHORIZED');
+  });
+
+  it('authorizes a STORY in a custom coding step (the observed CGLAB-109 deadlock)', () => {
+    const d = decideGatekeeperAuthorization([item('a1f428b9', 'CREATE_UNIT_TESTS', 'STORY')], tddFlow, { itemId: 'a1f428b9' });
+    expect(d.authorized).toBe(true);
+    expect(d.task?.id).toBe('a1f428b9');
+    expect(d.message).toContain('CREATE_UNIT_TESTS');
+  });
+
+  it('picks up a lone STORY as the actionable item when no TASK/BUG is active', () => {
+    const d = decideGatekeeperAuthorization([item('s1', 'IN_PROGRESS', 'STORY', 'My Story')], tddFlow, {});
+    expect(d.authorized).toBe(true);
+    expect(d.task?.id).toBe('s1');
+  });
+
+  it('resolves a STORY by id prefix when a TASK is also active', () => {
+    const items = [item('t1', 'IN_PROGRESS'), item('bbbbbbbb-2', 'CREATE_UNIT_TESTS', 'STORY', 'Story S')];
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'bbbbbbbb' });
+    expect(d.authorized).toBe(true);
+    expect(d.task?.id).toBe('bbbbbbbb-2');
+  });
+
+  it('lists a STORY among the ambiguous active items', () => {
+    const items = [item('t1', 'IN_PROGRESS'), item('s1', 'CREATE_UNIT_TESTS', 'STORY', 'Story S')];
+    const d = decideGatekeeperAuthorization(items, tddFlow, {});
+    expect(d.authorized).toBe(false);
+    expect(d.ambiguous).toBe(true);
+    expect(d.message).toContain('Story S');
+  });
+
+  it('still refuses when only an EPIC is active', () => {
+    const d = decideGatekeeperAuthorization([item('e1', 'IN_PROGRESS', 'EPIC', 'Epic X')], tddFlow, {});
+    expect(d.authorized).toBe(false);
+    expect(d.message).toMatch(/WORKFLOW BREACH/);
+    expect(d.message).toContain('Epic X');
+  });
+
+  it('carries the step contract onto an authorized STORY, not a refused EPIC', () => {
+    const ok = decideGatekeeperAuthorization([item('s1', 'DISCOVERY', 'STORY')], criteriaFlow, { itemId: 's1' });
+    expect(ok.authorized).toBe(true);
+    expect(ok.exitCriteria).toBe('Cards created and the user gave the go-ahead.');
+    const no = decideGatekeeperAuthorization([item('e1', 'DISCOVERY', 'EPIC')], criteriaFlow, { itemId: 'e1' });
+    expect(no.authorized).toBe(false);
+    expect(no.exitCriteria).toBeUndefined();
   });
 });
 
@@ -376,5 +441,189 @@ describe('the shipped default flow states its exit criteria (CGLAB-82)', () => {
     const { DEFAULT_FLOW } = await import('../defaultFlow');
     const anchors = DEFAULT_FLOW.steps.filter((s: any) => s.isAnchor);
     for (const a of anchors) expect((a as any).exitCriteria ?? '').toBe('');
+  });
+});
+
+// ── Mutation hardening (CGLAB-110 MUTATION_TESTS step) ──────────────────────
+// StrykerJS over packages/core/src/gatekeeper.ts reported 44 surviving mutants
+// against the original suite. These tests pin the behaviours those mutants
+// slipped through: the inactive-status set and its null-flow anchor fallback,
+// the cross-project match's projectId requirement, order-field sorting, the
+// whitespace-only criteria trim, and the exact refusal/fallback message copy.
+describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
+  it('excludes every INACTIVE_STATUSES entry, each name individually', () => {
+    for (const status of ['BLOCKED', 'PAUSED', 'TRASHED', 'ARCHIVED', 'IDEAS']) {
+      expect(INACTIVE_STATUSES).toContain(status);
+      const d = decideGatekeeperAuthorization([item('a', status)], tddFlow, {});
+      expect(d.authorized, `${status} must never be an active working step`).toBe(false);
+    }
+  });
+
+  it('falls back to TODO/DONE anchors when the flow is null', () => {
+    const items = [item('a', 'TODO'), item('b', 'DONE'), item('c', 'IN_PROGRESS')];
+    const active = getActiveStepItems(items, null);
+    expect(active.map(i => i.id)).toEqual(['c']);
+  });
+
+  it('never treats a cross-project match lacking a projectId as the match', () => {
+    const all = [
+      { id: 'ffff0000-1111', title: 'no-project match' } as any, // projectId undefined
+    ];
+    expect(detectCrossProjectItem(all, 'ffff0000', 'projC')).toBeNull();
+  });
+
+  it('prefers an in-project PREFIX-only match over an out-of-project exact match', () => {
+    // Kills the inner ||→&& mutant: the original accepts the in-project item on
+    // the id-prefix alone, so it must short-circuit the cross-project return.
+    const all = [
+      { id: 'abcdef12-other', projectId: 'projX', title: 'other' },
+      { id: 'abcdef12-mine', projectId: 'projY', title: 'mine' },
+    ];
+    expect(detectCrossProjectItem(all, 'abcdef12', 'projY')).toBeNull();
+  });
+
+  it('resolves coding/final steps by the order field, not array position', () => {
+    const shuffled: GatekeeperFlow = {
+      name: 'Shuffled',
+      steps: [
+        { name: 'IN_PROGRESS', order: 2 },
+        { name: 'DONE', order: 3, isAnchor: true },
+        { name: 'DISCOVERY', order: 1 },
+        { name: 'TODO', order: 0, isAnchor: true },
+      ],
+    } as GatekeeperFlow;
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], shuffled, {});
+    expect(d.codingStep).toBe('DISCOVERY');
+    expect(d.finalStep).toBe('IN_PROGRESS');
+  });
+
+  it('survives a flow whose every step is an anchor (no coding step, no throw)', () => {
+    const anchorsOnly: GatekeeperFlow = {
+      name: 'Anchors',
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'DONE', order: 1, isAnchor: true },
+      ],
+    } as GatekeeperFlow;
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchorsOnly, {});
+    expect(d.authorized).toBe(true);
+    expect(d.codingStep).toBeUndefined();
+    // Degenerate flow with no working steps: only DONE is filtered out of the
+    // "non-terminal" set, so the leftover anchor (TODO) is what finalStep pins.
+    expect(d.finalStep).toBe('TODO');
+  });
+
+  it('treats whitespace-only exit criteria as none-defined', () => {
+    const wsFlow: GatekeeperFlow = {
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'IN_PROGRESS', order: 1, exitCriteria: '   ' },
+        { name: 'DONE', order: 2, isAnchor: true },
+      ],
+    } as GatekeeperFlow;
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], wsFlow, {});
+    expect(d.criteriaState).toBe('none-defined');
+    expect(d.exitCriteria).toBeUndefined();
+  });
+
+  it('says "Could not resolve this project\'s flow" when the flow is unresolved', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], null as any, {});
+    expect(d.message).toContain("Could not resolve this project's flow");
+  });
+
+  it('joins the active flow steps with the arrow separator', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.message).toContain('TODO → DISCOVERY → IN_PROGRESS → DONE');
+    expect(d.message).toContain('Final step (omit the command on this one): IN_PROGRESS');
+  });
+
+  it('renders a nameless flow without a quoted name', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.message).toContain('Active flow "TDD Flow"');
+    const anonymous = { steps: anchoredFlow.steps } as GatekeeperFlow;
+    const d2 = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anonymous, {});
+    expect(d2.message).toContain('Active flow: TODO → DISCOVERY → IN_PROGRESS → DONE');
+    expect(d2.message).not.toContain('Active flow ""');
+  });
+
+  it('echoes the no-intent fallback and the default role in the message', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], tddFlow, {});
+    expect(d.message).toContain('Intent: "(no intent provided)"');
+    expect(d.message).toContain('AUTHORIZED (CODING)');
+  });
+
+  it('pins the generic no-actionable refusal copy', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'TODO')], tddFlow, {});
+    expect(d.message).toContain('No STORY, TASK or BUG is in an active working step');
+    expect(d.message).toContain('Create or advance a STORY, TASK or BUG to an active step first');
+  });
+
+  it('pins the EPIC refusal copy when a STORY is also actionable', () => {
+    // The by-id refusal branch only runs when SOME actionable item exists —
+    // with an EPIC as the sole active item the no-actionable refusal fires first.
+    const items = [item('s1', 'IN_PROGRESS', 'STORY'), item('e1', 'IN_PROGRESS', 'EPIC', 'Epic X')];
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'e1' });
+    expect(d.authorized).toBe(false);
+    expect(d.message).toContain('Cannot authorize work directly on an EPIC [e1] "Epic X"');
+    expect(d.message).toContain('An EPIC is never worked directly — create or advance a STORY, TASK or BUG within it');
+  });
+
+  it('pins the EPIC-stuck hint copy', () => {
+    const d = decideGatekeeperAuthorization([item('e1', 'IN_PROGRESS', 'EPIC', 'My Epic')], tddFlow, {});
+    expect(d.message).toContain('"My Epic" (EPIC) is at step IN_PROGRESS, but an EPIC is never worked directly');
+  });
+
+  it('embeds the 8-char id prefix, not the full id, in the EPIC refusal', () => {
+    const longId = 'a1b2c3d4-ef56-abcd-ef01-23456789abcd';
+    const items = [item('s1', 'IN_PROGRESS', 'STORY'), { ...item(longId, 'IN_PROGRESS', 'EPIC', 'Long Epic') }];
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'a1b2c3d4-ef56' });
+    expect(d.authorized).toBe(false);
+    expect(d.message).toContain('EPIC [a1b2c3d4] "Long Epic"');
+  });
+
+  it('pins the ambiguity listing line format', () => {
+    const items = [item('aaaaaaaa-1', 'IN_PROGRESS'), item('bbbbbbbb-2', 'CREATE_UNIT_TESTS', 'STORY', 'Story S')];
+    const d = decideGatekeeperAuthorization(items, tddFlow, {});
+    expect(d.message).toContain('Multiple items are in an active step. Provide --item-id to disambiguate');
+    expect(d.message).toContain('• [aaaaaaaa] t-aaaaaaaa-1 (IN_PROGRESS)');
+    expect(d.message).toContain('• [bbbbbbbb] Story S (CREATE_UNIT_TESTS)');
+    // The listing is newline-separated — pin the separator itself.
+    expect(d.message).toContain('(IN_PROGRESS)\n  • [bbbbbbbb] Story S');
+  });
+
+  it('pins the exact coding-step and final-step lines, and omits the coding line when there is none', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
+    expect(d.message).toContain('Coding step: DISCOVERY\nFinal step (omit the command on this one): IN_PROGRESS');
+    const anchorsOnly: GatekeeperFlow = {
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'DONE', order: 1, isAnchor: true },
+      ],
+    } as GatekeeperFlow;
+    const d2 = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchorsOnly, {});
+    expect(d2.message).not.toContain('Coding step:');
+    // Exact adjacency: with no coding step, the final-step line follows the
+    // flow line directly — nothing may be injected in between.
+    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command on this one): TODO');
+  });
+
+  it('leaks no step-shape copy when the flow could not be resolved', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], null as any, {});
+    expect(d.message).not.toContain('Active flow');
+    expect(d.message).not.toContain('Coding step');
+    // With no flow there is no step-shape block at all: the message must end
+    // exactly where the advice ends — nothing appended after it.
+    expect(d.message).toMatch(/before advancing\.$/);
+  });
+
+  it('embeds the item id prefix in the advance hint', () => {
+    const d = decideGatekeeperAuthorization([item('a1b2c3d4-9999', 'IN_PROGRESS')], tddFlow, {});
+    expect(d.message).toContain('agenfk verify a1b2c3d4 --evidence');
+  });
+
+  it('embeds the step status and title in the authorized message', () => {
+    const d = decideGatekeeperAuthorization([item('a1b2c3d4-9999', 'IN_PROGRESS', 'STORY', 'My Story')], tddFlow, {});
+    expect(d.message).toContain('STORY: [a1b2c3d4] My Story');
+    expect(d.message).toContain('Current step: IN_PROGRESS');
   });
 });

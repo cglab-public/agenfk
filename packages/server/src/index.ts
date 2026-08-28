@@ -765,14 +765,16 @@ async function callToolHandler(request: any): Promise<any> {
 
         // Find all items in any active working step (any non-anchor, non-BLOCKED/PAUSED step)
         const workingItems = getActiveStepItems(allItems, activeFlow);
-        const actionableItems = workingItems.filter((i: any) => i.type === 'TASK' || i.type === 'BUG');
+        // CGLAB-110: a STORY is directly actionable — mirrors the core
+        // decider; only an EPIC is never worked directly.
+        const actionableItems = workingItems.filter((i: any) => i.type === 'TASK' || i.type === 'BUG' || i.type === 'STORY');
 
         if (actionableItems.length === 0) {
-          const storyOrEpicInProgress = workingItems.find((i: any) => i.type === 'STORY' || i.type === 'EPIC');
-          const hint = storyOrEpicInProgress
-            ? `\n\n"${storyOrEpicInProgress.title}" (${storyOrEpicInProgress.type}) is at step ${storyOrEpicInProgress.status}, but work must be authorized on a TASK or BUG. Create or advance a TASK/BUG within that ${storyOrEpicInProgress.type} to an active step first.`
-            : ' Create or advance a TASK or BUG to an active step first.';
-          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No TASK or BUG is currently active in project [${effectiveProjectId}].${hint}${flowStepsSummary}` }] };
+          const epicInProgress = workingItems.find((i: any) => i.type === 'EPIC');
+          const hint = epicInProgress
+            ? `\n\n"${epicInProgress.title}" (${epicInProgress.type}) is at step ${epicInProgress.status}, but an EPIC is never worked directly. Create or advance a STORY, TASK or BUG within that EPIC to an active step first.`
+            : ' Create or advance a STORY, TASK or BUG to an active step first.';
+          return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: No STORY, TASK or BUG is currently active in project [${effectiveProjectId}].${hint}${flowStepsSummary}` }] };
         }
 
         // Resolve which task to authorize
@@ -782,13 +784,13 @@ async function callToolHandler(request: any): Promise<any> {
           // 8-char id shown in gatekeeper output) — matches the CLI/core decider.
           task = workingItems.find((i: any) => i.id === itemId || i.id.startsWith(itemId));
           if (!task) return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Item [${itemId}] is not in an active working step or does not belong to project [${effectiveProjectId}].` }] };
-          if (task.type === 'EPIC' || task.type === 'STORY') {
-            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on a ${task.type} [${task.id.substring(0,8)}] "${task.title}". Create or advance a TASK or BUG within this ${task.type} to an active step first, then call workflow_gatekeeper with that TASK/BUG's itemId.` }] };
+          if (task.type === 'EPIC') {
+            return { isError: true, content: [{ type: "text", text: `❌ WORKFLOW BREACH: Cannot authorize work directly on an EPIC [${task.id.substring(0,8)}] "${task.title}". An EPIC is never worked directly — create or advance a STORY, TASK or BUG within it to an active step first, then call workflow_gatekeeper with that item's id.` }] };
           }
         } else {
           if (actionableItems.length > 1) {
             const list = actionableItems.map((i: any) => `  • [${i.id.substring(0,8)}] ${i.title} (${i.status})`).join('\n');
-            return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple tasks are active in project [${effectiveProjectId}]. Provide 'itemId' to disambiguate:\n${list}` }] };
+            return { isError: true, content: [{ type: "text", text: `⚠️ AMBIGUOUS WORKFLOW: Multiple items are active in project [${effectiveProjectId}]. Provide 'itemId' to disambiguate:\n${list}` }] };
           }
           task = actionableItems[0];
         }
