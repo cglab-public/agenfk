@@ -11,6 +11,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
+import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
 
@@ -813,22 +814,31 @@ program
 program
   .command('ui')
   .description('Show dashboard information and open in browser')
-  .action(() => {
+  .option('--open <itemId>', 'Open the dashboard with that item highlighted (deep-links the Search Box to the item id)')
+  .action(async (options: { open?: string }) => {
     console.log(chalk.cyan('🌐 Opening UI...'));
-    
-    let uiUrl = 'http://localhost:5173';
-    try {
-      const rootDir = path.resolve(__dirname, '../../..');
-      const uiLogPath = path.join(rootDir, '.agenfk', 'ui.log');
-      if (fs.existsSync(uiLogPath)) {
-        const logContent = fs.readFileSync(uiLogPath, 'utf8');
-        const match = logContent.match(/http:\/\/localhost:\d+/);
-        if (match) {
-          uiUrl = match[0];
-        }
+
+    const rootDir = path.resolve(__dirname, '../../..');
+    const base = resolveDashboardUrl(rootDir);
+
+    let uiUrl = base;
+    if (options.open !== undefined) {
+      const itemId = options.open.trim();
+      if (!itemId) {
+        console.error(chalk.red('Error: --open requires a non-empty item id.'));
+        process.exitCode = 1;
+        return;
       }
-    } catch (err) {
-      // ignore parsing errors
+      // Deep-link: ?item=<id> makes the board pre-fill the Search Box with the
+      // id and run the search (drill-down + highlight + scroll). ?project opens
+      // the board on the project the ITEM belongs to — resolved from the server
+      // (the item id uniquely identifies it); the cwd's project is only a
+      // fallback for when the server is unreachable, since opening the board on
+      // the wrong project would silently switch the user's board and show
+      // NOT FOUND for a perfectly valid item.
+      let projectId = await resolveItemProjectId(itemId);
+      if (!projectId) projectId = findProjectId(process.cwd());
+      uiUrl = buildUiOpenUrl(base, itemId, projectId);
     }
 
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
@@ -1368,6 +1378,22 @@ function findProjectId(startDir: string): string | null {
   try {
     const config = JSON.parse(fs.readFileSync(projFile, 'utf8'));
     return config.projectId || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve which project an item belongs to, from the server (the item id
+ * uniquely identifies it). Used by `agenfk ui --open` so the deep-link opens
+ * the board on the item's real project even when the cwd belongs to a
+ * different one. Returns null when the server is unreachable or the id is
+ * unknown — callers fall back to the cwd's project.
+ */
+async function resolveItemProjectId(itemId: string): Promise<string | null> {
+  try {
+    const { data } = await axios.get(`${API_URL}/items/${encodeURIComponent(itemId)}`, { timeout: 3000 });
+    return data?.projectId || null;
   } catch {
     return null;
   }

@@ -158,6 +158,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Restart services | `agenfk restart [-q/--quiet]` |
 | Force-kill all processes/ports | `agenfk kill` |
 | Open / show the dashboard | `agenfk ui` |
+| Show item in the dashboard | `agenfk ui --open <itemId>` — opens the web UI with that item highlighted (deep-links the Search Box to the item id) |
 | Check framework health | `agenfk health` |
 | Upgrade the framework | `agenfk upgrade [-f/--force][-b/--beta][--version <ver>][--json][--debuglog]` |
 | Back up the database | `agenfk backup` |
@@ -165,6 +166,8 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Initialize a project in the cwd | `agenfk init [name] [-d/--description <desc>]` |
 | Fix Claude Code MCP integration | `agenfk configure-ide` |
 | Start the MCP server (stdio) | `agenfk mcp` |
+
+**Showing an item to the user**: when the user asks to *show* an item ("show me that task", "open <id> in the dashboard", "where is <id> on the board"), run `agenfk ui --open <itemId>` — it opens the web UI with that item highlighted, exactly like searching the id in the UI's Search Box. Read-only display — no workflow state changes, no gatekeeper needed.
 
 **Integrations, rules/skills & config** (CLI-only)
 

@@ -431,13 +431,30 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
   );
 };
 
+// Deep-link URL params (`agenfk ui --open <id>`): ?project selects the project,
+// ?item locates and highlights the item. Applied once, then stripped from the
+// URL (stripDeepLinkParams) so a later reload honours the user's picker choice
+// instead of re-applying a stale deep-link over it.
+const getUrlParam = (name: string): string | null =>
+  new URLSearchParams(window.location.search).get(name);
+
+const stripDeepLinkParams = () => {
+  if (!getUrlParam('item') && !getUrlParam('project')) return;
+  window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+};
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
   const easterEggsEnabled = useEasterEggs();
   
   // Project State
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => localStorage.getItem('agenfk_project_id'));
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
+    // `agenfk ui --open <id>&project=<pid>` deep-link: an explicit project in
+    // the URL wins over the last-used project in localStorage.
+    const fromUrl = getUrlParam('project');
+    return fromUrl || localStorage.getItem('agenfk_project_id');
+  });
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -508,6 +525,24 @@ export const KanbanBoard: React.FC = () => {
     queryFn: () => api.listProjects()
   });
 
+  // One-shot guard for the ?item deep-link (declared here so the stale-clear
+  // effect below can suppress a deep-link whose project turned out invalid).
+  const deepLinkAppliedRef = React.useRef(false);
+
+  // Deep-link (?project): `agenfk ui --open <id>&project=<pid>` may target a
+  // different project than the one in localStorage. The initializer above has
+  // already applied it; persist it the same way the project picker does so a
+  // later reload (without the param) still opens on that project. An invalid
+  // ?project is cleaned up by the stale-clear effect below.
+  useEffect(() => {
+    const fromUrl = getUrlParam('project');
+    if (fromUrl && fromUrl !== localStorage.getItem('agenfk_project_id')) {
+      localStorage.setItem('agenfk_project_id', fromUrl);
+    }
+    // With no ?item to apply there is nothing left to consume the params.
+    if (!getUrlParam('item')) stripDeepLinkParams();
+  }, []);
+
   // Clear stale localStorage project ID if it no longer exists in the DB
   useEffect(() => {
     if (isLoadingProjects || !projects) return;
@@ -521,6 +556,10 @@ export const KanbanBoard: React.FC = () => {
       } else {
         localStorage.removeItem('agenfk_project_id');
       }
+      // The ?item deep-link was aimed at a project that doesn't exist — don't
+      // let it fire later against whatever project the user picks instead.
+      deepLinkAppliedRef.current = true;
+      stripDeepLinkParams();
     }
   }, [projects, isLoadingProjects, selectedProjectId]);
 
@@ -1098,6 +1137,34 @@ export const KanbanBoard: React.FC = () => {
     [Status.ARCHIVED]: 8,
   };
 
+  // Shared by the Search Box form and the ?item deep-link: matches items by id
+  // or title (case-insensitive substring), navigates to the first match, or
+  // flashes NOT FOUND in the box when nothing matches.
+  const runSearch = (term: string) => {
+    if (!term.trim() || !items) return;
+
+    const lower = term.toLowerCase();
+    const matches = items
+      .filter((i: AgEnFKItem) =>
+        i.id.toLowerCase().includes(lower) ||
+        i.title.toLowerCase().includes(lower)
+      )
+      .sort((a: AgEnFKItem, b: AgEnFKItem) =>
+        (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
+      );
+
+    if (matches.length > 0) {
+      setSearchMatches(matches);
+      setCurrentMatchIndex(0);
+      navigateToMatch(matches[0]);
+    } else {
+      setSearchMatches([]);
+      setCurrentMatchIndex(0);
+      setSearchTerm('NOT FOUND');
+      setTimeout(() => setSearchTerm(''), 1000);
+    }
+  };
+
   const navigateToMatch = (item: AgEnFKItem) => {
     if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
     if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
@@ -1130,29 +1197,31 @@ export const KanbanBoard: React.FC = () => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim() || !items) return;
-
-    const term = searchQuery.toLowerCase();
-    const matches = items
-      .filter((i: AgEnFKItem) =>
-        i.id.toLowerCase().includes(term) ||
-        i.title.toLowerCase().includes(term)
-      )
-      .sort((a: AgEnFKItem, b: AgEnFKItem) =>
-        (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
-      );
-
-    if (matches.length > 0) {
-      setSearchMatches(matches);
-      setCurrentMatchIndex(0);
-      navigateToMatch(matches[0]);
-    } else {
-      setSearchMatches([]);
-      setCurrentMatchIndex(0);
-      setSearchTerm('NOT FOUND');
-      setTimeout(() => setSearchTerm(''), 1000);
-    }
+    runSearch(searchQuery);
   };
+
+  // Deep-link (?item): `agenfk ui --open <itemId>` opens the board with this
+  // param. Once items AND the flow are loaded (columns render only when the
+  // flow is available — see the isLoadingFlow placeholder), behave exactly as
+  // if the id had been typed into the Search Box: pre-fill it and run the
+  // search (drill-down + highlight + scroll, or the NOT FOUND flash when
+  // nothing matches). One-shot — the ref guard also keeps the StrictMode
+  // double-effect from applying it twice. runSearch is intentionally not a
+  // dep: it is re-created every render and the effect must fire on items/flow
+  // changes only; the ref makes a re-run a no-op anyway (the flow-readiness
+  // guard above also keeps the rule happy: the state sync is conditional on
+  // external data, not unconditional at mount).
+  useEffect(() => {
+    if (deepLinkAppliedRef.current || !items) return;
+    if (isLoadingFlow && !activeFlow) return;
+    const itemId = getUrlParam('item');
+    if (!itemId) return;
+    deepLinkAppliedRef.current = true;
+    setSearchTerm(itemId);
+    runSearch(itemId);
+    stripDeepLinkParams();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, isLoadingFlow, activeFlow]);
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
     if (searchMatches.length === 0) return;
