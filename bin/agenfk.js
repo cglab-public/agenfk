@@ -74,7 +74,16 @@ function toPosixPath(p) {
 
 // On Windows, BSD tar treats "C:" as a remote hostname; --force-local disables that.
 // On MinGW we also convert paths to POSIX form as a belt-and-suspenders measure.
-const tarFlags = process.platform === 'win32' ? '--force-local -xzf' : '-xzf';
+// Refuse macOS metadata on the way IN. This is the path that actually polluted
+// users: every published release up to v1.1.16-beta.4 was ~half AppleDouble
+// (`._*`) entries, and this extraction lands the tarball straight into the
+// install dir — after the filtered cpSync above, so that filter never sees it.
+// Excluding here makes the outcome independent of any later sweep.
+// (CGLAB-94 / issue #163)
+const tarExcludes = "--exclude='._*' --exclude='.DS_Store'";
+const tarFlags = process.platform === 'win32'
+  ? `--force-local ${tarExcludes} -xzf`
+  : `${tarExcludes} -xzf`;
 
 // compareSemver gates the redownload-on-update downgrade guard. It is imported
 // from ./version-utils.mjs (top of file) so prerelease ordering is correct
@@ -140,6 +149,28 @@ function downloadAsset(repo, tag, pattern, outputPath) {
   execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
 }
 
+
+// Never copy macOS AppleDouble / Finder metadata into the install dir. Releases
+// packaged on macOS carried a `._<name>` twin for every file with an extended
+// attribute; copied verbatim, they reached the skills sync and were surfaced as
+// garbage skills in every agent session (CGLAB-94 / issue #163).
+const isMacMetadata = (name) => name.startsWith('._') || name === '.DS_Store';
+const copyFilter = (src) => !isMacMetadata(path.basename(src));
+// Fallback path for Node builds without fs.cpSync: `cp -r` can't filter, so
+// remove the artifacts after the fact.
+function sweepMacMetadata(dir) {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    const full = path.join(dir, entry.name);
+    if (isMacMetadata(entry.name)) {
+      try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
+    } else if (entry.isDirectory()) {
+      sweepMacMetadata(full);
+    }
+  }
+}
+
 if (isNpxCache) {
   const isUpdate = fs.existsSync(INSTALL_DIR);
 
@@ -147,16 +178,18 @@ if (isNpxCache) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
     // Overlay new files from the npx cache onto the existing install
     if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
+      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
     } else {
       execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(INSTALL_DIR)}/`, { stdio: 'inherit', shell: true });
+      sweepMacMetadata(INSTALL_DIR);
     }
   } else {
     console.log(`${GREEN}Installing AgEnFK to ${INSTALL_DIR}...${RESET}`);
     if (fs.cpSync) {
-      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true });
+      fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
     } else {
       execSync(`cp -r ${JSON.stringify(REPO_ROOT)} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
+      sweepMacMetadata(INSTALL_DIR);
     }
   }
 

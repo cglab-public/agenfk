@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isMacMetadata, isAgenfkOwnedEntry } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -945,7 +945,7 @@ process.exit(0);
         if (existsSync(commandsDir)) {
             const files = await fs.readdir(commandsDir);
             for (const file of files) {
-                if (!file.endsWith('.md')) continue;
+                if (!isInstallableMarkdown(file)) continue;
                 const skillName = file.replace(/\.md$/, '');
                 const skillDir = path.join(claudeSkillsDir, skillName);
                 await fs.mkdir(skillDir, { recursive: true });
@@ -1035,7 +1035,7 @@ process.exit(0);
         if (existsSync(commandsDir)) {
             const files = await fs.readdir(commandsDir);
             for (const file of files) {
-                if (!file.endsWith('.md')) continue;
+                if (!isInstallableMarkdown(file)) continue;
                 const skillName = file.replace(/\.md$/, '');
                 const skillDir = path.join(agentsSkillsDir, skillName);
                 await fs.mkdir(skillDir, { recursive: true });
@@ -1159,7 +1159,7 @@ process.exit(0);
             if (existsSync(commandsDir)) {
                 const files = await fs.readdir(commandsDir);
                 for (const file of files) {
-                    if (file.endsWith('.md')) {
+                    if (isInstallableMarkdown(file)) {
                         await fs.copyFile(path.join(commandsDir, file), path.join(integration.targetBase, file));
                         console.log(`  Installed: ${path.join(integration.targetBase, file)}`);
                     }
@@ -1180,7 +1180,7 @@ process.exit(0);
             if (existsSync(commandsDir)) {
                 const files = await fs.readdir(commandsDir);
                 for (const file of files) {
-                    if (!file.endsWith('.md')) continue;
+                    if (!isInstallableMarkdown(file)) continue;
                     const mdPath = path.join(commandsDir, file);
                     const mdContent = readFileSync(mdPath, 'utf8');
                     // Parse description from YAML frontmatter
@@ -1207,6 +1207,71 @@ process.exit(0);
         } else if (!onlyPlatform) {
             console.log(`${GREEN}[10c/14] Gemini CLI not found. Skipping Gemini slash commands.${NC}`);
         }
+    }
+
+    // 11b. Sweep macOS AppleDouble / .DS_Store artifacts left by earlier releases.
+    // Every release up to v1.1.16-beta.4 was packaged with a bare `tar -czf` on
+    // macOS, which emits a `._<name>` companion for each file carrying an
+    // extended attribute — roughly half of every published tarball. The sync
+    // filters no longer propagate them, but a machine that installed a polluted
+    // release still has them on disk, where each `._agenfk-*` entry is surfaced
+    // by Claude Code (and Cursor/Codex/Gemini/OpenCode) as a skill whose
+    // description is mojibake binary, in the system prompt of every session.
+    // Upgrading must clean them up rather than leave the user a manual `find`.
+    //
+    // MUST run after every sync step (8b/8e skills AND 10/11/10c commands), or
+    // it heals only the dirs written before it. (CGLAB-94 / issue #163)
+    console.log(`${GREEN}[11b/14] Sweeping stale macOS metadata artifacts...${NC}`);
+    {
+        // Shared dirs: only ever remove OUR litter. An AppleDouble twin is named
+        // after the file it shadows, so ours are exactly `._agenfk*`; a bare
+        // `._*` sweep would delete another tool's twin and its `.DS_Store` too.
+        const sweepDirs = [
+            path.join(os.homedir(), '.agents', 'skills'),
+            path.join(os.homedir(), '.claude', 'skills'),
+            path.join(os.homedir(), '.claude', 'commands'),
+            path.join(os.homedir(), '.cursor', 'skills'),
+            path.join(os.homedir(), '.codex', 'skills'),
+            path.join(os.homedir(), '.gemini', 'skills'),
+            path.join(os.homedir(), '.gemini', 'commands'),
+            path.join(os.homedir(), '.gemini', 'commands', 'agenfk'),
+            path.join(os.homedir(), '.config', 'opencode', 'skills'),
+            path.join(os.homedir(), '.config', 'opencode', 'commands'),
+        ];
+        let swept = 0;
+        for (const dir of sweepDirs) {
+            if (!existsSync(dir)) continue;
+            for (const entry of readdirSync(dir)) {
+                if (!isMacMetadata(entry) || !isAgenfkOwnedEntry(entry)) continue;
+                try {
+                    await fs.rm(path.join(dir, entry), { recursive: true, force: true });
+                    swept++;
+                } catch { /* ignore — best effort, never fail the install */ }
+            }
+        }
+        // The install dir is entirely ours, so any `._*` there is ours to remove.
+        // Guarded the same way as cleanStaleSrc(): a distributed tarball never
+        // contains .git, so its presence means this is a dev checkout and the
+        // tree is the developer's working copy, not ours to prune.
+        const isDevCheckout = existsSync(path.join(rootDir, '.git'));
+        const sweepTree = (dir) => {
+            if (!existsSync(dir)) return;
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+                if (entry.name === 'node_modules' || entry.name === '.git') continue;
+                const full = path.join(dir, entry.name);
+                if (isMacMetadata(entry.name)) {
+                    try { rmSync(full, { recursive: true, force: true }); swept++; } catch { /* ignore */ }
+                } else if (entry.isDirectory()) {
+                    sweepTree(full);
+                }
+            }
+        };
+        if (isDevCheckout) {
+            console.log('  Skipping install-dir sweep (dev checkout detected: .git present).');
+        } else {
+            sweepTree(rootDir);
+        }
+        console.log(swept > 0 ? `  Removed ${swept} stale macOS metadata artifact(s)` : '  None found');
     }
 
     // 12. Mirror the shared hook scripts into ~/.agenfk/bin. This MUST happen

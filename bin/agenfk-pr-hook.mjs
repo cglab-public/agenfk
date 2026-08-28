@@ -106,7 +106,15 @@ export function buildDirective(client, message) {
     case 'claude-code':
       return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message } };
     case 'codex':
-      return { decision: 'continue', reason: message };
+      // CGLAB-86: the old { decision: 'continue', reason } envelope was REJECTED
+      // by Codex with "hook returned invalid post-tool-use JSON output" —
+      // `continue` is a field of the Stop-family hook output, not a PostToolUse
+      // decision value. Verified empirically against codex-cli 0.149.0: the old
+      // shape => "hook: PostToolUse Failed"; the hookSpecificOutput envelope
+      // below => "hook: PostToolUse Completed" (its wire struct carries
+      // hookEventName / additionalContext / updatedMCPToolOutput; the only
+      // valid top-level decision is `block`, which this nudge never wants).
+      return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: message } };
     case 'gemini':
       return { decision: 'continue', context: message };
     case 'cursor':
@@ -188,7 +196,13 @@ async function main() {
   }
 
   // push trigger: only nudge if the branch already has a registered PR.
-  const branch = trigger.branch || getCurrentBranch();
+  // `HEAD` is a symbolic push SOURCE ("push the current branch"), not a branch
+  // name — `git push -u origin HEAD` is the form the workflow itself recommends
+  // ("push your branch"), so resolve it to the real branch instead of nudging
+  // with the literal 'HEAD' (independent review finding, CGLAB-86). The
+  // classifier stays a pure string parser; git resolution happens here.
+  const branch =
+    trigger.branch && trigger.branch !== 'HEAD' ? trigger.branch : getCurrentBranch();
   if (!branch) process.exit(0);
   // We don't currently index PRs by branch, but the agent can still answer the
   // "did I add items to this PR?" question itself. Emit the directive

@@ -29,6 +29,12 @@ This avoids redundant build and test runs when the underlying code changes are s
 
 ---
 
+## Showing an Item in the UI
+
+When the user asks to *show* an item — "show me that task", "open <id> in the dashboard", "where is <id> on the board" — run `agenfk ui --open <itemId>`: it opens the web UI with that item highlighted (the Search Box pre-fills with the id and navigates to it, exactly like a manual search). It is a read-only display operation — no workflow state changes, no gatekeeper authorization needed.
+
+---
+
 ## Step 0 — Classify the request
 
 Before creating any item, evaluate the request against these signals:

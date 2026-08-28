@@ -105,6 +105,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | `query_token_events(...)` | `agenfk tokens [--item <id>][--project <id>][--client <name>][--since <ts>][--until <ts>][--limit <n>][--json]` |
 | `register_pr(...)` / `update_pr_sizing(...)` | `agenfk pr-register --item <id> --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` / `agenfk pr-resize --number <n> --repo <r> --epic <n> --story <n> --task <n> --bug <n> --model <id> --harness <name>` (`--model` and `--harness` are **REQUIRED** on both) |
 | `analyze_request(req)` | `agenfk analyze "<request>"` |
+| *(show item in the dashboard)* | `agenfk ui [--open <itemId>]` — opens the dashboard in the browser; `--open <itemId>` deep-links the web UI so that item is highlighted (the Search Box pre-fills with the id and navigates to it, exactly like a manual search). No MCP equivalent — CLI only. |
 
 **Read output**: append `--json` to any read command (`list`, `get`, `list-projects`,
 `current-project`, `flow show`, `tokens`, …) for machine-readable output you can parse
@@ -248,6 +249,7 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `agenfk verify <id> --evidence "<text>" ["<command>"]`: Step-completion gate — `evidence` (how you satisfied the exit criteria, logged as a tagged comment) is required; the command is optional. Advances to next step on success.
 *   `agenfk pause-work <id> --summary "<s>" --resume-instructions "<r>"`: Save context snapshot and pause item.
 *   `agenfk resume-work <id>`: Restore context and resume paused item.
+*   `agenfk ui [--open <itemId>]`: Open the dashboard in the browser. With `--open <itemId>` it opens the web UI with that item highlighted (the Search Box pre-fills with the id and navigates to it, like a manual search). **When the user asks to *show* an item — "show me that task", "open <id> in the dashboard", "where is <id> on the board" — run `agenfk ui --open <itemId>`.** It is a read-only display operation: no workflow state changes, no gatekeeper needed.
 
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 

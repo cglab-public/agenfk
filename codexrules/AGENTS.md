@@ -86,6 +86,14 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 - **Evidence-based claims**: Before claiming a feature already exists, search the codebase for the specific UI components, API endpoints, and database queries. Never assume without evidence.
 - **Root cause debugging**: When fixing errors, investigate the root cause fully before applying fixes. Avoid workarounds that create new problems (e.g. infinite loops). Trace from symptom to source. One fix at a time.
 
+### Long-running commands — async execution MANDATORY
+
+Codex's shell tool yields after a bounded window (the default `yield_time_ms` is ~30s). AgEnFK commands that run a full test suite — the project test command behind `agenfk log-test <id> --command "..."` — and the final-step `agenfk verify <id> --evidence "..."` (which runs the project's verify command to land DONE) routinely exceed it. A synchronously-truncated tool call never sees the completed result, so for any command expected to outlast the yield window:
+
+- Run it as an async task: pass `yield_time_ms` (e.g. 30000) in the shell tool call so it yields with the process still running instead of being cut off, then **wait** — poll the running process (an empty `write_stdin` write polls without sending input) until it **completes**, and read its final output and exit status.
+- Only once the process has finished, log the result (`agenfk log-test <id> ... --status PASSED|FAILED`) or advance the step (`agenfk verify ...`). A suite that was still running when you stopped waiting has NOT passed: never log PASSED on an incomplete run, and never land DONE without the completed verify output in hand.
+- Short commands (gatekeeper, comments, item reads, status checks) stay synchronous as usual — this rule targets the slow ones: full test runs, the final-step verify, heavy builds.
+
 ### STRICTLY FORBIDDEN shortcuts
 
 **NEVER** bypass the `agenfk` CLI/server by using these shortcuts:
@@ -163,6 +171,7 @@ This is the full workflow surface. In Codex, call the **`mcp__agenfk__*` tool** 
 | Restart services | `agenfk restart [-q/--quiet]` |
 | Force-kill all processes/ports | `agenfk kill` |
 | Open / show the dashboard | `agenfk ui` |
+| Show item in the dashboard | `agenfk ui --open <itemId>` — opens the web UI with that item highlighted (deep-links the Search Box to the item id) |
 | Check framework health | `agenfk health` |
 | Upgrade the framework | `agenfk upgrade [-f/--force][-b/--beta][--version <ver>][--json][--debuglog]` |
 | Back up the database | `agenfk backup` |
@@ -170,6 +179,8 @@ This is the full workflow surface. In Codex, call the **`mcp__agenfk__*` tool** 
 | Initialize a project in the cwd | `agenfk init [name] [-d/--description <desc>]` |
 | Fix Claude Code MCP integration | `agenfk configure-ide` |
 | Start the MCP server (stdio) | `agenfk mcp` |
+
+**Showing an item to the user**: when the user asks to *show* an item ("show me that task", "open <id> in the dashboard", "where is <id> on the board"), run `agenfk ui --open <itemId>` — it opens the web UI with that item highlighted, exactly like searching the id in the UI's Search Box. Read-only display — no workflow state changes, no gatekeeper needed.
 
 **Integrations, rules/skills & config** (CLI-only)
 
