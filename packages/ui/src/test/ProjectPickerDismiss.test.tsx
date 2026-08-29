@@ -205,4 +205,61 @@ describe('ProjectPickerDismiss', () => {
     expect(screen.getByPlaceholderText(/My Awesome App/i)).toBeDefined();
     expect(screen.getByText(/Project Name/i)).toBeDefined();
   });
+
+  // CGLAB-115 (2): selection moved from an inner button onto the whole row.
+  // These cover the switch-project path (a project is already selected, so the
+  // picker is an overlay that also closes on backdrop click) — the row must
+  // switch projects without the backdrop guard racing it.
+  it('clicking a different project row switches the project and closes the picker', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('p1','Alpha'), makeProject('p2','Beta')]);
+    localStorage.setItem('agenfk_project_id','p1');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => screen.getByText('Beta'));
+
+    // Click the row's padding — just outside the name, where the old inner
+    // button did not reach.
+    fireEvent.click(screen.getByText('Beta').closest('[role="option"]') as HTMLElement);
+
+    await waitFor(() => expect(screen.queryByText(/Welcome to AgEnFK/i)).toBeNull());
+    expect(localStorage.getItem('agenfk_project_id')).toBe('p2');
+  });
+
+  it('clicking the row of the already-selected project keeps it selected and closes the picker', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('p1','Alpha'), makeProject('p2','Beta')]);
+    localStorage.setItem('agenfk_project_id','p1');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => screen.getByText(/Welcome to AgEnFK/i));
+
+    // Scoped to the picker's listbox: 'Alpha' is also the board header behind
+    // the overlay.
+    const row = screen.getAllByRole('option').find(o => o.textContent?.includes('Alpha')) as HTMLElement;
+    fireEvent.click(row);
+
+    await waitFor(() => expect(screen.queryByText(/Welcome to AgEnFK/i)).toBeNull());
+    expect(localStorage.getItem('agenfk_project_id')).toBe('p1');
+  });
+
+  it('clicking a row while its delete confirm is armed neither deletes nor selects', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('p1','Alpha'), makeProject('p2','Beta')]);
+    localStorage.setItem('agenfk_project_id','p1');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => screen.getByTitle('Switch Project'));
+    fireEvent.click(screen.getByTitle('Switch Project'));
+    await waitFor(() => screen.getByText('Beta'));
+
+    fireEvent.click(screen.getByLabelText('Delete project Beta'));
+    await screen.findByText(/Delete "Beta"\?/i);
+
+    // Same row element, now showing the confirm. Clicking its padding must not
+    // fall through to "open Beta".
+    fireEvent.click(screen.getByText(/Delete "Beta"\?/i).closest('[role="option"]') as HTMLElement);
+
+    expect(api.deleteProject).not.toHaveBeenCalled();
+    expect(localStorage.getItem('agenfk_project_id')).toBe('p1');
+    expect(screen.getByText(/Delete "Beta"\?/i)).toBeDefined();
+  });
 });

@@ -918,8 +918,13 @@ export const KanbanBoard: React.FC = () => {
         e.preventDefault();
         setHighlightedProjectIndex(prev => clampIndex(prev === -1 ? 0 : prev - 1, n));
       } else if (e.key === 'Enter') {
-        if (highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length) {
-          handleSelectProject(sortedFilteredProjects[highlightedProjectIndex].id);
+        // Type-and-Enter: with no row highlighted, Enter takes the first match.
+        // A highlight is always a valid index (clampIndex) or -1, so ?? only
+        // covers the index being momentarily ahead of a shrinking list.
+        const target =
+          sortedFilteredProjects[highlightedProjectIndex] ?? sortedFilteredProjects[0];
+        if (target) {
+          handleSelectProject(target.id);
         }
       }
     };
@@ -1285,19 +1290,32 @@ export const KanbanBoard: React.FC = () => {
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
                     <p className="col-span-full text-sm text-slate-400 py-4 text-center">No projects match "{projectSearch}"</p>
                   ) : (
-                    sortedFilteredProjects.map((p, index) => (
+                    sortedFilteredProjects.map((p, index) => {
+                    // While the delete confirm is armed the row is a destructive
+                    // prompt, not a project shortcut: clicking it must neither
+                    // open the project nor answer the prompt.
+                    const isConfirmingDelete = confirmDeleteProjectId === p.id;
+                    return (
                     <div
                       key={p.id}
                       role="option"
                       id={`project-option-${p.id}`}
                       aria-selected={index === highlightedProjectIndex ? 'true' : 'false'}
+                      onClick={isConfirmingDelete ? undefined : () => handleSelectProject(p.id)}
+                      // The confirm row must not still look clickable: keeping
+                      // cursor/hover styling there would advertise a click that
+                      // the guard above deliberately ignores.
                       className={`flex items-center gap-3 p-4 rounded-xl border transition-all group ${
-                        index === highlightedProjectIndex
-                          ? 'border-border-brand bg-chip'
-                          : 'border-slate-100 dark:border-slate-800 hover:border-border-brand hover:bg-chip'
+                        isConfirmingDelete
+                          ? 'border-red-200 dark:border-red-900/40'
+                          : `cursor-pointer ${
+                              index === highlightedProjectIndex
+                                ? 'border-border-brand bg-chip'
+                                : 'border-slate-100 dark:border-slate-800 hover:border-border-brand hover:bg-chip'
+                            }`
                       }`}
                     >
-                      {confirmDeleteProjectId === p.id ? (
+                      {isConfirmingDelete ? (
                         <>
                           <Trash2 className="text-red-500 shrink-0" size={20} />
                           <span className="flex-1 text-sm font-semibold text-red-600 dark:text-red-400">Delete "{p.name}"?</span>
@@ -1317,13 +1335,10 @@ export const KanbanBoard: React.FC = () => {
                         </>
                       ) : (
                         <>
-                          <button
-                            onClick={() => handleSelectProject(p.id)}
-                            className="flex flex-1 items-center gap-3 text-left"
-                          >
+                          <div className="flex flex-1 items-center gap-3 text-left">
                             <Briefcase className="text-slate-400 group-hover:text-accent-text shrink-0" size={20} />
                             <span className="font-semibold text-slate-700 dark:text-slate-200">{p.name}</span>
-                          </button>
+                          </div>
                           <button
                             onClick={(e) => { e.stopPropagation(); setConfirmDeleteProjectId(p.id); }}
                             className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
@@ -1335,7 +1350,8 @@ export const KanbanBoard: React.FC = () => {
                         </>
                       )}
                     </div>
-                  ))
+                    );
+                    })
                   )}
                 </div>
               </div>

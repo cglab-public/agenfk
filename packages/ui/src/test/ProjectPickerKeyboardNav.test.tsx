@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -94,9 +94,14 @@ function getHighlightedRow(): HTMLElement | null {
 }
 
 describe('ProjectPickerKeyboardNav', () => {
+  // Handle on the QueryClient of the most recent render, so a test can force a
+  // projects refetch and watch the list change under the picker.
+  let queryClientRef: QueryClient | null = null;
+
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    queryClientRef = null;
   });
 
   afterEach(() => {
@@ -109,6 +114,7 @@ describe('ProjectPickerKeyboardNav', () => {
         queries: { retry: false, gcTime: 0 },
       },
     });
+    queryClientRef = queryClient;
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
@@ -136,6 +142,19 @@ describe('ProjectPickerKeyboardNav', () => {
     await waitFor(() => screen.getByText('apple'));
     const highlighted = getHighlightedRow();
     expect(highlighted).toBeNull();
+  });
+
+  // CGLAB-115 (1): the highlight is only a *visual* marker — Enter no longer
+  // depends on it. With no row highlighted, Enter falls back to the first
+  // match, so the fallback must not be smuggled into aria-selected either.
+  it('Enter with no highlight selects the first match without marking it aria-selected', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+
+    expect(getHighlightedRow()).toBeNull();
+    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
   });
 
   it('ArrowDown highlights the first project (alphabetically sorted)', async () => {
@@ -308,18 +327,119 @@ describe('ProjectPickerKeyboardNav', () => {
     const mangoRow = getProjectRow('Mango');
     expect(mangoRow?.getAttribute('aria-selected')).toBe('true');
 
-    // Enter selects Mango
+    // Enter selects Mango. Note this case does not discriminate between
+    // "highlighted" and "first match" — they are the same row here. The
+    // discriminating case is 'Enter selects the highlighted row even when it
+    // is not the first match'.
     fireEvent.keyDown(searchInput, { key: 'Enter' });
     expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
   });
 
-  it('Enter with no highlight is a no-op', async () => {
+  // CGLAB-115 (1): typing in the search box resets the highlight to -1, so
+  // Enter used to fall through and do nothing — the fastest path (type a few
+  // letters, hit Enter) was dead. Enter must select the first filtered match.
+  it('Enter while typing selects the first filtered match', async () => {
     setup();
     await waitFor(() => screen.getByText('apple'));
 
-    // Press Enter without any arrow key — no item highlighted
+    const searchInput = screen.getByLabelText('Search projects');
+    fireEvent.change(searchInput, { target: { value: 'man' } });
+    await waitFor(() => {
+      expect(screen.queryByText('Zebra')).toBeNull();
+      expect(screen.queryByText('apple')).toBeNull();
+    });
+
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
+  });
+
+  it('Enter with no typing and no highlight still selects the first project', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
     fireEvent.keyDown(document.body, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
+  });
+
+  // The fallback picks sortedFilteredProjects[0], so with no highlight Enter
+  // must land on 'apple' even though 'Zebra' is the first row in the raw
+  // fixture array — sort order decides, insertion order does not.
+  it('Enter with no highlight picks the alphabetically first project, not the first in the raw list', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    // 'Zebra' is index 0 in the fixture array; 'apple' sorts first.
+    expect(screen.getAllByText(/^(apple|Mango|Zebra)$/)[0].textContent).toBe('apple');
+
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('a-id');
+  });
+
+  it('Enter selects the highlighted row even when it is not the first match', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    const searchInput = screen.getByLabelText('Search projects');
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' }); // apple
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' }); // Mango
+
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('m-id');
+  });
+
+  it('Enter with no matches at all is a no-op', async () => {
+    setup();
+    await waitFor(() => screen.getByText('apple'));
+
+    const searchInput = screen.getByLabelText('Search projects');
+    fireEvent.change(searchInput, { target: { value: 'zzz-no-match' } });
+    await waitFor(() => screen.getByText(/no projects match/i));
+
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
 
     expect(localStorage.getItem('agenfk_project_id')).toBeNull();
   });
+
+  // The bounds check on the highlight guards a highlight that is out of range
+  // for the list it now indexes into. Typing cannot produce that (onChange
+  // resets the highlight to -1), but a background refetch of the project list
+  // can: react-query swaps in a shorter array without touching the highlight.
+  // Without this case an off-by-one in the guard survives — Stryker kept
+  // landing it, because every other Enter test leaves the index in range.
+  it('Enter with a highlight left out of range by a shrinking project list falls back to the first match', async () => {
+    const three = [
+      makeProject('z-id', 'Zebra'),
+      makeProject('a-id', 'apple'),
+      makeProject('m-id', 'Mango'),
+    ];
+    vi.mocked(api.listProjects).mockResolvedValue(three);
+    renderKanbanBoard();
+    await waitFor(() => screen.getByText('apple'));
+
+    const searchInput = screen.getByLabelText('Search projects');
+    // Highlight Mango, index 1 of apple/Mango/Zebra.
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+    fireEvent.keyDown(searchInput, { key: 'ArrowDown' });
+    expect(getProjectRow('Mango')?.getAttribute('aria-selected')).toBe('true');
+
+    // The list shrinks under the highlight: only Zebra remains, so index 1 is
+    // out of range while the highlight still reads 1.
+    vi.mocked(api.listProjects).mockResolvedValue([makeProject('z-id', 'Zebra')]);
+    await act(async () => {
+      await queryClientRef!.invalidateQueries({ queryKey: ['projects'] });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('apple')).toBeNull();
+      expect(screen.queryByText('Mango')).toBeNull();
+    });
+
+    fireEvent.keyDown(searchInput, { key: 'Enter' });
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('z-id');
+  });
+
 });

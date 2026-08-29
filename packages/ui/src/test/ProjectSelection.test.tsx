@@ -213,4 +213,98 @@ describe('ProjectSelection', () => {
     expect(screen.queryByText('Mango')).toBeNull();
     expect(screen.getByText(/no projects match/i)).toBeDefined();
   });
+
+  // ---- CGLAB-115 (2): the whole chip must be clickable, not just its name ----
+  // Each row is a padded container holding an inner button; only the icon +
+  // name were the button, so the padding ring, the gutter and the trailing
+  // dead strip swallowed clicks.
+
+  function rowOf(name: string): HTMLElement {
+    return screen.getByText(name).closest('[role="option"]') as HTMLElement;
+  }
+
+  async function renderThreeProjects() {
+    vi.mocked(api.listProjects).mockResolvedValue([
+      makeProject('z', 'Zebra'),
+      makeProject('a', 'apple'),
+      makeProject('m', 'Mango'),
+    ]);
+    renderKanbanBoard();
+    await waitFor(() => screen.getByText('apple'));
+  }
+
+  it('clicking the row padding (not the name) selects the project', async () => {
+    await renderThreeProjects();
+
+    fireEvent.click(rowOf('Zebra'));
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('z');
+  });
+
+  it('clicking the project icon selects the project', async () => {
+    await renderThreeProjects();
+
+    const row = rowOf('Mango');
+    const icon = row.querySelector('svg');
+    fireEvent.click(icon!);
+
+    expect(localStorage.getItem('agenfk_project_id')).toBe('m');
+  });
+
+  it('the whole row is the click target, not an inner sub-region', async () => {
+    await renderThreeProjects();
+
+    // The name/icon are no longer wrapped in their own button — that inner
+    // button is what left the row's padding dead. The only button left in the
+    // row is the trash action.
+    const row = rowOf('Zebra');
+    const buttons = row.querySelectorAll('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].getAttribute('aria-label')).toBe('Delete project Zebra');
+
+    // And the whole row, not just the name, performs the selection.
+    fireEvent.click(row);
+    expect(localStorage.getItem('agenfk_project_id')).toBe('z');
+  });
+
+  it('a row whose delete confirmation is armed does not advertise itself as clickable', async () => {
+    await renderThreeProjects();
+
+    const row = rowOf('Zebra');
+    expect(row.className).toContain('cursor-pointer');
+
+    fireEvent.click(screen.getByLabelText('Delete project Zebra'));
+    await screen.findByText(/Delete "Zebra"\?/i);
+
+    // Same row element, now the destructive prompt. It must stop looking
+    // clickable, or it advertises a click the guard deliberately ignores.
+    const armed = rowOf('Delete "Zebra"?');
+    expect(armed.className).not.toContain('cursor-pointer');
+    expect(armed.className).not.toContain('hover:bg-chip');
+  });
+
+  it('the trash button arms the delete confirm and does NOT select the project', async () => {
+    await renderThreeProjects();
+
+    const trash = screen.getByLabelText('Delete project Zebra');
+    fireEvent.click(trash);
+
+    expect(await screen.findByText(/Delete "Zebra"\?/i)).toBeDefined();
+    expect(localStorage.getItem('agenfk_project_id')).toBeNull();
+    expect(api.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('clicking the row padding while a delete confirm is armed does not delete', async () => {
+    await renderThreeProjects();
+
+    fireEvent.click(screen.getByLabelText('Delete project Zebra'));
+    await screen.findByText(/Delete "Zebra"\?/i);
+
+    // The confirm replaces the row's contents; clicking its padding must not
+    // select the project nor confirm the deletion.
+    fireEvent.click(rowOf('Delete "Zebra"?'));
+
+    expect(api.deleteProject).not.toHaveBeenCalled();
+    expect(localStorage.getItem('agenfk_project_id')).toBeNull();
+  });
 });
