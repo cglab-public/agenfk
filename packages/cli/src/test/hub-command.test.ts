@@ -79,9 +79,14 @@ describe('agenfk hub commands', () => {
     });
 
     it('refuses to write hub.json when ping fails', async () => {
+      // CGLAB-117 story 4 reordered the GETs: /healthz (identity gate) now
+      // runs BEFORE /v1/ping, so the healthz answer must be queued first or
+      // this test would exercise the healthz gate, not the ping gate.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       mockGet.mockRejectedValueOnce(new Error('ECONNREFUSED'));
       await expect(program.parseAsync(['node', 'agenfk', 'hub', 'login', '--url', 'http://hub.test', '--token', 'x', '--org', 'a']))
         .rejects.toThrow(/exit 1/);
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write hub\.json/);
       expect(fs.existsSync(HUB_CONFIG)).toBe(false);
     });
   });
@@ -118,8 +123,9 @@ describe('agenfk hub commands', () => {
   describe('join', () => {
     it('accepts `hub join <url> <token>` and redeems against the URL even without prior config', async () => {
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'https://hub.example.com' } });
-      // CGLAB-117 story 4: join now healthz-gates the redeemed hubUrl first.
-      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
+      // CGLAB-117 story 4: join healthz-gates the target URL BEFORE the
+      // invite token is posted, and again on the redeemed hubUrl.
+      mockGet.mockResolvedValue({ status: 200, data: { service: 'agenfk-hub' } });
       // No AGENFK_HUB_URL, no existing hub.json; must still work because URL is on the CLI.
       const prevEnv = process.env.AGENFK_HUB_URL;
       delete process.env.AGENFK_HUB_URL;
@@ -145,8 +151,9 @@ describe('agenfk hub commands', () => {
     it('single-arg form still works with an existing hub.json', async () => {
       fs.writeFileSync(HUB_CONFIG, JSON.stringify({ url: 'http://hub.test', token: 'old', orgId: 'acme' }));
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'http://hub.test' } });
-      // CGLAB-117 story 4: join now healthz-gates the redeemed hubUrl first.
-      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
+      // CGLAB-117 story 4: join healthz-gates the target URL BEFORE the
+      // invite token is posted, and again on the redeemed hubUrl.
+      mockGet.mockResolvedValue({ status: 200, data: { service: 'agenfk-hub' } });
       await program.parseAsync(['node', 'agenfk', 'hub', 'join', 'INVITE_TOK', '--no-restart']);
       expect(mockPost).toHaveBeenCalledWith(
         'http://hub.test/hub/invite/redeem',

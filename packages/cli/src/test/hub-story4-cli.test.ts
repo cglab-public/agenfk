@@ -399,9 +399,14 @@ describe('(c) repoint --carry-over gating', () => {
   });
 
   it('same org (no org change) never rewrites or prompts', async () => {
-    await run(makeProgram(), ['hub', 'repoint', '--url', 'https://hub.stg.example.com', '--no-restart']);
+    // A DIFFERENT url with the SAME org id: passes the "nothing to change"
+    // guard, clears healthz+ping, and must still skip the whole carry-over
+    // branch — the guard-return shortcut would make this vacuous otherwise.
+    route({ healthz: { service: 'agenfk-hub' }, ping: () => ({ ok: true, orgId: 'staging' }), status: { orgs: {} } });
+    await run(makeProgram(), ['hub', 'repoint', '--url', 'https://hub.new.example.com', '--no-restart']);
     expect(rewritePosts()).toHaveLength(0);
     expect(askState.lastQuestion).toBe('');
+    expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8')).url).toBe('https://hub.new.example.com');
   });
 });
 

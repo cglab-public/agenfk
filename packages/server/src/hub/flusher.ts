@@ -262,10 +262,17 @@ export class Flusher {
     const rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
     if (rows.length === 0) {
       this.status.lastFlushAt = new Date().toISOString();
+      // A cycle with nothing deliverable is not a failed attempt. Without
+      // this clear, a transport hiccup from an hour ago keeps `hub flush`
+      // printing red + exit 1 forever once the outbox empties (or holds only
+      // stale rows awaiting carry-over) — a false alarm with no actionable
+      // content, and it made the CLI's stale-row guidance unreachable.
+      this.status.lastError = null;
       return;
     }
     const events = rows.map(r => JSON.parse(r.payload));
     const ids = rows.map(r => r.event_id);
+    let refusedNow = 0;
     try {
       const resp = await this.http.post('/v1/events', { events });
       if (!isHubEventsAck(resp?.data)) {
@@ -309,6 +316,12 @@ export class Flusher {
           this.deadletterRows(rows.filter(r => reasonByEventId.has(r.event_id)), reasonByEventId);
           this.status.rejectedByHub += reasonByEventId.size;
           this.status.lastRejectionAt = new Date().toISOString();
+          // Refusals must be as loud as transport failures: `hub flush` and
+          // the preAction banner key off lastError, and a 200-with-rejections
+          // that clears it would put the events' disappearance right back to
+          // where 31 Aug was — invisible inside a green success.
+          this.status.lastError = `hub refused ${reasonByEventId.size} event(s) in the last batch — preserved in ${this.deadletterPath}; see \`agenfk hub deadletter\``;
+          refusedNow = reasonByEventId.size;
           console.warn(
             `[HUB] The hub refused ${reasonByEventId.size} event(s) from this batch; they are preserved in ${this.deadletterPath}. `
             + `${this.status.rejectedByHub} refused in total. Reasons usually mean a re-onboarded or hidden identity — `
@@ -340,7 +353,9 @@ export class Flusher {
       }
       this.storage.hubOutboxDelete(ids);
       this.status.lastFlushAt = new Date().toISOString();
-      this.status.lastError = null;
+      // Transport is healthy, but refusals this cycle keep lastError set —
+      // clearing it here is what made permanent loss look like success.
+      if (refusedNow === 0) this.status.lastError = null;
       this.status.consecutiveFailures = 0;
       this.nextEligibleAt = 0;
     } catch (e: any) {

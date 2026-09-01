@@ -497,6 +497,12 @@ export function registerHubCommands(program: Command): void {
       }
       for (const url of candidates) {
         try {
+          // Identity gate BEFORE the one-time invite token leaves this
+          // machine — symmetric with the device flow, which gates before
+          // /hub/device/start for the same reason (CGLAB-117 story 4).
+          if (!await isHubEndpoint(url, 'hub join')) {
+            continue;
+          }
           const { data } = await axios.post(
             `${url}/hub/invite/redeem`,
             { inviteToken, installation: localInstallationIdentity() },
@@ -721,7 +727,7 @@ export function registerHubCommands(program: Command): void {
               } catch (e: any) {
                 if (!(e instanceof HubRewriteFailed)) throw e; // audit-failure exit propagates
                 const orig: any = e.cause;
-                console.warn(chalk.yellow(`Could not rewrite local outbox (${orig?.message ?? orig}). After \`agenfk up\`, run \`agenfk hub carry-over --from ${existing.orgId} --to ${candidate.orgId}\` again to drain stragglers.`));
+                console.warn(chalk.yellow(`Could not rewrite local outbox (${orig?.response?.data?.error ?? orig?.message ?? orig}). After \`agenfk up\`, run \`agenfk hub carry-over --from ${existing.orgId} --to ${candidate.orgId}\` again to drain stragglers.`));
               }
             }
           }

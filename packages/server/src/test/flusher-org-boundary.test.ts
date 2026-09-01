@@ -287,6 +287,42 @@ describe('Flusher org boundary + deadletter (CGLAB-117)', () => {
     expect(flusher.getStatus().lastError).toBeNull();
   });
 
+  it('review F2: a modern-hub cycle WITH refusals leaves lastError set — 200-with-rejections must not read as clean', async () => {
+    queue('r-1', 'acme');
+    queue('r-2', 'acme');
+    const { http } = makeHttp({
+      postImpl: async () => ({
+        status: 200,
+        data: {
+          ingested: 1, skipped: 0, rejected: 1, hiddenDropped: 0,
+          rejections: [{ eventId: 'r-2', reason: 'org_mismatch' }],
+        },
+      }),
+    });
+    const flusher = makeFlusher(http);
+    await flusher.flush();
+    const st = flusher.getStatus();
+    expect(st.rejectedByHub).toBe(1);
+    // The exact invisibility 31 Aug had: refused events inside a green ack.
+    expect(st.lastError).toMatch(/hub refused 1 event/);
+    expect(st.lastError).toMatch(/agenfk hub deadletter/);
+  });
+
+  it('review F1: a no-op cycle clears a stale lastError — flush must not stay red forever', async () => {
+    queue('s-1', 'acme');
+    const { http } = makeHttp({ postImpl: async () => { throw new Error('ECONNREFUSED'); } });
+    const flusher = makeFlusher(http);
+    await flusher.flush();
+    expect(flusher.getStatus().lastError).toContain('ECONNREFUSED');
+    // Rows leave by some other route (carry-over + flush, or discard). The
+    // next cycle has nothing deliverable: it is NOT a failed attempt, so the
+    // historical error must not keep `hub flush` exiting 1 forever.
+    storage.hubOutboxDelete(['s-1']);
+    (flusher as any).nextEligibleAt = 0; // bypass the transport backoff
+    await flusher.flush();
+    expect(flusher.getStatus().lastError).toBeNull();
+  });
+
   it('rejection entries that cannot be attributed to a batch row are ignored (no crash, no false deadletter)', async () => {
     // A null entry, an eventId the hub could not read (null), and an id absent
     // from this batch: none can be mapped to a row. The spoke wrote these

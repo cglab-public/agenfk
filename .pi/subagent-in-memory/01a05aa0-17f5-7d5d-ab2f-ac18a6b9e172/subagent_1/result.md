@@ -1,63 +1,46 @@
 
 
-Now the spoke side and other consumers:
+## Adversarial review — story 4 (`327c96ea`, CGLAB-117 CLI hub guard/stale-org/flush/repoint)
 
+Evidence base: `git show 327c96ea` (the story-4 diff is committed, not in the worktree), full read of `packages/cli/src/commands/hub.ts` login/join/status/flush/repoint/carry-over, `packages/server/src/hub/flusher.ts`, `packages/server/src/hub/repointSync.ts`, `/internal/hub/status|flush` handlers, `hub-story4-cli.test.ts`, and the three disclosed test edits. `npx vitest run` over the 5 hub CLI test files: **86 passed**. No repo file touched; no scratch left behind.
 
+### Findings
 
+**F1 — Medium — `hub flush` exits 1 on a *sticky historical* `lastError`, and that branch makes spec-(d)'s yellow stale guidance unreachable.**
+`packages/cli/src/commands/hub.ts:619` (`if (data?.lastError) { …; process.exit(1); }`) runs **before** `hub.ts:624` (the stale branch). But `lastError` is not a per-flush result:
+- `packages/server/src/hub/flusher.ts:263-266` — a cycle that finds zero *deliverable* rows (empty outbox, or only stale/`''` rows) returns early and **never clears** `lastError`; only a successful POST clears it (`flusher.ts:343`).
+- `flush()` returns immediately inside the backoff window (`flusher.ts:163-165`), and `/internal/hub/flush` uses `flush()`, not `flushNow()` (`packages/server/src/server.ts:2907`), then echoes `getStatus()`.
 
-Now let me verify the HubEvent type, find all consumers of the endpoint, and check the server's body-limit/error handling:
+Consequences: (a) after any transient hub failure since boot, with an empty or wholly-undeliverable outbox, `agenfk hub flush` prints red and exits 1 **forever** until a delivery succeeds — a false failure with no actionable content; (b) in exactly the scenario story 4(d) targets (stale rows produced by a rejected/moved hub, which also sets `lastError`), the new yellow carry-over guidance at `hub.ts:624` can never print. Fix: evaluate stale first, and derive a per-cycle verdict (`lastFlushAt`/`rejectedByHub` delta, or clear `lastError` on a no-op cycle).
 
+**F2 — Medium — a flush in which the hub just deadlettered events still prints green and exits 0.**
+`flusher.ts:308-312` records rejections (`deadletterRows`, `rejectedByHub`, `lastRejectionAt`) for a modern hub and then falls through to `flusher.ts:341-344`, which **clears** `lastError`. So the flush POST returns `lastError: null` and `hub.ts:628` prints `✓ Flush completed` with exit 0 — events were just permanently refused and preserved in the deadletter file. This is the exact invisibility the change's own comment cites as its reason for existing ("Printing it green was how the 31 Aug rejections stayed invisible", `hub.ts:617-618`); it only fixed the *old-hub* path (`flusher.ts:331`). The response already carries `deadletterDepth` and `lastRejectionAt`; the success branch ignores both. Test gap confirmed: `hub-story4-cli.test.ts:410-431` never feeds a cycle with rejections (`deadletterDepth: 5` appears only alongside `lastError`).
 
+**F3 — Low (test vacuous) — `packages/cli/src/test/hub-story4-cli.test.ts:401-406`, "same org (no org change) never rewrites or prompts".**
+The args (`--url https://hub.stg.example.com`, no `--org-id`/`--token`) are byte-identical to the seeded config, so the action returns at the "Nothing to change" guard (`hub.ts:657-660`) — before the healthz gate, the ping, and the `candidate.orgId !== existing.orgId` branch. Both assertions (`rewritePosts()` empty, no prompt) are trivially true; the test passes even if repoint always rewrote the outbox on an unchanged org. To reach the branch it needs a *different* `--url` with healthz + `/v1/ping` returning `orgId: 'staging'`.
 
+**F4 — Low (coverage lost by a disclosed edit) — `packages/cli/src/test/hub-command.test.ts:81-88`, "refuses to write hub.json when ping fails" now tests the healthz gate instead.**
+`mockGet.mockRejectedValueOnce(...)` fires on the **first** GET, which after this story is `/healthz` (`hub.ts:239`), so the action exits before `/v1/ping`. The test still passes for the wrong reason, and `hub.ts:375` ("Refusing to write hub.json — fix the URL/token and try again.") is now asserted by nothing (grep: that string appears in no test). The disclosed edit added a healthz-ok mock only to the success test (`hub-command.test.ts:67`).
 
+**F5 — Nit — `hub join` sends the invite token to an ungated URL.** `hub.ts:498-505` POSTs `/hub/invite/redeem` (invite token + installation identity) to `url` before any `/healthz`; the gate at `hub.ts:507` covers only the server-supplied `hubUrl`. The device flow gates *before* `/hub/device/start`. Spec (a) is met (nothing persisted), so this is asymmetry + single-use-credential exposure only. Related: the gate sits inside join's per-candidate `try` (`hub.ts:508-552`), so a refusal is reported as "Redeem at … failed" — cosmetic in production (`process.exit` wins), confusing with multiple candidates.
 
-HubEvent.eventId is a required `string`, so post-narrowing access is safe. Next, check whether the existing hub tests are strictly pinning the shape of the response (the new field could break that), and check the git log for this change:
+**F6 — Nit — the hub-ui campaign now routes fleet runners into the no-rewrite path.** `packages/hub-ui/src/pages/adminOrgRename.ts:38` emits `--carry-over` but not `--yes`, while `packages/hub-ui/src/pages/AdminOrg.tsx:74` instructs admins to paste it "into your fleet runner". Non-TTY → `refuseWithoutTty` → rewrite skipped, repoint still succeeds, exit 0 (CLI behaviour is on the accepted list; the *campaign text* newly under-delivers against its own "zero-touch" comment at `adminOrgRename.ts:34-36`). Emit a runner variant with `--yes`, or say so in the UI copy.
 
+**F7 — Nit — repoint's rewrite warning drops the server's reason.** `hub.ts:724` prints `orig?.message ?? orig`, while carry-over prints `orig?.response?.data?.error` (`hub.ts:845`). A 4xx from the rewrite endpoint's `from`/`to` validation shows only "Request failed with status code 400" for a tenancy-crossing operation.
 
+### Verdict: **approve-with-nits**
+The tenancy core is sound: all four persist sites are gated on the URL actually written, no path auto-rewrites a non-empty org, and the rewrite+audit sequence is single-implementation with the audit outside the POST's error channel. I'd want **F1** fixed in this PR (a reorder plus a per-cycle verdict — otherwise clause (d)'s yellow branch is dead code in the field) and F3/F4 corrected so the gating is actually pinned; F2 tracked as a fast follow.
 
-
-All 8 new tests pass. Let me run the neighboring suites that exercise the same handler, and typecheck:
-
-
-
-
-Typecheck is clean and all 45 neighboring tests pass. Final checks — docs that describe the response shape, and the 413/400 shape pinning in existing tests:
-
-
-
-
-# Adversarial review: CGLAB-117 — per-event rejection reasons in `/v1/events`
-
-## (1) Findings
-
-### F1 — minor, CONFIRMED — `packages/hub/src/routes/events.ts:252-259` (400/413 early returns)
-**The 400/413 paths omit `rejections`, and nothing pins that.** I judge the omission **correct**: on 413 the batch is *unprocessed* and can contain >500 events (the cap fires before the loop, events.ts:257-259), so emitting `rejections` there would be unbounded and would reopen the response-size DoS the cap (bug 035a4736) exists to close; on 400 there are no events to report. The flusher treats any 4xx as non-destructive (no outbox delete, backoff/halt — `flusher.ts:271-309`), so no data loss depends on the field's presence. But the *absence* is a deliberate API decision with a DoS rationale and currently only the 413 status + "nothing written" is pinned (`security-hardening.test.ts:107-117` asserts status and DB count, not body shape). A future "consistency" fix adding `rejections` to 413 would silently reintroduce the unbounded-response path.
-**Fix:** one test: `post([])` → 400 and `post(501 events)` → 413, both asserting `expect(r.body.rejections).toBeUndefined()`.
-
-### F2 — minor, CONFIRMED — `packages/hub/src/test/events-rejections.test.ts:177`
-**Entry ordering is unpinned.** The mixed-batch test sorts `rejections` by eventId before comparing, so the contract "entries appended in batch order" (stated in the test's own comment) is not pinned. If the follow-up flusher deadletter (keyed by eventId) or a hub UI ever relies on order, it has no regression net.
-**Fix:** drop the `.sort(...)` in that one assertion (the expected array is already in batch order: e-bad-1, e-foreign-1, e-hidden-1, e-org-1), or add a dedicated ordering test.
-
-### F3 — minor, CONFIRMED — `packages/hub/src/routes/events.ts:400-402`
-**A duplicate `eventId` in a batch is `skipped` (INSERT OR IGNORE, `result.changes === 0`), not rejected — so it appears in *neither* `rejections` nor `rejected`.** For the stated purpose ("which events were lost"), a duplicate that got deduped is an invisible loss in the new payload too, and no test pins this branch (the mixed test's `e-skip-1` exercises the `tokens.logged` skip, not the dedup skip). The follow-up deadletter story keyed by eventId needs to know duplicate copies are *not* reportable losses.
-**Fix:** add a test: batch with the same valid eventId twice → `ingested: 1, skipped: 1, rejections: []` — pinning that dedup is not a rejection.
-
-### F4 — nit, CONFIRMED — `packages/hub/src/routes/events.ts:194-195`
-**No test for degenerate array elements** (`null`, `42`, `"str"`, `[]` in `events`). I traced each: `isValidEvent` → false, `eventIdOf` → `null` (primitives/arrays have no string `eventId`), so each yields `{eventId: null, reason: 'invalid'}` and increments `rejected`. Handled correctly; same code path as the tested missing-eventId case. Optional one-liner test if you want the boundary pinned.
-
-## (2) Checked and clean
-
-- **Authz/tenancy unchanged.** The diff only adds `rejections.push(...)` after the existing `rejected++`/`hiddenDropped++` in each branch — conditions, order, and `continue`s are byte-identical in logic (diff lines 284-293). The CGLAB-75/76 adoption path, foreign-install snapshot, hidden/alias loads, and all SQL are untouched. Confirmed against the full file, not just the diff.
-- **No new information leak via `rejections`.** Every entry's `eventId` is a value the *caller* put in *their own* request; no other tenant's data is read into the response. Reason codes traced for the cross-org attacker case (org-B key posting org-A-stamped events): `org_mismatch` is identical whether the claimed org exists on the hub or not (the old `rejected` counter was equally uninformative); `foreign_installation` merely names a distinction already observable before the change (naming an unregistered installation id was *ingested* — upsert creates the row in the caller's own org — vs a foreign id which was *rejected*, so "does this id exist in another org's fleet" was already discriminable via the counters); `hidden_user` is unreachable on cross-org stamps (the org check fires first and `hidden_users` is loaded only for the token's org), and the user key is derived from caller-controlled `actor` fields — so no probe of another org's hidden list is possible. `invalid` is pure caller input.
-- **TS narrowing / edge cases.** `HubEvent.eventId` is a required `string` (`packages/core/src/interfaces.ts:141`), so `e.eventId` in the narrowed branches is always a usable string; `eventIdOf` correctly nulls out missing/empty/non-string eventIds, including after `isValidEvent` fails on shape (e.g. `actor: null`). Empty-string boundary pinned by test 2. `npx tsc --noEmit` in `packages/hub`: exit 0.
-- **Batch ceiling / response size.** 413 fires before `rejections` is built; worst case is 500 entries whose total size is bounded by the sum of the caller's own eventIds inside the 10 MB body limit (`server.ts:180`) — no amplification, and ingested events already store the full `JSON.stringify(e)` anyway.
-- **Concurrency/async.** `rejections` is a handler-local `const` (per-request closure); no module/ctx-level state introduced; transaction boundary unchanged; on transaction throw the handler 500s with no response and the flusher retries (safe: rollback + INSERT OR IGNORE replay idempotency — pre-existing).
-- **Backward compatibility.** The only consumer in the repo is `packages/server/src/hub/flusher.ts`: `isHubEventsAck` (line 64) requires `ingested` to be a number — still present; the refusal count reads `rejected` (line 250) — unchanged; outbox delete on 200 unchanged. Old spokes ignore the additive field. Grep confirmed no other consumer parses the body (CLI/admin/other hub files only reference the word "ingested" in comments). Existing hub tests use `objectContaining`/field access (events.test.ts:74,97), so the added field breaks nothing.
-- **Tests pass.** New file: 8/8. Neighboring suites (events, events-hidden-users, security-hardening, hub-tenant-isolation): 45/45.
-- **Design decisions (a)–(e) all hold.** (a) BOLA + cross-org both → `foreign_installation` (lines 287-288); (b) best-effort eventId with the empty-string boundary (lines 194-195, pinned); (c) `hidden_user` in both `hiddenDropped` and `rejections` (line 293, pinned by test 6 which asserts `rejected: 0`); (d) first-failing-check-wins — every branch pushes exactly once and `continue`s; `skipped` branches push nothing; (e) bounded by the pre-existing 500 cap.
-
-## (3) Verdict
-
-Clean, security-neutral, backward-compatible additive change — ship it; the only gaps are three minor test-pins (413/400 body shape, entry order, dedup-skip semantics) that matter mainly as regression nets for the follow-up deadletter story.
-
-*(Note: the GitHub-admin golden-path reminder doesn't apply here — this is a code review, not repo administration.)*
+### Suspicions I deleted after checking
+1. **Ungated persist site** — all `writeHubConfig` callers gate on the final URL: `hub.ts:378` (legacy, gated 364-367), `464` (device, gated 456-458 on `approved.hubUrl`), `512` (join, gated 505-509), `731` (repoint, gated 663-675). The server-side writer at `server.ts:726` (repointSync) validates `/healthz` **and** org match before writing (`repointSync.ts:130-145`). No other hub.json writer exists in `packages/*`, `bin/`, `scripts/`.
+2. **`reportStaleOrgRows` breaking login/join** — `readVerifyToken` is try/catch (`hub.ts:296`); `getApiUrl()` and the GET are inside one try (`hub.ts:261-266`); non-object/absent `orgs` degrade to no-op; `Number(undefined) > 0` is false. Pinned by `hub-story4-cli.test.ts:292-298`.
+3. **`hub flush` exit-1 breaking automation** — repo-wide grep for `hub flush`: only `HUB_ARCHITECTURE.md:301`, tests, and `hub.ts:855`. Nothing in `bin/`, `scripts/`, hooks, or the rule bundles; no programmatic `['hub','flush']` invocation.
+4. **`hub status` crash on `enabled:false`** — new lines are guarded (`data.orgs &&` at `hub.ts:583`, `!== undefined` at 589/592); only the pre-existing `Outbox: ${data.outboxDepth}` prints `undefined`.
+5. **Helper error typing swallowing an exit** — audit is outside the POST try (`hub.ts:207-224`); `HubRewriteFailed` is the only wrapped error; both callers rethrow anything else (`hub.ts:723`, `843`); the typed confirm/TTY refusal live outside the helper; the device-flow config block is genuinely out of the poll loop's catch (`hub.ts:449-466`). The remaining `process.exit` calls inside the poll try (`expired`, 410) are swallowed only under the tests' throwing-exit mock, never in production.
+6. **`--carry-over` one-liner failing to parse** — commander ignores option order; `--carry-over` → `opts.carryOver` (`hub.ts:642-643,645`); `AdminOrg.tsx:48` is the real consumer and does use the helper; no second generator of the repoint one-liner anywhere.
+7. **`orgs` shape mismatch making the guidance vacuous** — `storage-sqlite/src/index.ts:272` returns `{count, firstOccurredAt, lastOccurredAt, types}`; the CLI's `{count}` reads match.
+8. **`staleOrgDepth`/`deadletterDepth` absent from the flush POST response** — computed in `getStatus()` (`flusher.ts:145-163`).
+9. **repointSync as an unaudited cross-org rewrite** — it refuses when the hub's orgId differs (`repointSync.ts:143`) and never touches the outbox, so no unaudited tenancy crossing.
+10. **`join` not calling `stampPendingOutbox`** (leaves `''` rows until the next boot) — pre-existing, backstopped by boot stamping and by the default server bounce; adjacent to the accepted `''` decision.
+11. **`lists multiple stale orgs in descending count order`** (`story4:206-221`) can't distinguish count-sort from alphabetical (`big-corp` wins both) — weak, not wrong; noted, not filed.
+12. **Audit-failure test's `chmod 0o500`** (`story4:382`) wouldn't fail under root — CI fragility only, and it fails loudly rather than passing vacuously.
