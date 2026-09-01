@@ -2,6 +2,58 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.2] — 2026-09-01
+
+Hub org-boundary hardening (CGLAB-117) — after the 31 Aug 2026 incident, a clobbered
+`~/.agenfk/hub.json` made one installation flush another org's queued events; the hub
+rejected all 57 inside a `200 OK` and the flusher deleted them with the batch. This
+release makes that failure mode structurally impossible and gives the operator the
+tools to see and recover from it. See `HUB_ARCHITECTURE.md` §5.6.
+
+### Added
+- **Hub per-event rejection reasons**: `POST /v1/events` now answers
+  `rejections: [{ eventId, reason }]` alongside the counters, with a four-code taxonomy
+  (`invalid`, `org_mismatch`, `foreign_installation`, `hidden_user`).
+- **Flusher org boundary**: only rows stamped for the installation's own org (or the
+  pre-login `''` sentinel) ever enter a batch — enforced in SQL
+  (`hubOutboxPeekDeliverable`), so stale rows never consume attempts and never starve
+  the queue head. Surfaced as `staleOrgDepth` + per-org breakdown in
+  `/internal/hub/status`, `agenfk hub status`, `agenfk hub flush`.
+- **Deadletter instead of silent delete**: hub-refused events are preserved to
+  `~/.agenfk/hub-deadletter.jsonl` *before* leaving the outbox; a failed write keeps
+  the rows for retry. Against an old hub (no per-event detail) nothing is deleted at
+  all — the batch is kept and re-sent idempotently with a loud `lastError`.
+- **`agenfk hub carry-over --from <orgId> --to <orgId>`**: the sole path that rewrites
+  an event's org stamp between named orgs — summary first, typed target confirmation
+  (`--yes` for scripts, refusal on non-TTY), loud warning when the target is not the
+  configured org, and every run audited to `~/.agenfk/hub-audit.jsonl`.
+- **`agenfk hub deadletter`** (list, grouped by org) and
+  **`agenfk hub deadletter discard --org X | --all`** (re-read before write, atomic
+  replace, unparseable lines preserved on `--org`).
+- **Identity gates**: `hub login` (both paths) and `hub join` refuse to persist a
+  `hub.json` unless the URL about to be persisted answers `/healthz` with
+  `service=agenfk-hub` — including the server-supplied `hubUrl` in device/redeem
+  responses, and the invite is no longer POSTed to an ungated URL.
+- **`hub repoint --carry-over`**: an org rename rewrites the outbox only when
+  explicitly asked, through the same confirm + audit sequence; the default now prints
+  the exact carry-over command and leaves the outbox untouched. The hub-ui rename
+  campaign emits `--carry-over` (runners: add `--yes`).
+- **Honest flush reporting**: `agenfk hub flush` exits 1 + red when the cycle ends
+  with `lastError` — including a `200` that carried refusals — and prints yellow
+  carry-over guidance when stale rows remain; `agenfk hub status` shows stale-org and
+  deadletter depths.
+
+### Fixed
+- A `200 OK` containing per-event refusals no longer clears `lastError` — permanent
+  loss no longer prints green.
+- A no-op flush cycle (nothing deliverable) clears a historical `lastError`; `hub
+  flush` no longer stays red forever after a transient failure once the outbox is
+  empty.
+- One corrupt outbox row (invalid JSON payload) could 500 the whole confirmed
+  carry-over rewrite; the rewrite is now `json_valid`-guarded in SQL.
+- `hub login` device flow: a refused/aborted config write no longer gets swallowed by
+  the poll loop's error handling (endless polling instead of refusal).
+
 ## [1.1.0-beta.2] — 2026-06-23
 
 ### Changed
