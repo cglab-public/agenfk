@@ -189,6 +189,35 @@ export class SQLiteStorageProvider implements StorageProvider {
     ).all(limit) as any;
   }
 
+  /**
+   * The peek window of rows the flusher may actually POST under `orgId`'s
+   * credentials (CGLAB-117). The org boundary lives in SQL, NOT in a JS filter
+   * applied after the peek: with a post-peek filter, >=limit stale-org rows at
+   * the head of the oldest-first window would starve every deliverable row
+   * behind them forever — a silent stall replacing the silent loss this
+   * exists to fix. One predicate, in one place, cannot drift.
+   *
+   * Deliverable = payload is valid JSON AND (orgId field absent or null — the
+   * hub judges such rows and they carry no stamp to leak — OR orgId equals the
+   * caller's org). The pending sentinel ('') can never match a real org;
+   * orgId is required non-empty so no caller can aim at the sentinel.
+   * Non-string orgIds (JSON numbers/objects) never equal a text orgId in
+   * SQLite. Unparseable payloads are excluded: they can never deliver and
+   * would throw for the WHOLE batch on the way into the POST.
+   */
+  hubOutboxPeekDeliverable(limit: number, orgId: string): Array<{ event_id: string; occurred_at: string; payload: string; attempts: number; last_error: string | null }> {
+    if (typeof orgId !== 'string' || orgId.length === 0) {
+      throw new Error('hubOutboxPeekDeliverable: orgId must be a non-empty string');
+    }
+    return this.database.prepare(
+      `SELECT event_id, occurred_at, payload, attempts, last_error
+         FROM hub_outbox
+        WHERE json_valid(payload) = 1
+          AND (json_extract(payload, '$.orgId') IS NULL OR json_extract(payload, '$.orgId') = ?)
+        ORDER BY occurred_at ASC LIMIT ?`
+    ).all(orgId, limit) as any;
+  }
+
   hubOutboxDelete(eventIds: string[]): void {
     if (eventIds.length === 0) return;
     const placeholders = eventIds.map(() => '?').join(',');
@@ -206,6 +235,30 @@ export class SQLiteStorageProvider implements StorageProvider {
   hubOutboxCount(): number {
     const row = this.database.prepare('SELECT COUNT(*) AS c FROM hub_outbox').get() as { c: number };
     return row.c;
+  }
+
+  /**
+   * Outbox row counts keyed by the orgId embedded in each payload (CGLAB-117).
+   * Lets `hub status`/`join`/`login` surface rows left stamped with a stale org
+   * after a re-onboard — those rows are never deliverable under current
+   * credentials and wait for an explicit carry-over or discard.
+   *
+   * The PENDING_ORG sentinel ('') is included: it is the count of rows awaiting
+   * their stamp, a different condition, and callers interpret it as such.
+   * Rows whose payload is not valid JSON are EXCLUDED — sqlite's json_extract
+   * throws on malformed input, so they are filtered with json_valid; such rows
+   * can never deliver and are invisible to this count.
+   */
+  hubOutboxOrgCounts(): Record<string, number> {
+    const rows = this.database.prepare(
+      "SELECT json_extract(payload, '$.orgId') AS org, COUNT(*) AS c FROM hub_outbox WHERE json_valid(payload) = 1 GROUP BY org"
+    ).all() as Array<{ org: string | null; c: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) {
+      if (typeof r.org !== 'string') continue; // valid JSON without an orgId field
+      out[r.org] = Number(r.c);
+    }
+    return out;
   }
 
   /**
