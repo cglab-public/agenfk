@@ -187,6 +187,96 @@ function refuseWithoutTty(flag: string): boolean {
   return true;
 }
 
+/** Thrown by rewriteOutboxAndAudit when the POST itself fails; the caller
+ *  decides the error channel (carry-over exits red, repoint warns and moves
+ *  on). Anything else thrown (e.g. the confirmation/exit signals) must NOT be
+ *  caught as a rewrite failure. */
+class HubRewriteFailed extends Error {
+  constructor(public readonly cause: unknown) {
+    super('hub outbox rewrite failed');
+  }
+}
+
+/**
+ * The shared tenancy-crossing sequence: POST the rewrite, then audit it —
+ * in that order, with the audit OUTSIDE the POST's error channel so an audit
+ * failure can never be downgraded to a rewrite warning (review F4 and the
+ * bug the story-4 mutation run caught). Returns the rewritten count.
+ */
+async function rewriteOutboxAndAudit(from: string, to: string, verifyToken: string): Promise<number> {
+  let rewritten: number;
+  try {
+    const { data } = await axios.post(
+      `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
+      { from, to },
+      { headers: { 'x-agenfk-internal': verifyToken }, timeout: 15_000 },
+    );
+    rewritten = Number(data?.rewritten ?? 0);
+  } catch (e: any) {
+    throw new HubRewriteFailed(e);
+  }
+  let osUser = 'unknown';
+  try { osUser = os.userInfo().username; } catch { /* no passwd entry (containers) */ }
+  try {
+    appendHubAuditLine({ at: new Date().toISOString(), from, to, rewritten, osUser });
+  } catch (ae: any) {
+    console.error(chalk.red.bold(`!! REWRITE SUCCEEDED (${rewritten} event(s)) BUT THE AUDIT LINE FAILED TO WRITE: ${ae?.message ?? ae}`));
+    console.error(chalk.red(`   Append it manually to ${auditFile()} before anyone reads this output as "nothing happened".`));
+    process.exit(1);
+  }
+  return rewritten;
+}
+
+/**
+ * Identity gate (CGLAB-117 story 4): never persist a hub.json — or send a
+ * token to — an endpoint that has not identified itself as an AgenFK Hub.
+ * The 31 Aug fixture clobber began with exactly this: a hub.json whose URL
+ * was not a hub. Same gate `hub repoint` already had, now on every login
+ * path. Returns true when the endpoint is a hub; reports and exits otherwise.
+ */
+async function isHubEndpoint(url: string, verb: string): Promise<boolean> {
+  try {
+    const { data, status } = await axios.get(`${url}/healthz`, { timeout: 10_000 });
+    if (status === 200 && data && data.service === 'agenfk-hub') return true;
+    console.error(chalk.red(`Refusing ${verb}: ${url}/healthz did not identify as agenfk-hub (got service=${data?.service ?? 'absent'}).`));
+    console.error(chalk.gray('  Nothing was written. Confirm the Hub URL with your administrator.'));
+  } catch (e: any) {
+    console.error(chalk.red(`Refusing ${verb}: cannot reach ${url}/healthz — ${e?.message ?? e}`));
+    console.error(chalk.gray('  Nothing was written. A hub that does not answer /healthz is not a hub.'));
+  }
+  return false;
+}
+
+/**
+ * After login/join write a new credential, surface outbox rows still stamped
+ * with some OTHER org (the stale-org backlog). Guidance only — an automatic
+ * re-stamp would be exactly the cross-org leak this epic exists to prevent.
+ * Best-effort: an unreachable local server must not fail the login.
+ */
+async function reportStaleOrgRows(orgId: string): Promise<void> {
+  const token = readVerifyToken();
+  if (!token) return;
+  let orgs: Record<string, { count: number }> | undefined;
+  try {
+    const { data } = await axios.get(`${getApiUrl()}/internal/hub/status`, {
+      headers: { 'x-agenfk-internal': token }, timeout: 5_000,
+    });
+    orgs = data?.orgs;
+  } catch { return; }
+  if (!orgs) return;
+  const stale = Object.entries(orgs)
+    .filter(([k, v]) => k !== orgId && k !== '' && Number(v?.count) > 0)
+    .sort((a, b) => Number(b[1]?.count) - Number(a[1]?.count));
+  if (stale.length === 0) return;
+  console.log();
+  console.log(chalk.yellow(`  ⚠ The local outbox holds events stamped for other orgs — they will NOT be delivered:`));
+  for (const [org, v] of stale) {
+    console.log(chalk.yellow(`    ${v.count} event(s) still stamped "${org}" → agenfk hub carry-over --from ${org} --to ${orgId}`));
+  }
+  console.log(chalk.gray('  Or drop them for good with `agenfk hub deadletter` (list) / `... discard`.'));
+  console.log();
+}
+
 function readHubConfig(): HubConfig | null {
   try {
     return JSON.parse(fs.readFileSync(hubConfigFile(), 'utf8')) as HubConfig;
@@ -271,6 +361,10 @@ export function registerHubCommands(program: Command): void {
           process.exit(1);
         }
         const cfg: HubConfig = { url, token: String(opts.token), orgId: String(opts.org) };
+        // Identity gate BEFORE the token leaves this machine (CGLAB-117).
+        if (!await isHubEndpoint(cfg.url, 'hub login')) {
+          process.exit(1);
+        }
         try {
           await axios.get(`${cfg.url}/v1/ping`, {
             headers: { Authorization: `Bearer ${cfg.token}`, 'X-Installation-Id': 'cli-login' },
@@ -288,11 +382,15 @@ export function registerHubCommands(program: Command): void {
         console.log(applied === 'unavailable'
           ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
           : chalk.gray('  Running server is now pushing events with this config.'));
+        await reportStaleOrgRows(cfg.orgId);
         return;
       }
 
       // Device-code flow.
       warnIfNoGitEmail(localInstallationIdentity());
+      if (!await isHubEndpoint(url, 'hub login')) {
+        process.exit(1);
+      }
       let start;
       try {
         // Send who we are: the hub binds this onto the issued key, and an
@@ -320,22 +418,15 @@ export function registerHubCommands(program: Command): void {
       const interval = Math.max(1, Number(start.interval) || 2);
       const expiresAt = Date.now() + Math.max(60, Number(start.expiresIn) || 600) * 1000;
       process.stdout.write(chalk.gray('Waiting for approval'));
+      let approved: any = null;
       while (Date.now() < expiresAt) {
         await new Promise(r => setTimeout(r, interval * 1000));
         process.stdout.write(chalk.gray('.'));
         try {
           const { data } = await axios.post(`${url}/hub/device/poll`, { deviceCode: start.deviceCode }, { timeout: 10_000 });
           if (data.status === 'approved') {
-            console.log();
-            const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
-            writeHubConfig(cfg);
-            await stampPendingOutbox(cfg.orgId);
-            const applied = await reloadServerHubConfig();
-            console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
-            console.log(applied === 'unavailable'
-              ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
-              : chalk.gray('  Running server is now pushing events with this config.'));
-            return;
+            approved = data;
+            break;
           }
           if (data.status === 'expired') {
             console.log();
@@ -351,9 +442,33 @@ export function registerHubCommands(program: Command): void {
           }
         }
       }
+      if (!approved) {
+        console.log();
+        console.error(chalk.red('Timed out waiting for approval.'));
+        process.exit(1);
+      }
+      // Config handling lives OUTSIDE the poll loop's try/catch: a thrown
+      // exit/abort signal there was being swallowed as a transient poll
+      // error, turning a refusal into an endless wait (same bug class as
+      // the audit-exit swallow the story-4 mutation run caught).
       console.log();
-      console.error(chalk.red('Timed out waiting for approval.'));
-      process.exit(1);
+      // The hub gets to NAME the url it wrote the token for — so gate
+      // THAT url, not the one we typed: a (compromised or malicious)
+      // hub returning hubUrl=evil.example would otherwise persist an
+      // unverified endpoint and start streaming this org's events and
+      // token there (CGLAB-117 story 4).
+      const cfg: HubConfig = { url: String(approved.hubUrl ?? url).replace(/\/$/, ''), token: String(approved.token), orgId: String(approved.orgId) };
+      if (!await isHubEndpoint(cfg.url, 'hub login')) {
+        process.exit(1);
+      }
+      writeHubConfig(cfg);
+      await stampPendingOutbox(cfg.orgId);
+      const applied = await reloadServerHubConfig();
+      console.log(chalk.green(`✓ Hub configured at ${cfg.url} (org=${cfg.orgId}).`));
+      console.log(applied === 'unavailable'
+        ? chalk.gray('  Local API server not reachable; the next `agenfk up` will pick it up.')
+        : chalk.gray('  Running server is now pushing events with this config.'));
+      await reportStaleOrgRows(cfg.orgId);
     });
 
   hub
@@ -388,8 +503,15 @@ export function registerHubCommands(program: Command): void {
             { timeout: 10_000 },
           );
           const cfg: HubConfig = { url: String(data.hubUrl ?? url).replace(/\/$/, ''), token: String(data.token), orgId: String(data.orgId) };
+          // Same gate as login: the redeemed response's hubUrl is
+          // server-supplied and must identify as agenfk-hub BEFORE the
+          // joined token is persisted against it (CGLAB-117 story 4).
+          if (!await isHubEndpoint(cfg.url, 'hub join')) {
+            process.exit(1);
+          }
           writeHubConfig(cfg);
           console.log(chalk.green(`✓ Joined ${cfg.url} (org=${cfg.orgId}).`));
+          await reportStaleOrgRows(cfg.orgId);
 
           // Story 6: probe the local API server and bounce it so the new
           // hub.json is picked up without manual intervention. --no-restart
@@ -453,6 +575,18 @@ export function registerHubCommands(program: Command): void {
           headers: { 'x-agenfk-internal': verifyToken }, timeout: 5_000,
         });
         console.log(`Outbox:    ${data.outboxDepth} pending`);
+        if (data.orgs && Object.keys(data.orgs).length > 0) {
+          const parts = Object.entries(data.orgs as Record<string, { count: number }>)
+            .sort((a, b) => Number(b[1]?.count) - Number(a[1]?.count))
+            .map(([org, v]) => `${org === '' ? '(pre-login)' : org}: ${v.count}`);
+          console.log(`By org:    ${parts.join(', ')}`);
+        }
+        if (data.staleOrgDepth !== undefined) {
+          console.log(`Stale-org rows: ${data.staleOrgDepth}${Number(data.staleOrgDepth) > 0 ? chalk.yellow(' (different org — carry-over or discard)') : ''}`);
+        }
+        if (data.deadletterDepth !== undefined) {
+          console.log(`Deadlettered: ${data.deadletterDepth}${Number(data.deadletterDepth) > 0 ? chalk.yellow(' (hub-rejected, preserved — see `agenfk hub deadletter`)') : ''}`);
+        }
         console.log(`Last flush: ${data.lastFlushAt ?? 'never'}`);
         console.log(`Last error: ${data.lastError ?? 'none'}`);
         console.log(`Halted:    ${data.halted ? 'YES (hub rejected us repeatedly)' : 'no'}`);
@@ -480,6 +614,17 @@ export function registerHubCommands(program: Command): void {
         const { data } = await axios.post(`${getApiUrl()}/internal/hub/flush`, {}, {
           headers: { 'x-agenfk-internal': verifyToken }, timeout: 30_000,
         });
+        // A flush that ended with lastError SET is a failed flush. Printing it
+        // green was how the 31 Aug rejections stayed invisible (review F8).
+        if (data?.lastError) {
+          console.error(chalk.red(`✗ Flush ended with an error: ${data.lastError}`));
+          console.error(chalk.gray(`  Outbox ${data.outboxDepth} pending, deadlettered ${data.deadletterDepth ?? 0}. See \`agenfk hub status\` / \`agenfk hub deadletter\`.`));
+          process.exit(1);
+        }
+        if (Number(data?.staleOrgDepth) > 0) {
+          console.log(chalk.yellow(`⚠ Flush completed, but ${data.staleOrgDepth} event(s) carry a stale org stamp and will not be delivered — agenfk hub carry-over / agenfk hub deadletter. Outbox now ${data.outboxDepth}.`));
+          return;
+        }
         console.log(chalk.green(`✓ Flush completed. Outbox now ${data.outboxDepth}, last error: ${data.lastError ?? 'none'}`));
       } catch (e: any) {
         const msg = e?.response?.data?.error ?? e?.message;
@@ -494,8 +639,10 @@ export function registerHubCommands(program: Command): void {
     .option('--url <url>', 'New hub base URL')
     .option('--org-id <orgId>', 'New org id (required when the hub admin renamed it)')
     .option('--token <token>', 'Replacement API token (rare; carry the existing token over by default)')
+    .option('--carry-over', 'Also rewrite queued outbox events from the old org stamp to the new one (tenancy-crossing operation: typed confirmation unless --yes, audited to ~/.agenfk/hub-audit.jsonl). Without it the outbox is left untouched and carry-over guidance is printed.')
+    .option('--yes', 'Skip the carry-over confirmation (scripted use; only meaningful with --carry-over)')
     .option('--no-restart', 'Do not restart the local API server after a successful repoint')
-    .action(async (opts: { url?: string; orgId?: string; token?: string; restart?: boolean }) => {
+    .action(async (opts: { url?: string; orgId?: string; token?: string; carryOver?: boolean; yes?: boolean; restart?: boolean }) => {
       const existing = readHubConfig();
       if (!existing) {
         console.error(chalk.red('No existing hub config at ~/.agenfk/hub.json. Run `agenfk hub login` or `agenfk hub join <invite>` first.'));
@@ -543,19 +690,40 @@ export function registerHubCommands(program: Command): void {
       }
 
       if (candidate.orgId !== existing.orgId) {
-        const verifyToken = readVerifyToken();
-        if (!verifyToken) {
-          console.warn(chalk.yellow('No verify-token — skipping local outbox rewrite. After `agenfk up`, run `agenfk hub repoint --org-id ' + candidate.orgId + '` again to drain stragglers.'));
+        // CGLAB-117 story 4: an org rename must NOT silently move queued
+        // events across the tenancy boundary. Rewriting happens only when
+        // explicitly asked for, confirmed like carry-over's, and audited.
+        if (!opts.carryOver) {
+          console.log(chalk.yellow(`  Outbox events stamped "${existing.orgId}" were left untouched.`));
+          console.log(chalk.gray(`  Move them deliberately: agenfk hub carry-over --from ${existing.orgId} --to ${candidate.orgId}`));
+          console.log(chalk.gray(`  Or drop them: agenfk hub deadletter`));
         } else {
-          try {
-            const { data } = await axios.post(
-              `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
-              { from: existing.orgId, to: candidate.orgId },
-              { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10_000 },
-            );
-            console.log(chalk.green(`✓ Rewrote ${data?.rewritten ?? 0} queued outbox event(s) from org "${existing.orgId}" to "${candidate.orgId}".`));
-          } catch (e: any) {
-            console.warn(chalk.yellow(`Could not rewrite local outbox (${e?.message ?? e}). After \`agenfk up\`, run \`agenfk hub repoint --org-id ${candidate.orgId}\` again to drain stragglers.`));
+          let proceed = true;
+          if (!opts.yes) {
+            if (refuseWithoutTty('--yes')) {
+              proceed = false;
+            } else {
+              const answer = await askLine(`Type the target org id (${chalk.bold(candidate.orgId)}) to confirm carrying queued events from "${existing.orgId}" across the org boundary, or anything else to skip: `);
+              if (answer !== candidate.orgId) {
+                console.log(chalk.gray('Aborted — outbox left untouched (the repoint itself stands).'));
+                proceed = false;
+              }
+            }
+          }
+          if (proceed) {
+            const verifyToken = readVerifyToken();
+            if (!verifyToken) {
+              console.warn(chalk.yellow('No verify-token — skipping local outbox rewrite. After `agenfk up`, run `agenfk hub carry-over --from ' + existing.orgId + ' --to ' + candidate.orgId + '`.'));
+            } else {
+              try {
+                const rewritten = await rewriteOutboxAndAudit(existing.orgId, candidate.orgId, verifyToken);
+                console.log(chalk.green(`✓ Carried over ${rewritten} queued outbox event(s) from org "${existing.orgId}" to "${candidate.orgId}" (audited).`));
+              } catch (e: any) {
+                if (!(e instanceof HubRewriteFailed)) throw e; // audit-failure exit propagates
+                const orig: any = e.cause;
+                console.warn(chalk.yellow(`Could not rewrite local outbox (${orig?.message ?? orig}). After \`agenfk up\`, run \`agenfk hub carry-over --from ${existing.orgId} --to ${candidate.orgId}\` again to drain stragglers.`));
+              }
+            }
           }
         }
       }
@@ -668,37 +836,23 @@ export function registerHubCommands(program: Command): void {
           return;
         }
       }
+      let rewritten: number;
       try {
-        const { data } = await axios.post(
-          `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
-          { from, to },
-          { headers: { 'x-agenfk-internal': verifyToken }, timeout: 15_000 },
-        );
-        const rewritten = Number(data?.rewritten ?? 0);
-        if (rewritten !== summary.count) {
-          // The summary was a snapshot; the rewrite is set-based (review F5).
-          console.log(chalk.yellow(`  Note: the summary showed ${summary.count} event(s) but ${rewritten} were rewritten — rows arrived or were delivered between the two calls.`));
-        }
-        // The audit is the control that legitimises this command: once the
-        // rewrite has happened, an audit failure must be SHOUTED, not folded
-        // into "Carry-over failed" (review F4).
-        let osUser = 'unknown';
-        try { osUser = os.userInfo().username; } catch { /* no passwd entry (containers) */ }
-        try {
-          appendHubAuditLine({ at: new Date().toISOString(), from, to, rewritten, osUser });
-        } catch (ae: any) {
-          console.error(chalk.red.bold(`!! REWRITE SUCCEEDED (${rewritten} event(s)) BUT THE AUDIT LINE FAILED TO WRITE: ${ae?.message ?? ae}`));
-          console.error(chalk.red(`   Append it manually to ${auditFile()} before anyone reads this output as "nothing happened".`));
-          process.exit(1);
-          return;
-        }
-        console.log(chalk.green(`✓ Carried over ${rewritten} event(s) from "${from}" to "${to}" (audited).`));
-        if (cfg && to === cfg.orgId) {
-          console.log(chalk.gray('  They are deliverable now — run `agenfk hub flush` to send them.'));
-        }
+        rewritten = await rewriteOutboxAndAudit(from, to, verifyToken);
       } catch (e: any) {
-        console.error(chalk.red(`Carry-over failed: ${e?.response?.data?.error ?? e?.message ?? e}`));
+        if (!(e instanceof HubRewriteFailed)) throw e; // exit/abort signals propagate untouched
+        const orig: any = e.cause;
+        console.error(chalk.red(`Carry-over failed: ${orig?.response?.data?.error ?? orig?.message ?? orig}`));
         process.exit(1);
+        return;
+      }
+      if (rewritten !== summary.count) {
+        // The summary was a snapshot; the rewrite is set-based (review F5).
+        console.log(chalk.yellow(`  Note: the summary showed ${summary.count} event(s) but ${rewritten} were rewritten — rows arrived or were delivered between the two calls.`));
+      }
+      console.log(chalk.green(`✓ Carried over ${rewritten} event(s) from "${from}" to "${to}" (audited).`));
+      if (cfg && to === cfg.orgId) {
+        console.log(chalk.gray('  They are deliverable now — run `agenfk hub flush` to send them.'));
       }
     });
 

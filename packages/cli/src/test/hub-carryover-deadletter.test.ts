@@ -68,11 +68,16 @@ describe('hub carry-over wiring (source scan)', () => {
   });
 
   it('POSTs the rewrite and audits {at, from, to, rewritten, osUser}', () => {
-    expect(s).toMatch(/\/internal\/hub\/rewrite-outbox-org/);
-    expect(s).toMatch(/hub-audit\.jsonl/);
-    expect(s).toMatch(/at: new Date\(\)\.toISOString\(\)/);
-    expect(s).toMatch(/rewritten/);
-    expect(s).toMatch(/osUser/);
+    // The rewrite+audit sequence is the shared rewriteOutboxAndAudit helper
+    // (single implementation for carry-over AND repoint — they must not drift).
+    expect(s).toMatch(/rewriteOutboxAndAudit\(/);
+    expect(HUB_SRC).toMatch(/\/internal\/hub\/rewrite-outbox-org/);
+    expect(HUB_SRC).toMatch(/hub-audit\.jsonl/);
+    expect(HUB_SRC).toMatch(/at: new Date\(\)\.toISOString\(\)/);
+    expect(HUB_SRC).toMatch(/rewritten/);
+    expect(HUB_SRC).toMatch(/osUser/);
+    // Audit failure is fatal and LOUD, never folded into the POST's channel.
+    expect(HUB_SRC).toMatch(/REWRITE SUCCEEDED .* BUT THE AUDIT LINE FAILED TO WRITE/);
   });
 
   it('pins the deadletter path literal against drift with the server flusher', () => {

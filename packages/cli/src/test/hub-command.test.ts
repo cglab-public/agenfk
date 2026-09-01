@@ -61,6 +61,10 @@ describe('agenfk hub commands', () => {
 
   describe('login', () => {
     it('writes hub.json with chmod 600 on successful ping', async () => {
+      // CGLAB-117 story 4: the first GET is now the /healthz identity gate
+      // (spec clause a); the endpoint must announce itself as agenfk-hub
+      // before the token is sent anywhere. Same assertions as before.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       mockGet.mockResolvedValueOnce({ status: 200, data: {} });
       await program.parseAsync(['node', 'agenfk', 'hub', 'login', '--url', 'http://hub.test/', '--token', 'tok123', '--org', 'acme']);
       expect(fs.existsSync(HUB_CONFIG)).toBe(true);
@@ -114,6 +118,8 @@ describe('agenfk hub commands', () => {
   describe('join', () => {
     it('accepts `hub join <url> <token>` and redeems against the URL even without prior config', async () => {
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'https://hub.example.com' } });
+      // CGLAB-117 story 4: join now healthz-gates the redeemed hubUrl first.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       // No AGENFK_HUB_URL, no existing hub.json; must still work because URL is on the CLI.
       const prevEnv = process.env.AGENFK_HUB_URL;
       delete process.env.AGENFK_HUB_URL;
@@ -139,6 +145,8 @@ describe('agenfk hub commands', () => {
     it('single-arg form still works with an existing hub.json', async () => {
       fs.writeFileSync(HUB_CONFIG, JSON.stringify({ url: 'http://hub.test', token: 'old', orgId: 'acme' }));
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'http://hub.test' } });
+      // CGLAB-117 story 4: join now healthz-gates the redeemed hubUrl first.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       await program.parseAsync(['node', 'agenfk', 'hub', 'join', 'INVITE_TOK', '--no-restart']);
       expect(mockPost).toHaveBeenCalledWith(
         'http://hub.test/hub/invite/redeem',

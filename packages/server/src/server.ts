@@ -2948,7 +2948,8 @@ app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
   res.json({ ...hubFlusher.getStatus(), orgs });
 }));
 
-// ── Hub outbox org rewrite (used by `agenfk hub repoint`) ───────────────────
+// ── Hub outbox org rewrite (used by `agenfk hub carry-over`, `hub repoint
+// --carry-over`, and login's pre-login sentinel stamp) ─────────────────────
 // When the hub admin renames the org (e.g. staging→cglab), every queued event
 // in the local outbox still has the old orgId baked into its JSON. The
 // renamed hub rejects them on orgId mismatch. This endpoint rewrites them in
