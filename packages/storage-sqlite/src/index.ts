@@ -262,6 +262,33 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   /**
+   * Per-org outbox summaries (CGLAB-117 story 3): count, occurred-at range and
+   * event-type tallies, keyed by the embedded orgId. Powers the
+   * `agenfk hub carry-over` confirmation summary via /internal/hub/status — a
+   * stamp-rewrite is the one operation on the outbox that must never be
+   * executed blind. Rows with unparseable payloads or no orgId field carry no
+   * org to summarize and are excluded (same rule as hubOutboxOrgCounts).
+   */
+  hubOutboxOrgSummaries(): Record<string, { count: number; firstOccurredAt: string; lastOccurredAt: string; types: Record<string, number> }> {
+    // One scan, aggregated per (org, type); org-level count/range fold up in
+    // JS. /internal/hub/status calls this on every CLI invocation (preAction
+    // banner), so a second full GROUP BY here would double the request cost.
+    const rows = this.database.prepare(
+      "SELECT json_extract(payload, '$.orgId') AS org, json_extract(payload, '$.type') AS t, COUNT(*) AS c, MIN(occurred_at) AS f, MAX(occurred_at) AS l FROM hub_outbox WHERE json_valid(payload) = 1 GROUP BY org, t"
+    ).all() as Array<{ org: string | null; t: string | null; c: number; f: string; l: string }>;
+    const out: Record<string, { count: number; firstOccurredAt: string; lastOccurredAt: string; types: Record<string, number> }> = {};
+    for (const r of rows) {
+      if (typeof r.org !== 'string') continue;
+      const g = out[r.org] ??= { count: 0, firstOccurredAt: r.f, lastOccurredAt: r.l, types: {} };
+      g.count += Number(r.c);
+      if (typeof r.f === 'string' && r.f < g.firstOccurredAt) g.firstOccurredAt = r.f;
+      if (typeof r.l === 'string' && r.l > g.lastOccurredAt) g.lastOccurredAt = r.l;
+      if (typeof r.t === 'string') g.types[r.t] = Number(r.c);
+    }
+    return out;
+  }
+
+  /**
    * Rewrite the embedded `orgId` in queued outbox payloads from `from` to
    * `to`. Used by `agenfk hub repoint` after the hub admin renames the org —
    * without this, queued events keep the stale orgId and get rejected by the
@@ -274,8 +301,12 @@ export class SQLiteStorageProvider implements StorageProvider {
       throw new Error('hubOutboxRewriteOrgId: target orgId must be a non-empty string');
     }
     if (from === to) return 0;
+    // json_valid guard: json_extract RAISES on a malformed payload (see the
+    // note in hubOutboxOrgCounts), so without it one corrupt row would abort
+    // the whole UPDATE with "malformed JSON". Such rows are acknowledged to
+    // exist — the flusher skips them and cap-pruning drops them.
     const result = this.database.prepare(
-      "UPDATE hub_outbox SET payload = json_set(payload, '$.orgId', ?) WHERE json_extract(payload, '$.orgId') = ?"
+      "UPDATE hub_outbox SET payload = json_set(payload, '$.orgId', ?) WHERE json_valid(payload) = 1 AND json_extract(payload, '$.orgId') = ?"
     ).run(to, from);
     return Number(result.changes ?? 0);
   }

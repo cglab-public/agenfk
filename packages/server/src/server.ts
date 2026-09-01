@@ -2935,10 +2935,17 @@ app.get('/internal/hub/status', asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: 'Forbidden: hub status requires internal token.' });
   }
+  // orgs (per-org outbox summaries, CGLAB-117) is present even when the hub
+  // is NOT configured: a stale-org install is exactly when `hub carry-over`
+  // needs to read it. Guarded for the pre-initStorage/shutdown window where
+  // the provider is not (or no longer) open.
+  const orgs = typeof (storage as any)?.hubOutboxOrgSummaries === 'function'
+    ? (storage as any).hubOutboxOrgSummaries()
+    : {};
   if (!hubFlusher) {
-    return res.json({ enabled: false });
+    return res.json({ enabled: false, orgs });
   }
-  res.json(hubFlusher.getStatus());
+  res.json({ ...hubFlusher.getStatus(), orgs });
 }));
 
 // ── Hub outbox org rewrite (used by `agenfk hub repoint`) ───────────────────

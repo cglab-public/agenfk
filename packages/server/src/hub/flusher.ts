@@ -21,8 +21,10 @@ const MAX_BACKOFF_MS = 5 * 60_000;
 /**
  * Where hub-rejected events are preserved before their outbox rows are
  * deleted (CGLAB-117). Same idiom as hubClient.ts's HUB_CONFIG_PATH; the CLI
- * `hub deadletter` commands read this exact constant, so spoke-side writer
- * and reader cannot drift apart.
+ * `hub deadletter` commands duplicate this path expression (packages/cli/src/
+ * commands/hub.ts deadletterFile) — the packages share no module, so rename
+ * here and the CLI reader must move with it (hub-carryover-deadletter.test.ts
+ * pins the literal against drift).
  */
 export const DEFAULT_DEADLETTER_PATH = path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
 

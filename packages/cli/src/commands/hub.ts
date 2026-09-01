@@ -42,28 +42,168 @@ function localInstallationIdentity(): { installationId: string; osUser: string; 
   };
 }
 
-const HUB_CONFIG_FILE = path.join(os.homedir(), '.agenfk', 'hub.json');
-const VERIFY_TOKEN_FILE = path.join(os.homedir(), '.agenfk', 'verify-token');
+// Home-dir files resolved AT CALL TIME, not module load: importing this
+// module must not freeze a snapshot of the environment (tests sandbox HOME
+// after import; a long-lived CLI process could see HOME change).
+function hubConfigFile(): string { return path.join(os.homedir(), '.agenfk', 'hub.json'); }
+function verifyTokenFile(): string { return path.join(os.homedir(), '.agenfk', 'verify-token'); }
+// Kept in sync with the server flusher's DEFAULT_DEADLETTER_PATH (the writer);
+// same duplication idiom as hub.json across hubClient/server/CLI.
+function deadletterFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl'); }
+function auditFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-audit.jsonl'); }
 
 interface HubConfig { url: string; token: string; orgId: string }
 
+/** One line of ~/.agenfk/hub-deadletter.jsonl (written by the server flusher). */
+export interface DeadletterEntry {
+  eventId?: string | null;
+  occurredAt?: string;
+  deadletteredAt?: string;
+  reason?: string;
+  payload?: { orgId?: unknown; [k: string]: unknown } | string | null;
+}
+
+export interface DeadletterOrgSummary {
+  org: string;
+  count: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  reasons: Record<string, number>;
+}
+
+function deadletterOrgOf(e: DeadletterEntry): string {
+  const orgId = (e?.payload && typeof e.payload === 'object') ? (e.payload as any).orgId : undefined;
+  return typeof orgId === 'string' && orgId.length > 0 ? orgId : '(unknown)';
+}
+
+/**
+ * One physical line of the deadletter file. `entry` is null for lines that do
+ * not parse — the flusher writes deadletter lines because the outbox row is
+ * about to be DELETED, so an unparseable line may still be the last copy of
+ * something. It is preserved verbatim through partial discards (review F2).
+ */
+interface DeadletterLine {
+  raw: string;
+  entry: DeadletterEntry | null;
+}
+
+/**
+ * Group deadletter entries by the org stamped on the preserved payload:
+ * count, occurred-at range and reason tallies per org. Exported (and unit
+ * tested) so the list command's math is testable without a real home dir.
+ */
+export function summarizeDeadletter(entries: DeadletterEntry[]): DeadletterOrgSummary[] {
+  const byOrg = new Map<string, DeadletterOrgSummary>();
+  for (const e of entries) {
+    const org = deadletterOrgOf(e);
+    let g = byOrg.get(org);
+    if (!g) {
+      g = { org, count: 0, firstAt: null, lastAt: null, reasons: {} };
+      byOrg.set(org, g);
+    }
+    g.count++;
+    const at = typeof e?.occurredAt === 'string' ? e.occurredAt : null;
+    if (at) {
+      if (!g.firstAt || at < g.firstAt) g.firstAt = at;
+      if (!g.lastAt || at > g.lastAt) g.lastAt = at;
+    }
+    const reason = typeof e?.reason === 'string' && e.reason ? e.reason : 'unknown';
+    g.reasons[reason] = (g.reasons[reason] ?? 0) + 1;
+  }
+  return [...byOrg.values()];
+}
+
+/**
+ * The entries that SURVIVE a discard: --all keeps nothing, --org keeps
+ * everything not stamped with that org. Exported for unit tests.
+ */
+export function filterDeadletterForDiscard(entries: DeadletterEntry[], opts: { org?: string; all?: boolean }): DeadletterEntry[] {
+  if (opts.all) return [];
+  if (opts.org) return entries.filter(e => deadletterOrgOf(e) !== opts.org);
+  return entries;
+}
+
+/**
+ * Line-level discard filter (review F2): unparseable lines are nobody's org,
+ * so --org preserves them; --all (typed confirmation covers the whole file)
+ * does not.
+ */
+export function filterDeadletterLinesForDiscard(lines: DeadletterLine[], opts: { org?: string; all?: boolean }): DeadletterLine[] {
+  if (opts.all) return [];
+  if (opts.org) return lines.filter(l => l.entry === null || deadletterOrgOf(l.entry) !== opts.org);
+  return lines;
+}
+
+function readDeadletterLines(): DeadletterLine[] {
+  let raw: string;
+  try { raw = fs.readFileSync(deadletterFile(), 'utf8'); } catch { return []; }
+  const out: DeadletterLine[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push({ raw: line, entry: JSON.parse(line) }); } catch { out.push({ raw: line, entry: null }); }
+  }
+  return out;
+}
+
+function writeDeadletterLines(kept: DeadletterLine[]): void {
+  if (kept.length === 0) {
+    try { fs.unlinkSync(deadletterFile()); } catch { /* already gone */ }
+    return;
+  }
+  // tmp + rename: a truncate-then-fail on the survivor set would destroy the
+  // very file this feature exists to protect (review F3).
+  const tmp = deadletterFile() + '.tmp';
+  fs.mkdirSync(path.dirname(deadletterFile()), { recursive: true });
+  fs.writeFileSync(tmp, kept.map(l => l.raw).join('\n') + '\n', { mode: 0o600 });
+  try { fs.chmodSync(tmp, 0o600); } catch { /* ignore */ }
+  fs.renameSync(tmp, deadletterFile());
+}
+
+function appendHubAuditLine(line: Record<string, unknown>): void {
+  fs.mkdirSync(path.dirname(auditFile()), { recursive: true });
+  fs.appendFileSync(auditFile(), JSON.stringify(line) + '\n', { mode: 0o600 });
+  try { fs.chmodSync(auditFile(), 0o600); } catch { /* ignore */ }
+}
+
+async function askLine(question: string): Promise<string> {
+  const readline = await import('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise<string>((resolve) => rl.question(question, (a: string) => resolve(a.trim())));
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Interactive confirmation is impossible without a TTY: readline's question
+ * callback never fires at EOF, so an unpiped `--yes`-less run would wedge
+ * forever (review F8). Refuse instead — the repo gates on isTTY elsewhere.
+ */
+function refuseWithoutTty(flag: string): boolean {
+  if (process.stdin.isTTY) return false;
+  console.error(chalk.red('Refusing: interactive confirmation is required but stdin is not a TTY.'));
+  console.error(chalk.gray(`  Review the summary above, then re-run with ${flag} for scripted use.`));
+  return true;
+}
+
 function readHubConfig(): HubConfig | null {
   try {
-    return JSON.parse(fs.readFileSync(HUB_CONFIG_FILE, 'utf8')) as HubConfig;
+    return JSON.parse(fs.readFileSync(hubConfigFile(), 'utf8')) as HubConfig;
   } catch {
     return null;
   }
 }
 
 function writeHubConfig(cfg: HubConfig): void {
-  fs.mkdirSync(path.dirname(HUB_CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(HUB_CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  fs.mkdirSync(path.dirname(hubConfigFile()), { recursive: true });
+  fs.writeFileSync(hubConfigFile(), JSON.stringify(cfg, null, 2), { mode: 0o600 });
   // Re-apply mode in case the file already existed without 600 perms.
-  try { fs.chmodSync(HUB_CONFIG_FILE, 0o600); } catch { /* ignore */ }
+  try { fs.chmodSync(hubConfigFile(), 0o600); } catch { /* ignore */ }
 }
 
 function readVerifyToken(): string | null {
-  try { return fs.readFileSync(VERIFY_TOKEN_FILE, 'utf8').trim() || null; } catch { return null; }
+  try { return fs.readFileSync(verifyTokenFile(), 'utf8').trim() || null; } catch { return null; }
 }
 
 /**
@@ -460,11 +600,186 @@ export function registerHubCommands(program: Command): void {
     });
 
   hub
+    .command('carry-over')
+    .description('Move queued outbox events from one org stamp to another — the only path that rewrites an event\'s org stamp (the tenancy watermark) between two NAMED orgs; login/boot stamping of pre-login events and `hub repoint` org renames are separate, narrower paths. Prints a confirmation summary, demands explicit confirmation (or --yes), and audits every run to ~/.agenfk/hub-audit.jsonl.')
+    .option('--from <orgId>', 'Org stamp currently on the queued events')
+    .option('--to <orgId>', 'Org stamp the events should carry afterwards')
+    .option('--yes', 'Skip the interactive confirmation (scripted use)')
+    .action(async (opts: { from?: string; to?: string; yes?: boolean }) => {
+      const from = opts.from ? String(opts.from).trim() : '';
+      const to = opts.to ? String(opts.to).trim() : '';
+      if (!from || !to) {
+        console.error(chalk.red('Both --from and --to are required. Example: agenfk hub carry-over --from old-corp --to acme'));
+        process.exit(1);
+        return;
+      }
+      if (from === to) {
+        console.error(chalk.red('Refusing carry-over: --from and --to are the same org — there is nothing to carry.'));
+        process.exit(1);
+        return;
+      }
+      const verifyToken = readVerifyToken();
+      if (!verifyToken) {
+        console.error(chalk.red('Cannot reach the local API server (~/.agenfk/verify-token not found). Is `agenfk up` running?'));
+        process.exit(1);
+        return;
+      }
+      let orgs: Record<string, { count: number; firstOccurredAt: string; lastOccurredAt: string; types: Record<string, number> }>;
+      try {
+        const { data } = await axios.get(`${getApiUrl()}/internal/hub/status`, {
+          headers: { 'x-agenfk-internal': verifyToken }, timeout: 5_000,
+        });
+        orgs = data?.orgs ?? {};
+      } catch (e: any) {
+        console.error(chalk.red(`Cannot read the local outbox (${e?.response?.data?.error ?? e?.message ?? e}). Is the API server running?`));
+        process.exit(1);
+        return;
+      }
+      const summary = orgs[from];
+      if (!summary || !summary.count) {
+        console.error(chalk.red(`Refusing carry-over: no queued events stamped org "${from}" in the local outbox.`));
+        process.exit(1);
+        return;
+      }
+      const cfg = readHubConfig();
+      console.log(`Carry-over: ${summary.count} queued event(s) stamped org "${from}" -> "${to}"`);
+      console.log(chalk.gray(`  Time range : ${summary.firstOccurredAt} .. ${summary.lastOccurredAt}`));
+      const typePairs = Object.entries(summary.types ?? {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([t, n]) => `${t} (${n})`);
+      if (typePairs.length) console.log(chalk.gray(`  Event types: ${typePairs.join(', ')}`));
+      console.log();
+      console.log(chalk.red.bold('  ⚠ This rewrites the TENANCY WATERMARK of those events — the one operation that'));  // cross-org warning
+      console.log(chalk.red.bold('    moves data across an org boundary. It is audited to ~/.agenfk/hub-audit.jsonl.'));
+      if (cfg && to !== cfg.orgId) {
+        console.log(chalk.yellow(`  ⚠ Current credentials are for org "${cfg.orgId}": after the carry-over these rows`));
+        console.log(chalk.yellow(`    are STILL not deliverable — carry over to "${cfg.orgId}" or discard them.`));
+      }
+      console.log();
+      if (!opts.yes) {
+        if (refuseWithoutTty('--yes')) {
+          process.exit(1);
+          return;
+        }
+        // Confirm the TENANCY-RELEVANT half: the operator types the target org.
+        const answer = await askLine(`Type the target org id (${chalk.bold(to)}) to confirm carrying ${summary.count} event(s) from "${from}" across the org boundary, or anything else to abort: `);
+        if (answer !== to) {
+          console.log(chalk.gray('Aborted — nothing was rewritten.'));
+          return;
+        }
+      }
+      try {
+        const { data } = await axios.post(
+          `${getApiUrl()}/internal/hub/rewrite-outbox-org`,
+          { from, to },
+          { headers: { 'x-agenfk-internal': verifyToken }, timeout: 15_000 },
+        );
+        const rewritten = Number(data?.rewritten ?? 0);
+        if (rewritten !== summary.count) {
+          // The summary was a snapshot; the rewrite is set-based (review F5).
+          console.log(chalk.yellow(`  Note: the summary showed ${summary.count} event(s) but ${rewritten} were rewritten — rows arrived or were delivered between the two calls.`));
+        }
+        // The audit is the control that legitimises this command: once the
+        // rewrite has happened, an audit failure must be SHOUTED, not folded
+        // into "Carry-over failed" (review F4).
+        let osUser = 'unknown';
+        try { osUser = os.userInfo().username; } catch { /* no passwd entry (containers) */ }
+        try {
+          appendHubAuditLine({ at: new Date().toISOString(), from, to, rewritten, osUser });
+        } catch (ae: any) {
+          console.error(chalk.red.bold(`!! REWRITE SUCCEEDED (${rewritten} event(s)) BUT THE AUDIT LINE FAILED TO WRITE: ${ae?.message ?? ae}`));
+          console.error(chalk.red(`   Append it manually to ${auditFile()} before anyone reads this output as "nothing happened".`));
+          process.exit(1);
+          return;
+        }
+        console.log(chalk.green(`✓ Carried over ${rewritten} event(s) from "${from}" to "${to}" (audited).`));
+        if (cfg && to === cfg.orgId) {
+          console.log(chalk.gray('  They are deliverable now — run `agenfk hub flush` to send them.'));
+        }
+      } catch (e: any) {
+        console.error(chalk.red(`Carry-over failed: ${e?.response?.data?.error ?? e?.message ?? e}`));
+        process.exit(1);
+      }
+    });
+
+  const deadletter = hub
+    .command('deadletter')
+    .description('List events the hub rejected and the spoke preserved in ~/.agenfk/hub-deadletter.jsonl, grouped by the org stamped on each payload')
+    .action(() => {
+      const lines = readDeadletterLines();
+      const entries = lines.map(l => l.entry).filter((e): e is DeadletterEntry => e !== null);
+      if (lines.length === 0) {
+        console.log(chalk.gray(`No deadlettered events${fs.existsSync(deadletterFile()) ? ' (file is empty)' : ''}.`));
+        return;
+      }
+      for (const g of summarizeDeadletter(entries)) {
+        console.log(`Org ${chalk.bold(g.org)} — ${g.count} event(s), ${g.firstAt ?? '?'} .. ${g.lastAt ?? '?'}`);
+        const reasons = Object.entries(g.reasons).map(([r, n]) => `${r} (${n})`).join(', ');
+        console.log(chalk.gray(`  reasons: ${reasons}`));
+      }
+      const corrupt = lines.length - entries.length;
+      if (corrupt > 0) {
+        console.log(chalk.yellow(`  ${corrupt} unparseable line(s) — preserved on --org discards, removed only by --all.`));
+      }
+      console.log(chalk.gray(`Total: ${lines.length} line(s) in ${deadletterFile()} — discard with \`agenfk hub deadletter discard\`.`));
+    });
+
+  deadletter
+    .command('discard')
+    .description('Permanently remove deadlettered entries (see `agenfk hub deadletter`)')
+    .option('--org <orgId>', 'Discard only entries stamped with this org')
+    .option('--all', 'Discard every deadlettered entry')
+    .option('--yes', 'Skip the interactive confirmation (scripted use)')
+    .action(async (opts: { org?: string; all?: boolean; yes?: boolean }) => {
+      if (!opts.org && !opts.all) {
+        console.error(chalk.red('Choose --org <orgId> or --all.'));
+        process.exit(1);
+        return;
+      }
+      const target = { org: opts.org, all: !!opts.all };
+      const lines = readDeadletterLines();
+      if (lines.length === 0) {
+        console.log(chalk.gray('Nothing to discard.'));
+        return;
+      }
+      const removedNow = lines.length - filterDeadletterLinesForDiscard(lines, target).length;
+      if (removedNow === 0) {
+        console.log(chalk.gray(`No deadlettered entries match — nothing discarded.`));
+        return;
+      }
+      if (opts.all && !opts.yes) {
+        console.log(chalk.red.bold(`About to permanently discard ALL ${removedNow} deadlettered line(s) (including any unparseable ones) — this cannot be undone.`));
+        if (refuseWithoutTty('--yes')) {
+          process.exit(1);
+          return;
+        }
+        const answer = await askLine("Type 'discard all' to confirm, or anything else to abort: ");
+        if (answer !== 'discard all') {
+          console.log(chalk.gray('Aborted — nothing was discarded.'));
+          return;
+        }
+      }
+      // Re-read IMMEDIATELY before writing (review F1): the flusher appends on
+      // its own timer — anything that landed during the confirmation prompt is
+      // already deleted from the outbox, and a stale rewrite would destroy it
+      // here too. Re-filter the fresh contents instead.
+      const fresh = readDeadletterLines();
+      const kept = filterDeadletterLinesForDiscard(fresh, target);
+      const removed = fresh.length - kept.length;
+      if (removed === 0) {
+        console.log(chalk.gray('No deadlettered entries match the current file — nothing discarded.'));
+        return;
+      }
+      writeDeadletterLines(kept);
+      console.log(chalk.green(`✓ Discarded ${removed} deadlettered entr${removed === 1 ? 'y' : 'ies'}; ${kept.length} remain.`));
+    });
+
+  hub
     .command('logout')
     .description('Disconnect from the Hub (preserves the local outbox)')
     .action(() => {
       try {
-        fs.unlinkSync(HUB_CONFIG_FILE);
+        fs.unlinkSync(hubConfigFile());
         console.log(chalk.green('✓ Removed ~/.agenfk/hub.json. Restart the API server to stop pushing.'));
       } catch {
         console.log(chalk.gray('Hub was not configured.'));

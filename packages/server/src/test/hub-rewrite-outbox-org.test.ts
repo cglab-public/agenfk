@@ -52,6 +52,22 @@ describe('POST /internal/hub/rewrite-outbox-org', () => {
     expect(emptyTo.status).toBe(400);
   });
 
+  it('skips malformed-JSON rows instead of aborting the whole UPDATE (json_valid guard, review F7)', async () => {
+    // json_extract RAISES "malformed JSON" on a corrupt payload; without the
+    // guard one rotten row 500s the entire rewrite the operator confirmed.
+    (storage as any).database.prepare('DELETE FROM hub_outbox').run();
+    (storage as any).hubOutboxAppend('rot-1', new Date().toISOString(), 'NOT-JSON');
+    queue('acme');
+    const res = await request(app).post(ROUTE)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ from: 'acme', to: 'acme2' });
+    expect(res.status).toBe(200);
+    expect(res.body.rewritten).toBe(1);
+    const rows = (storage as any).database.prepare('SELECT payload FROM hub_outbox WHERE event_id = ?').get('rot-1');
+    expect(rows.payload).toBe('NOT-JSON'); // untouched, not rewritten, not deleted
+    (storage as any).database.prepare('DELETE FROM hub_outbox').run(); // leave the table as we found it
+  });
+
   it('rewrites queued outbox rows from the pending sentinel to the real org', async () => {
     queue('');            // pending-org sentinel (queued pre-login)
     queue('');
