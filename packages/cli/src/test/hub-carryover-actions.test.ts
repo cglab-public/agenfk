@@ -66,6 +66,10 @@ function seed(opts: { config?: boolean; token?: boolean } = {}): void {
   if (opts.token !== false) fs.writeFileSync(VERIFY_TOKEN, 'verifytok\n');
 }
 
+/** Strip ANSI escape codes so output assertions don't depend on whether the
+ *  environment emits color (the verify worker runs npm test with FORCE_COLOR). */
+const plain = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, '');
+
 function seedDeadletter(lines: Array<{ eventId: string; orgId?: string; occurredAt: string; reason: string }>): void {
   fs.mkdirSync(AGENFK_DIR, { recursive: true });
   fs.writeFileSync(DEADLETTER, lines.map(l => JSON.stringify({
@@ -347,7 +351,11 @@ describe('agenfk hub deadletter (actions)', () => {
   it('lists entries grouped by org with counts, range and reasons', async () => {
     seedDeadletter(THREE);
     await run(program, ['hub', 'deadletter']);
-    const out = logSpy.mock.calls.flat().join(' ');
+    // Strip ANSI styling: the org name is chalk.bold()-ed, so the raw output
+    // carries escape codes whenever the environment emits color (e.g. the
+    // verify worker runs with FORCE_COLOR) — the content assertions must not
+    // depend on that.
+    const out = plain(logSpy.mock.calls.flat().join(' '));
     expect(out).toMatch(/Org old-corp — 2 event\(s\)/);
     expect(out).toMatch(/2026-01-01T00:00:00Z \.\. 2026-01-05T00:00:00Z/);
     expect(out).toMatch(/org_mismatch \(1\), hidden_user \(1\), reasons:|reasons: org_mismatch \(1\), hidden_user \(1\)/);
@@ -360,7 +368,7 @@ describe('agenfk hub deadletter (actions)', () => {
     await run(program, ['hub', 'deadletter', 'discard', '--org', 'old-corp']);
     logSpy.mockClear();
     await run(program, ['hub', 'deadletter']);
-    const out = logSpy.mock.calls.flat().join(' ');
+    const out = plain(logSpy.mock.calls.flat().join(' '));
     expect(out).toMatch(/Org other-org — 1 event\(s\)/);
     expect(out).toMatch(/Total: 1 line\(s\)/);
   });
