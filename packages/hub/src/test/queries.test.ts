@@ -537,6 +537,21 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.totals.prs).toBe(0);
   });
 
+  it('a model param with only empty entries applies no filter (all models)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?model=,').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3); // empty entries dropped → null → no filter
+  });
+
+  it('repeated model params (?model=a&model=b) are parsed, not a 500', async () => {
+    // Express delivers repeated params as an array; parseList must normalize.
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-opus-4-8&model=claude-sonnet-4-6')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3);
+  });
+
   it('the model filter applies to the previous-period window too (delta honesty)', async () => {
     // Current window (from 05-04): only bob's sonnet PR#3. The previous
     // equal-length window holds alice's two opus PRs — with the model filter

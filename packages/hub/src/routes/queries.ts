@@ -9,6 +9,9 @@ import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit } from '../util/rateLimit.js';
 
 function parseList(s: string | undefined): string[] | null {
+  // Repeated params (?model=a&model=b) arrive as an array — normalize to the
+  // CSV form instead of letting .split throw a 500 (all list filters use this).
+  if (Array.isArray(s)) s = s.join(',');
   if (!s) return null;
   const parts = s.split(',').map(p => p.trim()).filter(Boolean);
   return parts.length ? parts : null;
