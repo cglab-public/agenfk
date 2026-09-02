@@ -115,7 +115,7 @@ describe('org-flow routes (hub enabled)', () => {
     activeMode = 'ok';
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
-    stubHubFetch(); // resetMocks clears the impl between tests; re-stub
+    stubHubFetch(); // re-stub below clears the previous impl (no implicit reset)
   });
 
   it('GET /flows/org-available returns the hub available set', async () => {

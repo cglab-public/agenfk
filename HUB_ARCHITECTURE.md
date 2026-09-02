@@ -517,7 +517,7 @@ rejection handling), `packages/storage-sqlite/src/index.ts`
 `hubOutboxOrgSummaries`), `packages/cli/src/commands/hub.ts`
 (carry-over, deadletter, gates, reporting),
 `packages/hub/src/routes/events.ts` (rejections). The deadletter path is
-a contract between flusher and CLI (`DEFAULT_DEADLETTER_PATH`),
+a contract between flusher and CLI (`defaultDeadletterPath()`),
 drift-pinned by tests in both packages; the docs↔code facts above are
 pinned by `packages/hub/src/test/hub-docs-tenancy.test.ts`.
 

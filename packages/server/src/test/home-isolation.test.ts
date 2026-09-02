@@ -59,6 +59,7 @@ describe('home isolation (item 9c297075)', () => {
     process.env.HOME = probeDir;
     let follows = false;
     try { follows = os.homedir() === probeDir; } finally { process.env.HOME = prev; }
+    fs.rmSync(probeDir, { recursive: true, force: true });
     if (follows) return; // forks pool (normal runs, CI): libuv linkage holds.
     // Frozen C environ (Stryker threads pool): HOME can only reach
     // os.homedir() if it was baked in at SPAWN time — require the guard's
