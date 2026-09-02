@@ -7,6 +7,7 @@ import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { loadModelMappings } from '../util/modelMapping.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -224,6 +225,10 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // Multi-select: a CSV of models, same parseList semantics as users/projects.
     // A single-value ?model=x link keeps working (one-element list).
     const models = parseList(req.query.model as string | undefined);
+    // Admin alias -> canonical. Resolved inside the aggregator for the rows, and
+    // the filter values go through the same mapping so a saved link to
+    // `?model=qwen38-27b` still finds the group now filed under `qwen3.8:27b`.
+    const modelMapping = await loadModelMappings(ctx.db, orgId);
 
     // Fetch PR events with only the UPPER time bound applied in SQL (`upTo`). The
     // lower bound (`from`) and the model filter are intentionally NOT pushed down:
@@ -253,7 +258,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       );
     };
 
-    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, models, developers: f.users });
+    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, models, developers: f.users, modelMapping });
 
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened
@@ -266,7 +271,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
         const span = toMs - fromMs;
         const prevFrom = new Date(fromMs - span).toISOString();
         const prevTo = new Date(fromMs - 1).toISOString();
-        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, models, developers: f.users });
+        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, models, developers: f.users, modelMapping });
         previous = { prs: prev.totals.prs, sizePoints: prev.totals.sizePoints };
       }
     }

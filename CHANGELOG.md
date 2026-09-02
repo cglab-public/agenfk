@@ -2,6 +2,21 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.4] — 2026-09-02
+
+### Added
+- **Hub admin → Models**: a model id is free text an installation self-reports via
+  `--model <id>`, so one model reaching the hub as `qwen38-27b` and `qwen3.8:27b`
+  appeared as two rows in the PR Overview "By model" table, splitting its PR count
+  and offering two filter chips for one model. Admins can now map a reported
+  spelling to a single desired name. Resolution is a read-time overlay
+  (`model_mappings`), so `events` keeps recording what was actually reported and
+  deleting a mapping puts the dashboards back — no recompute, no migration.
+  Resolution is an exact lookup by deliberate choice: a normalization rule that
+  maps `-` to `:` and `38` to `3.8` would silently merge genuinely different
+  models. Saved links to an old spelling keep resolving, because filter values
+  go through the same mapping as stored ones.
+
 ## [1.1.17-beta.3] — 2026-09-02
 
 - **PR Overview dash: multi-select models filter** — the hub-ui PR Overview page's
@@ -16,6 +31,7 @@ All notable changes to AgEnFK are documented here.
 - **CLI test robustness** — hub deadletter list assertions are now
   color-independent (ANSI-tolerant), fixing a flake when the verify worker ran
   with `FORCE_COLOR`.
+ origin/feat/CGLAB-117_hub-per-event-rejections
 
 ## [1.1.17-beta.2] — 2026-09-01
 
