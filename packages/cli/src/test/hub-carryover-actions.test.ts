@@ -18,11 +18,8 @@ const { sandboxHome } = vi.hoisted(() => {
   const path = require('path');
   return { sandboxHome: fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-carryover-')) };
 });
-const realHome = process.env.HOME;
-// HOME is (re-)assigned in a global beforeEach for plain vitest; under
-// stryker's in-process runner os.homedir() ignores process.env.HOME entirely,
-// so the os module itself is mocked below — belt and braces.
-beforeEach(() => { process.env.HOME = sandboxHome; });
+// The os module is mocked below (static homedir -> sandboxHome), so no env
+// manipulation is needed: it works under any runner (item 9c297075).
 
 const { mockGet, mockPost, askState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -124,7 +121,6 @@ describe('agenfk hub carry-over (actions)', () => {
   afterAll(() => {
     if (realIsTTY) Object.defineProperty(process.stdin, 'isTTY', realIsTTY);
     else delete (process.stdin as any).isTTY;
-    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
   });
 
   it('refuses missing --from/--to without touching the server', async () => {
@@ -339,7 +335,6 @@ describe('agenfk hub deadletter (actions)', () => {
   afterAll(() => {
     if (realIsTTY) Object.defineProperty(process.stdin, 'isTTY', realIsTTY);
     else delete (process.stdin as any).isTTY;
-    if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
   });
 
   const THREE = [

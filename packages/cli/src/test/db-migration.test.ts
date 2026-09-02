@@ -2,10 +2,21 @@
  * Tests for the db.json → SQLite migration helper.
  * These tests should FAIL before stageJsonMigration() is implemented.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+// Mockable homedir (item 9c297075) — the migration.json save/restore cycle
+// below then runs in the sandbox under any runner (an env override only
+// works while libuv follows the JS env — not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-db-migration-'));
+fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 // We will import the real module after it exists
 let stageJsonMigration: (agenfkHome: string) => boolean;
@@ -117,4 +128,9 @@ describe('stageJsonMigration', () => {
     expect(result).toBe(false);
     expect(fs.existsSync(migrationPath)).toBe(false);
   });
+});
+
+afterAll(() => {
+  vi.mocked(os.homedir).mockRestore();
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
 });

@@ -4,9 +4,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075) —
+// runner-independent. Replaces the old process.env.HOME override, which only
+// works while libuv follows the JS env (not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-repoint-'));
-const realHome = process.env.HOME;
-process.env.HOME = sandboxHome;
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const { mockGet, mockPost } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -76,8 +82,7 @@ describe('agenfk hub repoint', () => {
   });
 
   afterAll(() => {
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* */ }
   });
 

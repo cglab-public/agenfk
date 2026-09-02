@@ -19,6 +19,21 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
+// Mockable homedir (item 9c297075) — delegates to the real one until armed.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075): every
+// jira-token/config save-restore cycle in this file then operates in the
+// sandbox — the real ~/.agenfk is never touched under any runner (an env
+// override only works while libuv follows the JS env — not under Stryker's
+// threads pool). Must arm before the module-level path constants below.
+const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-supplemental-'));
+fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
+
 // CRITICAL: install a no-op exec impl for POST /releases/update *before any
 // test runs*. Without this, the supplemental test below shells out for real
 // via `npx -y github:cglab-public/agenfk`, which downgrades ~/.agenfk-system/
@@ -52,7 +67,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  // Restore the original jira token state
+  // Restore the original jira token state (sandbox-scoped since item 9c297075)
   if (globalSavedToken) {
     fs.writeFileSync(GLOBAL_TOKEN_PATH, globalSavedToken);
   } else if (fs.existsSync(GLOBAL_TOKEN_PATH)) {
@@ -60,6 +75,8 @@ afterAll(() => {
   }
   // Clean up test DB
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  vi.mocked(os.homedir).mockRestore();
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 

@@ -6,12 +6,22 @@
  * assertions for the shell-injection sites that only execute once `gh`/`jira`
  * are configured (so the argv/allowlist shape is what we pin down).
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+// Mockable homedir (item 9c297075): the verify-token read below then comes
+// from the sandbox under any runner — never the real ~/.agenfk/verify-token.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sec-hardening-'));
+fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const TEST_DB = path.resolve('./security-hardening-test-db.sqlite');
 const VERIFY_TOKEN = (() => {
