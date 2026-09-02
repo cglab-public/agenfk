@@ -97,6 +97,13 @@ describe('PrOverviewPage model multi-select', () => {
     await screen.findByRole('heading', { name: 'Model' });
     await screen.findByRole('button', { name: 'Clear (2)' });
 
+    // The URL write-back must preserve the CSV (join separator), not collapse it.
+    // (URLSearchParams percent-encodes the comma in the written-back URL, so
+    // compare the parsed value, not the raw text.)
+    await waitFor(() =>
+      expect(new URLSearchParams(urlNow()).get('model')).toBe('claude-opus-4-8,glm-5.2'),
+    );
+
     // The data query carries both models; the unfiltered options query (facet
     // choices) is also issued WITHOUT a model param.
     const urls = overviewUrls();
@@ -134,8 +141,21 @@ describe('PrOverviewPage model multi-select', () => {
     const urls = overviewUrls();
     expect(urls.length).toBe(1); // no active filter → no separate options query
     expect(qs(urls[0]).get('model')).toBeNull();
+    // The URL write-back must not leave a dangling model param when nothing is selected.
+    await waitFor(() => expect(urlNow()).toBe(''));
     // The legacy single-model <select> is gone.
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+  });
+
+  it('a developer selection (no model) still triggers the unfiltered options query', async () => {
+    renderPage('/prs?developers=alice@acme.com');
+    await screen.findByRole('heading', { name: 'Developer' });
+    // filtersActive must be true on a developer-only selection: the facet options
+    // query (no users, no model) runs alongside the filtered data query.
+    await waitFor(() => expect(overviewUrls().length).toBe(2));
+    const withUsers = overviewUrls().filter(u => qs(u).get('users') === 'alice@acme.com');
+    expect(withUsers.length).toBe(1);
+    expect(qs(withUsers[0]).get('model')).toBeNull();
   });
 
   it('renders the searchable popover path (N selected · N total) with more than six models', async () => {

@@ -537,6 +537,24 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.totals.prs).toBe(0);
   });
 
+  it('the model filter applies to the previous-period window too (delta honesty)', async () => {
+    // Current window (from 05-04): only bob's sonnet PR#3. The previous
+    // equal-length window holds alice's two opus PRs — with the model filter
+    // they must be excluded from `previous` as well, not just the current totals.
+    const filtered = await supertest(app)
+      .get('/v1/prs/overview?model=claude-sonnet-4-6&from=2026-05-04T00:00:00Z')
+      .set('Cookie', cookie);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.totals.prs).toBe(1);
+    expect(filtered.body.previous.prs).toBe(0);
+
+    // Same window without the model filter: previous period holds alice's two PRs.
+    const unfiltered = await supertest(app)
+      .get('/v1/prs/overview?from=2026-05-04T00:00:00Z')
+      .set('Cookie', cookie);
+    expect(unfiltered.body.previous.prs).toBe(2);
+  });
+
   it('filters by date range', async () => {
     const r = await supertest(app).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.status).toBe(200);

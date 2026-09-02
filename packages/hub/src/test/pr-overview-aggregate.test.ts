@@ -256,6 +256,16 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.prs).toBe(0);
     expect(r.totals.medianBucket).toBeNull();
   });
+
+  it('window bounds are INCLUSIVE: a PR opened exactly at from or at to is kept, one after to is not', () => {
+    const rows = [
+      row({ pr_number: 31, occurred_at: '2026-05-01T00:00:00Z' }), // exactly at `from`
+      row({ pr_number: 32, occurred_at: '2026-05-05T00:00:00Z' }), // exactly at `to`
+      row({ pr_number: 33, occurred_at: '2026-05-06T00:00:00Z' }), // after `to` → excluded
+    ];
+    const r = aggregatePrOverview(rows, { from: '2026-05-01T00:00:00Z', to: '2026-05-05T00:00:00Z' });
+    expect(r.totals.prs).toBe(2); // #31 and #32 kept; #33 excluded
+  });
 });
 
 describe('multi-model filter (models window field)', () => {
