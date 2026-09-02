@@ -16,7 +16,7 @@
     "@agenfk/storage-sqlite": "1.1.16",
     "@agenfk/telemetry": "1.1.16",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "axios": "^1.19.0",
+    "axios": "^1.20.0",
     "body-parser": "^2.3.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
