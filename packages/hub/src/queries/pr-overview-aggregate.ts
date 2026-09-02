@@ -1,4 +1,5 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
+import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
 
 // One json_extract-shaped row per pr.opened / pr.updated event. Sizing fields are
 // read from the server-computed shadow (the only source that knows leaf stories).
@@ -44,7 +45,7 @@ const toNum = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-function normaliseRow(r: PrEventRow): NormRow {
+function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
   return {
     user_key: r.user_key,
     occurred_at: toIso(r.occurred_at),
@@ -54,7 +55,9 @@ function normaliseRow(r: PrEventRow): NormRow {
     leafStory: toNum(r.leaf_story),
     task: toNum(r.task),
     bug: toNum(r.bug),
-    model: r.model,
+    // Resolved here, at the single funnel both the grouping and the filter read
+    // through, so the two can never disagree about a PR's model.
+    model: resolveModelId(r.model, mapping),
     harness: r.harness,
   };
 }
@@ -97,6 +100,12 @@ export interface PrWindow {
   to?: string | null;
   models?: string[] | null;
   developers?: string[] | null;
+  /**
+   * Admin alias -> canonical model name. Applied to stored ids AND to `models`
+   * above, so both sides of the filter compare canonical names. Callers pass
+   * already-resolved `models` if they resolved them themselves.
+   */
+  modelMapping?: ModelMapping | null;
 }
 
 interface ResolvedPr {
@@ -114,10 +123,10 @@ interface ResolvedPr {
 // Collapse the raw event stream into one record per PR. A pr.updated never adds a
 // new PR — it re-sizes the existing one. The PR is counted once, placed on its
 // OPEN day at its LATEST size, and attributed to whoever OPENED it.
-function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
+function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): ResolvedPr[] {
   const groups = new Map<string, NormRow[]>();
   for (const raw of rows) {
-    const r = normaliseRow(raw);
+    const r = normaliseRow(raw, mapping);
     if (!r.repo || r.pr_number == null) continue; // not a sizeable PR event
     const key = `${r.repo}#${r.pr_number}`;
     const g = groups.get(key);
@@ -149,9 +158,12 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
 export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: PrWindow): PrOverviewResult {
   const from = window?.from ?? null;
   const to = window?.to ?? null;
-  const modelFilter = window?.models && window.models.length ? new Set(window.models) : null;
+  const mapping = window?.modelMapping ?? EMPTY_MODEL_MAPPING;
+  const modelFilter = window?.models && window.models.length
+    ? new Set(window.models.map(m => resolveModelId(m, mapping) as string))
+    : null;
   const devFilter = window?.developers && window.developers.length ? new Set(window.developers) : null;
-  const prs = resolvePrs(rows).filter(pr =>
+  const prs = resolvePrs(rows, mapping).filter(pr =>
     (!from || pr.openerAt >= from)
     && (!to || pr.openerAt <= to)
     && (!modelFilter || modelFilter.has(pr.model))

@@ -293,6 +293,34 @@ const SCHEMA_SQLITE = `
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (org_id, user_key)
   );
+
+  -- Admin-curated model identity, the "model" axis of user_key_aliases.
+  -- A model id is free text the agent self-reports (--model <id>), so one
+  -- model arrives as qwen3.8:27b, qwen38-27b, ... and the dashboards group
+  -- by the raw string and show them as separate models.
+  --
+  -- The canonical name is the admin's literal string, deliberately NOT derived
+  -- by a normalization rule: a rule that maps "-" to ":" and "38" to "3.8"
+  -- eventually merges two genuinely different models, and the admin cannot see
+  -- why it happened. Here the desired name is exactly what was typed, and only
+  -- the listed aliases fold into it.
+  --
+  -- Applied at read time only. The events table keeps recording what was actually
+  -- reported — this is append-only telemetry of what an agent claimed, and
+  -- rewriting it would destroy that fact and be undone by the next event
+  -- anyway. Deleting a row here reverts the dashboards, which is why no
+  -- recompute job is needed.
+  CREATE TABLE IF NOT EXISTS model_mappings (
+    org_id TEXT NOT NULL,
+    alias_model TEXT NOT NULL,
+    canonical_model TEXT NOT NULL,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, alias_model)
+  );
+  CREATE INDEX IF NOT EXISTS idx_model_mappings_canonical
+    ON model_mappings(org_id, canonical_model);
 `;
 
 class SqliteAdapter implements HubDb {
