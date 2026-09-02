@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [1.1.17-beta.3] — 2026-09-02
+## [1.1.17-beta.4] — 2026-09-02
 
 ### Added
 - **Hub admin → Models**: a model id is free text an installation self-reports via
