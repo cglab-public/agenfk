@@ -87,13 +87,15 @@ const pointsOf = (r: NormRow): number =>
  *  even if it was re-sized within the window (the update alone must not make it
  *  look new). Pass rows fetched WITHOUT a lower time bound so true openers are
  *  visible. The model filter likewise matches the OPENER's model, so a PR re-sized
- *  by a different runtime stays attributed to whoever opened it. The developer
+ *  by a different runtime stays attributed to whoever opened it. `models` is
+ *  match-any (multi-select): a PR is kept when its opener's model is ANY of the
+ *  listed ones; an empty/absent list means no filter (all models). The developer
  *  filter is likewise opener-based — a PR opened by X but re-sized by Y still
  *  belongs to X, so filtering by Y must not pull it in. */
 export interface PrWindow {
   from?: string | null;
   to?: string | null;
-  model?: string | null;
+  models?: string[] | null;
   developers?: string[] | null;
 }
 
@@ -147,12 +149,12 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
 export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: PrWindow): PrOverviewResult {
   const from = window?.from ?? null;
   const to = window?.to ?? null;
-  const model = window?.model ?? null;
+  const modelFilter = window?.models && window.models.length ? new Set(window.models) : null;
   const devFilter = window?.developers && window.developers.length ? new Set(window.developers) : null;
   const prs = resolvePrs(rows).filter(pr =>
     (!from || pr.openerAt >= from)
     && (!to || pr.openerAt <= to)
-    && (!model || pr.model === model)
+    && (!modelFilter || modelFilter.has(pr.model))
     && (!devFilter || devFilter.has(pr.user_key)),
   );
 

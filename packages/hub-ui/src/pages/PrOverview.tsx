@@ -115,8 +115,8 @@ export function PrOverviewPage() {
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
+  const modelSel = useToggleSet(csv('model'));
   const [range, setRange] = useState<RangeKey>(initRange);
-  const [model, setModel] = useState<string>(searchParams.get('model') ?? '');
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
@@ -125,7 +125,7 @@ export function PrOverviewPage() {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
-    if (model) p.set('model', model);
+    if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (customFrom || customTo) {
       // Explicit range takes precedence over the preset in the URL too.
       if (customFrom) p.set('from', customFrom);
@@ -134,7 +134,7 @@ export function PrOverviewPage() {
       p.set('range', range); // omit the default to keep the URL clean
     }
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, model, range, customFrom, customTo, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, range, customFrom, customTo, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -156,10 +156,10 @@ export function PrOverviewPage() {
 
   const dataQs = useMemo(() => {
     const p = new URLSearchParams(baseQs);
-    if (model) p.set('model', model);
+    if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, model, devSel.set]);
+  }, [baseQs, modelSel.set, devSel.set]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -170,7 +170,7 @@ export function PrOverviewPage() {
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
   // once a model or developer is selected.
-  const filtersActive = !!model || devSel.set.size > 0;
+  const filtersActive = modelSel.set.size > 0 || devSel.set.size > 0;
   const optionsQuery = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
@@ -217,14 +217,6 @@ export function PrOverviewPage() {
           <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            className="text-[12px] font-medium rounded-lg border border-border-soft bg-surface text-ink-secondary px-2.5 py-1.5"
-          >
-            <option value="">All models</option>
-            {modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
           <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {RANGES.map(r => {
               const active = !customFrom && !customTo && range === r.key;
@@ -291,6 +283,16 @@ export function PrOverviewPage() {
         onClear={devSel.clear}
         inlineThreshold={6}
         placeholder="Search developers…"
+      />
+
+      <FacetMultiselect
+        label="Model"
+        options={modelOptions}
+        selected={modelSel.set}
+        onToggle={modelSel.toggle}
+        onClear={modelSel.clear}
+        inlineThreshold={6}
+        placeholder="Search models…"
       />
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}

@@ -505,6 +505,38 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.byModel[0].model).toBe('claude-sonnet-4-6');
   });
 
+  it('accepts a CSV of models (multi-select) and matches any', async () => {
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-opus-4-8,claude-sonnet-4-6')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3); // opus PRs #1 #2 + sonnet PR #3
+    expect(r.body.byModel.map((m: any) => m.model).sort()).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
+  });
+
+  it('trims whitespace and ignores empty entries in the model CSV', async () => {
+    // %20 = space: " claude-opus-4-8 , ,claude-sonnet-4-6 "
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=%20claude-opus-4-8%20,%20,claude-sonnet-4-6%20')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3);
+  });
+
+  it('an unknown model in the CSV matches nothing extra', async () => {
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-sonnet-4-6,no-such-model')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(1);
+  });
+
+  it('a model CSV that resolves to nothing returns zero PRs (no fallback to all)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?model=no-such-model').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(0);
+  });
+
   it('filters by date range', async () => {
     const r = await supertest(app).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.status).toBe(200);

@@ -129,11 +129,11 @@ describe('aggregatePrOverview', () => {
       row({ pr_number: 11, type: 'pr.updated', user_key: 'bob@acme.com', occurred_at: '2026-05-04T10:00:00Z', model: 'glm-5.2', task: 3 }),
       row({ pr_number: 12, type: 'pr.opened', user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', model: 'glm-5.2' }),
     ];
-    const opus = aggregatePrOverview(rows, { model: 'claude-opus-4-8' });
+    const opus = aggregatePrOverview(rows, { models: ['claude-opus-4-8'] });
     expect(opus.totals.prs).toBe(1); // PR#11 only (opened with opus); the glm re-size does not drop it
     expect(opus.byDeveloper[0].user_key).toBe('alice@acme.com');
 
-    const glm = aggregatePrOverview(rows, { model: 'glm-5.2' });
+    const glm = aggregatePrOverview(rows, { models: ['glm-5.2'] });
     expect(glm.totals.prs).toBe(1); // PR#12 only — PR#11 was OPENED with opus, not glm
     expect(glm.byDeveloper[0].user_key).toBe('bob@acme.com');
   });
@@ -255,5 +255,57 @@ describe('aggregatePrOverview', () => {
     const r = aggregatePrOverview([row({ repo: null }), row({ pr_number: null })]);
     expect(r.totals.prs).toBe(0);
     expect(r.totals.medianBucket).toBeNull();
+  });
+});
+
+describe('multi-model filter (models window field)', () => {
+  const rows = [
+    row({ pr_number: 21, type: 'pr.opened', user_key: 'alice@acme.com', occurred_at: '2026-05-03T10:00:00Z', model: 'claude-opus-4-8' }),
+    row({ pr_number: 22, type: 'pr.opened', user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', model: 'glm-5.2' }),
+    row({ pr_number: 23, type: 'pr.opened', user_key: 'carol@acme.com', occurred_at: '2026-05-03T12:00:00Z', model: 'gpt-5.2' }),
+    // #24 opened with opus, re-sized with glm → attributed to opus.
+    row({ pr_number: 24, type: 'pr.opened', user_key: 'dave@acme.com', occurred_at: '2026-05-03T09:00:00Z', model: 'claude-opus-4-8' }),
+    row({ pr_number: 24, type: 'pr.updated', user_key: 'dave@acme.com', occurred_at: '2026-05-04T09:00:00Z', model: 'glm-5.2', task: 2 }),
+  ];
+
+  it('match-any: keeps PRs opened by ANY of the selected models', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'glm-5.2'] });
+    expect(r.totals.prs).toBe(3); // #21, #22, #24 — carol's gpt-5.2 PR excluded
+    expect(r.byModel.map(m => m.model).sort()).toEqual(['claude-opus-4-8', 'glm-5.2']);
+  });
+
+  it('matches the OPENER model under multi-select — a re-size with an unselected model does not pull a PR in', () => {
+    const glmOnly = aggregatePrOverview(rows, { models: ['glm-5.2'] });
+    expect(glmOnly.totals.prs).toBe(1); // #22 only — #24 was OPENED with opus
+    expect(glmOnly.byDeveloper[0].user_key).toBe('bob@acme.com');
+
+    const opusOnly = aggregatePrOverview(rows, { models: ['claude-opus-4-8'] });
+    expect(opusOnly.totals.prs).toBe(2); // #21 + #24 (opus re-sizes stay attributed to opus)
+  });
+
+  it('an empty, null or absent models list keeps every PR (all-models default)', () => {
+    expect(aggregatePrOverview(rows, { models: [] }).totals.prs).toBe(4);
+    expect(aggregatePrOverview(rows, { models: null }).totals.prs).toBe(4);
+    expect(aggregatePrOverview(rows).totals.prs).toBe(4);
+  });
+
+  it('unknown models in the selection are a no-op, not an error', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'no-such-model'] });
+    expect(r.totals.prs).toBe(2); // #21 + #24
+  });
+
+  it('a selection of only unknown models yields zero PRs, not a fallback to all', () => {
+    expect(aggregatePrOverview(rows, { models: ['no-such-model'] }).totals.prs).toBe(0);
+  });
+
+  it('composes with the developer filter (both must match)', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'glm-5.2'], developers: ['bob@acme.com'] });
+    expect(r.totals.prs).toBe(1); // #22 only — bob\'s, opened with glm
+  });
+
+  it('a single-element list behaves exactly like the legacy single-model filter', () => {
+    const r = aggregatePrOverview(rows, { models: ['gpt-5.2'] });
+    expect(r.totals.prs).toBe(1); // #23 only
+    expect(r.byDeveloper[0].user_key).toBe('carol@acme.com');
   });
 });

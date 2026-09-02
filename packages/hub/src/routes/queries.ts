@@ -218,7 +218,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
   router.get('/prs/overview', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const f = readEventFilters(req);
-    const model = ((req.query.model as string | undefined) ?? '').trim() || null;
+    // Multi-select: a CSV of models, same parseList semantics as users/projects.
+    // A single-value ?model=x link keeps working (one-element list).
+    const models = parseList(req.query.model as string | undefined);
 
     // Fetch PR events with only the UPPER time bound applied in SQL (`upTo`). The
     // lower bound (`from`) and the model filter are intentionally NOT pushed down:
@@ -248,7 +250,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       );
     };
 
-    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, model, developers: f.users });
+    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, models, developers: f.users });
 
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened
@@ -261,7 +263,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
         const span = toMs - fromMs;
         const prevFrom = new Date(fromMs - span).toISOString();
         const prevTo = new Date(fromMs - 1).toISOString();
-        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, model, developers: f.users });
+        const prev = aggregatePrOverview(await fetchRows(prevTo), { from: prevFrom, to: prevTo, models, developers: f.users });
         previous = { prs: prev.totals.prs, sizePoints: prev.totals.sizePoints };
       }
     }
