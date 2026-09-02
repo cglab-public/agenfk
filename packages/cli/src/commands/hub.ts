@@ -47,7 +47,7 @@ function localInstallationIdentity(): { installationId: string; osUser: string; 
 // after import; a long-lived CLI process could see HOME change).
 function hubConfigFile(): string { return path.join(os.homedir(), '.agenfk', 'hub.json'); }
 function verifyTokenFile(): string { return path.join(os.homedir(), '.agenfk', 'verify-token'); }
-// Kept in sync with the server flusher's DEFAULT_DEADLETTER_PATH (the writer);
+// Kept in sync with the server flusher's defaultDeadletterPath() (the writer);
 // same duplication idiom as hub.json across hubClient/server/CLI.
 function deadletterFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl'); }
 function auditFile(): string { return path.join(os.homedir(), '.agenfk', 'hub-audit.jsonl'); }

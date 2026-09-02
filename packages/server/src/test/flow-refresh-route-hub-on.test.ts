@@ -81,7 +81,7 @@ describe('GET /projects/:id/flow?refresh=true (hub enabled)', () => {
   beforeEach(async () => {
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
-    stubHubFetch(); // resetMocks clears the impl between tests; re-stub
+    stubHubFetch(); // re-stub below clears the previous impl (no implicit reset)
   });
 
   it('pulls the hub flow and rebinds the project on read, and it persists', async () => {

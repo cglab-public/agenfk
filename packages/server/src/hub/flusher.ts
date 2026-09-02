@@ -26,7 +26,9 @@ const MAX_BACKOFF_MS = 5 * 60_000;
  * here and the CLI reader must move with it (hub-carryover-deadletter.test.ts
  * pins the literal against drift).
  */
-export const DEFAULT_DEADLETTER_PATH = path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
+export function defaultDeadletterPath(): string {
+  return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
+}
 
 /**
  * Resolve the running agenfk version once at module load. Story 7 of
@@ -106,8 +108,8 @@ export class Flusher {
     private intervalMs: number = DEFAULT_INTERVAL_MS,
     private batchSize: number = DEFAULT_BATCH_SIZE,
     httpClient?: AxiosInstance,
-    /** See DEFAULT_DEADLETTER_PATH. Injectable for tests. */
-    private deadletterPath: string = DEFAULT_DEADLETTER_PATH,
+    /** See defaultDeadletterPath(). Injectable for tests. */
+    private deadletterPath: string = defaultDeadletterPath(),
   ) {
     this.http = httpClient ?? axios.create({
       baseURL: config.url,

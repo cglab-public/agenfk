@@ -18,6 +18,17 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
+// Mockable homedir (item 9c297075) — the migration.json save/replace cycle
+// below then runs in the sandbox under any runner (an env override only
+// works while libuv follows the JS env — not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sqlite-only-'));
+fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
+
 const TEST_DB_JSON_PATH = path.resolve('./server-sqlite-only-test-db.json');
 const TEST_DB_SQLITE_PATH = path.resolve('./server-sqlite-only-test-db.sqlite');
 
@@ -142,4 +153,9 @@ describe('SQLite-only storage enforcement', () => {
       expect(fs.existsSync(migrationPath)).toBe(false);
     });
   });
+});
+
+afterAll(() => {
+  vi.mocked(os.homedir).mockRestore();
+  try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
 });

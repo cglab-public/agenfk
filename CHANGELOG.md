@@ -17,6 +17,22 @@ All notable changes to AgEnFK are documented here.
   models. Saved links to an old spelling keep resolving, because filter values
   go through the same mapping as stored ones.
 
+## [1.1.17-beta.3] — 2026-09-02
+
+- **PR Overview dash: multi-select models filter** — the hub-ui PR Overview page's
+  model filter is now a `FacetMultiselect` row (same component as Project/
+  Developer); `?model=` is a CSV end-to-end (URL → toggle-set → data query →
+  match-any on the PR *opener's* model), applied to both the current and
+  previous-period windows so delta badges stay honest. Legacy single-value
+  `?model=x` links keep working (`PrWindow.model` → `models: string[] | null`).
+- **`parseList` hardening** — repeated query params (`?model=a&model=b`, which
+  Express delivers as an array) are normalized to CSV form instead of 500-ing;
+  covers every list filter (users/projects/types/itemTypes/model).
+- **CLI test robustness** — hub deadletter list assertions are now
+  color-independent (ANSI-tolerant), fixing a flake when the verify worker ran
+  with `FORCE_COLOR`.
+ origin/feat/CGLAB-117_hub-per-event-rejections
+
 ## [1.1.17-beta.2] — 2026-09-01
 
 Hub org-boundary hardening (CGLAB-117) — after the 31 Aug 2026 incident, a clobbered

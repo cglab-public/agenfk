@@ -288,11 +288,11 @@ const purgeItemLogs = (itemId: string): void => {
 
 // ── Backup ───────────────────────────────────────────────────────────────────
 
-const BACKUP_DIR = path.join(os.homedir(), '.agenfk', 'backup');
+function backupDir(): string { return path.join(os.homedir(), '.agenfk', 'backup'); }
 const MAX_BACKUPS = 10;
 
 const performBackup = async (): Promise<string> => {
-  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  if (!fs.existsSync(backupDir())) fs.mkdirSync(backupDir(), { recursive: true });
 
   const [projects, items] = await Promise.all([
     storage.listProjects(),
@@ -301,16 +301,16 @@ const performBackup = async (): Promise<string> => {
 
   const timestamp = new Date().toISOString().replace(/:/g, '-');
   const dbType = 'sqlite';
-  const backupFile = path.join(BACKUP_DIR, `agenfk-backup-${timestamp}.json`);
+  const backupFile = path.join(backupDir(), `agenfk-backup-${timestamp}.json`);
 
   fs.writeFileSync(backupFile, JSON.stringify({ version: '1', backupDate: new Date().toISOString(), dbType, projects, items }, null, 2));
 
   // Rotate — keep only the MAX_BACKUPS most recent files
-  const existing = fs.readdirSync(BACKUP_DIR)
+  const existing = fs.readdirSync(backupDir())
     .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
     .sort();
   for (const old of existing.slice(0, Math.max(0, existing.length - MAX_BACKUPS))) {
-    fs.unlinkSync(path.join(BACKUP_DIR, old));
+    fs.unlinkSync(path.join(backupDir(), old));
   }
 
   console.log(`[BACKUP] Written: ${backupFile}`);
@@ -945,14 +945,14 @@ app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
   const dbType = 'sqlite';
   let backupCount = 0;
   let latestBackup: string | null = null;
-  if (fs.existsSync(BACKUP_DIR)) {
-    const files = fs.readdirSync(BACKUP_DIR)
+  if (fs.existsSync(backupDir())) {
+    const files = fs.readdirSync(backupDir())
       .filter(f => f.startsWith('agenfk-backup-') && f.endsWith('.json'))
       .sort();
     backupCount = files.length;
     latestBackup = files.length > 0 ? files[files.length - 1] : null;
   }
-  res.json({ dbType, dbPath, backupDir: BACKUP_DIR, backupCount, latestBackup });
+  res.json({ dbType, dbPath, backupDir: backupDir(), backupCount, latestBackup });
 }));
 
 app.post("/backup", asyncHandler(async (req: any, res: any) => {
@@ -3089,7 +3089,7 @@ app.get("/items/:id/snapshot", asyncHandler(async (req: any, res: any) => {
 
 // ── JIRA Integration ─────────────────────────────────────────────────────────
 
-const JIRA_TOKEN_PATH = path.join(os.homedir(), '.agenfk', 'jira-token.json');
+function jiraTokenPath(): string { return path.join(os.homedir(), '.agenfk', 'jira-token.json'); }
 
 interface JiraTokenData {
   access_token: string;
@@ -3138,8 +3138,8 @@ const loadJiraConfig = (): JiraConfig => {
 
 const loadJiraToken = (): JiraTokenData | null => {
   try {
-    if (!fs.existsSync(JIRA_TOKEN_PATH)) return null;
-    return JSON.parse(fs.readFileSync(JIRA_TOKEN_PATH, 'utf8'));
+    if (!fs.existsSync(jiraTokenPath())) return null;
+    return JSON.parse(fs.readFileSync(jiraTokenPath(), 'utf8'));
   } catch { return null; }
 };
 
@@ -3148,14 +3148,14 @@ export let jiraValidationCache: { valid: boolean; checkedAt: number } | null = n
 const JIRA_VALIDATION_TTL = 60_000; // 60 seconds
 
 const saveJiraToken = (data: JiraTokenData): void => {
-  const dir = path.dirname(JIRA_TOKEN_PATH);
+  const dir = path.dirname(jiraTokenPath());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(JIRA_TOKEN_PATH, JSON.stringify(data, null, 2));
+  fs.writeFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
   jiraValidationCache = null;
 };
 
 const deleteJiraToken = (): void => {
-  if (fs.existsSync(JIRA_TOKEN_PATH)) fs.unlinkSync(JIRA_TOKEN_PATH);
+  if (fs.existsSync(jiraTokenPath())) fs.unlinkSync(jiraTokenPath());
   jiraValidationCache = null;
 };
 

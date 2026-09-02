@@ -257,12 +257,12 @@ function runIntegrationScript(scriptName: string, args: string[]) {
   }
 }
 
-const AGENFK_CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'config.json');
+function agenfkConfigPath(): string { return path.join(os.homedir(), '.agenfk', 'config.json'); }
 
 function getPausedIntegrations(): string[] {
-  if (!fs.existsSync(AGENFK_CONFIG_PATH)) return [];
+  if (!fs.existsSync(agenfkConfigPath())) return [];
   try {
-    const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8'));
     return Array.isArray(cfg.pausedIntegrations) ? cfg.pausedIntegrations : [];
   } catch {
     return [];
@@ -271,11 +271,11 @@ function getPausedIntegrations(): string[] {
 
 function setPausedIntegrations(list: string[]): void {
   let cfg: Record<string, any> = {};
-  if (fs.existsSync(AGENFK_CONFIG_PATH)) {
-    try { cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8')); } catch {}
+  if (fs.existsSync(agenfkConfigPath())) {
+    try { cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8')); } catch {}
   }
   cfg.pausedIntegrations = list;
-  fs.writeFileSync(AGENFK_CONFIG_PATH, JSON.stringify(cfg, null, 2), 'utf8');
+  fs.writeFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
 }
 
 // Only show the ASCII banner for interactive humans. When stdout is piped or
@@ -1216,8 +1216,8 @@ integrationCommand
 
     let rulesScope = '';
     try {
-      if (fs.existsSync(AGENFK_CONFIG_PATH)) {
-        const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+      if (fs.existsSync(agenfkConfigPath())) {
+        const cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8'));
         if (cfg.rulesScope) rulesScope = cfg.rulesScope;
       }
     } catch {}
@@ -1340,8 +1340,8 @@ program
     // Read rulesScope from config for re-install
     let rulesScope = '';
     try {
-      if (fs.existsSync(AGENFK_CONFIG_PATH)) {
-        const cfg = JSON.parse(fs.readFileSync(AGENFK_CONFIG_PATH, 'utf8'));
+      if (fs.existsSync(agenfkConfigPath())) {
+        const cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8'));
         if (cfg.rulesScope) rulesScope = cfg.rulesScope;
       }
     } catch {}
@@ -2291,7 +2291,7 @@ configSetCommand
 // ── agenfk skills ─────────────────────────────────────────────────────────────
 
 // Framework install dir (~/.agenfk-system) — where rule source files live
-const AGENFK_SYSTEM_DIR = path.join(os.homedir(), '.agenfk-system');
+function agenfkSystemDir(): string { return path.join(os.homedir(), '.agenfk-system'); }
 const AGENFK_BLOCK_RE = /\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g;
 
 /** Returns the git repo root, falling back to process.cwd() */
@@ -2337,33 +2337,33 @@ function removeRuleBlock(targetPath: string): void {
 
 const RULES_CONFIG: Array<{
   label: string;
-  sourceFile: string;
+  sourceFile: () => string; // lazy (item 9c297075): home resolves at call time
   globalPath: () => string;
   projectPath: (root: string) => string;
   copy?: boolean; // true = copy whole file (mdc), false = insert block
 }> = [
   {
     label: 'CLAUDE.md',
-    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'clauderules', 'CLAUDE.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'clauderules', 'CLAUDE.md'),
     globalPath: () => path.join(os.homedir(), '.claude', 'CLAUDE.md'),
     projectPath: (root) => path.join(root, '.claude', 'CLAUDE.md'),
   },
   {
     label: 'agenfk.mdc (Cursor)',
-    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'cursorrules', 'agenfk.mdc'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'cursorrules', 'agenfk.mdc'),
     globalPath: () => path.join(getCursorRulesDir(), 'agenfk.mdc'),
     projectPath: (root) => path.join(root, '.cursor', 'rules', 'agenfk.mdc'),
     copy: true,
   },
   {
     label: 'AGENTS.md (Codex)',
-    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'codexrules', 'AGENTS.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'codexrules', 'AGENTS.md'),
     globalPath: () => path.join(os.homedir(), '.codex', 'AGENTS.md'),
     projectPath: (root) => path.join(root, 'AGENTS.md'),
   },
   {
     label: 'GEMINI.md',
-    sourceFile: path.join(AGENFK_SYSTEM_DIR, 'geminirules', 'GEMINI.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'geminirules', 'GEMINI.md'),
     globalPath: () => path.join(os.homedir(), '.gemini', 'GEMINI.md'),
     projectPath: (root) => path.join(root, 'GEMINI.md'),
   },
@@ -2523,7 +2523,7 @@ function syncCommandsFlat(srcDir: string, destDir: string, platformKey?: string)
     let src = path.join(srcDir, file);
     if (file === 'agenfk-flow.md') {
       if (platformKey === 'claude') {
-        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
+        const custom = path.join(agenfkSystemDir(), 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
         if (fs.existsSync(custom)) src = custom;
       }
     }
@@ -2592,7 +2592,7 @@ function syncCommandsToDir(
     let src = path.join(srcDir, file);
     if (file === 'agenfk-flow.md') {
       if (platformKey === 'claude') {
-        const custom = path.join(AGENFK_SYSTEM_DIR, 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
+        const custom = path.join(agenfkSystemDir(), 'skills', 'claude-code', 'agenfk-flow', 'SKILL.md');
         if (fs.existsSync(custom)) src = custom;
       }
     }
@@ -2676,14 +2676,14 @@ rulesCommand
     // Compute once (avoids repeated git calls and duplicate "fatal:" warnings)
     const oppositeRoot = scope === 'global' ? getProjectRoot() : '';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
-    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
+    const cmdSrcDir = path.join(agenfkSystemDir(), 'commands');
     try {
       const installed: string[] = [];
       const skipped: string[] = [];
 
       // ── Rule files ──────────────────────────────────────────────────────────
       for (const rule of RULES_CONFIG) {
-        if (!fs.existsSync(rule.sourceFile)) {
+        if (!fs.existsSync(rule.sourceFile())) {
           skipped.push(rule.label);
           continue;
         }
@@ -2692,9 +2692,9 @@ rulesCommand
 
         if (rule.copy) {
           fs.mkdirSync(path.dirname(activePath), { recursive: true });
-          fs.copyFileSync(rule.sourceFile, activePath);
+          fs.copyFileSync(rule.sourceFile(), activePath);
         } else {
-          const src = fs.readFileSync(rule.sourceFile, 'utf8');
+          const src = fs.readFileSync(rule.sourceFile(), 'utf8');
           writeRuleBlock(activePath, src);
         }
         installed.push(`  ${chalk.green('✓')} ${rule.label} → ${activePath}`);
@@ -2790,7 +2790,7 @@ rulesCommand
     const scope = options.project ? 'project' : 'global';
     const projectRoot = scope === 'project' ? getProjectRoot() : '';
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
-    const cmdSrcDir = path.join(AGENFK_SYSTEM_DIR, 'commands');
+    const cmdSrcDir = path.join(agenfkSystemDir(), 'commands');
     try {
       const removed: string[] = [];
 

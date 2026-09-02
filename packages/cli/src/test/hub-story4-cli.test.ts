@@ -27,9 +27,6 @@ const { sandboxHome } = vi.hoisted(() => {
   const path = require('path');
   return { sandboxHome: fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-story4-')) };
 });
-const realHome = process.env.HOME;
-beforeEach(() => { process.env.HOME = sandboxHome; });
-
 const { mockGet, mockPost, askState } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockPost: vi.fn(),
@@ -138,7 +135,6 @@ afterEach(() => {
 afterAll(() => {
   if (realIsTTY) Object.defineProperty(process.stdin, 'isTTY', realIsTTY);
   else delete (process.stdin as any).isTTY;
-  if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
 });
 
 describe('(a) login healthz guard — the fixture-clobber regression gate', () => {

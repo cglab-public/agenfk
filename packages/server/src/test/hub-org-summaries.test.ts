@@ -6,20 +6,24 @@
  * GET /internal/hub/status — which must expose them even when the hub is NOT
  * configured (a stale-org install is exactly when carry-over is needed).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-// Sandbox HOME BEFORE importing the server: on a hub-configured dev machine a
-// real ~/.agenfk/hub.json would construct the real hubFlusher, making
-// `enabled` non-deterministic (and pointing the flusher at the live hub).
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075), armed
+// BEFORE importing the server: on a hub-configured dev machine a real
+// ~/.agenfk/hub.json would construct the real hubFlusher, making `enabled`
+// non-deterministic (and pointing the flusher at the live hub). The mock works
+// under any runner — an env override only works while libuv follows the JS env
+// (not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-status-'));
-const realHome = process.env.HOME;
-// See hub-carryover-actions.test.ts: HOME must be correct at TEST time, not
-// just import time, under a shared-process runner.
-beforeEach(() => { process.env.HOME = sandboxHome; });
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const mod = await import('../server');
 const { app, VERIFY_TOKEN } = mod;
@@ -34,8 +38,8 @@ describe('hub outbox org summaries', () => {
   });
   afterAll(() => {
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
   beforeEach(async () => {
     (mod.storage as any).database.prepare('DELETE FROM hub_outbox').run();

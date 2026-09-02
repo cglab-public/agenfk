@@ -81,7 +81,7 @@ describe('hub carry-over wiring (source scan)', () => {
   });
 
   it('pins the deadletter path literal against drift with the server flusher', () => {
-    // packages/server/src/hub/flusher.ts DEFAULT_DEADLETTER_PATH uses the
+    // packages/server/src/hub/flusher.ts defaultDeadletterPath() uses the
     // same literal (pinned by flusher-org-boundary.test.ts); a one-sided
     // rename breaks one of the two pinning tests.
     expect(HUB_SRC).toMatch(/'\.agenfk', 'hub-deadletter\.jsonl'/);

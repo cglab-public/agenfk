@@ -11,21 +11,26 @@
  * routes to whichever port the file currently names — including after the file
  * changes mid-session.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-// Sandbox HOME BEFORE importing anything that resolves the port-file path.
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075), armed
+// BEFORE importing the API client — runner-independent (an env override only
+// works while libuv follows the JS env — not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-apiclient-'));
-const realHome = process.env.HOME;
-process.env.HOME = sandboxHome;
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 delete process.env.AGENFK_API_URL;
 delete process.env.AGENFK_PORT;
 delete process.env.PORT;
 
-// Import after HOME is overridden so getApiUrl reads the sandbox port file.
+// Import after the homedir mock is armed so getApiUrl reads the sandbox port file.
 const { createApiClient } = await import('../apiClient.js');
 
 const portFile = path.join(sandboxHome, '.agenfk', 'server-port');
@@ -63,8 +68,7 @@ describe('MCP api client port discovery', () => {
   afterAll(async () => {
     await serverA.close();
     await serverB.close();
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
