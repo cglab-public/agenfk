@@ -2,6 +2,35 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.5] — 2026-09-02
+
+### Fixed
+- **Test runs can no longer touch the real `~/.agenfk`** (item 9c297075) — the
+  structural fix for the 2026-08-31/09-01 hub.json clobber incidents:
+  - Hub/telemetry home paths resolve at CALL time instead of import time
+    (module-level `os.homedir()` captures are gone from telemetry, hub, and CLI
+    rule-sync code), so per-test sandboxing always applies.
+  - Every vitest worker (root + workspace + UI configs) starts with
+    `process.env.HOME` pinned to a per-run sandbox; the real home is exposed as
+    `AGENFK_REAL_HOME` for the tests that verify the pin.
+  - New home-integrity sentinel (`scripts/home-integrity.mjs`) snapshots the
+    protected `~/.agenfk` files before a test run and fails on any drift —
+    wired into `test:home-integrity`, `test:coverage`, and the CI workflow
+    (snapshot before, verify after the test step).
+  - New `test:stryker` script runs Stryker under a spawn-time HOME pin
+    (`scripts/stryker-home-wrap.mjs`) + sentinel: Stryker's forced threads pool
+    keeps a frozen C environ where in-process env changes never reach
+    `os.homedir()`, so the pin is baked into every spawned child instead — an
+    unguarded launch now fails loudly via the `AGENFK_SPAWN_PIN` marker.
+  - All remaining env-override test files (hub CLI, JIRA, migration, port
+    discovery, hub-off/port-discovery routes) migrated to the `vi.mock('os')`
+    homedir-mock pattern, verified green under `--pool threads`.
+
+### Testing
+- Diff-scoped StrykerJS pass (run through the guard): 76 mutants killed on the
+  new code spans; remaining survivors are documented equivalents / per-test
+  coverage attribution artifacts. Full suite 2601 tests across 235 files.
+
 ## [1.1.17-beta.4] — 2026-09-02
 
 ### Added
