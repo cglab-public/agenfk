@@ -21,6 +21,10 @@ const configPath = () => path.join(agenfkDir(), 'config.json');
 const installationIdPath = () => path.join(agenfkDir(), 'installation-id');
 const hubConfigFile = () => path.join(agenfkDir(), 'hub.json');
 
+// Exported for direct testing of the call-time (lazy) path resolution —
+// the structural fix for the 2026-08-31 clobber incident (item 9c297075).
+export { configPath, installationIdPath, hubConfigFile };
+
 export type InstallSource = 'hub' | 'manual';
 
 export function getInstallSource(): InstallSource {

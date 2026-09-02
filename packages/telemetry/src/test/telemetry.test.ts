@@ -29,9 +29,24 @@ vi.mock('posthog-node', () => ({
   }),
 }));
 
+// Mockable homedir (delegates to the real one unless a test re-points it) —
+// lets the lazy-getter tests assert call-time resolution in any runner env.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+
 import * as path from 'path';
 import * as os from 'os';
-import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource } from '../index';
+import {
+  TelemetryClient,
+  getInstallationId,
+  isTelemetryEnabled,
+  getInstallSource,
+  configPath,
+  installationIdPath,
+  hubConfigFile,
+} from '../index';
 
 const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
 const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
@@ -257,5 +272,47 @@ describe('isTelemetryEnabled', () => {
   it('returns true when config file is missing', () => {
     mockReadFileSync.mockImplementation(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); });
     expect(isTelemetryEnabled()).toBe(true);
+  });
+});
+
+describe('lazy home-path getters (item 9c297075)', () => {
+  // Paths must resolve against os.homedir() AT CALL TIME — module-level
+  // captures froze the machine home at import time, which is the hole behind
+  // the 2026-08-31 hub.json clobber. The homedir mock is re-pointed per
+  // assertion, so a stale import-time capture cannot pass these tests.
+  function withHomedir<T>(sandbox: string, fn: () => T): T {
+    vi.mocked(os.homedir).mockReturnValue(sandbox);
+    try {
+      return fn();
+    } finally {
+      vi.mocked(os.homedir).mockRestore();
+    }
+  }
+
+  it('configPath resolves against the current homedir', () => {
+    const sandbox = '/tmp/agenfk-lazy-config';
+    expect(withHomedir(sandbox, () => configPath())).toBe(path.join(sandbox, '.agenfk', 'config.json'));
+  });
+
+  it('installationIdPath resolves against the current homedir', () => {
+    const sandbox = '/tmp/agenfk-lazy-installation-id';
+    expect(withHomedir(sandbox, () => installationIdPath())).toBe(path.join(sandbox, '.agenfk', 'installation-id'));
+  });
+
+  it('hubConfigFile resolves against the current homedir', () => {
+    const sandbox = '/tmp/agenfk-lazy-hub';
+    expect(withHomedir(sandbox, () => hubConfigFile())).toBe(path.join(sandbox, '.agenfk', 'hub.json'));
+  });
+
+  it('all three getters track homedir changes between calls (no import-time freeze)', () => {
+    vi.mocked(os.homedir).mockReturnValue('/tmp/agenfk-a');
+    try {
+      expect(configPath()).toBe('/tmp/agenfk-a/.agenfk/config.json');
+      vi.mocked(os.homedir).mockReturnValue('/tmp/agenfk-b');
+      expect(hubConfigFile()).toBe('/tmp/agenfk-b/.agenfk/hub.json');
+      expect(installationIdPath()).toBe('/tmp/agenfk-b/.agenfk/installation-id');
+    } finally {
+      vi.mocked(os.homedir).mockRestore();
+    }
   });
 });
