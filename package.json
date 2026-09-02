@@ -26,7 +26,8 @@
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
     "install:framework": "node scripts/install.mjs",
     "uninstall:framework": "node scripts/uninstall.mjs",
-    "start:services": "node scripts/start-services.mjs"
+    "start:services": "node scripts/start-services.mjs",
+    "test:home-integrity": "node scripts/home-integrity.mjs snapshot && npm test && node scripts/home-integrity.mjs verify"
   },
   "keywords": [
     "agenfk",

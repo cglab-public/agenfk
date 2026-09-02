@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
+import { testHomeEnv } from './scripts/vitest-home-pin.mjs';
 
 export default defineConfig({
   define: {
@@ -12,6 +13,11 @@ export default defineConfig({
     },
   },
   test: {
+    // HOME isolation (item 9c297075): pin every test worker to a per-run
+    // sandbox home so no test can ever write into the real ~/.agenfk
+    // (the 2026-08-31 hub.json clobber). Applies to Stryker runs too —
+    // they reuse this config.
+    env: testHomeEnv(),
     globals: true,
     environment: 'node', // Use node for server/storage
     resetMocks: true, // reset queued mockResolvedValueOnce/mockRejectedValueOnce between tests

@@ -5,7 +5,10 @@ import * as os from 'os';
 import * as path from 'path';
 
 // Sandbox HOME so the tests never touch the developer's real ~/.agenfk/server-port.
-// Must run BEFORE the module under test resolves SERVER_PORT_FILE at import time.
+// Paths now resolve at CALL time (item 9c297075), so the override is effective
+// regardless of import order — the pre-import dance below is kept as defense
+// in depth (and under the vitest HOME pin this file's override merely narrows
+// the already-sandboxed home to this file's own directory).
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-serverport-'));
 const realHome = process.env.HOME;
 process.env.HOME = sandboxHome;
@@ -13,7 +16,7 @@ process.env.HOME = sandboxHome;
 // Import after HOME is overridden.
 const mod = await import('../serverPort.js');
 const {
-  SERVER_PORT_FILE,
+  serverPortFile,
   DEFAULT_API_PORT,
   isPortAvailable,
   findAvailablePort,
@@ -89,7 +92,7 @@ describe('serverPort', () => {
     it('writes to ~/.agenfk/server-port (sandbox-scoped HOME)', () => {
       writeServerPortFile(31_415);
       const expected = path.join(sandboxHome, '.agenfk', 'server-port');
-      expect(SERVER_PORT_FILE).toBe(expected);
+      expect(serverPortFile()).toBe(expected);
       expect(fs.readFileSync(expected, 'utf8').trim()).toBe('31415');
     });
 
@@ -100,8 +103,8 @@ describe('serverPort', () => {
     });
 
     it('readServerPort returns null for invalid contents', () => {
-      fs.mkdirSync(path.dirname(SERVER_PORT_FILE), { recursive: true });
-      fs.writeFileSync(SERVER_PORT_FILE, 'not-a-port');
+      fs.mkdirSync(path.dirname(serverPortFile()), { recursive: true });
+      fs.writeFileSync(serverPortFile(), 'not-a-port');
       expect(readServerPort()).toBeNull();
     });
   });

@@ -31,7 +31,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
-import { Flusher, DEFAULT_DEADLETTER_PATH } from '../hub/flusher';
+import { Flusher, defaultDeadletterPath } from '../hub/flusher';
 
 const HUB_CONFIG = { url: 'http://hub.test', token: 't', orgId: 'acme' };
 
@@ -483,8 +483,8 @@ describe('Flusher org boundary + deadletter (CGLAB-117)', () => {
     expect(() => storage.hubOutboxPeekDeliverable(500, undefined as any)).toThrow(/non-empty string/);
   });
 
-  it('DEFAULT_DEADLETTER_PATH is the ~/.agenfk/hub-deadletter.jsonl contract the CLI reads', async () => {
-    expect(DEFAULT_DEADLETTER_PATH).toBe(path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl'));
+  it('defaultDeadletterPath is the ~/.agenfk/hub-deadletter.jsonl contract the CLI reads', async () => {
+    expect(defaultDeadletterPath()).toBe(path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl'));
   });
 
   it('staleOrgDepth excludes the PENDING_ORG sentinel rows', async () => {
