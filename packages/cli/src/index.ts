@@ -2337,33 +2337,33 @@ function removeRuleBlock(targetPath: string): void {
 
 const RULES_CONFIG: Array<{
   label: string;
-  sourceFile: string;
+  sourceFile: () => string; // lazy (item 9c297075): home resolves at call time
   globalPath: () => string;
   projectPath: (root: string) => string;
   copy?: boolean; // true = copy whole file (mdc), false = insert block
 }> = [
   {
     label: 'CLAUDE.md',
-    sourceFile: path.join(agenfkSystemDir(), 'clauderules', 'CLAUDE.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'clauderules', 'CLAUDE.md'),
     globalPath: () => path.join(os.homedir(), '.claude', 'CLAUDE.md'),
     projectPath: (root) => path.join(root, '.claude', 'CLAUDE.md'),
   },
   {
     label: 'agenfk.mdc (Cursor)',
-    sourceFile: path.join(agenfkSystemDir(), 'cursorrules', 'agenfk.mdc'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'cursorrules', 'agenfk.mdc'),
     globalPath: () => path.join(getCursorRulesDir(), 'agenfk.mdc'),
     projectPath: (root) => path.join(root, '.cursor', 'rules', 'agenfk.mdc'),
     copy: true,
   },
   {
     label: 'AGENTS.md (Codex)',
-    sourceFile: path.join(agenfkSystemDir(), 'codexrules', 'AGENTS.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'codexrules', 'AGENTS.md'),
     globalPath: () => path.join(os.homedir(), '.codex', 'AGENTS.md'),
     projectPath: (root) => path.join(root, 'AGENTS.md'),
   },
   {
     label: 'GEMINI.md',
-    sourceFile: path.join(agenfkSystemDir(), 'geminirules', 'GEMINI.md'),
+    sourceFile: () => path.join(agenfkSystemDir(), 'geminirules', 'GEMINI.md'),
     globalPath: () => path.join(os.homedir(), '.gemini', 'GEMINI.md'),
     projectPath: (root) => path.join(root, 'GEMINI.md'),
   },
@@ -2683,7 +2683,7 @@ rulesCommand
 
       // ── Rule files ──────────────────────────────────────────────────────────
       for (const rule of RULES_CONFIG) {
-        if (!fs.existsSync(rule.sourceFile)) {
+        if (!fs.existsSync(rule.sourceFile())) {
           skipped.push(rule.label);
           continue;
         }
@@ -2692,9 +2692,9 @@ rulesCommand
 
         if (rule.copy) {
           fs.mkdirSync(path.dirname(activePath), { recursive: true });
-          fs.copyFileSync(rule.sourceFile, activePath);
+          fs.copyFileSync(rule.sourceFile(), activePath);
         } else {
-          const src = fs.readFileSync(rule.sourceFile, 'utf8');
+          const src = fs.readFileSync(rule.sourceFile(), 'utf8');
           writeRuleBlock(activePath, src);
         }
         installed.push(`  ${chalk.green('✓')} ${rule.label} → ${activePath}`);

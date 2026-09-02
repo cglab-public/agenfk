@@ -4,9 +4,19 @@
  * The 2026-08-31 clobber incident: a Stryker mutation run executed hub tests
  * whose HOME sandboxing did not apply under the runner, so a test fixture
  * `hub.json` was written into the REAL ~/.agenfk — twice. The structural fix:
- * every vitest worker (normal runs AND Stryker, which reuses this config)
- * starts with HOME pinned to a per-run sandbox, so a test that forgets to
- * sandbox writes into the sandbox, never the machine home.
+ * every vitest worker starts with process.env.HOME pinned to a per-run
+ * sandbox, so a test that forgets to sandbox writes into the sandbox, never
+ * the machine home. This pin guarantees the JS-level process.env.HOME value
+ * in every runner. On POSIX, os.homedir() (libuv) follows it wherever the
+ * process's C environ is live — normal vitest runs (forks pool) and CI.
+ *
+ * KNOWN LIMITATION (this machine, Node >= 24): Stryker's vitest runner
+ * forces pool 'threads', and its child processes keep a FROZEN C environ —
+ * process.env mutations inside the process never reach libuv there. For
+ * Stryker runs the pin must therefore be applied at SPAWN time: use
+ * `npm run test:stryker` (scripts/stryker-home-wrap.mjs), which bakes the
+ * sandbox HOME into every child's C environ and wraps the run with the
+ * home-integrity sentinel.
  *
  * The original home is exposed as AGENFK_REAL_HOME for the tests that verify
  * the pin itself (packages/server/src/test/home-isolation.test.ts).

@@ -17,8 +17,12 @@
  *     is what makes this verification environment-independent: the getters
  *     must track whatever os.homedir() returns at call time, in every runner.
  *  2. The vitest runner pins process.env.HOME to a per-run sandbox
- *     (see vitest.config.ts / scripts/vitest-home-pin.mjs), so a test that
- *     forgets to sandbox writes into the sandbox, never the machine home.
+ *     (see vitest.config.ts / scripts/vitest-home-pin.mjs) — a JS-level
+ *     guarantee for every worker. Under the forks pool (normal runs, CI)
+ *     libuv/os.homedir() follows it (asserted below); under Stryker's forced
+ *     threads pool the C environ is frozen on this machine, so Stryker must
+ *     be launched via `npm run test:stryker` (spawn-time pin + sentinel) —
+ *     also asserted below, via the AGENFK_SPAWN_PIN marker.
  */
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
@@ -45,6 +49,25 @@ describe('home isolation (item 9c297075)', () => {
     // The sandbox is pre-seeded with the framework dir so code that reads
     // verify-token/server-port gets "absent", not "hostile".
     expect(fs.existsSync(path.join(process.env.HOME!, '.agenfk'))).toBe(true);
+  });
+
+  it('os.homedir() honors the pinned HOME — or the run was launched via the spawn-time Stryker guard', () => {
+    // Probe the libuv linkage directly: re-point the JS-level HOME and check
+    // whether os.homedir() follows.
+    const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-probe-'));
+    const prev = process.env.HOME!;
+    process.env.HOME = probeDir;
+    let follows = false;
+    try { follows = os.homedir() === probeDir; } finally { process.env.HOME = prev; }
+    if (follows) return; // forks pool (normal runs, CI): libuv linkage holds.
+    // Frozen C environ (Stryker threads pool): HOME can only reach
+    // os.homedir() if it was baked in at SPAWN time — require the guard's
+    // marker so an unguarded Stryker launch fails LOUDLY instead of letting
+    // tests silently write into the machine home.
+    expect(
+      process.env.AGENFK_SPAWN_PIN,
+      'os.homedir() linkage is frozen in this runner — launch Stryker via `npm run test:stryker`',
+    ).toBe('1');
   });
 
   it('the hub config path resolves against the CURRENT homedir (lazy, not import-time)', () => {
