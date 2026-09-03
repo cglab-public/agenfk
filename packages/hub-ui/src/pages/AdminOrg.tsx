@@ -71,7 +71,7 @@ export function AdminOrg() {
             <li>Logical rename only — no event/installation/api-key/user data is lost.</li>
             <li>Repoints rows across <code className="font-mono">events</code>, <code className="font-mono">installations</code>, <code className="font-mono">users</code>, <code className="font-mono">api_keys</code>, <code className="font-mono">flows</code>, and 6 other <code className="font-mono">org_id</code>-bearing tables in one transaction.</li>
             <li>Re-issues your admin session so the next request doesn't 401 against a deleted org.</li>
-            <li>Spoke installations need to be repointed afterward — copy the command we generate below into your fleet runner or share it with each developer.</li>
+            <li>Spoke installations need to be repointed afterward — copy the command we generate below into your fleet runner or share it with each developer. It includes <code className="font-mono">--carry-over</code> so queued events move with the org; on a non-interactive runner append <code className="font-mono">--yes</code>, since the carry-over rewrite asks for a typed confirmation interactively.</li>
             <li>You will need to update <code className="font-mono">AGENFK_HUB_ORG_ID</code> in your hub deployment manifest before the next restart, otherwise the hub will start in maintenance mode on the wrong env.</li>
           </ul>
         </details>

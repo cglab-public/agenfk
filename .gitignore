@@ -26,7 +26,8 @@ tmp.*.json
 /reports/
 .stryker-tmp/
 stryker.log
-mutation-testing/
-
 # pi coding-agent local session artifacts (subagent transcripts, clipboard)
-.pi/
+/.pi/
+
+# Stryker default HTML report dir (JSON reports land in /reports/ above)
+mutation-testing/

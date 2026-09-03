@@ -354,7 +354,10 @@ to humans in the dashboard.
 
 `Flusher` runs a background timer every `intervalMs` (30 s by default):
 
-1. `hubOutboxPeek(batchSize)` — up to 500 rows.
+1. `hubOutboxPeekDeliverable(batchSize, orgId)` — up to 500 rows that
+   carry *this installation's* org stamp (see §5.6; rows stamped for
+   another org never enter a batch, and never starve the ones behind
+   them).
 2. `POST /v1/events` with `{ events }` and these headers:
 
    ```
@@ -363,7 +366,10 @@ to humans in the dashboard.
    X-Agenfk-Version:  <semver>
    Content-Type:     application/json
    ```
-3. On `2xx`: delete the rows, clear `lastError`, reset backoff.
+3. On `2xx`: delete the rows, clear `lastError`, reset backoff — except
+   that a cycle which *refused* events (§5.6) keeps `lastError` set, and
+   a cycle with nothing deliverable clears a historical `lastError` (a
+   no-op is not a failed attempt).
 4. On `5xx` / network: increment `attempts`, set
    `nextEligibleAt = now + min(MAX_BACKOFF, intervalMs * 2^attempts)`.
    Capped at 5 min.
@@ -414,6 +420,106 @@ This makes stuck processes visible directly in the activity stream: when
 recent events are still tagged with the pre-upgrade version after a
 `fleet:upgrade:succeeded`, the in-memory module did not pick up the new
 code.
+
+### 5.6 The org tenancy boundary (CGLAB-117)
+
+Every event carries an `orgId` stamp — the **tenancy watermark**. It is
+set when the event is queued (`hub login`/`join` stamp it; events queued
+before any login carry the empty sentinel `''`, which boot-time stamping
+adopts into the current org) and it is the boundary the hub enforces on
+ingest. The invariant this section documents:
+
+> **A→B no-leak:** an installation bound to org A can never deliver,
+> move, or destroy an event stamped for any other org — and a rejected
+> event is never deleted without a preserved copy.
+
+This exists because of a real incident (31 Aug 2026): a test fixture
+clobbered a live `~/.agenfk/hub.json`, the installation began flushing
+another org's queued events, the hub rejected all 57 inside a `200 OK`,
+and the flusher deleted them with the batch. Recovery was SQLite WAL
+forensics. Every layer below closes one step of that chain.
+
+**Hub side — per-event rejections** (`packages/hub/src/routes/events.ts`).
+`POST /v1/events` answers with
+`{ ingested, skipped, rejected, hiddenDropped, rejections: [{ eventId, reason }] }`.
+The reason taxonomy is exactly four codes:
+
+| reason | meaning |
+| --- | --- |
+| `invalid` | event failed schema validation (no usable `eventId`, bad shape) |
+| `org_mismatch` | `orgId` ≠ the org the api key is bound to |
+| `foreign_installation` | installation not bound to this key, or not enrolled in this org (BOLA guard) |
+| `hidden_user` | installation's user is hidden from the org |
+
+**Spoke side — the boundary is enforced before the POST, in SQL.**
+`hubOutboxPeekDeliverable(limit, orgId)` selects only rows whose payload
+stamp equals the configured org (or the `''` sentinel). Stale-stamped
+rows *stay in the outbox* — they never enter a batch, never consume
+attempts, and never starve the head of the queue. They surface as
+`staleOrgDepth` in `/internal/hub/status`, `agenfk hub status`, and
+`agenfk hub flush`.
+
+**Spoke side — the deadletter file.** When a modern hub reports
+rejections, the rejected rows are written to
+`~/.agenfk/hub-deadletter.jsonl` (one JSON line per event:
+`{ eventId, occurredAt, deadletteredAt, reason, payload }`, file mode
+`0600`) *before* they leave the outbox; if that write
+fails, the rows stay for retry. Nothing is ever deleted without a
+preserved copy. Against an **old hub** (no `rejections` field, just
+`rejected > 0`) the flusher deletes *nothing* — the batch is kept and
+re-sent (hub-side `INSERT OR IGNORE` makes re-sends idempotent) with a
+loud `lastError` and escalating backoff.
+
+**`agenfk hub deadletter`** lists what was refused, grouped by org stamp
+(unparseable lines are shown, never silently dropped), and
+`agenfk hub deadletter discard --org X | --all` removes entries —
+re-reading the file immediately before writing, writing atomically
+(tmp + rename), and preserving unparseable lines on `--org` discards.
+
+**`agenfk hub carry-over` is the sole stamp-rewrite path.** It moves
+queued events from one *named* org stamp to another:
+`agenfk hub carry-over --from <orgId> --to <orgId>`. It is
+deliberately heavy:
+
+- prints a summary first (count, `occurredAt` range, event types, per
+  org, descending);
+- warns LOUDLY when the target is not the configured org — the events
+  are then *carried but still not deliverable*;
+- demands a typed confirmation of the **target** org id (`--yes` skips;
+  a non-TTY run refuses rather than hanging);
+- POSTs the rewrite to the local server's
+  `/internal/hub/rewrite-outbox-org` (verify-token gated);
+- **audits every run** to `~/.agenfk/hub-audit.jsonl`
+  (`{ at, from, to, rewritten, osUser }`). An audit failure after a
+  successful rewrite is shouted, never swallowed.
+
+Nothing else rewrites an existing stamp across named orgs. `hub repoint --carry-over`
+(an org *rename* — same tenancy, new id) is the only repoint variant that touches the
+outbox, and it routes through the same confirm + audit sequence; plain `hub repoint`
+prints the exact carry-over command and leaves the outbox untouched.
+
+**Reporting.** `agenfk hub flush` exits `1` with a red diagnostic when
+the cycle ends with `lastError` (transport failure *or* refusals — a
+`200` containing rejections is an error, not a green success), prints
+yellow carry-over guidance when stale rows remain, and only prints
+`✓ Flush completed` when the outbox is clean. `agenfk hub status` shows
+`Stale-org rows`, `Deadlettered`, and the per-org outbox breakdown.
+`hub login`/`hub join` print the same stale-org guidance after writing
+config — with exact counts and ready-to-run commands — and never
+auto-rewrite a non-empty foreign org. Identity gates: `login` (both
+paths) and `join` refuse to persist a `hub.json` unless the URL they are
+about to persist answers `/healthz` with `service=agenfk-hub` —
+including the server-supplied `hubUrl` in redeem/device responses.
+
+Code: `packages/server/src/hub/flusher.ts` (boundary, deadletter,
+rejection handling), `packages/storage-sqlite/src/index.ts`
+(`hubOutboxPeekDeliverable`, `hubOutboxRewriteOrgId`,
+`hubOutboxOrgSummaries`), `packages/cli/src/commands/hub.ts`
+(carry-over, deadletter, gates, reporting),
+`packages/hub/src/routes/events.ts` (rejections). The deadletter path is
+a contract between flusher and CLI (`defaultDeadletterPath()`),
+drift-pinned by tests in both packages; the docs↔code facts above are
+pinned by `packages/hub/src/test/hub-docs-tenancy.test.ts`.
 
 ---
 

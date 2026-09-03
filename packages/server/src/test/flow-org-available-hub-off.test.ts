@@ -12,6 +12,15 @@ import * as os from 'os';
 import * as path from 'path';
 import request from 'supertest';
 
+// Mockable homedir (item 9c297075): pointing the SERVER at TMP_HOME via a
+// call-time os.homedir() mock works under any runner (an env override only
+// works while libuv follows the JS env — not under Stryker's threads pool,
+// where this test would otherwise let loadHubConfig() read the real hub.json).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+
 const TEST_DB = path.resolve('./flow-org-avail-huboff-test-db.sqlite');
 const TMP_HOME = path.join(os.tmpdir(), 'agenfk-huboff-home');
 const savedEnv: Record<string, string | undefined> = {};
@@ -36,8 +45,7 @@ describe('org-flow routes (hub disabled)', () => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
     // Redirect homedir so loadHubConfig() does NOT find ~/.agenfk/hub.json.
     fs.mkdirSync(TMP_HOME, { recursive: true });
-    process.env.HOME = TMP_HOME;
-    process.env.USERPROFILE = TMP_HOME;
+    vi.mocked(os.homedir).mockReturnValue(TMP_HOME);
     // Explicitly remove hub config so loadHubConfig() returns null.
     delete process.env.AGENFK_HUB_URL;
     delete process.env.AGENFK_HUB_TOKEN;
@@ -52,6 +60,7 @@ describe('org-flow routes (hub disabled)', () => {
 
   afterAll(() => {
     vi.unstubAllGlobals();
+    vi.mocked(os.homedir).mockRestore();
     for (const k of ENV_KEYS) {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k]!;
@@ -63,7 +72,7 @@ describe('org-flow routes (hub disabled)', () => {
   beforeEach(async () => {
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
-    stubBenignFetch(); // resetMocks clears the impl between tests; re-stub
+    stubBenignFetch(); // re-stub below clears the previous impl (no implicit reset)
   });
 
   it('GET /flows/org-available reports hub disabled', async () => {

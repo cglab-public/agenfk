@@ -4,9 +4,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075) —
+// runner-independent. Replaces the old process.env.HOME override, which only
+// works while libuv follows the JS env (not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-cli-'));
-const realHome = process.env.HOME;
-process.env.HOME = sandboxHome;
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const { mockGet, mockPost } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -54,13 +60,16 @@ describe('agenfk hub commands', () => {
   });
 
   afterAll(() => {
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* */ }
   });
 
   describe('login', () => {
     it('writes hub.json with chmod 600 on successful ping', async () => {
+      // CGLAB-117 story 4: the first GET is now the /healthz identity gate
+      // (spec clause a); the endpoint must announce itself as agenfk-hub
+      // before the token is sent anywhere. Same assertions as before.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       mockGet.mockResolvedValueOnce({ status: 200, data: {} });
       await program.parseAsync(['node', 'agenfk', 'hub', 'login', '--url', 'http://hub.test/', '--token', 'tok123', '--org', 'acme']);
       expect(fs.existsSync(HUB_CONFIG)).toBe(true);
@@ -75,9 +84,14 @@ describe('agenfk hub commands', () => {
     });
 
     it('refuses to write hub.json when ping fails', async () => {
+      // CGLAB-117 story 4 reordered the GETs: /healthz (identity gate) now
+      // runs BEFORE /v1/ping, so the healthz answer must be queued first or
+      // this test would exercise the healthz gate, not the ping gate.
+      mockGet.mockResolvedValueOnce({ status: 200, data: { service: 'agenfk-hub' } });
       mockGet.mockRejectedValueOnce(new Error('ECONNREFUSED'));
       await expect(program.parseAsync(['node', 'agenfk', 'hub', 'login', '--url', 'http://hub.test', '--token', 'x', '--org', 'a']))
         .rejects.toThrow(/exit 1/);
+      expect(errSpy.mock.calls.flat().join(' ')).toMatch(/Refusing to write hub\.json/);
       expect(fs.existsSync(HUB_CONFIG)).toBe(false);
     });
   });
@@ -114,6 +128,9 @@ describe('agenfk hub commands', () => {
   describe('join', () => {
     it('accepts `hub join <url> <token>` and redeems against the URL even without prior config', async () => {
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'https://hub.example.com' } });
+      // CGLAB-117 story 4: join healthz-gates the target URL BEFORE the
+      // invite token is posted, and again on the redeemed hubUrl.
+      mockGet.mockResolvedValue({ status: 200, data: { service: 'agenfk-hub' } });
       // No AGENFK_HUB_URL, no existing hub.json; must still work because URL is on the CLI.
       const prevEnv = process.env.AGENFK_HUB_URL;
       delete process.env.AGENFK_HUB_URL;
@@ -139,6 +156,9 @@ describe('agenfk hub commands', () => {
     it('single-arg form still works with an existing hub.json', async () => {
       fs.writeFileSync(HUB_CONFIG, JSON.stringify({ url: 'http://hub.test', token: 'old', orgId: 'acme' }));
       mockPost.mockResolvedValueOnce({ data: { token: 'newtok', orgId: 'acme', hubUrl: 'http://hub.test' } });
+      // CGLAB-117 story 4: join healthz-gates the target URL BEFORE the
+      // invite token is posted, and again on the redeemed hubUrl.
+      mockGet.mockResolvedValue({ status: 200, data: { service: 'agenfk-hub' } });
       await program.parseAsync(['node', 'agenfk', 'hub', 'join', 'INVITE_TOK', '--no-restart']);
       expect(mockPost).toHaveBeenCalledWith(
         'http://hub.test/hub/invite/redeem',

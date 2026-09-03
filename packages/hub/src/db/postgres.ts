@@ -273,6 +273,20 @@ const SCHEMA_PG = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, user_key)
   );
+
+  -- Admin-curated model identity; see the SQLite schema for the reasoning
+  -- (literal canonical name by choice, read-time only, events untouched).
+  CREATE TABLE IF NOT EXISTS model_mappings (
+    org_id TEXT NOT NULL,
+    alias_model TEXT NOT NULL,
+    canonical_model TEXT NOT NULL,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, alias_model)
+  );
+  CREATE INDEX IF NOT EXISTS idx_model_mappings_canonical
+    ON model_mappings(org_id, canonical_model);
 `;
 
 /**

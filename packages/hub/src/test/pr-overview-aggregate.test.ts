@@ -130,11 +130,11 @@ describe('aggregatePrOverview', () => {
       row({ pr_number: 11, type: 'pr.updated', user_key: 'bob@acme.com', occurred_at: '2026-05-04T10:00:00Z', model: 'glm-5.2', task: 3 }),
       row({ pr_number: 12, type: 'pr.opened', user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', model: 'glm-5.2' }),
     ];
-    const opus = aggregatePrOverview(rows, { model: 'claude-opus-4-8' });
+    const opus = aggregatePrOverview(rows, { models: ['claude-opus-4-8'] });
     expect(opus.totals.prs).toBe(1); // PR#11 only (opened with opus); the glm re-size does not drop it
     expect(opus.byDeveloper[0].user_key).toBe('alice@acme.com');
 
-    const glm = aggregatePrOverview(rows, { model: 'glm-5.2' });
+    const glm = aggregatePrOverview(rows, { models: ['glm-5.2'] });
     expect(glm.totals.prs).toBe(1); // PR#12 only — PR#11 was OPENED with opus, not glm
     expect(glm.byDeveloper[0].user_key).toBe('bob@acme.com');
   });
@@ -257,6 +257,68 @@ describe('aggregatePrOverview', () => {
     expect(r.totals.prs).toBe(0);
     expect(r.totals.medianBucket).toBeNull();
   });
+
+  it('window bounds are INCLUSIVE: a PR opened exactly at from or at to is kept, one after to is not', () => {
+    const rows = [
+      row({ pr_number: 31, occurred_at: '2026-05-01T00:00:00Z' }), // exactly at `from`
+      row({ pr_number: 32, occurred_at: '2026-05-05T00:00:00Z' }), // exactly at `to`
+      row({ pr_number: 33, occurred_at: '2026-05-06T00:00:00Z' }), // after `to` → excluded
+    ];
+    const r = aggregatePrOverview(rows, { from: '2026-05-01T00:00:00Z', to: '2026-05-05T00:00:00Z' });
+    expect(r.totals.prs).toBe(2); // #31 and #32 kept; #33 excluded
+  });
+});
+
+describe('multi-model filter (models window field)', () => {
+  const rows = [
+    row({ pr_number: 21, type: 'pr.opened', user_key: 'alice@acme.com', occurred_at: '2026-05-03T10:00:00Z', model: 'claude-opus-4-8' }),
+    row({ pr_number: 22, type: 'pr.opened', user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', model: 'glm-5.2' }),
+    row({ pr_number: 23, type: 'pr.opened', user_key: 'carol@acme.com', occurred_at: '2026-05-03T12:00:00Z', model: 'gpt-5.2' }),
+    // #24 opened with opus, re-sized with glm → attributed to opus.
+    row({ pr_number: 24, type: 'pr.opened', user_key: 'dave@acme.com', occurred_at: '2026-05-03T09:00:00Z', model: 'claude-opus-4-8' }),
+    row({ pr_number: 24, type: 'pr.updated', user_key: 'dave@acme.com', occurred_at: '2026-05-04T09:00:00Z', model: 'glm-5.2', task: 2 }),
+  ];
+
+  it('match-any: keeps PRs opened by ANY of the selected models', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'glm-5.2'] });
+    expect(r.totals.prs).toBe(3); // #21, #22, #24 — carol's gpt-5.2 PR excluded
+    expect(r.byModel.map(m => m.model).sort()).toEqual(['claude-opus-4-8', 'glm-5.2']);
+  });
+
+  it('matches the OPENER model under multi-select — a re-size with an unselected model does not pull a PR in', () => {
+    const glmOnly = aggregatePrOverview(rows, { models: ['glm-5.2'] });
+    expect(glmOnly.totals.prs).toBe(1); // #22 only — #24 was OPENED with opus
+    expect(glmOnly.byDeveloper[0].user_key).toBe('bob@acme.com');
+
+    const opusOnly = aggregatePrOverview(rows, { models: ['claude-opus-4-8'] });
+    expect(opusOnly.totals.prs).toBe(2); // #21 + #24 (opus re-sizes stay attributed to opus)
+  });
+
+  it('an empty, null or absent models list keeps every PR (all-models default)', () => {
+    expect(aggregatePrOverview(rows, { models: [] }).totals.prs).toBe(4);
+    expect(aggregatePrOverview(rows, { models: null }).totals.prs).toBe(4);
+    expect(aggregatePrOverview(rows).totals.prs).toBe(4);
+  });
+
+  it('unknown models in the selection are a no-op, not an error', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'no-such-model'] });
+    expect(r.totals.prs).toBe(2); // #21 + #24
+  });
+
+  it('a selection of only unknown models yields zero PRs, not a fallback to all', () => {
+    expect(aggregatePrOverview(rows, { models: ['no-such-model'] }).totals.prs).toBe(0);
+  });
+
+  it('composes with the developer filter (both must match)', () => {
+    const r = aggregatePrOverview(rows, { models: ['claude-opus-4-8', 'glm-5.2'], developers: ['bob@acme.com'] });
+    expect(r.totals.prs).toBe(1); // #22 only — bob\'s, opened with glm
+  });
+
+  it('a single-element list behaves exactly like the legacy single-model filter', () => {
+    const r = aggregatePrOverview(rows, { models: ['gpt-5.2'] });
+    expect(r.totals.prs).toBe(1); // #23 only
+    expect(r.byDeveloper[0].user_key).toBe('carol@acme.com');
+  });
 });
 
 // CGLAB-131 — the heatmap drill-down: the overview response carries the same
@@ -325,7 +387,7 @@ describe('prs detail list (drill-down)', () => {
     const win = aggregatePrOverview(rows, { from: '2026-05-02T00:00:00Z' });
     expect(win.prs.map(p => p.prNumber).sort()).toEqual([2, 3]);
     // model filter matches the OPENER's model
-    const byModel = aggregatePrOverview(rows, { model: 'glm-5.2' });
+    const byModel = aggregatePrOverview(rows, { models: ['glm-5.2'] });
     expect(byModel.prs.map(p => p.prNumber)).toEqual([2]);
     // developer filter is opener-based
     const byDev = aggregatePrOverview(rows, { developers: ['bob@acme.com'] });

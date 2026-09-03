@@ -3,9 +3,16 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
-const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
+// Home paths resolve at CALL time (item 9c297075): a module-level os.homedir()
+// capture freezes the machine home at import time, defeating the per-test HOME
+// sandbox and the vitest HOME pin (the 2026-08-31 hub.json clobber hole).
+export function agenfkDir(): string {
+  return path.join(os.homedir(), '.agenfk');
+}
 
-export const SERVER_PORT_FILE = path.join(AGENFK_DIR, 'server-port');
+export function serverPortFile(): string {
+  return path.join(agenfkDir(), 'server-port');
+}
 export const DEFAULT_API_PORT = 3000;
 export const MAX_PORT_PROBE_ATTEMPTS = 100;
 
@@ -40,8 +47,8 @@ export async function findAvailablePort(
 
 export function writeServerPortFile(port: number): void {
   try {
-    fs.mkdirSync(AGENFK_DIR, { recursive: true });
-    fs.writeFileSync(SERVER_PORT_FILE, String(port), 'utf8');
+    fs.mkdirSync(agenfkDir(), { recursive: true });
+    fs.writeFileSync(serverPortFile(), String(port), 'utf8');
   } catch {
     // best-effort — discovery falls back to env vars / defaults
   }
@@ -49,7 +56,7 @@ export function writeServerPortFile(port: number): void {
 
 export function removeServerPortFile(): void {
   try {
-    fs.unlinkSync(SERVER_PORT_FILE);
+    fs.unlinkSync(serverPortFile());
   } catch {
     // ignore — file may already be gone
   }
@@ -57,7 +64,7 @@ export function removeServerPortFile(): void {
 
 export function readServerPort(): number | null {
   try {
-    const raw = fs.readFileSync(SERVER_PORT_FILE, 'utf8').trim();
+    const raw = fs.readFileSync(serverPortFile(), 'utf8').trim();
     const n = Number.parseInt(raw, 10);
     return Number.isInteger(n) && n > 0 && n < 65536 ? n : null;
   } catch {

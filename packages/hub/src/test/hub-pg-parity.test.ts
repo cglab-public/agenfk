@@ -673,3 +673,67 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(board.body.counts.succeeded).toBe(1);
   });
 });
+
+describe('PG parity: admin model mappings', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { await fx.db.close(); });
+
+  const pr = (n: number, model: string) => ({
+    eventId: `pr-${n}`, installationId: 'inst-1', orgId: 'org',
+    occurredAt: '2026-05-03T10:00:00Z',
+    actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' },
+    type: 'pr.opened',
+    remoteUrl: 'git@github.com:acme/api.git',
+    payload: {
+      prNumber: n, repo: 'acme/api', model, harness: 'pi',
+      sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+      sizingShadow: { epic: 0, story: 0, task: 1, bug: 0 },
+      leafStory: 0,
+    },
+  });
+
+  it('lists observed models, creates a mapping, and folds the PR Overview rows', async () => {
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({
+      events: [pr(1, 'qwen3.8:27b'), pr(2, 'qwen38-27b'), pr(3, 'qwen38-27b')],
+    });
+
+    // The DISTINCT + json_extract scan must survive the dialect rewrite: on PG
+    // json_extract becomes jsonb_extract_path_text and the count comes back as a
+    // string, which is why the route coerces with Number().
+    const before = await supertest(fx.app).get('/v1/admin/models').set('Cookie', fx.cookie);
+    expect(before.status).toBe(200);
+    const q = before.body.observed.find((o: any) => o.model === 'qwen38-27b');
+    expect(q.prs).toBe(2);
+
+    const created = await supertest(fx.app).post('/v1/admin/models/mappings')
+      .set('Cookie', fx.cookie)
+      .send({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
+    expect(created.status).toBe(201);
+
+    const list = await supertest(fx.app).get('/v1/admin/models').set('Cookie', fx.cookie);
+    expect(list.body.mappings).toHaveLength(1);
+    expect(list.body.mappings[0]).toMatchObject({
+      aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b', createdByEmail: 'admin@x',
+    });
+
+    const overview = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
+    expect(overview.byModel).toHaveLength(1);
+    expect(overview.byModel[0]).toMatchObject({ model: 'qwen3.8:27b', prs: 3 });
+
+    // The ON CONFLICT path: identical repeat is a no-op, a different target 409s.
+    await supertest(fx.app).post('/v1/admin/models/mappings')
+      .set('Cookie', fx.cookie)
+      .send({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' }).expect(201);
+    expect((await supertest(fx.app).get('/v1/admin/models').set('Cookie', fx.cookie)).body.mappings).toHaveLength(1);
+    await supertest(fx.app).post('/v1/admin/models/mappings')
+      .set('Cookie', fx.cookie)
+      .send({ aliasModel: 'qwen38-27b', canonicalModel: 'other' }).expect(409);
+
+    const removed = await supertest(fx.app)
+      .delete('/v1/admin/models/mappings/qwen38-27b').set('Cookie', fx.cookie);
+    expect(removed.body.removed).toBe(true);
+    const reverted = await (await supertest(fx.app).get('/v1/prs/overview').set('Cookie', fx.cookie)).body;
+    expect(reverted.byModel).toHaveLength(2);
+  });
+});

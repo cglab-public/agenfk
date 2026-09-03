@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "1.1.16",
+  "version": "1.1.17-beta.8",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
@@ -22,11 +22,13 @@
   "scripts": {
     "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "node scripts/home-integrity.mjs snapshot && vitest run --coverage && node scripts/home-integrity.mjs verify",
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
     "install:framework": "node scripts/install.mjs",
     "uninstall:framework": "node scripts/uninstall.mjs",
-    "start:services": "node scripts/start-services.mjs"
+    "start:services": "node scripts/start-services.mjs",
+    "test:home-integrity": "node scripts/home-integrity.mjs snapshot && npx vitest run && node scripts/home-integrity.mjs verify",
+    "test:stryker": "node scripts/stryker-home-wrap.mjs"
   },
   "keywords": [
     "agenfk",

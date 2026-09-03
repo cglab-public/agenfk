@@ -13,6 +13,7 @@ import { recomputeRollups } from '../rollup.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { loadModelMappings } from '../util/modelMapping.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -239,6 +240,146 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Note: api_key revocation is permanent — unhiding does NOT restore
     // revoked tokens (the person must re-register their installation).
     res.json({ userKey, unhidden: r.changes > 0 });
+  });
+
+  // ── Model mappings ───────────────────────────────────────────────────────
+  // Admin-curated model identity: an alias reported by an installation folds
+  // into a canonical name the admin chose. Read-time overlay only — `events`
+  // keeps what was actually reported, so DELETE reverts the dashboards and no
+  // recompute job is involved. See util/modelMapping.ts for why resolution is
+  // an exact lookup rather than a normalization rule.
+  //
+  // Ids are stored EXACTLY as typed, not lowercased or trimmed beyond the outer
+  // whitespace: the canonical name is the admin's literal string and the UI
+  // shows it verbatim. Trimming is applied because a trailing space is invisible
+  // in a table cell and would otherwise make an alias unmatchable.
+  const MODEL_ID_MAX_LENGTH = 200;
+
+  function validModelId(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const v = value.trim();
+    if (!v || v.length > MODEL_ID_MAX_LENGTH) return null;
+    // Control characters cannot be typed deliberately but arrive via paste, and
+    // would make an alias that can never be matched or read.
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(v)) return null;
+    return v;
+  }
+
+  // The table the admin edits, plus every model id actually seen in events so
+  // the UI can offer real values instead of free typing. The DISTINCT scan is
+  // over an append-only table and reads a JSON field, so it is bounded by total
+  // event volume rather than by the window — acceptable at current scale, and
+  // the reason this is an admin page rather than something on every dashboard
+  // load. A materialized model column would replace it if that ever bites.
+  router.get('/models', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const [mappings, seen] = await Promise.all([
+      ctx.db.all<Record<string, unknown>>(
+        `SELECT alias_model, canonical_model, created_by_user_id, created_by_email, created_at
+           FROM model_mappings WHERE org_id = ? ORDER BY canonical_model, alias_model`,
+        [orgId],
+      ),
+      ctx.db.all<{ model: string | null; prs: number }>(
+        `SELECT json_extract(payload, '$.payload.model') AS model,
+                COUNT(*) AS prs
+           FROM events
+          WHERE org_id = ? AND type IN ('pr.opened', 'pr.updated')
+          GROUP BY model`,
+        [orgId],
+      ),
+    ]);
+
+    const mapped = new Map(mappings.map((m: any) => [m.alias_model as string, m.canonical_model as string]));
+    const observed = seen
+      .filter(r => r.model)
+      .map(r => ({
+        model: r.model as string,
+        prs: Number(r.prs),
+        // A reported id already folded into a canonical name: shown grouped
+        // under that name rather than as its own row.
+        canonicalModel: mapped.get(r.model as string) ?? (r.model as string),
+        isMapped: mapped.has(r.model as string),
+      }))
+      .sort((a, b) => b.prs - a.prs || a.model.localeCompare(b.model));
+
+    res.json({
+      mappings: mappings.map((m: any) => ({
+        aliasModel: m.alias_model,
+        canonicalModel: m.canonical_model,
+        createdByUserId: m.created_by_user_id ?? null,
+        createdByEmail: m.created_by_email ?? null,
+        createdAt: m.created_at,
+      })),
+      observed,
+    });
+  });
+
+  router.post('/models/mappings', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const aliasModel = validModelId(req.body?.aliasModel);
+    const canonicalModel = validModelId(req.body?.canonicalModel);
+    if (!aliasModel || !canonicalModel) {
+      return res.status(400).json({
+      error: `Body must be { aliasModel: string, canonicalModel: string }, each non-empty and at most ${MODEL_ID_MAX_LENGTH} characters.`,
+      });
+    }
+    if (aliasModel === canonicalModel) {
+      return res.status(400).json({ error: 'An alias must differ from the canonical name it maps to.' });
+    }
+
+    // Reject an alias that would resolve to a different canonical name than the
+    // one already on file. Overwriting silently would re-file every PR behind
+    // that alias under a new model with no audit trail, so the admin has to
+    // delete the existing row first and say so deliberately.
+    const existing = await ctx.db.get<{ canonical_model: string }>(
+      'SELECT canonical_model FROM model_mappings WHERE org_id = ? AND alias_model = ?',
+      [orgId, aliasModel],
+    );
+    if (existing && existing.canonical_model !== canonicalModel) {
+      return res.status(409).json({
+        error: `"${aliasModel}" is already mapped to "${existing.canonical_model}". Delete that mapping first.`,
+        canonicalModel: existing.canonical_model,
+      });
+    }
+
+    // A chain (A→B where B is itself an alias of C) would resolve A→B while the
+    // dashboard shows B grouped under C, so A's PRs land in a group that looks
+    // empty. Reject rather than resolve transitively: the admin's intent when
+    // mapping A is to name it, and pointing A at the final name is one edit.
+    const aliasIsAlsoAlias = await ctx.db.get<{ canonical_model: string }>(
+      'SELECT canonical_model FROM model_mappings WHERE org_id = ? AND alias_model = ?',
+      [orgId, canonicalModel],
+    );
+    if (aliasIsAlsoAlias) {
+      return res.status(409).json({
+        error: `"${canonicalModel}" is itself mapped to "${aliasIsAlsoAlias.canonical_model}". Map "${aliasModel}" to that final name instead.`,
+      });
+    }
+
+    let createdByEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      createdByEmail = u?.email ?? null;
+    }
+
+    await ctx.db.run(
+      `INSERT INTO model_mappings (org_id, alias_model, canonical_model, created_by_user_id, created_by_email)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(org_id, alias_model) DO NOTHING`,
+      [orgId, aliasModel, canonicalModel, req.session!.userId, createdByEmail],
+    );
+    res.status(201).json({ aliasModel, canonicalModel });
+  });
+
+  router.delete('/models/mappings/:aliasModel', guard, async (req: Request, res: Response) => {
+    const aliasModel = validModelId(decodeURIComponent(req.params.aliasModel));
+    if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
+    const r = await ctx.db.run(
+      'DELETE FROM model_mappings WHERE org_id = ? AND alias_model = ?',
+      [req.session!.orgId, aliasModel],
+    );
+    res.json({ aliasModel, removed: r.changes > 0 });
   });
 
   // ── Users ────────────────────────────────────────────────────────────────

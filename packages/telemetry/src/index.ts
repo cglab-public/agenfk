@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { PostHog } from 'posthog-node';
+import { agenfkDir } from './serverPort.js';
 
 const AGENFK_VERSION: string = (() => {
   try {
@@ -13,16 +14,22 @@ const AGENFK_VERSION: string = (() => {
   }
 })();
 
-const AGENFK_DIR = path.join(os.homedir(), '.agenfk');
-const CONFIG_PATH = path.join(AGENFK_DIR, 'config.json');
-const INSTALLATION_ID_PATH = path.join(AGENFK_DIR, 'installation-id');
-const HUB_CONFIG_PATH = path.join(AGENFK_DIR, 'hub.json');
+// Home paths resolve at CALL time (item 9c297075): module-level os.homedir()
+// captures froze the machine home at import time — the hole behind the
+// 2026-08-31 hub.json clobber. os.homedir() re-reads HOME on every call.
+const configPath = () => path.join(agenfkDir(), 'config.json');
+const installationIdPath = () => path.join(agenfkDir(), 'installation-id');
+const hubConfigFile = () => path.join(agenfkDir(), 'hub.json');
+
+// Exported for direct testing of the call-time (lazy) path resolution —
+// the structural fix for the 2026-08-31 clobber incident (item 9c297075).
+export { configPath, installationIdPath, hubConfigFile };
 
 export type InstallSource = 'hub' | 'manual';
 
 export function getInstallSource(): InstallSource {
   try {
-    const raw = fs.readFileSync(HUB_CONFIG_PATH, 'utf8');
+    const raw = fs.readFileSync(hubConfigFile(), 'utf8');
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && typeof parsed.url === 'string' && parsed.url.length > 0) {
       return 'hub';
@@ -35,7 +42,7 @@ export function getInstallSource(): InstallSource {
 
 function readConfig(): Record<string, unknown> {
   try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
   } catch {
     return {};
   }
@@ -43,15 +50,15 @@ function readConfig(): Record<string, unknown> {
 
 function getOrCreateInstallationId(): string {
   try {
-    const existing = fs.readFileSync(INSTALLATION_ID_PATH, 'utf8').trim();
+    const existing = fs.readFileSync(installationIdPath(), 'utf8').trim();
     if (existing) return existing;
   } catch {
     // File doesn't exist yet — create it below
   }
   const id = crypto.randomUUID();
   try {
-    fs.mkdirSync(AGENFK_DIR, { recursive: true });
-    fs.writeFileSync(INSTALLATION_ID_PATH, id, 'utf8');
+    fs.mkdirSync(agenfkDir(), { recursive: true });
+    fs.writeFileSync(installationIdPath(), id, 'utf8');
   } catch {
     // Fail silently — telemetry must never block normal operation
   }
@@ -131,7 +138,8 @@ export function isTelemetryEnabled(): boolean {
 }
 
 export {
-  SERVER_PORT_FILE,
+  agenfkDir,
+  serverPortFile,
   DEFAULT_API_PORT,
   MAX_PORT_PROBE_ATTEMPTS,
   isPortAvailable,
