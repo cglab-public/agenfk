@@ -9,7 +9,7 @@
  * mirroring ../prOverview.
  */
 import { describe, it, expect } from 'vitest';
-import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip } from '../prPerDay';
+import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip, estimateTooltipSize } from '../prPerDay';
 
 describe('buildMonthBands', () => {
   it('spans each month name across exactly its day columns', () => {
@@ -63,6 +63,20 @@ describe('dayHeaderInfo', () => {
     expect(dayHeaderInfo('2026-07-14', '2026-07-14').isToday).toBe(true);
     expect(dayHeaderInfo('2026-07-13', '2026-07-14').isToday).toBe(false);
   });
+
+  it('normalises a full ISO timestamp input to its UTC calendar day', () => {
+    // The slice(0,10) + T00:00:00Z normalisation means a timestamp that leaked
+    // in (e.g. '2026-06-29T12:00:00Z') is read as its UTC day, not the
+    // embedded hour — 2026-06-29 is a Monday.
+    expect(dayHeaderInfo('2026-06-29T12:00:00Z')).toMatchObject({ weekday: 'Mon', dayNum: 29 });
+  });
+
+  it('rejects a non-10-char day instead of letting the engine misparse it', () => {
+    // '2026-06-2' (9 chars): with the T00:00:00Z suffix the string is invalid
+    // ISO and dayNum is NaN; without it, V8 leniently misparses it as a local
+    // date. The strict normalisation is the contract.
+    expect(dayHeaderInfo('2026-06-2').dayNum).toBeNaN();
+  });
 });
 
 describe('contributionPcts', () => {
@@ -96,5 +110,106 @@ describe('cellTooltip', () => {
   it('still produces a tooltip for empty cells (0 PRs) — the bug being fixed', () => {
     expect(cellTooltip('danielp@cglab.com', '2026-06-28', 0))
       .toBe('danielp@cglab.com · Sun 2026-06-28: 0 PRs');
+  });
+});
+
+describe('estimateTooltipSize', () => {
+  it('estimates a single-line box that grows with the text', () => {
+    const a = estimateTooltipSize('alice · Mon 2026-06-29: 2 PRs');
+    const b = estimateTooltipSize('a@long-org.example.com · Mon 2026-06-29: 2 PRs');
+    expect(a.width).toBeGreaterThan(0);
+    expect(b.width).toBeGreaterThan(a.width);
+    // single-line tooltip: height does not depend on the text
+    expect(b.height).toBe(a.height);
+  });
+
+  // Exact-size contract (6px per mono glyph + 18px padding, 26px line): the
+  // clamping in placeTooltip is only as good as this estimate, so pin the
+  // formula rather than merely its monotonicity.
+  it('pins the documented size formula', () => {
+    expect(estimateTooltipSize('abc').width).toBe(3 * 6 + 18);
+    // empty text still gets a non-zero minimum box (Math.max(1, length))
+    expect(estimateTooltipSize('').width).toBe(1 * 6 + 18);
+    expect(estimateTooltipSize('abc').height).toBe(26);
+  });
+});
+
+// CGLAB-131 — the tooltip was rendered INSIDE the backdrop-blur card section,
+// so its viewport coordinates were interpreted against the section's box
+// (offset = "far away") and its z-50 lost to the later cards (z-order).
+// placeTooltip() is the pure placement contract the component must honour:
+// the returned {x, y} are VIEWPORT coordinates for a tooltip rendered outside
+// any filtered/stacking ancestor, centred horizontally on x, and occupying
+// [y - h, y] when `below` is false (anchored above) or [y, y + h] when true.
+describe('placeTooltip', () => {
+  const cell = { left: 500, top: 300, width: 20, height: 20 };
+  const text = 'alice@acme.com · Mon 2026-06-29: 2 PRs';
+
+  it('anchors above the cell, centred on it, when there is room', () => {
+    const p = placeTooltip(cell, text, 1200);
+    const { width: w, height: h } = estimateTooltipSize(text);
+    expect(p.below).toBe(false);
+    expect(p.x).toBe(510); // cell centre (500 + 20/2)
+    expect(p.y).toBe(294); // 6px gap above the cell top
+    // the tooltip box [y-h, y] × [x-w/2, x+w/2] must fit the viewport
+    expect(p.y - h).toBeGreaterThanOrEqual(0);
+    expect(p.x - w / 2).toBeGreaterThanOrEqual(0);
+    expect(p.x + w / 2).toBeLessThanOrEqual(1200);
+  });
+
+  it('stays above when the box would land exactly on the margin', () => {
+    // top of the box = cell.top - gap - h must equal the margin, not go past it
+    const { height: h } = estimateTooltipSize(text);
+    const c = { ...cell, top: h + 6 + 8 };
+    const p = placeTooltip(c, text, 1200);
+    expect(p.below).toBe(false);
+    expect(p.y - h).toBe(8);
+  });
+
+  it('flips below the cell when there is no room above', () => {
+    const p = placeTooltip({ ...cell, top: 10 }, text, 1200);
+    expect(p.below).toBe(true);
+    // anchored 6px below the cell bottom, centred unchanged
+    expect(p.x).toBe(510);
+    expect(p.y).toBe(36); // 10 + 20 + 6
+  });
+
+  it('flips below at the top of the no-room band (top < height + gap + margin)', () => {
+    // top=30: room above = 30 - 6 - 26 = -2 < 8 → below (y = 30 + 20 + 6 = 56).
+    // Guards the sign of the gap term in the room-above comparison: a +/-
+    // flip in that comparison moves the flip threshold by 2*gap and this
+    // input sits inside the band where the two branches disagree.
+    const p = placeTooltip({ ...cell, top: 30 }, text, 1200);
+    expect(p.below).toBe(true);
+    expect(p.y).toBe(56);
+  });
+
+  it('clamps to the left edge when the cell sits near it', () => {
+    const long = 'x'.repeat(100);
+    const { width: w } = estimateTooltipSize(long);
+    const p = placeTooltip({ left: 2, top: 300, width: 20, height: 20 }, long, 1200);
+    expect(p.below).toBe(false);
+    // tooltip left edge stays at least the margin inside the viewport
+    expect(p.x - w / 2).toBeGreaterThanOrEqual(8);
+    expect(p.x - w / 2).toBe(8); // pinned, not centred
+  });
+
+  it('clamps to the right edge when the cell sits near it', () => {
+    const long = 'x'.repeat(100);
+    const { width: w } = estimateTooltipSize(long);
+    const p = placeTooltip({ left: 1195, top: 300, width: 20, height: 20 }, long, 1200);
+    // tooltip right edge stays at least the margin inside the viewport
+    expect(p.x + w / 2).toBeLessThanOrEqual(1192);
+    expect(p.x + w / 2).toBe(1192); // pinned, not centred
+  });
+
+  it('does not blow up when the tooltip is wider than the viewport', () => {
+    const huge = 'x'.repeat(5000);
+    const p = placeTooltip({ left: 500, top: 300, width: 20, height: 20 }, huge, 800);
+    // the degenerate branch centres the tooltip on the VIEWPORT (not the cell):
+    // pin the exact value, not just finiteness — a clamped coordinate here
+    // would be far off-screen.
+    expect(p.x).toBe(400); // viewportWidth / 2
+    expect(Number.isFinite(p.y)).toBe(true);
   });
 });

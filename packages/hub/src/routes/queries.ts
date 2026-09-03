@@ -241,7 +241,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
                 json_extract(payload, '$.payload.sizingShadow.task') AS task,
                 json_extract(payload, '$.payload.sizingShadow.bug') AS bug,
                 json_extract(payload, '$.payload.model') AS model,
-                json_extract(payload, '$.payload.harness') AS harness
+                json_extract(payload, '$.payload.harness') AS harness,
+                remote_url
          FROM events WHERE ${where.join(' AND ')}
          ORDER BY occurred_at ASC`,
         base.params,

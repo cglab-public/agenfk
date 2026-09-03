@@ -67,3 +67,56 @@ export function cellTooltip(userKey: string, day: string, count: number): string
   const { weekday } = dayHeaderInfo(day);
   return `${userKey} · ${weekday} ${day}: ${count} PR${count === 1 ? '' : 's'}`;
 }
+
+// CGLAB-131 — tooltip placement. The tooltip is position:fixed and must be
+// rendered OUTSIDE any backdrop-filter/transform ancestor (the card sections
+// create containing blocks + stacking contexts that offset the placement and
+// swallow its z-index). The returned {x, y} are therefore VIEWPORT
+// coordinates: x is the horizontal centre of the box, and the box occupies
+// [y - height, y] when `below` is false (anchored above the cell) or
+// [y, y + height] when true (flipped below, no room above).
+//
+// The box size is estimated from the single-line mono text rather than
+// measured from the DOM: the tooltip only appears on hover, a layout pass to
+// measure it would flash it at the wrong spot for one frame, and the mono
+// character width is exact enough for clamping.
+const TIP_CHAR_WIDTH = 6;   // 10px font-mono ≈ 6px per glyph
+const TIP_PADDING = 18;     // px-2 padding + border slack
+const TIP_HEIGHT = 26;       // single line: py-1 + 10px text
+const TIP_GAP = 6;           // distance from the cell edge
+const TIP_MARGIN = 8;        // minimum distance from the viewport edges
+
+export interface TooltipSize { width: number; height: number }
+
+/** Estimated on-screen box for a single-line tooltip with this text. */
+export function estimateTooltipSize(text: string): TooltipSize {
+  return { width: Math.max(1, text.length) * TIP_CHAR_WIDTH + TIP_PADDING, height: TIP_HEIGHT };
+}
+
+export interface CellRect { left: number; top: number; width: number; height: number }
+
+export interface TooltipPlacement { x: number; y: number; below: boolean }
+
+/**
+ * Place the tooltip for one cell in VIEWPORT coordinates. Centred horizontally
+ * on the cell, anchored `TIP_GAP` above it — flipping below when the box would
+ * cross the top margin — with the box clamped to the viewport on both
+ * horizontal edges. Degenerate case (box wider than the viewport): centre on
+ * the viewport rather than producing an infinite/negative coordinate.
+ */
+export function placeTooltip(cell: CellRect, text: string, viewportWidth: number): TooltipPlacement {
+  const { width, height } = estimateTooltipSize(text);
+  const halfW = width / 2;
+  const centreX = cell.left + cell.width / 2;
+  const minX = TIP_MARGIN + halfW;
+  const maxX = viewportWidth - TIP_MARGIN - halfW;
+  const x = maxX < minX
+    ? viewportWidth / 2
+    : Math.min(maxX, Math.max(minX, centreX));
+  const roomAbove = cell.top - TIP_GAP - height >= TIP_MARGIN;
+  return {
+    x,
+    y: roomAbove ? cell.top - TIP_GAP : cell.top + cell.height + TIP_GAP,
+    below: !roomAbove,
+  };
+}
