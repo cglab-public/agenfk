@@ -13,6 +13,7 @@ const row = (o: Partial<PrEventRow>): PrEventRow => ({
   bug: 0,
   model: 'claude-opus-4-8',
   harness: 'claude-code',
+  remote_url: null,
   ...o,
 });
 
@@ -255,5 +256,90 @@ describe('aggregatePrOverview', () => {
     const r = aggregatePrOverview([row({ repo: null }), row({ pr_number: null })]);
     expect(r.totals.prs).toBe(0);
     expect(r.totals.medianBucket).toBeNull();
+  });
+});
+
+// CGLAB-131 — the heatmap drill-down: the overview response carries the same
+// resolved PR set as a detail list, so the per-cell modal can never drift from
+// the cell it backs (one aggregation pass, same opener attribution and window).
+describe('prs detail list (drill-down)', () => {
+  const GH = 'git@github.com:acme/api.git';
+
+  it('exposes one entry per PR with the full drill-down shape', () => {
+    const rows = [
+      row({ pr_number: 1, user_key: 'alice@acme.com', occurred_at: '2026-05-03T10:00:00Z', task: 1, remote_url: GH }),
+      row({ pr_number: 2, user_key: 'bob@acme.com', occurred_at: '2026-05-03T11:00:00Z', repo: 'acme/web', leaf_story: 1, remote_url: 'git@github.com:acme/web.git' }),
+    ];
+    const r = aggregatePrOverview(rows);
+    expect(r.prs).toHaveLength(2);
+    const [p1, p2] = r.prs;
+    expect(p1).toMatchObject({
+      repo: 'acme/api', prNumber: 1, user_key: 'alice@acme.com',
+      model: 'claude-opus-4-8', harness: 'claude-code',
+      openedAt: '2026-05-03T10:00:00Z', day: '2026-05-03',
+      points: 2, bucket: 'xs', url: 'https://github.com/acme/api/pull/1',
+    });
+    expect(p2.url).toBe('https://github.com/acme/web/pull/2');
+    expect(p2.bucket).toBe('s'); // leafStory 1 → 4 pts
+    expect(typeof p1.prNumber).toBe('number');
+  });
+
+  it('counts a resized PR once at its latest size, on its open day, at the opener identity', () => {
+    const rows = [
+      row({ pr_number: 9, user_key: 'alice@acme.com', occurred_at: '2026-05-03T09:00:00Z', task: 1, remote_url: GH }), // 2 → xs
+      row({ pr_number: 9, type: 'pr.updated', user_key: 'bob@acme.com', occurred_at: '2026-05-05T09:00:00Z', model: 'glm-5.2', task: 4, remote_url: 'git@ghe.internal:acme/api.git' }), // 8 → m
+    ];
+    const r = aggregatePrOverview(rows);
+    expect(r.prs).toHaveLength(1);
+    const p = r.prs[0];
+    expect(p.user_key).toBe('alice@acme.com'); // opener
+    expect(p.model).toBe('claude-opus-4-8');   // opener's model
+    expect(p.day).toBe('2026-05-03');          // open day
+    expect(p.bucket).toBe('m');                // latest sizing (8 pts)
+    // the link follows the OPENER's remote — bob's GHE remote must not leak in
+    expect(p.url).toBe('https://github.com/acme/api/pull/9');
+  });
+
+  it('returns a null url for non-GitHub remotes (no guessing)', () => {
+    const rows = [row({ pr_number: 5, repo: 'team/service', remote_url: 'git@ghe.internal:team/service.git' })];
+    const r = aggregatePrOverview(rows);
+    expect(r.prs).toHaveLength(1);
+    expect(r.prs[0].url).toBeNull();
+  });
+
+  it('falls back to the payload slug for the link when the remote is missing', () => {
+    const rows = [row({ pr_number: 6, repo: 'acme/api', remote_url: null })];
+    const r = aggregatePrOverview(rows);
+    expect(r.prs[0].url).toBe('https://github.com/acme/api/pull/6');
+  });
+
+  it('applies the window, model and developer filters to the list exactly like the totals', () => {
+    const rows = [
+      row({ pr_number: 1, user_key: 'alice@acme.com', occurred_at: '2026-05-01T09:00:00Z', remote_url: GH }),
+      row({ pr_number: 2, user_key: 'alice@acme.com', occurred_at: '2026-05-03T09:00:00Z', model: 'glm-5.2', remote_url: GH }),
+      row({ pr_number: 3, user_key: 'bob@acme.com', occurred_at: '2026-05-03T09:00:00Z', remote_url: GH }),
+    ];
+    const all = aggregatePrOverview(rows);
+    expect(all.prs).toHaveLength(3);
+    // #1 opened before the window — excluded, same rule as the totals
+    const win = aggregatePrOverview(rows, { from: '2026-05-02T00:00:00Z' });
+    expect(win.prs.map(p => p.prNumber).sort()).toEqual([2, 3]);
+    // model filter matches the OPENER's model
+    const byModel = aggregatePrOverview(rows, { model: 'glm-5.2' });
+    expect(byModel.prs.map(p => p.prNumber)).toEqual([2]);
+    // developer filter is opener-based
+    const byDev = aggregatePrOverview(rows, { developers: ['bob@acme.com'] });
+    expect(byDev.prs.map(p => p.prNumber)).toEqual([3]);
+  });
+
+  it('orders the list by open time, then repo#number (stable for the modal)', () => {
+    const rows = [
+      row({ pr_number: 3, occurred_at: '2026-05-03T09:00:00Z', remote_url: GH }),
+      row({ pr_number: 1, repo: 'acme/zeta', occurred_at: '2026-05-03T08:00:00Z', remote_url: 'git@github.com:acme/zeta.git' }),
+      row({ pr_number: 2, occurred_at: '2026-05-03T08:00:00Z', remote_url: GH }), // ties #1 on time → repo#number breaks it
+    ];
+    const r = aggregatePrOverview(rows);
+    // 'acme/api#2' < 'acme/zeta#1' → the api PR comes first
+    expect(r.prs.map(p => p.prNumber)).toEqual([2, 1, 3]);
   });
 });

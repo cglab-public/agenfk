@@ -1,4 +1,5 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
+import { prUrlFor } from '../util/remoteUrl.js';
 
 // One json_extract-shaped row per pr.opened / pr.updated event. Sizing fields are
 // read from the server-computed shadow (the only source that knows leaf stories).
@@ -18,6 +19,9 @@ export interface PrEventRow {
   bug: number | string | null;
   model: string | null;
   harness: string | null;
+  // CGLAB-131: the event's canonical git remote (written at ingest). The
+  // drill-down link is derived from the OPENER's row, not the latest one.
+  remote_url: string | null;
 }
 
 // Normalised, backend-agnostic event used internally.
@@ -32,6 +36,7 @@ interface NormRow {
   bug: number;
   model: string | null;
   harness: string | null;
+  remoteUrl: string | null;
 }
 
 const toIso = (v: unknown): string =>
@@ -56,6 +61,7 @@ function normaliseRow(r: PrEventRow): NormRow {
     bug: toNum(r.bug),
     model: r.model,
     harness: r.harness,
+    remoteUrl: r.remote_url ?? null,
   };
 }
 
@@ -75,6 +81,23 @@ export interface PrOverviewResult {
   }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
+  // CGLAB-131 drill-down: the resolved PR set itself — one entry per PR with
+  // opener attribution and the LATEST sizing, exactly the set the heatmap
+  // cells and the totals count. Ordered by open time, then repo#number.
+  // `url` is a GitHub link or null (non-GitHub host / unparseable — the UI
+  // then shows "repo #N" without a link rather than a guess).
+  prs: Array<{
+    repo: string;
+    prNumber: number;
+    url: string | null;
+    user_key: string;
+    model: string;
+    harness: string | null;
+    openedAt: string;
+    day: string;
+    points: number;
+    bucket: SizeBucket;
+  }>;
 }
 
 const emptyDist = (): SizeDist => ({ xs: 0, s: 0, m: 0, l: 0, xl: 0 });
@@ -107,6 +130,10 @@ interface ResolvedPr {
   bucket: SizeBucket;   // from latest sizing
   openerPoints: number; // first sizing
   events: number;
+  // CGLAB-131 drill-down fields (opener-identified, for the link + list).
+  repo: string;
+  prNumber: number;
+  url: string | null;   // GitHub link or null (non-GitHub host / unparseable)
 }
 
 // Collapse the raw event stream into one record per PR. A pr.updated never adds a
@@ -129,6 +156,8 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
     const opener = sorted.find(e => e.type === 'pr.opened') ?? sorted[0];
     const latest = sorted[sorted.length - 1];
     const points = pointsOf(latest);
+    // The link follows the OPENER (same attribution rule as user/model/day):
+    // a later re-size from another machine must not re-home the PR's repo host.
     resolved.push({
       user_key: opener.user_key,
       model: opener.model ?? 'unknown',
@@ -139,6 +168,9 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>): ResolvedPr[] {
       bucket: prSizeBucket(points),
       openerPoints: pointsOf(opener),
       events: sorted.length,
+      repo: opener.repo!,
+      prNumber: Number(opener.pr_number),
+      url: prUrlFor(opener.remoteUrl, opener.repo, Number(opener.pr_number)),
     });
   }
   return resolved;
@@ -228,6 +260,25 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     .map(([model, v]) => ({ model, prs: v.prs, sizePoints: v.sizePoints, sizes: v.sizes, harnesses: [...v.harnesses].sort() }))
     .sort((a, b) => b.prs - a.prs || a.model.localeCompare(b.model));
 
+  // The drill-down list: the same resolved PRs (already window/model/dev-
+  // filtered), in a stable order for the modal — open time, then repo#number.
+  const prsDetail = [...prs]
+    .sort((a, b) =>
+      a.openerAt.localeCompare(b.openerAt)
+      || `${a.repo}#${a.prNumber}`.localeCompare(`${b.repo}#${b.prNumber}`))
+    .map(p => ({
+      repo: p.repo,
+      prNumber: p.prNumber,
+      url: p.url,
+      user_key: p.user_key,
+      model: p.model,
+      harness: p.harness,
+      openedAt: p.openerAt,
+      day: p.day,
+      points: p.points,
+      bucket: p.bucket,
+    }));
+
   return {
     buckets: SIZE_BUCKETS,
     totals: { prs: prs.length, sizePoints, developers: developers.size, medianBucket },
@@ -235,5 +286,6 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     byDay,
     byDeveloper,
     byModel,
+    prs: prsDetail,
   };
 }

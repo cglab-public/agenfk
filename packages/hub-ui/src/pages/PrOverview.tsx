@@ -8,7 +8,7 @@ import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
-import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip } from '../prPerDay';
+import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -31,6 +31,20 @@ interface PrOverviewResponse {
   }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
+  // CGLAB-131 drill-down: the resolved PR set behind the heatmap cells
+  // (opener attribution, latest sizing — same aggregation pass as the totals).
+  prs: Array<{
+    repo: string;
+    prNumber: number;
+    url: string | null;
+    user_key: string;
+    model: string;
+    harness: string | null;
+    openedAt: string;
+    day: string;
+    points: number;
+    bucket: SizeKey;
+  }>;
   previous: { prs: number; sizePoints: number } | null;
 }
 interface ProjectsResponse { projects: string[] }
@@ -101,6 +115,82 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
       <polyline points={pts} fill="none" stroke="#04cc98" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/** CGLAB-131 — the per-cell drill-down: the PRs one developer opened on one
+ *  day, with a GitHub link where the server could derive one. Rendered at the
+ *  page root (fixed positioning — same containing-block rule as the tooltip). */
+function PrDrilldownModal({ dev, day, prs, onClose }: {
+  dev: string;
+  day: string;
+  prs: NonNullable<PrOverviewResponse['prs']>;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const { weekday } = dayHeaderInfo(day);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`}>
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+        <div className="sticky top-0 flex items-center justify-between gap-3 border-b border-border-soft bg-surface px-5 py-3.5">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-ink">{dev}</h3>
+            <p className="font-mono text-[11px] text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-chip transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+        <ul className="divide-y divide-border-soft">
+          {prs.map(p => {
+            const size = SIZE_META.find(s => s.key === p.bucket);
+            const openedAt = new Date(p.openedAt);
+            return (
+              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+                {p.url ? (
+                  <a
+                    href={p.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-mono text-[13px] font-bold text-accent-text hover:underline shrink-0"
+                    title="Open on GitHub"
+                  >
+                    #{p.prNumber}
+                  </a>
+                ) : (
+                  <span className="font-mono text-[13px] font-bold text-ink-secondary shrink-0" title={`${p.repo} — no GitHub link (non-GitHub host)`}>
+                    #{p.prNumber}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[12px] text-ink-secondary">{p.repo}</div>
+                  <div className="text-[11px] text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  {size && (
+                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold text-white" style={{ background: size.color }}>
+                      {size.label}
+                    </span>
+                  )}
+                  <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
+                    {Number.isNaN(openedAt.getTime()) ? '' : openedAt.toISOString().slice(11, 19)} UTC
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
   );
 }
 
@@ -196,13 +286,25 @@ export function PrOverviewPage() {
   const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
   // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
   // spans would add tens of thousands of DOM nodes on a 90d × many-devs grid,
-  // and anything absolutely positioned inside the overflow-x-auto scroller
-  // gets clipped at its edges. Fixed positioning escapes the scroller.
-  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  // and anything positioned inside the overflow-x-auto scroller gets clipped
+  // at its edges. Fixed positioning escapes the scroller — BUT only when the
+  // tooltip is NOT a descendant of a backdrop-filter/transform element (those
+  // create a containing block that silently re-roots the fixed coordinates and
+  // a stacking context that swallows the z-index — the CGLAB-131 defect). So it
+  // renders at the page root, below, in viewport coordinates from placeTooltip.
+  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number; below: boolean } | null>(null);
   const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    setHeatTip({ text, x: Math.max(8, Math.min(r.left + r.width / 2, window.innerWidth - 8)), y: r.top - 6 });
+    setHeatTip({ text, ...placeTooltip({ left: r.left, top: r.top, width: r.width, height: r.height }, text, window.innerWidth) });
   };
+  // CGLAB-131 — the cell being drilled into (developer × day), or null.
+  const [drill, setDrill] = useState<{ dev: string; day: string } | null>(null);
+  const drillPrs = useMemo(() => {
+    if (!drill || !d?.prs) return [];
+    // The server already orders by open time, then repo#number, and applied the
+    // same window/model/developer filters as the heatmap itself.
+    return d.prs.filter(p => p.user_key === drill.dev && p.day === drill.day);
+  }, [drill, d?.prs]);
   const maxDayTotal = Math.max(1, ...(d?.byDay.map(x => x.total) ?? [1]));
   const byDayMap = useMemo(() => new Map((d?.byDay ?? []).map(x => [x.day, x])), [d]);
 
@@ -517,11 +619,14 @@ export function PrOverviewPage() {
                             key={day}
                             onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
                             onMouseLeave={() => setHeatTip(null)}
+                            // CGLAB-131 — non-empty cells are drillable: open the PR list.
+                            // (Clear the tooltip so it cannot peek out from the modal.)
+                            onClick={c > 0 ? () => { setHeatTip(null); setDrill({ dev: dev.user_key, day }); } : undefined}
                             className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
                                 ? 'bg-chip border border-dashed border-border-soft'
                                 : 'bg-chip'
-                              : ''}`}
+                              : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
                             style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
                           />
                         );
@@ -531,15 +636,21 @@ export function PrOverviewPage() {
                 })}
               </div>
             </div>
-            {heatTip && (
-              <div
-                className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-card-glass text-white font-mono text-[10px] px-2 py-1 shadow-lg"
-                style={{ left: heatTip.x, top: heatTip.y }}
-              >
-                {heatTip.text}
-              </div>
-            )}
           </section>
+
+          {/* CGLAB-131 — deliberately OUTSIDE the heatmap section above: a
+              backdrop-filter ancestor would re-root these fixed coordinates
+              (the "tooltip far away" defect) and swallow the z-50 (the z-order
+              defect). Coordinates are viewport-relative, from placeTooltip. */}
+          {heatTip && (
+            <div
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-card-glass text-white font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              style={{ left: heatTip.x, top: heatTip.y }}
+            >
+              {heatTip.text}
+            </div>
+          )}
+          {drill && <PrDrilldownModal dev={drill.dev} day={drill.day} prs={drillPrs} onClose={() => setDrill(null)} />}
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
