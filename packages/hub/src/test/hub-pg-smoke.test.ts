@@ -102,4 +102,80 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
     expect(types.status).toBe(200);
     expect(types.body.types).toContain('item.created');
   });
+
+  it('serves /v1/prs/overview with the per-PR drill-down list (CGLAB-131 — jsonb sizing path)', async () => {
+    // The only changed call path with no end-to-end PG coverage: this SELECT
+    // mixes bare columns (remote_url) with eight json_extract(payload, …) forms
+    // the dialect rewriter must translate to jsonb_extract_path_text — and the
+    // aggregator must normalise PG's Date/jsonb-text rows onto the same shape
+    // as SQLite (opener attribution, latest sizing, GitHub links).
+    await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
+    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const cookie = login.headers['set-cookie']?.[0] ?? '';
+    expect(login.status).toBe(200);
+
+    const token = await issueApiKey(db, 'org', 'pg-test');
+    const send = (events: any[]) =>
+      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+
+    const pr = (over: any) => ({
+      eventId: over.eventId,
+      installationId: 'inst-pg',
+      orgId: 'org',
+      occurredAt: over.occurredAt,
+      actor: { osUser: over.osUser, gitName: over.osUser[0].toUpperCase(), gitEmail: `${over.osUser}@acme.com` },
+      type: over.type ?? 'pr.opened',
+      projectId: 'p1',
+      itemId: 'i1',
+      remoteUrl: over.remoteUrl ?? null,
+      payload: {
+        prNumber: over.prNumber,
+        repo: over.repo ?? 'acme/api',
+        model: over.model,
+        harness: 'claude-code',
+        sizing: over.sizing,
+        sizingShadow: over.sizing,
+        leafStory: over.leafStory ?? 0,
+      },
+    });
+
+    await send([
+      // alice opens #1 (task 1 → 2pts → xs) with an authoritative GitHub remote.
+      pr({ eventId: 'pg-pr-1', occurredAt: '2026-05-03T10:00:00Z', osUser: 'alice', prNumber: 1,
+           model: 'claude-opus-4-8', sizing: { epic: 0, story: 0, task: 1, bug: 0 },
+           remoteUrl: 'git@github.com:acme/api.git' }),
+      // bob opens #2 WITHOUT a remote — the link must fall back to the slug.
+      pr({ eventId: 'pg-pr-2', occurredAt: '2026-05-03T11:00:00Z', osUser: 'bob', prNumber: 2,
+           model: 'glm-5.2', sizing: { epic: 0, story: 1, task: 0, bug: 0 }, leafStory: 1 }),
+      // alice re-sizes #1 later (task 4 → 6pts → s) — latest sizing must win
+      // while the attribution (and the link) stays with the OPENER.
+      pr({ eventId: 'pg-pr-3', type: 'pr.updated', occurredAt: '2026-05-04T09:00:00Z', osUser: 'alice', prNumber: 1,
+           model: 'claude-opus-4-8', sizing: { epic: 0, story: 0, task: 4, bug: 0 } }),
+    ]);
+
+    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(2);
+    expect(r.body.prs).toHaveLength(2);
+    const p1 = r.body.prs.find((p: any) => p.prNumber === 1);
+    expect(p1).toMatchObject({
+      repo: 'acme/api',
+      user_key: 'alice@acme.com',
+      model: 'claude-opus-4-8',
+      day: '2026-05-03',
+      bucket: 'm', // latest sizing (task 4 → 8pts) wins, attribution stays with the opener
+      url: 'https://github.com/acme/api/pull/1',
+    });
+    const p2 = r.body.prs.find((p: any) => p.prNumber === 2);
+    expect(p2).toMatchObject({
+      user_key: 'bob@acme.com',
+      bucket: 's', // leafStory 1 → 4pts
+      url: 'https://github.com/acme/api/pull/2', // slug fallback, same github.com assumption
+    });
+
+    // The developer filter is opener-based on PG too.
+    const filtered = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.prs.map((p: any) => p.prNumber)).toEqual([2]);
+  });
 });

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
@@ -120,29 +120,68 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
 
 /** CGLAB-131 — the per-cell drill-down: the PRs one developer opened on one
  *  day, with a GitHub link where the server could derive one. Rendered at the
- *  page root (fixed positioning — same containing-block rule as the tooltip). */
+ *  page root (fixed positioning — same containing-block rule as the tooltip).
+ *  Focus management (aria-modal contract): focus moves into the dialog on
+ *  open and Tab cycles inside it; focus returns to the triggering cell on
+ *  close; background scrolling is locked while open. */
 function PrDrilldownModal({ dev, day, prs, onClose }: {
   dev: string;
   day: string;
   prs: NonNullable<PrOverviewResponse['prs']>;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Initial focus + focus restore (runs once per open).
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => { prev?.focus?.(); };
+  }, []);
+
+  // Escape to close (window-level: works no matter where focus sits inside).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Scroll lock while the overlay is up.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Minimal focus trap: wrap Tab / Shift+Tab at the dialog edges.
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const nodes = panelRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])');
+    if (!nodes || nodes.length === 0) return;
+    const list = Array.from(nodes);
+    const first = list[0];
+    const last = list[list.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panelRef.current)) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault(); first.focus();
+    }
+  };
+
   const { weekday } = dayHeaderInfo(day);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`} onKeyDown={trapTab}>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+      <div ref={panelRef} className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
         <div className="sticky top-0 flex items-center justify-between gap-3 border-b border-border-soft bg-surface px-5 py-3.5">
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-ink">{dev}</h3>
             <p className="font-mono text-[11px] text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
           </div>
           <button
+            ref={closeRef}
             onClick={onClose}
             aria-label="Close"
             className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-chip transition-colors"
@@ -299,6 +338,14 @@ export function PrOverviewPage() {
   };
   // CGLAB-131 — the cell being drilled into (developer × day), or null.
   const [drill, setDrill] = useState<{ dev: string; day: string } | null>(null);
+  const closeDrill = useCallback(() => setDrill(null), []);
+  const openDrill = useCallback((devKey: string, dayKey: string) => {
+    setHeatTip(null);
+    setDrill({ dev: devKey, day: dayKey });
+  }, []);
+  // A refetch replaces the data the open drill was built from — close it
+  // rather than show a stale (or emptied) list against the new window.
+  useEffect(() => { setDrill(null); }, [d]);
   const drillPrs = useMemo(() => {
     if (!drill || !d?.prs) return [];
     // The server already orders by open time, then repo#number, and applied the
@@ -621,7 +668,14 @@ export function PrOverviewPage() {
                             onMouseLeave={() => setHeatTip(null)}
                             // CGLAB-131 — non-empty cells are drillable: open the PR list.
                             // (Clear the tooltip so it cannot peek out from the modal.)
-                            onClick={c > 0 ? () => { setHeatTip(null); setDrill({ dev: dev.user_key, day }); } : undefined}
+                            // role/tabIndex/keydown keep the drill reachable by keyboard.
+                            onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
+                            role={c > 0 ? 'button' : undefined}
+                            tabIndex={c > 0 ? 0 : undefined}
+                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${dev.user_key} on ${day} — open list` : undefined}
+                            onKeyDown={c > 0 ? (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
+                            } : undefined}
                             className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
                                 ? 'bg-chip border border-dashed border-border-soft'
@@ -650,7 +704,7 @@ export function PrOverviewPage() {
               {heatTip.text}
             </div>
           )}
-          {drill && <PrDrilldownModal dev={drill.dev} day={drill.day} prs={drillPrs} onClose={() => setDrill(null)} />}
+          {drill && <PrDrilldownModal dev={drill.dev} day={drill.day} prs={drillPrs} onClose={closeDrill} />}
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
