@@ -24,6 +24,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-rejections-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -74,7 +75,12 @@ describe('hub /v1/events — per-event rejections (CGLAB-117)', () => {
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('reports reason "invalid" with the best-effort eventId when an event fails isValidEvent', async () => {
     const r = await post([sampleEvent({ eventId: 'bad-1', actor: null })]);

@@ -24,6 +24,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-tenant-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -56,7 +57,12 @@ describe('hub privilege and tenant boundaries (CGLAB-75)', () => {
       .headers['set-cookie']?.[0] ?? '';
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // ── Boundary 1: a viewer is read-only ────────────────────────────────────
 

@@ -7,6 +7,7 @@ import axios from 'axios';
 import { createHubApp } from '../server';
 import { encryptSecret } from '../crypto';
 import { _resetEntraDiscoveryCache } from '../auth/entra';
+import { drainApp } from './helpers/drainApp';
 
 let mockClaims: any = {};
 
@@ -66,7 +67,12 @@ describe('Entra OIDC flow', () => {
     vi.restoreAllMocks();
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('returns 404 when not configured', async () => {
     const r = await supertest(app).get('/auth/entra/start');

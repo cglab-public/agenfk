@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-admin-installations-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -60,7 +61,12 @@ describe('GET /v1/admin/installations', () => {
     cookieView = await loginAs(app, 'view@x', 'longenough1');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('lists installations scoped to the caller org with version + lastSeen', async () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-1', 'v0.3.0-beta.28', '2026-05-06T12:00:00Z', 'alice');

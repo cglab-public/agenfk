@@ -6,6 +6,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-active-scopes-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -81,7 +82,12 @@ describe('GET /v1/flows/active — multi-scope resolution', () => {
     tokenNoInstall = await issueApiKey(ctx.db, 'org-a', 'no-install');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('returns the org-default flow when no scope context is provided', async () => {
     const orgFlow = await seedFlow(app, cookie, 'Org Flow');

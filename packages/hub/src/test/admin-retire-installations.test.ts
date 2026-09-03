@@ -18,6 +18,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-retire-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -98,7 +99,12 @@ describe('retire-installation admin API', () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-1', 'dev@acme.com');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('authz', () => {
     it('rejects unauthenticated requests', async () => {

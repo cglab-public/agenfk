@@ -24,6 +24,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-repoint-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -112,7 +113,12 @@ describe('repoint campaign (hub side)', () => {
     token2 = await issueApiKey(ctx.db, 'org-a', 'k2', { installationId: 'inst-2' } as any);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('authz', () => {
     it('rejects unauthenticated admin calls', async () => {

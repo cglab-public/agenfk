@@ -6,6 +6,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { encryptSecret, decryptSecret } from '../crypto';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-admin-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64); // 64 hex chars = 32 bytes
@@ -56,7 +57,12 @@ describe('admin routes', () => {
     await createPasswordUser(ctx.db, 'org', 'view@x', 'longenough1', 'viewer');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('rejects non-admin sessions', async () => {
     const cookie = await loginAs(app, 'view@x', 'longenough1');

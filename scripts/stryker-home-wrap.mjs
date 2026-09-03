@@ -28,7 +28,7 @@
 import { spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import { snapshotHome, verifyHome } from './home-integrity.mjs';
-import { testHomeEnv } from './vitest-home-pin.mjs';
+import { testEnv } from './vitest-home-pin.mjs';
 
 const args = process.argv.slice(2);
 const probe = args[0] === '--probe';
@@ -37,7 +37,7 @@ const probe = args[0] === '--probe';
 // C-level home — the one the spawned children inherit).
 const snapshot = snapshotHome();
 
-const env = { ...process.env, ...testHomeEnv(), AGENFK_SPAWN_PIN: '1' };
+const env = { ...process.env, ...testEnv(), AGENFK_SPAWN_PIN: '1' };
 
 let result;
 if (probe) {

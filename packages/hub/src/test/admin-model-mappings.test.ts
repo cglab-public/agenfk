@@ -15,6 +15,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-model-mappings-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -76,7 +77,12 @@ describe('admin model mappings', () => {
     ]);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('the bug', () => {
     it('splits one model across rows before any mapping exists', async () => {
