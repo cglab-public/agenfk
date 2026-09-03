@@ -604,4 +604,32 @@ describe('GET /v1/prs/overview', () => {
     expect(may3.devBySize.xs).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
     expect(may3.devBySize.m).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
   });
+
+  it('exposes the per-PR drill-down list with GitHub links (CGLAB-131)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    // the same 3 resolved PRs as the totals — nothing more, nothing less
+    expect(r.body.prs).toHaveLength(3);
+    const p1 = r.body.prs.find((p: any) => p.prNumber === 1);
+    expect(p1).toMatchObject({
+      repo: 'acme/api',
+      user_key: 'alice@acme.com',
+      model: 'claude-opus-4-8',
+      day: '2026-05-03',
+      bucket: 'xs',
+      url: 'https://github.com/acme/api/pull/1',
+    });
+    // PR#2 counted at its LATEST (m) size, with its own link
+    const p2 = r.body.prs.find((p: any) => p.prNumber === 2);
+    expect(p2.bucket).toBe('m');
+    expect(p2.url).toBe('https://github.com/acme/api/pull/2');
+  });
+
+  it('applies the developer filter to the drill-down list (opener-based)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.prs).toHaveLength(1);
+    expect(r.body.prs[0].prNumber).toBe(3);
+    expect(r.body.prs[0].url).toBe('https://github.com/acme/api/pull/3');
+  });
 });
