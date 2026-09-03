@@ -27,3 +27,6 @@ tmp.*.json
 .stryker-tmp/
 stryker.log
 mutation-testing/
+
+# pi coding-agent local session artifacts (subagent transcripts, clipboard)
+.pi/
