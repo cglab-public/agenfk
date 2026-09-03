@@ -2,6 +2,42 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.7] — 2026-09-03
+
+### Added
+- **PR Overview: per-cell drill-down** (CGLAB-131) — clicking a non-zero
+  "Per developer, per day" heatmap cell opens a modal listing the PRs that
+  developer opened that day (the same resolved PR set the heatmap counts —
+  zero drift), with GitHub links where the hub could derive one
+  (`prUrlFor`: github.com remotes only, documented slug fallback, no
+  guessing for custom hosts). `/v1/prs/overview` now returns that per-PR
+  list (`prs`), and the PR-event SELECT includes `remote_url`.
+- Drill-down modal a11y: focus trap + initial focus + focus restore,
+  body scroll lock, Esc/backdrop/× to close; non-zero cells are
+  keyboard-operable (`role=button`, Enter/Space).
+- **Coverage**: pg-mem e2e test for `/v1/prs/overview` (the jsonb sizing
+  path through the dialect rewriter).
+
+### Fixed
+- **PR Overview tooltip placement / z-order** (CGLAB-131) — the tooltip
+  rendered inside the `backdrop-blur` card section: its `backdrop-filter`
+  became the containing block for the `position:fixed` element (re-rooting
+  its coordinates — the "tooltip far away from the cell" defect) and a
+  stacking context that swallowed the `z-50`. The tooltip now renders at
+  the page root, with placement extracted to a pure, unit-tested
+  `placeTooltip()` (viewport coordinates, edge clamping, flips below when
+  there is no room above).
+
+## [1.1.17-beta.6] — 2026-09-03
+
+### Fixed
+- Re-cut of the 1.1.17 beta line with **no code delta over beta.5** —
+  cut to ship the pre-release flag fix below; superseded by beta.7
+  (same line + the CGLAB-131 PR Overview work).
+- GitHub releases for the 1.1.17 betas are now properly marked
+  **pre-release** (beta.5/4/3 flagged retroactively); "Latest" points at
+  the last stable release (v1.1.16).
+
 ## [1.1.17-beta.5] — 2026-09-02
 
 ### Fixed
