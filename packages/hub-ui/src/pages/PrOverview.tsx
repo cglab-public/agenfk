@@ -9,6 +9,18 @@ import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip } from '../prPerDay';
+import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+
+const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
+  { key: 'daily', label: 'daily', unit: 'day' },
+  { key: 'weekly', label: 'weekly', unit: 'week' },
+  { key: 'monthly', label: 'monthly', unit: 'month' },
+];
+
+/** Average PRs per bucket: integers stay bare, fractional rates show 1 decimal. */
+function fmtAverage(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -35,7 +47,6 @@ interface PrOverviewResponse {
 }
 interface ProjectsResponse { projects: string[] }
 
-const EMPTY: SizeDist = { xs: 0, s: 0, m: 0, l: 0, xl: 0 };
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
 const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
@@ -116,6 +127,9 @@ export function PrOverviewPage() {
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
   const [range, setRange] = useState<RangeKey>(initRange);
+  const urlGran = searchParams.get('gran');
+  const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
+  const [gran, setGran] = useState<Granularity>(initGran);
   const [model, setModel] = useState<string>(searchParams.get('model') ?? '');
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
@@ -133,8 +147,9 @@ export function PrOverviewPage() {
     } else if (range !== '30d') {
       p.set('range', range); // omit the default to keep the URL clean
     }
+    if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, model, range, customFrom, customTo, setSearchParams]);
+  }, [projectSel.set, devSel.set, model, range, gran, customFrom, customTo, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -190,6 +205,10 @@ export function PrOverviewPage() {
   const d = overview.data;
   const to = d?.period.to ?? (toParam || new Date().toISOString());
   const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
+  // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
+  const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
+  const volumeBuckets = volume?.buckets ?? [];
+  const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
   // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
   const todayIso = new Date().toISOString().slice(0, 10);
   // Per-column header info, computed once per axis instead of per cell.
@@ -203,8 +222,6 @@ export function PrOverviewPage() {
     const r = e.currentTarget.getBoundingClientRect();
     setHeatTip({ text, x: Math.max(8, Math.min(r.left + r.width / 2, window.innerWidth - 8)), y: r.top - 6 });
   };
-  const maxDayTotal = Math.max(1, ...(d?.byDay.map(x => x.total) ?? [1]));
-  const byDayMap = useMemo(() => new Map((d?.byDay ?? []).map(x => [x.day, x])), [d]);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
@@ -334,33 +351,45 @@ export function PrOverviewPage() {
           {/* Daily stacked bar */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
             <div className="flex items-baseline justify-between gap-3 flex-wrap mb-4">
-              <h2 className="text-sm font-semibold text-ink">Daily PR volume by size</h2>
-              <div className="flex gap-3 flex-wrap">
+              <h2 className="text-sm font-semibold text-ink">PR volume by size</h2>
+              <div className="flex items-center gap-3 flex-wrap">
                 {SIZE_META.map(s => (
                   <span key={s.key} className="inline-flex items-center gap-1.5 text-[11px] text-ink-tertiary">
                     <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} /> {s.label}
                   </span>
                 ))}
+                <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
+                  {GRANULARITIES.map(g => (
+                    <button
+                      key={g.key}
+                      onClick={() => setGran(g.key)}
+                      aria-pressed={gran === g.key}
+                      className={`px-2.5 py-1 rounded-md transition-colors ${gran === g.key
+                        ? 'bg-surface text-accent-text shadow-sm'
+                        : 'text-ink-tertiary hover:text-ink'}`}
+                    >
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="overflow-x-auto">
               <div className="flex items-end gap-1.5 h-44 min-w-[420px]">
-                {axis.map(day => {
-                  const entry = byDayMap.get(day);
-                  const sizes = entry?.sizes ?? EMPTY;
-                  const total = entry?.total ?? 0;
+                {volumeBuckets.map(b => {
+                  const sizes = b.sizes;
                   const sliceTitle = (key: SizeKey, label: string) => {
-                    const devs = entry?.devBySize?.[key] ?? [];
-                    const head = `${label} · ${day} · ${sizes[key]} PR${sizes[key] === 1 ? '' : 's'}`;
+                    const devs = b.devBySize[key] ?? [];
+                    const head = `${label} · ${b.rangeLabel} · ${sizes[key]} PR${sizes[key] === 1 ? '' : 's'}`;
                     const lines = devs.map(x => `  ${x.user_key}: ${x.count}`).join('\n');
                     return lines ? `${head}\n${lines}` : head;
                   };
                   return (
-                    <div key={day} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${day}: ${total} PR${total === 1 ? '' : 's'}`}>
+                    <div key={b.key} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${b.rangeLabel}: ${b.total} PR${b.total === 1 ? '' : 's'}`}>
                       {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
                         <div
                           key={s.key}
-                          style={{ background: s.color, height: `${(sizes[s.key] / maxDayTotal) * 100}%` }}
+                          style={{ background: s.color, height: `${(sizes[s.key] / maxBucketTotal) * 100}%` }}
                           className="rounded-[2px] hover:opacity-80 transition-opacity cursor-default"
                           title={sliceTitle(s.key, s.label)}
                         />
@@ -370,13 +399,31 @@ export function PrOverviewPage() {
                 })}
               </div>
               <div className="flex gap-1.5 mt-2 min-w-[420px]">
-                {axis.map((day, i) => (
-                  <div key={day} className="flex-1 text-center font-mono text-[9px] text-ink-tertiary">
-                    {i % Math.ceil(axis.length / 10 || 1) === 0 ? day.slice(5) : ''}
+                {volumeBuckets.map((b, i) => (
+                  <div key={b.key} className="flex-1 text-center font-mono text-[9px] text-ink-tertiary">
+                    {volumeBuckets.length <= 16 || i % Math.ceil(volumeBuckets.length / 10 || 1) === 0 ? b.label : ''}
                   </div>
                 ))}
               </div>
             </div>
+            {/* Stats under the chart — respect the selected granularity. Average
+                is per bucket over the WHOLE range (empty buckets included). */}
+            {volume && (
+              <div className="mt-4 flex gap-3 flex-wrap">
+                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Total</div>
+                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{volume.stats.total}</div>
+                </div>
+                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Average / {GRANULARITIES.find(g => g.key === gran)!.unit}</div>
+                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{fmtAverage(volume.stats.average)}</div>
+                </div>
+                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Max{volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}</div>
+                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{volume.stats.max}</div>
+                </div>
+              </div>
+            )}
           </section>
 
           {/* By developer */}
