@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-projects-discovery-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -65,7 +66,12 @@ describe('GET /v1/admin/projects (repo discovery)', () => {
     cookieView = await loginAs(app, 'view@x', 'longenough1');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('returns distinct repos (remote URLs) for the caller org', async () => {
     // Same repo from two different local projectIds → collapses to one repo.

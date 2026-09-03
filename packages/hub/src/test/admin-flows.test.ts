@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -57,7 +58,12 @@ describe('admin flow routes', () => {
     await createPasswordUser(ctx.db, 'org-b', 'admin-b@x', 'longenough1', 'admin');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // ── auth gating ────────────────────────────────────────────────────────────
   it('rejects non-admin sessions on flows endpoints', async () => {

@@ -13,6 +13,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-remote-case-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -57,7 +58,12 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
     token = await issueApiKey(ctx.db, 'org-a', 'inst-1');
   });
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('lowercases remote_url at ingest', async () => {
     await supertest(app)

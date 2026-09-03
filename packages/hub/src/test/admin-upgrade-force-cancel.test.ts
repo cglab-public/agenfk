@@ -26,6 +26,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-force-cancel-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -90,7 +91,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     fleetTokenInst1 = await issueApiKey(ctx.db, 'org-a', 'inst-1-token', { installationId: 'inst-1' } as any);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   async function issueDirectiveAll(): Promise<string> {
     const r = await supertest(app)

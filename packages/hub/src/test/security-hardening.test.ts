@@ -11,6 +11,7 @@ import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { cookieSecure } from '../auth/session';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-security-test-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -44,7 +45,12 @@ describe('hub security hardening', () => {
     ctx = out.ctx;
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // ── bug 210b3d34: login brute-force lockout ─────────────────────────────────
   describe('bug 210b3d34: /auth/login lockout', () => {

@@ -18,6 +18,7 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { remoteUrlFromRepo, sanitizeRemoteUrl } from '../util/remoteUrl';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-pr-remote-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -114,7 +115,12 @@ describe('Hub: PR events populate the remote_url filter dimension', { hookTimeou
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
     token = await issueApiKey(ctx.db, 'org-a', 'inst-1');
   });
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('derives remote_url from payload.repo when the event has no remoteUrl', async () => {
     await supertest(app)

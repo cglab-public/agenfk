@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-auth-test-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -30,7 +31,12 @@ describe('hub auth + setup', () => {
     ctx = out.ctx;
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('GET /auth/providers reflects requiresSetup when no users exist', async () => {
     const r = await supertest(app).get('/auth/providers');

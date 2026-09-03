@@ -14,6 +14,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-installation-version-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -59,7 +60,13 @@ describe('Story 7 — per-installation agenfk version', () => {
     fleetToken = await issueApiKey(ctx.db, 'org-a', 'inst-1-key', { installationId: 'inst-1' } as any);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  // Drain in-flight responses before pulling the DB out from under them — see
+  // helpers/drainApp.ts for the ECONNRESET this prevents.
+  afterEach(async () => {
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('schema migration', () => {
     it('installations table has agenfk_version + agenfk_version_updated_at columns', async () => {

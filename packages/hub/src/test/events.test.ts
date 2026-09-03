@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-test-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -40,7 +41,12 @@ describe('hub /v1 events', () => {
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('rejects requests without bearer', async () => {
     const r = await supertest(app).get('/v1/ping');

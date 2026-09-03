@@ -6,6 +6,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-avail-sel-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -105,7 +106,12 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     tokenB = await issueApiKey(ctx.db, 'org-b', 'clientB', { installationId: 'inst-b' });
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // -----------------------------------------------------------------------
   // GET /v1/flows/available

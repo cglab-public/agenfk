@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flow-avail-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -55,7 +56,12 @@ describe('flow org_available — admin availability toggle', () => {
     cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('newly created flow is not org-available by default', async () => {
     const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('NewFlow') })).body;

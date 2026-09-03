@@ -9,6 +9,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-hidden-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -44,7 +45,12 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   const hide = (userKey: string) =>
     ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', userKey]);

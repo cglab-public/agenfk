@@ -14,6 +14,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-rename-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -64,7 +65,12 @@ describe('admin POST /v1/admin/orgs/rename', () => {
     );
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('rejects non-admin sessions', async () => {
     const cookie = await loginAs(app, 'viewer@x', 'longenough1');
@@ -178,7 +184,12 @@ describe('admin GET /v1/admin/system/pending + POST /v1/admin/system/pending/ack
     await createPasswordUser(ctx.db, 'cglab', 'admin@x', 'longenough1', 'admin');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('returns null when nothing is pending', async () => {
     const cookie = await loginAs(app, 'admin@x', 'longenough1');

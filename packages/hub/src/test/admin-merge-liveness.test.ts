@@ -21,6 +21,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-mergelive-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -88,7 +89,12 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
     ingestToken = await issueApiKey(ctx.db, 'org-a', 'ingest');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // ── Defect 1: the Identities tab blocked merges that were already safe ────
 

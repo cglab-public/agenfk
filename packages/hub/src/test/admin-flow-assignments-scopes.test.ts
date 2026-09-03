@@ -5,6 +5,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-fa-scopes-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -66,7 +67,12 @@ describe('flow_assignments — multi-scope CRUD', () => {
     );
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   // ── GET shape ─────────────────────────────────────────────────────────────
   it('GET /flow-assignments returns an array for the new shape', async () => {

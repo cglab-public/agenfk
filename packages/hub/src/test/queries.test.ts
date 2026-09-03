@@ -7,6 +7,7 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { recomputeRollups } from '../rollup';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-queries-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -73,7 +74,12 @@ describe('hub query endpoints', () => {
     ]);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('GET /v1/users requires session', async () => {
     const r = await supertest(app).get('/v1/users');
@@ -473,7 +479,12 @@ describe('GET /v1/prs/overview', () => {
     ]);
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   it('requires a session', async () => {
     const r = await supertest(app).get('/v1/prs/overview');

@@ -9,6 +9,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-fleet-hidden-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -55,7 +56,12 @@ describe('fleet exclusions for hidden people (CGLAB-31)', () => {
     cookieAdmin = await loginAs(app, 'admin@x', 'longenough1');
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('GET /v1/admin/installations', () => {
     it('excludes installations of hidden people by default', async () => {

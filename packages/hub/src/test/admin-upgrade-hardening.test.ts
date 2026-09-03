@@ -15,6 +15,7 @@ import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-hardening-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -54,7 +55,12 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
   });
 
-  afterEach(async () => { await ctx.db.close(); cleanup(); });
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
+    await ctx.db.close();
+    cleanup();
+  });
 
   describe('audit metadata', () => {
     it('persists created_by_email + request_ip and surfaces them in GET /v1/admin/upgrade', async () => {
