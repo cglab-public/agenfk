@@ -73,6 +73,26 @@ describe('remoteUrlFromRepo (unit)', () => {
   });
 });
 
+describe('sanitizeRemoteUrl (unit)', () => {
+  // The chip-collapse function: canonical ssh form wins, noise is stripped
+  // first, and anything unparseable is returned cleaned (never a guess).
+  it('canonicalises an https remote onto the canonical ssh form', () => {
+    expect(sanitizeRemoteUrl('https://github.com/acme/api'))
+      .toBe('git@github.com:acme/api.git');
+  });
+
+  it('strips noise (whitespace/control chars) before parsing and canonicalising', () => {
+    expect(sanitizeRemoteUrl('  git@github.com:acme/api \t .git  '))
+      .toBe('git@github.com:acme/api.git');
+  });
+
+  it('returns the cleaned input for anything that does not parse (never throws, never guesses)', () => {
+    // no host/owner/repo structure → no canonical form exists; the chip shows
+    // the stripped + lowercased input instead.
+    expect(sanitizeRemoteUrl('not a remote')).toBe('notaremote');
+  });
+});
+
 describe('Hub: PR events populate the remote_url filter dimension', { hookTimeout: 30_000 }, () => {
   let app: any;
   let ctx: any;

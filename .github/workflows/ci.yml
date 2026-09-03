@@ -37,5 +37,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Home-integrity snapshot (item 9c297075)
+        run: node scripts/home-integrity.mjs snapshot
+
       - name: Test
         run: npm test
+
+      - name: Home-integrity verify (item 9c297075)
+        run: node scripts/home-integrity.mjs verify

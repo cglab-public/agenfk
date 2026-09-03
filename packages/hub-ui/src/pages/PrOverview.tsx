@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
@@ -8,7 +8,7 @@ import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
-import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip } from '../prPerDay';
+import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
@@ -43,6 +43,20 @@ interface PrOverviewResponse {
   }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
   byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
+  // CGLAB-131 drill-down: the resolved PR set behind the heatmap cells
+  // (opener attribution, latest sizing — same aggregation pass as the totals).
+  prs: Array<{
+    repo: string;
+    prNumber: number;
+    url: string | null;
+    user_key: string;
+    model: string;
+    harness: string | null;
+    openedAt: string;
+    day: string;
+    points: number;
+    bucket: SizeKey;
+  }>;
   previous: { prs: number; sizePoints: number } | null;
 }
 interface ProjectsResponse { projects: string[] }
@@ -115,6 +129,140 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
   );
 }
 
+/** CGLAB-131 — the per-cell drill-down: the PRs one developer opened on one
+ *  day, with a GitHub link where the server could derive one. Rendered at the
+ *  page root (fixed positioning — same containing-block rule as the tooltip).
+ *  Focus management (aria-modal contract): focus moves into the dialog on
+ *  open and Tab cycles inside it; focus returns to the triggering cell on
+ *  close; background scrolling is locked while open. */
+function PrDrilldownModal({ dev, day, prs, onClose }: {
+  dev: string;
+  day: string;
+  prs: NonNullable<PrOverviewResponse['prs']>;
+  onClose: () => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Initial focus + focus restore (runs once per open).
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => { prev?.focus?.(); };
+  }, []);
+
+  // Escape to close (window-level: works no matter where focus sits inside).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Scroll lock while the overlay is up.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
+  // Minimal focus trap: wrap Tab / Shift+Tab at the dialog edges.
+  const trapTab = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const nodes = panelRef.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled])');
+    if (!nodes || nodes.length === 0) return;
+    const list = Array.from(nodes);
+    const first = list[0];
+    const last = list[list.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panelRef.current)) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault(); first.focus();
+    }
+  };
+
+  const { weekday } = dayHeaderInfo(day);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`} onKeyDown={trapTab}>
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div ref={panelRef} className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+        <div className="sticky top-0 flex items-center justify-between gap-3 border-b border-border-soft bg-surface px-5 py-3.5">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-ink">{dev}</h3>
+            <p className="font-mono text-[11px] text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
+          </div>
+          <button
+            ref={closeRef}
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-chip transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+        <ul className="divide-y divide-border-soft">
+          {prs.map(p => {
+            const size = SIZE_META.find(s => s.key === p.bucket);
+            const openedAt = new Date(p.openedAt);
+            const rowBody = (
+              <>
+                {p.url ? (
+                  <span className="font-mono text-[13px] font-bold text-accent-text shrink-0">
+                    #{p.prNumber}
+                  </span>
+                ) : (
+                  <span
+                    className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
+                    title={`${p.repo} — no GitHub link (non-GitHub host)`}
+                  >
+                    #{p.prNumber}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[12px] text-ink-secondary">{p.repo}</div>
+                  <div className="text-[11px] text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  {size && (
+                    // size.text (not a fixed text-white): the ramp's light end
+                    // is near-white, so white-on-XS reads as a blank box.
+                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: size.color, color: size.text }}>
+                      {size.label}
+                    </span>
+                  )}
+                  <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
+                    {Number.isNaN(openedAt.getTime()) ? '' : openedAt.toISOString().slice(11, 19)} UTC
+                  </div>
+                </div>
+              </>
+            );
+            // Whole row is the GitHub link (no nested anchors): the <a> IS the
+            // row container, so repo / model / badge / time all open the PR.
+            // Rows without a derived link stay inert.
+            return p.url ? (
+              <li key={`${p.repo}#${p.prNumber}`}>
+                <a
+                  href={p.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open on GitHub"
+                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-chip/40 transition-colors"
+                >
+                  {rowBody}
+                </a>
+              </li>
+            ) : (
+              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+                {rowBody}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export function PrOverviewPage() {
   // The URL query string is the source of truth for every filter, so a refresh
   // or a shared link restores the exact same view. State is seeded from the URL
@@ -126,11 +274,11 @@ export function PrOverviewPage() {
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
+  const modelSel = useToggleSet(csv('model'));
   const [range, setRange] = useState<RangeKey>(initRange);
   const urlGran = searchParams.get('gran');
   const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
   const [gran, setGran] = useState<Granularity>(initGran);
-  const [model, setModel] = useState<string>(searchParams.get('model') ?? '');
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
@@ -139,7 +287,7 @@ export function PrOverviewPage() {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
-    if (model) p.set('model', model);
+    if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (customFrom || customTo) {
       // Explicit range takes precedence over the preset in the URL too.
       if (customFrom) p.set('from', customFrom);
@@ -149,7 +297,7 @@ export function PrOverviewPage() {
     }
     if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, model, range, gran, customFrom, customTo, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -171,10 +319,10 @@ export function PrOverviewPage() {
 
   const dataQs = useMemo(() => {
     const p = new URLSearchParams(baseQs);
-    if (model) p.set('model', model);
+    if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, model, devSel.set]);
+  }, [baseQs, modelSel.set, devSel.set]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -185,7 +333,7 @@ export function PrOverviewPage() {
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
   // once a model or developer is selected.
-  const filtersActive = !!model || devSel.set.size > 0;
+  const filtersActive = modelSel.set.size > 0 || devSel.set.size > 0;
   const optionsQuery = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
@@ -215,13 +363,33 @@ export function PrOverviewPage() {
   const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
   // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
   // spans would add tens of thousands of DOM nodes on a 90d × many-devs grid,
-  // and anything absolutely positioned inside the overflow-x-auto scroller
-  // gets clipped at its edges. Fixed positioning escapes the scroller.
-  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  // and anything positioned inside the overflow-x-auto scroller gets clipped
+  // at its edges. Fixed positioning escapes the scroller — BUT only when the
+  // tooltip is NOT a descendant of a backdrop-filter/transform element (those
+  // create a containing block that silently re-roots the fixed coordinates and
+  // a stacking context that swallows the z-index — the CGLAB-131 defect). So it
+  // renders at the page root, below, in viewport coordinates from placeTooltip.
+  const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number; below: boolean } | null>(null);
   const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    setHeatTip({ text, x: Math.max(8, Math.min(r.left + r.width / 2, window.innerWidth - 8)), y: r.top - 6 });
+    setHeatTip({ text, ...placeTooltip({ left: r.left, top: r.top, width: r.width, height: r.height }, text, window.innerWidth) });
   };
+  // CGLAB-131 — the cell being drilled into (developer × day), or null.
+  const [drill, setDrill] = useState<{ dev: string; day: string } | null>(null);
+  const closeDrill = useCallback(() => setDrill(null), []);
+  const openDrill = useCallback((devKey: string, dayKey: string) => {
+    setHeatTip(null);
+    setDrill({ dev: devKey, day: dayKey });
+  }, []);
+  // A refetch replaces the data the open drill was built from — close it
+  // rather than show a stale (or emptied) list against the new window.
+  useEffect(() => { setDrill(null); }, [d]);
+  const drillPrs = useMemo(() => {
+    if (!drill || !d?.prs) return [];
+    // The server already orders by open time, then repo#number, and applied the
+    // same window/model/developer filters as the heatmap itself.
+    return d.prs.filter(p => p.user_key === drill.dev && p.day === drill.day);
+  }, [drill, d?.prs]);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
@@ -234,14 +402,6 @@ export function PrOverviewPage() {
           <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            className="text-[12px] font-medium rounded-lg border border-border-soft bg-surface text-ink-secondary px-2.5 py-1.5"
-          >
-            <option value="">All models</option>
-            {modelOptions.map(m => <option key={m} value={m}>{m}</option>)}
-          </select>
           <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {RANGES.map(r => {
               const active = !customFrom && !customTo && range === r.key;
@@ -308,6 +468,16 @@ export function PrOverviewPage() {
         onClear={devSel.clear}
         inlineThreshold={6}
         placeholder="Search developers…"
+      />
+
+      <FacetMultiselect
+        label="Model"
+        options={modelOptions}
+        selected={modelSel.set}
+        onToggle={modelSel.toggle}
+        onClear={modelSel.clear}
+        inlineThreshold={6}
+        placeholder="Search models…"
       />
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
@@ -564,11 +734,21 @@ export function PrOverviewPage() {
                             key={day}
                             onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
                             onMouseLeave={() => setHeatTip(null)}
+                            // CGLAB-131 — non-empty cells are drillable: open the PR list.
+                            // (Clear the tooltip so it cannot peek out from the modal.)
+                            // role/tabIndex/keydown keep the drill reachable by keyboard.
+                            onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
+                            role={c > 0 ? 'button' : undefined}
+                            tabIndex={c > 0 ? 0 : undefined}
+                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${dev.user_key} on ${day} — open list` : undefined}
+                            onKeyDown={c > 0 ? (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
+                            } : undefined}
                             className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
                                 ? 'bg-chip border border-dashed border-border-soft'
                                 : 'bg-chip'
-                              : ''}`}
+                              : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
                             style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
                           />
                         );
@@ -578,15 +758,21 @@ export function PrOverviewPage() {
                 })}
               </div>
             </div>
-            {heatTip && (
-              <div
-                className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-md bg-card-glass text-white font-mono text-[10px] px-2 py-1 shadow-lg"
-                style={{ left: heatTip.x, top: heatTip.y }}
-              >
-                {heatTip.text}
-              </div>
-            )}
           </section>
+
+          {/* CGLAB-131 — deliberately OUTSIDE the heatmap section above: a
+              backdrop-filter ancestor would re-root these fixed coordinates
+              (the "tooltip far away" defect) and swallow the z-50 (the z-order
+              defect). Coordinates are viewport-relative, from placeTooltip. */}
+          {heatTip && (
+            <div
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-card-glass text-white font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              style={{ left: heatTip.x, top: heatTip.y }}
+            >
+              {heatTip.text}
+            </div>
+          )}
+          {drill && <PrDrilldownModal dev={drill.dev} day={drill.day} prs={drillPrs} onClose={closeDrill} />}
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">

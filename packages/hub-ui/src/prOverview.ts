@@ -3,12 +3,17 @@
 
 /** Ordinal PR-size ramp (XS→XL): a single teal hue climbing in weight, so a
  *  bigger PR reads as a denser colour. Separate from status colours on purpose. */
+/** Size ramp: light → dark on the dark canvas. `color` is the fill; `text`
+ *  is the label color when text is rendered ON the fill (the drill-down modal
+ *  badge, CGLAB-131) — the ramp's light end is near-white, so one fixed
+ *  `text-white` reads as a blank white box there; light steps take the dark
+ *  primary ink, dark steps take white. */
 export const SIZE_META = [
-  { key: 'xs', label: 'XS', color: '#dbf7f0' },
-  { key: 's', label: 'S', color: '#7fe5ca' },
-  { key: 'm', label: 'M', color: '#04cc98' },
-  { key: 'l', label: 'L', color: '#056f71' },
-  { key: 'xl', label: 'XL', color: '#00332f' },
+  { key: 'xs', label: 'XS', color: '#dbf7f0', text: '#000f3b' },
+  { key: 's', label: 'S', color: '#7fe5ca', text: '#000f3b' },
+  { key: 'm', label: 'M', color: '#04cc98', text: '#000f3b' },
+  { key: 'l', label: 'L', color: '#056f71', text: '#ffffff' },
+  { key: 'xl', label: 'XL', color: '#00332f', text: '#ffffff' },
 ] as const;
 
 export type SizeKey = typeof SIZE_META[number]['key'];

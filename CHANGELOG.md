@@ -2,6 +2,170 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.8] — 2026-09-03
+
+### Fixed
+- **PR Overview drill-down modal** (CGLAB-131 follow-up, user-reported):
+  - Size badges rendered as blank "white boxes" — `text-white` on the ramp's
+    near-white light end (XS `#dbf7f0`, S `#7fe5ca`, M `#04cc98`). `SIZE_META`
+    now carries a per-step label color: dark primary ink (`#000f3b`) on the
+    light steps, white on the dark steps (L/XL). The badge is the only place
+    text sits on the fill, so the change is scoped to it.
+  - Rows with a derived GitHub link are now **whole-row links** (the `<a>` is
+    the row container — no nested anchors), so repo / model / badge / time all
+    open the PR; rows without a link stay inert.
+  - New tests: pure `SIZE_META` text-contrast pin + jsdom page test covering
+    the cell→modal flow, whole-row href without nested anchors, inert
+    no-link rows, and badge contrast per ramp step.
+
+## [1.1.17-beta.7] — 2026-09-03
+
+### Added
+- **PR Overview: per-cell drill-down** (CGLAB-131) — clicking a non-zero
+  "Per developer, per day" heatmap cell opens a modal listing the PRs that
+  developer opened that day (the same resolved PR set the heatmap counts —
+  zero drift), with GitHub links where the hub could derive one
+  (`prUrlFor`: github.com remotes only, documented slug fallback, no
+  guessing for custom hosts). `/v1/prs/overview` now returns that per-PR
+  list (`prs`), and the PR-event SELECT includes `remote_url`.
+- Drill-down modal a11y: focus trap + initial focus + focus restore,
+  body scroll lock, Esc/backdrop/× to close; non-zero cells are
+  keyboard-operable (`role=button`, Enter/Space).
+- **Coverage**: pg-mem e2e test for `/v1/prs/overview` (the jsonb sizing
+  path through the dialect rewriter).
+
+### Fixed
+- **PR Overview tooltip placement / z-order** (CGLAB-131) — the tooltip
+  rendered inside the `backdrop-blur` card section: its `backdrop-filter`
+  became the containing block for the `position:fixed` element (re-rooting
+  its coordinates — the "tooltip far away from the cell" defect) and a
+  stacking context that swallowed the `z-50`. The tooltip now renders at
+  the page root, with placement extracted to a pure, unit-tested
+  `placeTooltip()` (viewport coordinates, edge clamping, flips below when
+  there is no room above).
+
+## [1.1.17-beta.6] — 2026-09-03
+
+### Fixed
+- Re-cut of the 1.1.17 beta line with **no code delta over beta.5** —
+  cut to ship the pre-release flag fix below; superseded by beta.7
+  (same line + the CGLAB-131 PR Overview work).
+- GitHub releases for the 1.1.17 betas are now properly marked
+  **pre-release** (beta.5/4/3 flagged retroactively); "Latest" points at
+  the last stable release (v1.1.16).
+
+## [1.1.17-beta.5] — 2026-09-02
+
+### Fixed
+- **Test runs can no longer touch the real `~/.agenfk`** (item 9c297075) — the
+  structural fix for the 2026-08-31/09-01 hub.json clobber incidents:
+  - Hub/telemetry home paths resolve at CALL time instead of import time
+    (module-level `os.homedir()` captures are gone from telemetry, hub, and CLI
+    rule-sync code), so per-test sandboxing always applies.
+  - Every vitest worker (root + workspace + UI configs) starts with
+    `process.env.HOME` pinned to a per-run sandbox; the real home is exposed as
+    `AGENFK_REAL_HOME` for the tests that verify the pin.
+  - New home-integrity sentinel (`scripts/home-integrity.mjs`) snapshots the
+    protected `~/.agenfk` files before a test run and fails on any drift —
+    wired into `test:home-integrity`, `test:coverage`, and the CI workflow
+    (snapshot before, verify after the test step).
+  - New `test:stryker` script runs Stryker under a spawn-time HOME pin
+    (`scripts/stryker-home-wrap.mjs`) + sentinel: Stryker's forced threads pool
+    keeps a frozen C environ where in-process env changes never reach
+    `os.homedir()`, so the pin is baked into every spawned child instead — an
+    unguarded launch now fails loudly via the `AGENFK_SPAWN_PIN` marker.
+  - All remaining env-override test files (hub CLI, JIRA, migration, port
+    discovery, hub-off/port-discovery routes) migrated to the `vi.mock('os')`
+    homedir-mock pattern, verified green under `--pool threads`.
+
+### Testing
+- Diff-scoped StrykerJS pass (run through the guard): 76 mutants killed on the
+  new code spans; remaining survivors are documented equivalents / per-test
+  coverage attribution artifacts. Full suite 2601 tests across 235 files.
+
+## [1.1.17-beta.4] — 2026-09-02
+
+### Added
+- **Hub admin → Models**: a model id is free text an installation self-reports via
+  `--model <id>`, so one model reaching the hub as `qwen38-27b` and `qwen3.8:27b`
+  appeared as two rows in the PR Overview "By model" table, splitting its PR count
+  and offering two filter chips for one model. Admins can now map a reported
+  spelling to a single desired name. Resolution is a read-time overlay
+  (`model_mappings`), so `events` keeps recording what was actually reported and
+  deleting a mapping puts the dashboards back — no recompute, no migration.
+  Resolution is an exact lookup by deliberate choice: a normalization rule that
+  maps `-` to `:` and `38` to `3.8` would silently merge genuinely different
+  models. Saved links to an old spelling keep resolving, because filter values
+  go through the same mapping as stored ones.
+
+## [1.1.17-beta.3] — 2026-09-02
+
+- **PR Overview dash: multi-select models filter** — the hub-ui PR Overview page's
+  model filter is now a `FacetMultiselect` row (same component as Project/
+  Developer); `?model=` is a CSV end-to-end (URL → toggle-set → data query →
+  match-any on the PR *opener's* model), applied to both the current and
+  previous-period windows so delta badges stay honest. Legacy single-value
+  `?model=x` links keep working (`PrWindow.model` → `models: string[] | null`).
+- **`parseList` hardening** — repeated query params (`?model=a&model=b`, which
+  Express delivers as an array) are normalized to CSV form instead of 500-ing;
+  covers every list filter (users/projects/types/itemTypes/model).
+- **CLI test robustness** — hub deadletter list assertions are now
+  color-independent (ANSI-tolerant), fixing a flake when the verify worker ran
+  with `FORCE_COLOR`.
+ origin/feat/CGLAB-117_hub-per-event-rejections
+
+## [1.1.17-beta.2] — 2026-09-01
+
+Hub org-boundary hardening (CGLAB-117) — after the 31 Aug 2026 incident, a clobbered
+`~/.agenfk/hub.json` made one installation flush another org's queued events; the hub
+rejected all 57 inside a `200 OK` and the flusher deleted them with the batch. This
+release makes that failure mode structurally impossible and gives the operator the
+tools to see and recover from it. See `HUB_ARCHITECTURE.md` §5.6.
+
+### Added
+- **Hub per-event rejection reasons**: `POST /v1/events` now answers
+  `rejections: [{ eventId, reason }]` alongside the counters, with a four-code taxonomy
+  (`invalid`, `org_mismatch`, `foreign_installation`, `hidden_user`).
+- **Flusher org boundary**: only rows stamped for the installation's own org (or the
+  pre-login `''` sentinel) ever enter a batch — enforced in SQL
+  (`hubOutboxPeekDeliverable`), so stale rows never consume attempts and never starve
+  the queue head. Surfaced as `staleOrgDepth` + per-org breakdown in
+  `/internal/hub/status`, `agenfk hub status`, `agenfk hub flush`.
+- **Deadletter instead of silent delete**: hub-refused events are preserved to
+  `~/.agenfk/hub-deadletter.jsonl` *before* leaving the outbox; a failed write keeps
+  the rows for retry. Against an old hub (no per-event detail) nothing is deleted at
+  all — the batch is kept and re-sent idempotently with a loud `lastError`.
+- **`agenfk hub carry-over --from <orgId> --to <orgId>`**: the sole path that rewrites
+  an event's org stamp between named orgs — summary first, typed target confirmation
+  (`--yes` for scripts, refusal on non-TTY), loud warning when the target is not the
+  configured org, and every run audited to `~/.agenfk/hub-audit.jsonl`.
+- **`agenfk hub deadletter`** (list, grouped by org) and
+  **`agenfk hub deadletter discard --org X | --all`** (re-read before write, atomic
+  replace, unparseable lines preserved on `--org`).
+- **Identity gates**: `hub login` (both paths) and `hub join` refuse to persist a
+  `hub.json` unless the URL about to be persisted answers `/healthz` with
+  `service=agenfk-hub` — including the server-supplied `hubUrl` in device/redeem
+  responses, and the invite is no longer POSTed to an ungated URL.
+- **`hub repoint --carry-over`**: an org rename rewrites the outbox only when
+  explicitly asked, through the same confirm + audit sequence; the default now prints
+  the exact carry-over command and leaves the outbox untouched. The hub-ui rename
+  campaign emits `--carry-over` (runners: add `--yes`).
+- **Honest flush reporting**: `agenfk hub flush` exits 1 + red when the cycle ends
+  with `lastError` — including a `200` that carried refusals — and prints yellow
+  carry-over guidance when stale rows remain; `agenfk hub status` shows stale-org and
+  deadletter depths.
+
+### Fixed
+- A `200 OK` containing per-event refusals no longer clears `lastError` — permanent
+  loss no longer prints green.
+- A no-op flush cycle (nothing deliverable) clears a historical `lastError`; `hub
+  flush` no longer stays red forever after a transient failure once the outbox is
+  empty.
+- One corrupt outbox row (invalid JSON payload) could 500 the whole confirmed
+  carry-over rewrite; the rewrite is now `json_valid`-guarded in SQL.
+- `hub login` device flow: a refused/aborted config write no longer gets swallowed by
+  the poll loop's error handling (endless polling instead of refusal).
+
 ## [1.1.0-beta.2] — 2026-06-23
 
 ### Changed

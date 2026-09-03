@@ -31,5 +31,9 @@ export interface SpokeRepointArgs {
  */
 export function spokeRepointCommand(args: SpokeRepointArgs): string {
   const url = String(args.hubUrl).replace(/\/$/, '');
-  return `agenfk hub repoint --url ${url} --org-id ${args.orgId}`;
+  // CGLAB-117: repoint only rewrites the outbox with --carry-over; the
+  // campaign one-liner opts in explicitly so the admin rename flow stays
+  // zero-touch-but-confirmed (the spoke still types the target org or passes
+  // --yes in a fleet runner).
+  return `agenfk hub repoint --url ${url} --org-id ${args.orgId} --carry-over`;
 }

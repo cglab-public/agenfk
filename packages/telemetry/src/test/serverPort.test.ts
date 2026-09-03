@@ -1,19 +1,31 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
-// Sandbox HOME so the tests never touch the developer's real ~/.agenfk/server-port.
-// Must run BEFORE the module under test resolves SERVER_PORT_FILE at import time.
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075).
+//
+// The previous mechanism was a process.env.HOME override. That depends on
+// libuv picking up the mutated env — and under the Stryker child-process
+// runner that linkage is broken on this machine: os.homedir() kept returning
+// the machine home, so the real-fs writes in this file (writeServerPortFile /
+// removeServerPortFile) landed in the REAL ~/.agenfk and a dry run deleted
+// the live server-port file. A mocked homedir pins every path in this file to
+// the sandbox in every runner environment — the same guarantee the vitest
+// HOME pin gives for the other test files.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-serverport-'));
-const realHome = process.env.HOME;
-process.env.HOME = sandboxHome;
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
-// Import after HOME is overridden.
+// Import after the mock is armed. Paths resolve at CALL time (item 9c297075),
+// so the mock is effective regardless of import order.
 const mod = await import('../serverPort.js');
 const {
-  SERVER_PORT_FILE,
+  serverPortFile,
   DEFAULT_API_PORT,
   isPortAvailable,
   findAvailablePort,
@@ -38,14 +50,14 @@ describe('serverPort', () => {
   afterEach(async () => {
     await Promise.all(occupiers.map(s => new Promise<void>(r => s.close(() => r()))));
     occupiers = [];
-    // Restore env but keep HOME pointed at the sandbox.
-    process.env = { ...originalEnv, HOME: sandboxHome };
+    // Restore env vars the getApiUrl tests mutate (HOME is irrelevant — the
+    // homedir mock owns path resolution in this file).
+    process.env = { ...originalEnv };
     removeServerPortFile();
   });
 
   afterAll(() => {
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -86,10 +98,10 @@ describe('serverPort', () => {
       expect(readServerPort()).toBe(45_678);
     });
 
-    it('writes to ~/.agenfk/server-port (sandbox-scoped HOME)', () => {
+    it('writes to ~/.agenfk/server-port (sandbox-scoped homedir)', () => {
       writeServerPortFile(31_415);
       const expected = path.join(sandboxHome, '.agenfk', 'server-port');
-      expect(SERVER_PORT_FILE).toBe(expected);
+      expect(serverPortFile()).toBe(expected);
       expect(fs.readFileSync(expected, 'utf8').trim()).toBe('31415');
     });
 
@@ -100,8 +112,8 @@ describe('serverPort', () => {
     });
 
     it('readServerPort returns null for invalid contents', () => {
-      fs.mkdirSync(path.dirname(SERVER_PORT_FILE), { recursive: true });
-      fs.writeFileSync(SERVER_PORT_FILE, 'not-a-port');
+      fs.mkdirSync(path.dirname(serverPortFile()), { recursive: true });
+      fs.writeFileSync(serverPortFile(), 'not-a-port');
       expect(readServerPort()).toBeNull();
     });
   });

@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
+import { testHomeEnv } from './scripts/vitest-home-pin.mjs';
 
 export default defineConfig({
   define: {
@@ -12,9 +13,18 @@ export default defineConfig({
     },
   },
   test: {
+    // HOME isolation (item 9c297075): pin every test worker to a per-run
+    // sandbox home so no test can ever write into the real ~/.agenfk
+    // (the 2026-08-31 hub.json clobber). Guarantees the JS-level
+    // process.env.HOME sandbox for ALL workers (forks pool: normal runs +
+    // CI — where libuv/os.homedir() follows it). Under Stryker's forced
+    // threads pool the C environ is frozen in the runner's children on this
+    // machine, so os.homedir() needs the spawn-time pin — always launch
+    // Stryker via `npm run test:stryker` (scripts/stryker-home-wrap.mjs).
+    // Stryker reuses this config for its vitest run.
+    env: testHomeEnv(),
     globals: true,
     environment: 'node', // Use node for server/storage
-    resetMocks: true, // reset queued mockResolvedValueOnce/mockRejectedValueOnce between tests
     fileParallelism: false, // run test files serially to prevent filesystem state conflicts
     sequence: { concurrent: false }, // run tests within a file serially
     // Bumped above defaults (5s/10s) to absorb CPU contention when ~1100 tests

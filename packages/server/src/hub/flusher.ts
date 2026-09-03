@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, FlusherStatus } from './types.js';
@@ -16,6 +17,18 @@ const HALT_AFTER_4XX_ATTEMPTS = 5;
  */
 const RETRYABLE_4XX = new Set([408, 425, 429]);
 const MAX_BACKOFF_MS = 5 * 60_000;
+
+/**
+ * Where hub-rejected events are preserved before their outbox rows are
+ * deleted (CGLAB-117). Same idiom as hubClient.ts's HUB_CONFIG_PATH; the CLI
+ * `hub deadletter` commands duplicate this path expression (packages/cli/src/
+ * commands/hub.ts deadletterFile) — the packages share no module, so rename
+ * here and the CLI reader must move with it (hub-carryover-deadletter.test.ts
+ * pins the literal against drift).
+ */
+export function defaultDeadletterPath(): string {
+  return path.join(os.homedir(), '.agenfk', 'hub-deadletter.jsonl');
+}
 
 /**
  * Resolve the running agenfk version once at module load. Story 7 of
@@ -95,6 +108,8 @@ export class Flusher {
     private intervalMs: number = DEFAULT_INTERVAL_MS,
     private batchSize: number = DEFAULT_BATCH_SIZE,
     httpClient?: AxiosInstance,
+    /** See defaultDeadletterPath(). Injectable for tests. */
+    private deadletterPath: string = defaultDeadletterPath(),
   ) {
     this.http = httpClient ?? axios.create({
       baseURL: config.url,
@@ -114,6 +129,8 @@ export class Flusher {
       halted: false,
       consecutiveFailures: 0,
       rejectedByHub: 0,
+      staleOrgDepth: 0,
+      deadletterDepth: 0,
     };
   }
 
@@ -128,9 +145,18 @@ export class Flusher {
   }
 
   getStatus(): FlusherStatus {
+    // Stale-org depth is computed from the outbox itself, not cached: rows can
+    // be appended by the request path at any time, and carry-over/discard
+    // (CLI) removes them outside the flusher's knowledge.
+    let staleOrgDepth = 0;
+    for (const [org, n] of Object.entries(this.storage.hubOutboxOrgCounts())) {
+      if (org !== this.config.orgId && org !== PENDING_ORG) staleOrgDepth += n;
+    }
     return {
       ...this.status,
       outboxDepth: this.storage.hubOutboxCount(),
+      staleOrgDepth,
+      deadletterDepth: countJsonlLines(this.deadletterPath),
       // Surfaced so the CLI can warn about an install that is stuck WITHOUT
       // being halted — a retired hub URL answering 404 HTML now backs off
       // forever instead of halting, and would otherwise be invisible.
@@ -222,20 +248,33 @@ export class Flusher {
   }
 
   private async flushOnce(): Promise<void> {
-    const allRows = this.storage.hubOutboxPeek(this.batchSize);
-    // Never ship pending-org sentinel rows (orgId '') — they were queued while
-    // the hub was disconnected and must be stamped with the real orgId first
-    // (boot / `hub login` does that). The hub would reject them per-event
-    // inside a 200 response and flushOnce would then DELETE them — silent loss.
-    const rows = allRows.filter(r => {
-      try { return JSON.parse(r.payload).orgId !== PENDING_ORG; } catch { return true; }
-    });
+    // The org boundary lives in the SQL window itself (CGLAB-117): rows whose
+    // payload stamps a different org — or the pending sentinel — never enter
+    // the batch, and stale rows at the head of the oldest-first window cannot
+    // starve the deliverable ones behind them (a post-peek JS filter would
+    // stall delivery forever once >=batchSize stale rows queue up ahead of
+    // them — a silent stall replacing the silent loss). Shipping a
+    // foreign-stamped row is exactly how the 31 Aug incident destroyed 57
+    // events: rejected inside a 200, deleted with the batch. Stale rows stay
+    // in the outbox awaiting an explicit `agenfk hub carry-over` or discard,
+    // and surface via staleOrgDepth. Rows with no orgId field still ship (no
+    // stamp, nothing to leak — the hub judges them); unparseable payloads
+    // never ship: they can never deliver and would throw for the WHOLE batch
+    // on the way into the POST.
+    const rows = this.storage.hubOutboxPeekDeliverable(this.batchSize, this.config.orgId);
     if (rows.length === 0) {
       this.status.lastFlushAt = new Date().toISOString();
+      // A cycle with nothing deliverable is not a failed attempt. Without
+      // this clear, a transport hiccup from an hour ago keeps `hub flush`
+      // printing red + exit 1 forever once the outbox empties (or holds only
+      // stale rows awaiting carry-over) — a false alarm with no actionable
+      // content, and it made the CLI's stale-row guidance unreachable.
+      this.status.lastError = null;
       return;
     }
     const events = rows.map(r => JSON.parse(r.payload));
     const ids = rows.map(r => r.event_id);
+    let refusedNow = 0;
     try {
       const resp = await this.http.post('/v1/events', { events });
       if (!isHubEventsAck(resp?.data)) {
@@ -243,23 +282,82 @@ export class Flusher {
         // rather than deleting events into a captive portal.
         throw new Error('Response was not an agenfk-hub ingest acknowledgement');
       }
-      // The hub can accept the request and still refuse individual events (a
-      // foreign installation id, a hidden user, a malformed payload). Deleting
-      // them is correct — a retry is refused identically — but it must not be
-      // silent, because the count is the only evidence the events existed.
-      const refused = Number((resp?.data as { rejected?: unknown })?.rejected ?? 0);
-      if (Number.isFinite(refused) && refused > 0) {
-        this.status.rejectedByHub += refused;
+      const data = resp.data as { rejected?: unknown; rejections?: unknown };
+      const refused = Number(data?.rejected ?? 0);
+      const rejections = Array.isArray(data?.rejections) ? (data.rejections as Array<{ eventId?: unknown; reason?: unknown }>) : null;
+
+      if (rejections) {
+        // NEW hub: per-event detail. Delete only the accepted rows; rejected
+        // rows are preserved in the deadletter file FIRST, then removed from
+        // the outbox — a failed write throws here, leaving the rows in place
+        // for retry rather than repeating the silent loss this exists to fix.
+        const reasonByEventId = new Map<string, string>();
+        const batchIds = new Set(ids);
+        for (const rj of rejections) {
+          // Entries the hub could not attribute (eventId null — it could not
+          // read one — or an id absent from this batch) cannot be mapped to a
+          // row. The spoke writes its own payloads, so an unattributable entry
+          // is a hub-side curiosity, not a loss to record.
+          if (typeof rj?.eventId === 'string' && batchIds.has(rj.eventId)) {
+            reasonByEventId.set(rj.eventId, typeof rj.reason === 'string' ? rj.reason : 'unknown');
+          }
+        }
+        // Rows whose payload lost its usable eventId can never be attributed
+        // by either side — the hub reports them with eventId null. They are
+        // rejected by DEFINITION (the hub's isValidEvent requires a string
+        // eventId), so they join the deadletter as 'invalid' instead of being
+        // deleted silently. The spoke writes its own payloads, so a row gets
+        // here only through DB corruption.
+        for (const r of rows) {
+          const parsedEventId = (JSON.parse(r.payload) as { eventId?: unknown }).eventId;
+          if (!(typeof parsedEventId === 'string' && parsedEventId.length > 0) && !reasonByEventId.has(r.event_id)) {
+            reasonByEventId.set(r.event_id, 'invalid');
+          }
+        }
+        if (reasonByEventId.size > 0) {
+          this.deadletterRows(rows.filter(r => reasonByEventId.has(r.event_id)), reasonByEventId);
+          this.status.rejectedByHub += reasonByEventId.size;
+          this.status.lastRejectionAt = new Date().toISOString();
+          // Refusals must be as loud as transport failures: `hub flush` and
+          // the preAction banner key off lastError, and a 200-with-rejections
+          // that clears it would put the events' disappearance right back to
+          // where 31 Aug was — invisible inside a green success.
+          this.status.lastError = `hub refused ${reasonByEventId.size} event(s) in the last batch — preserved in ${this.deadletterPath}; see \`agenfk hub deadletter\``;
+          refusedNow = reasonByEventId.size;
+          console.warn(
+            `[HUB] The hub refused ${reasonByEventId.size} event(s) from this batch; they are preserved in ${this.deadletterPath}. `
+            + `${this.status.rejectedByHub} refused in total. Reasons usually mean a re-onboarded or hidden identity — `
+            + 'see `agenfk hub deadletter`.',
+          );
+        }
+        // Accepted AND rejected rows both leave the outbox here (rejected ones
+        // only after the deadletter write above succeeded — it throws first).
+      } else if (refused > 0) {
+        // OLD hub (predates the rejections field): it refused something but
+        // cannot say which events. Deleting the batch is the 31 Aug failure
+        // mode again; keeping it costs nothing because hub-side INSERT OR
+        // IGNORE makes re-sends idempotent. Nothing is lost yet, so
+        // rejectedByHub (a lost-events counter) must NOT tick — but the kept
+        // rows must age like any failed delivery: attempts climb, the cadence
+        // backs off toward the cap, the warn stops being a 30s siren, and the
+        // CLI banner can see the install is stuck. Halting is deliberately
+        // NOT used: halt's ping-probe recovery would instantly un-halt a
+        // healthy-but-old hub, so escalating the cadence is the real lever.
+        this.status.lastError = `hub rejected ${refused} of ${rows.length} events (no per-event detail - upgrade hub)`;
+        this.status.lastFlushAt = new Date().toISOString();
         this.status.lastRejectionAt = new Date().toISOString();
-        console.warn(
-          `[HUB] The hub refused ${refused} event(s) in this batch; they have been discarded. `
-          + `${this.status.rejectedByHub} refused in total. This usually means the installation `
-          + 'is registered to a different organisation — re-run `agenfk hub login` to re-onboard it.',
-        );
+        this.status.consecutiveFailures++;
+        this.storage.hubOutboxIncrementAttempt(ids, 'hub rejected events without per-event detail (old hub)');
+        const maxAttempts = Math.max(...rows.map(r => r.attempts + 1));
+        this.nextEligibleAt = Date.now() + this.backoffMs(maxAttempts);
+        console.warn(`[HUB] ${this.status.lastError} — batch kept for retry; re-sends are idempotent.`);
+        return;
       }
       this.storage.hubOutboxDelete(ids);
       this.status.lastFlushAt = new Date().toISOString();
-      this.status.lastError = null;
+      // Transport is healthy, but refusals this cycle keep lastError set —
+      // clearing it here is what made permanent loss look like success.
+      if (refusedNow === 0) this.status.lastError = null;
       this.status.consecutiveFailures = 0;
       this.nextEligibleAt = 0;
     } catch (e: any) {
@@ -275,11 +373,58 @@ export class Flusher {
       // Backoff applies either way. On the authoritative path it stops us
       // hammering the hub through the attempts that lead up to a halt; on the
       // transport path it is the whole recovery strategy.
-      const backoff = Math.min(MAX_BACKOFF_MS, this.intervalMs * Math.pow(2, maxAttempts));
-      this.nextEligibleAt = Date.now() + backoff;
+      this.nextEligibleAt = Date.now() + this.backoffMs(maxAttempts);
       if (authoritative4xx && maxAttempts >= HALT_AFTER_4XX_ATTEMPTS) {
         this.status.halted = true;
       }
     }
+  }
+
+  /** Exponential retry cadence capped at MAX_BACKOFF_MS; shared by the
+   *  transport-failure path and the old-hub keep-batch path. */
+  private backoffMs(maxAttempts: number): number {
+    return Math.min(MAX_BACKOFF_MS, this.intervalMs * Math.pow(2, maxAttempts));
+  }
+
+  /**
+   * Append rejected rows to the deadletter file (JSONL, one line per event)
+   * BEFORE their outbox rows are deleted. A write failure throws out of
+   * flushOnce — the batch stays in the outbox and retries — so this path can
+   * only ever duplicate a deadletter line (harmless, eventId is in it), never
+   * lose one. `payload` is embedded parsed when possible, raw when not.
+   */
+  private deadletterRows(
+    rows: Array<{ event_id: string; occurred_at: string; payload: string }>,
+    reasonByEventId: Map<string, string>,
+  ): void {
+    const deadletteredAt = new Date().toISOString();
+    const lines = rows.map(r => {
+      let payload: unknown = r.payload;
+      try { payload = JSON.parse(r.payload); } catch { /* keep the raw string */ }
+      return JSON.stringify({
+        eventId: r.event_id,
+        occurredAt: r.occurred_at,
+        deadletteredAt,
+        // The rows passed in are exactly those keyed in the map, so get()
+        // cannot miss — no fallback.
+        reason: reasonByEventId.get(r.event_id)!,
+        payload,
+      });
+    });
+    fs.mkdirSync(path.dirname(this.deadletterPath), { recursive: true });
+    // 0600: the lines embed actor.osUser/gitEmail and item titles — tenant
+    // data, same standard as hub.json (server.ts). appendFileSync's mode
+    // applies only on creation; chmod covers the pre-existing-file case.
+    fs.appendFileSync(this.deadletterPath, lines.join('\n') + '\n', { mode: 0o600 });
+    try { fs.chmodSync(this.deadletterPath, 0o600); } catch { /* best effort */ }
+  }
+}
+
+/** Line count of a JSONL file; 0 when it does not exist yet. */
+function countJsonlLines(filePath: string): number {
+  try {
+    return fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean).length;
+  } catch {
+    return 0;
   }
 }

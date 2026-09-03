@@ -14,6 +14,13 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
+// Mockable homedir (item 9c297075) — the JIRA block re-points it per test so
+// its token/config cycles can never touch the real ~/.agenfk under any runner.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
+
 const TEST_DB = path.resolve('./server-test-db.sqlite');
 
 describe('Server API', () => {
@@ -305,8 +312,15 @@ describe('Server API', () => {
 // ── JIRA Integration Tests ────────────────────────────────────────────────────
 
 describe('JIRA Integration', () => {
-  const jiraTokenPath = path.join(os.homedir(), '.agenfk', 'jira-token.json');
-  const jiraConfigPath = path.join(os.homedir(), '.agenfk', 'config.json');
+  // Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075):
+  // the paths are lazy so the beforeEach re-arm (after vi.resetAllMocks) is
+  // always effective, and the token/config cycles can never touch the real
+  // ~/.agenfk under any runner (env overrides only work while libuv follows
+  // the JS env — not under Stryker's threads pool).
+  const jiraSandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-server-jira-'));
+  fs.mkdirSync(path.join(jiraSandboxHome, '.agenfk'), { recursive: true });
+  const jiraTokenPath = () => path.join(os.homedir(), '.agenfk', 'jira-token.json');
+  const jiraConfigPath = () => path.join(os.homedir(), '.agenfk', 'config.json');
 
   const testToken = {
     access_token: 'test-access-token',
@@ -320,13 +334,13 @@ describe('JIRA Integration', () => {
 
   beforeEach(async () => {
     // Clean token
-    if (fs.existsSync(jiraTokenPath)) fs.unlinkSync(jiraTokenPath);
+    if (fs.existsSync(jiraTokenPath())) fs.unlinkSync(jiraTokenPath());
     // Backup config and remove JIRA section
-    if (fs.existsSync(jiraConfigPath)) {
-      originalConfig = fs.readFileSync(jiraConfigPath, 'utf8');
+    if (fs.existsSync(jiraConfigPath())) {
+      originalConfig = fs.readFileSync(jiraConfigPath(), 'utf8');
       const cfg = JSON.parse(originalConfig);
       delete cfg.jira;
-      fs.writeFileSync(jiraConfigPath, JSON.stringify(cfg, null, 2));
+      fs.writeFileSync(jiraConfigPath(), JSON.stringify(cfg, null, 2));
     } else {
       originalConfig = null;
     }
@@ -336,13 +350,15 @@ describe('JIRA Integration', () => {
     pkceStore.clear();
     clearJiraValidationCache();
     vi.resetAllMocks();
+    // Re-arm: resetAllMocks reverted the homedir mock to its factory default.
+    vi.mocked(os.homedir).mockReturnValue(jiraSandboxHome);
   });
 
   afterEach(() => {
-    if (fs.existsSync(jiraTokenPath)) fs.unlinkSync(jiraTokenPath);
+    if (fs.existsSync(jiraTokenPath())) fs.unlinkSync(jiraTokenPath());
     // Restore config
     if (originalConfig !== null) {
-      fs.writeFileSync(jiraConfigPath, originalConfig);
+      fs.writeFileSync(jiraConfigPath(), originalConfig);
     }
   });
 
@@ -378,7 +394,7 @@ describe('JIRA Integration', () => {
     it('returns connected:true with cloudId and email when token is valid', async () => {
       process.env.JIRA_CLIENT_ID = 'cid';
       process.env.JIRA_CLIENT_SECRET = 'csec';
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const axios = (await import('axios')).default as any;
       // Mock the /myself validation call
       axios.mockResolvedValueOnce({ data: { emailAddress: 'test@example.com' } });
@@ -393,7 +409,7 @@ describe('JIRA Integration', () => {
     it('returns connected:false with reason when token is expired and refresh fails', async () => {
       process.env.JIRA_CLIENT_ID = 'cid';
       process.env.JIRA_CLIENT_SECRET = 'csec';
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const axios = (await import('axios')).default as any;
       const err401 = Object.assign(new Error('Unauthorized'), { response: { status: 401 } });
       // Validation call to /myself returns 401
@@ -410,7 +426,7 @@ describe('JIRA Integration', () => {
     it('returns connected:true when Atlassian API is unreachable (network error)', async () => {
       process.env.JIRA_CLIENT_ID = 'cid';
       process.env.JIRA_CLIENT_SECRET = 'csec';
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const axios = (await import('axios')).default as any;
       // Network error (no response property)
       axios.mockRejectedValueOnce(new Error('ECONNREFUSED'));
@@ -441,11 +457,11 @@ describe('JIRA Integration', () => {
     });
 
     it('reads config from ~/.agenfk/config.json jira key', async () => {
-      const cfg = fs.existsSync(jiraConfigPath)
-        ? JSON.parse(fs.readFileSync(jiraConfigPath, 'utf8'))
+      const cfg = fs.existsSync(jiraConfigPath())
+        ? JSON.parse(fs.readFileSync(jiraConfigPath(), 'utf8'))
         : {};
       cfg.jira = { clientId: 'cfg-client-id', clientSecret: 'cfg-secret' };
-      fs.writeFileSync(jiraConfigPath, JSON.stringify(cfg, null, 2));
+      fs.writeFileSync(jiraConfigPath(), JSON.stringify(cfg, null, 2));
 
       const res = await request(app).get('/jira/oauth/authorize');
       expect(res.status).toBe(302);
@@ -492,8 +508,8 @@ describe('JIRA Integration', () => {
       const res = await request(app).get('/jira/oauth/callback?code=auth-code&state=test-state');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('jira=connected');
-      expect(fs.existsSync(jiraTokenPath)).toBe(true);
-      const saved = JSON.parse(fs.readFileSync(jiraTokenPath, 'utf8'));
+      expect(fs.existsSync(jiraTokenPath())).toBe(true);
+      const saved = JSON.parse(fs.readFileSync(jiraTokenPath(), 'utf8'));
       expect(saved.cloudId).toBe('cloud-123');
       expect(saved.email).toBe('user@test.com');
     });
@@ -507,7 +523,7 @@ describe('JIRA Integration', () => {
     });
 
     it('returns project list when connected', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const axios = (await import('axios')).default as any;
       axios.mockResolvedValueOnce({
         data: { values: [{ id: '10001', key: 'PROJ', name: 'My Project', projectTypeKey: 'software' }] },
@@ -527,7 +543,7 @@ describe('JIRA Integration', () => {
     });
 
     it('returns issues with mapped types', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const axios = (await import('axios')).default as any;
       axios.mockResolvedValueOnce({
         data: {
@@ -556,13 +572,13 @@ describe('JIRA Integration', () => {
     });
 
     it('returns 400 when items array missing or empty', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const res = await request(app).post('/jira/import').send({ projectId: 'p1' });
       expect(res.status).toBe(400);
     });
 
     it('imports issues and creates AgEnFK items', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const projRes = await request(app).post('/projects').send({ name: 'JIRA Import Test' });
       const projectId = projRes.body.id;
 
@@ -589,7 +605,7 @@ describe('JIRA Integration', () => {
     });
 
     it('records errors for failed issue fetches', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const projRes = await request(app).post('/projects').send({ name: 'JIRA Err Test' });
       const projectId = projRes.body.id;
 
@@ -609,11 +625,11 @@ describe('JIRA Integration', () => {
   // ── POST /jira/disconnect ────────────────────────────────────────────────
   describe('POST /jira/disconnect', () => {
     it('removes token file and returns disconnected:true', async () => {
-      fs.writeFileSync(jiraTokenPath, JSON.stringify(testToken));
+      fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
       const res = await request(app).post('/jira/disconnect');
       expect(res.status).toBe(200);
       expect(res.body.disconnected).toBe(true);
-      expect(fs.existsSync(jiraTokenPath)).toBe(false);
+      expect(fs.existsSync(jiraTokenPath())).toBe(false);
     });
 
     it('succeeds even when token file does not exist', async () => {
@@ -642,4 +658,10 @@ describe('JIRA Integration', () => {
       }
     });
   });
+
+  afterAll(() => {
+    vi.mocked(os.homedir).mockRestore();
+    try { fs.rmSync(jiraSandboxHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
 });

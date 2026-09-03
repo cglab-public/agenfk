@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import axios from 'axios';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
-import { HubClient, Flusher, loadHubConfig, HUB_CONFIG_FILE } from '../hub';
+import { HubClient, Flusher, loadHubConfig, hubConfigPath } from '../hub';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-client-test-${process.pid}.sqlite`);
 const cleanupDb = () => {
@@ -132,10 +132,11 @@ describe('loadHubConfig', () => {
     delete process.env.AGENFK_HUB_URL;
     delete process.env.AGENFK_HUB_TOKEN;
     delete process.env.AGENFK_HUB_ORG;
-    // HUB_CONFIG_FILE points at user home — only check that loader returns null
-    // when env is empty AND the file is unreadable. (We avoid mutating the user's
-    // real ~/.agenfk/hub.json.)
-    if (!fs.existsSync(HUB_CONFIG_FILE)) {
+    // hubConfigPath() resolves against the CURRENT home (item 9c297075) — under
+    // the vitest HOME pin that is the per-run sandbox, never the machine home.
+    // Only check that loader returns null when env is empty AND the file is
+    // unreadable.
+    if (!fs.existsSync(hubConfigPath())) {
       expect(loadHubConfig()).toBeNull();
     }
   });

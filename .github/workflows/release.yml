@@ -70,7 +70,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json packages/*/package.json
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          # The documented release flow bumps locally first (bump-version.mjs,
+          # committed with the lockfile), so by the time this workflow runs the
+          # manifests usually already carry the target version — `git commit`
+          # then exits 1 on a clean tree and `set -e` kills the release. A
+          # no-op bump is success, not failure.
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}" || echo "Version already current on this ref — nothing to bump."
           git push
 
       - name: Install dependencies

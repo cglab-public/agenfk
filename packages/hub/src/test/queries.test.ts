@@ -505,6 +505,71 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.byModel[0].model).toBe('claude-sonnet-4-6');
   });
 
+  it('accepts a CSV of models (multi-select) and matches any', async () => {
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-opus-4-8,claude-sonnet-4-6')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3); // opus PRs #1 #2 + sonnet PR #3
+    expect(r.body.byModel.map((m: any) => m.model).sort()).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
+  });
+
+  it('trims whitespace and ignores empty entries in the model CSV', async () => {
+    // %20 = space: " claude-opus-4-8 , ,claude-sonnet-4-6 "
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=%20claude-opus-4-8%20,%20,claude-sonnet-4-6%20')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3);
+  });
+
+  it('an unknown model in the CSV matches nothing extra', async () => {
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-sonnet-4-6,no-such-model')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(1);
+  });
+
+  it('a model CSV that resolves to nothing returns zero PRs (no fallback to all)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?model=no-such-model').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(0);
+  });
+
+  it('a model param with only empty entries applies no filter (all models)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?model=,').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3); // empty entries dropped → null → no filter
+  });
+
+  it('repeated model params (?model=a&model=b) are parsed, not a 500', async () => {
+    // Express delivers repeated params as an array; parseList must normalize.
+    const r = await supertest(app)
+      .get('/v1/prs/overview?model=claude-opus-4-8&model=claude-sonnet-4-6')
+      .set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.totals.prs).toBe(3);
+  });
+
+  it('the model filter applies to the previous-period window too (delta honesty)', async () => {
+    // Current window (from 05-04): only bob's sonnet PR#3. The previous
+    // equal-length window holds alice's two opus PRs — with the model filter
+    // they must be excluded from `previous` as well, not just the current totals.
+    const filtered = await supertest(app)
+      .get('/v1/prs/overview?model=claude-sonnet-4-6&from=2026-05-04T00:00:00Z')
+      .set('Cookie', cookie);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.totals.prs).toBe(1);
+    expect(filtered.body.previous.prs).toBe(0);
+
+    // Same window without the model filter: previous period holds alice's two PRs.
+    const unfiltered = await supertest(app)
+      .get('/v1/prs/overview?from=2026-05-04T00:00:00Z')
+      .set('Cookie', cookie);
+    expect(unfiltered.body.previous.prs).toBe(2);
+  });
+
   it('filters by date range', async () => {
     const r = await supertest(app).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -538,5 +603,33 @@ describe('GET /v1/prs/overview', () => {
     // alice opened PR#1 (xs) and PR#2 (m, latest) on 05-03
     expect(may3.devBySize.xs).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
     expect(may3.devBySize.m).toEqual([{ user_key: 'alice@acme.com', count: 1 }]);
+  });
+
+  it('exposes the per-PR drill-down list with GitHub links (CGLAB-131)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    // the same 3 resolved PRs as the totals — nothing more, nothing less
+    expect(r.body.prs).toHaveLength(3);
+    const p1 = r.body.prs.find((p: any) => p.prNumber === 1);
+    expect(p1).toMatchObject({
+      repo: 'acme/api',
+      user_key: 'alice@acme.com',
+      model: 'claude-opus-4-8',
+      day: '2026-05-03',
+      bucket: 'xs',
+      url: 'https://github.com/acme/api/pull/1',
+    });
+    // PR#2 counted at its LATEST (m) size, with its own link
+    const p2 = r.body.prs.find((p: any) => p.prNumber === 2);
+    expect(p2.bucket).toBe('m');
+    expect(p2.url).toBe('https://github.com/acme/api/pull/2');
+  });
+
+  it('applies the developer filter to the drill-down list (opener-based)', async () => {
+    const r = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.prs).toHaveLength(1);
+    expect(r.body.prs[0].prNumber).toBe(3);
+    expect(r.body.prs[0].url).toBe('https://github.com/acme/api/pull/3');
   });
 });

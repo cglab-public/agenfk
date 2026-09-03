@@ -24,6 +24,16 @@ export interface FlusherStatus {
   rejectedByHub: number;
   /** When the hub last refused events, if ever. */
   lastRejectionAt?: string | null;
+  /**
+   * Outbox rows whose embedded orgId differs from the config org (CGLAB-117).
+   * They are never delivered under current credentials — the 31 Aug incident
+   * shipped such rows, lost them to a 2xx-with-rejections, and deleted them.
+   * They wait in the outbox for `agenfk hub carry-over` or discard. The
+   * PENDING_ORG sentinel is excluded (awaiting-stamp is a different condition).
+   */
+  staleOrgDepth: number;
+  /** Line count of the deadletter file (~/.agenfk/hub-deadletter.jsonl), 0 when absent. */
+  deadletterDepth: number;
 }
 
 export type RecordEventInput = Omit<HubEvent, 'eventId' | 'installationId' | 'orgId' | 'occurredAt' | 'actor'> & {

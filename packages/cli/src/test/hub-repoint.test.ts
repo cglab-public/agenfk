@@ -4,9 +4,15 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// Sandbox homedir via a CALL-TIME mock of os.homedir() (item 9c297075) —
+// runner-independent. Replaces the old process.env.HOME override, which only
+// works while libuv follows the JS env (not under Stryker's threads pool).
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-repoint-'));
-const realHome = process.env.HOME;
-process.env.HOME = sandboxHome;
+vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const { mockGet, mockPost } = vi.hoisted(() => ({
   mockGet: vi.fn(),
@@ -76,8 +82,7 @@ describe('agenfk hub repoint', () => {
   });
 
   afterAll(() => {
-    if (realHome === undefined) delete process.env.HOME;
-    else process.env.HOME = realHome;
+    vi.mocked(os.homedir).mockRestore();
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* */ }
   });
 
@@ -122,6 +127,9 @@ describe('agenfk hub repoint', () => {
       'node', 'agenfk', 'hub', 'repoint',
       '--url', 'https://afk-hub.prd.cglab.com',
       '--org-id', 'cglab',
+      // CGLAB-117 story 4: the rewrite now requires an explicit opt-in
+      // (--carry-over, --yes skips the typed confirmation). Spec-mandated.
+      '--carry-over', '--yes',
       '--no-restart',
     ]);
 
@@ -169,7 +177,7 @@ describe('agenfk hub repoint', () => {
 
     await program.parseAsync([
       'node', 'agenfk', 'hub', 'repoint',
-      '--url', 'https://prod', '--org-id', 'cglab', '--no-restart',
+      '--url', 'https://prod', '--org-id', 'cglab', '--carry-over', '--yes', '--no-restart',
     ]);
     // hub.json IS updated even though outbox rewrite couldn't reach the local server.
     expect(JSON.parse(fs.readFileSync(HUB_CONFIG, 'utf8')).orgId).toBe('cglab');

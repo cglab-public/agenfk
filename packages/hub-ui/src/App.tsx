@@ -13,6 +13,7 @@ import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
 import { AdminRepoint } from './pages/AdminRepoint';
 import { AdminIdentities } from './pages/AdminIdentities';
+import { AdminModels } from './pages/AdminModels';
 import { AdminOrg } from './pages/AdminOrg';
 import { Layout } from './components/Layout';
 
@@ -65,6 +66,7 @@ export function App() {
         <Route path="installations" element={<AdminInstallations />} />
         <Route path="repoint" element={<AdminRepoint />} />
         <Route path="identities" element={<AdminIdentities />} />
+        <Route path="models" element={<AdminModels />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>

@@ -30,6 +30,21 @@ export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 
 
+/**
+ * Per-event rejection reasons reported in the /v1/events response (CGLAB-117).
+ * The 31 Aug 2026 incident showed that a bare `rejected` counter leaves both
+ * sides blind to WHICH events were lost — the flusher deletes the batch on any
+ * 200, so rejected events otherwise vanish with no trace on either side.
+ * Backward compatible: the legacy counters are unchanged and this field is
+ * purely additive; old spokes ignore it.
+ */
+export type EventRejectionReason = 'invalid' | 'org_mismatch' | 'foreign_installation' | 'hidden_user';
+export interface EventRejection {
+  /** Best-effort: null when the event had no usable eventId (often why it is invalid). */
+  eventId: string | null;
+  reason: EventRejectionReason;
+}
+
 function isValidEvent(e: any): e is HubEvent {
   return (
     e &&
@@ -173,6 +188,11 @@ export function eventsRouter(ctx: HubServerContext): Router {
     let rejected = 0;
     let hiddenDropped = 0;
     const seenInstallations = new Set<string>();
+    const rejections: EventRejection[] = [];
+    // Best-effort eventId for events that fail isValidEvent: they may lack it
+    // entirely, which is often the very reason they are invalid.
+    const eventIdOf = (ev: any): string | null =>
+      ev && typeof ev.eventId === 'string' && ev.eventId.length > 0 ? ev.eventId : null;
 
     // CGLAB-31: people hidden by an admin stop emitting go-forward data.
     // Load the org's hidden user_keys once per batch; events whose user_key
@@ -261,15 +281,16 @@ export function eventsRouter(ctx: HubServerContext): Router {
 
     await ctx.db.transaction(async () => {
       for (const e of events) {
-        if (!isValidEvent(e)) { rejected++; continue; }
-        if (e.orgId !== orgId) { rejected++; continue; }
-        if (keyInstallation && e.installationId !== keyInstallation) { rejected++; continue; }
-        if (foreignInstalls.has(e.installationId)) { rejected++; continue; }
+        if (!isValidEvent(e)) { rejected++; rejections.push({ eventId: eventIdOf(e), reason: 'invalid' }); continue; }
+        // The tenancy watermark: the event's org must match the token's org.
+        if (e.orgId !== orgId) { rejected++; rejections.push({ eventId: e.eventId, reason: 'org_mismatch' }); continue; }
+        if (keyInstallation && e.installationId !== keyInstallation) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
+        if (foreignInstalls.has(e.installationId)) { rejected++; rejections.push({ eventId: e.eventId, reason: 'foreign_installation' }); continue; }
         if (e.type === 'tokens.logged') { skipped++; continue; }
         // Resolve BEFORE the hidden check: hiding applies to the person, so a
         // merged-away key must not be a hole in the rule.
         const userKey = resolveAliasKey(userKeyFor(e.actor, e.installationId), aliasMap);
-        if (hiddenUserKeys.has(userKey)) { hiddenDropped++; continue; }
+        if (hiddenUserKeys.has(userKey)) { hiddenDropped++; rejections.push({ eventId: e.eventId, reason: 'hidden_user' }); continue; }
         // The installation row has to follow the identity too. The upsert below
         // COALESCEs the reported git_email over whatever is stored, so a machine
         // still configured with a merged-away address used to overwrite the
@@ -475,7 +496,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
-    res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader });
+    res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
   });
 
   return router;

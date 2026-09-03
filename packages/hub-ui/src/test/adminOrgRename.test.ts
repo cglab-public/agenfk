@@ -46,12 +46,15 @@ describe('validateOrgIdInput', () => {
 
 describe('spokeRepointCommand', () => {
   it('builds the canonical one-liner using window-origin URL and the new org id', () => {
+    // Story d9b756c0 (CGLAB-117): repoint only rewrites the outbox with
+    // --carry-over, so the campaign one-liner must carry the flag to keep the
+    // admin rename flow zero-touch-but-confirmed.
     expect(spokeRepointCommand({ hubUrl: 'https://afk-hub.prd.cglab.com', orgId: 'cglab' }))
-      .toBe('agenfk hub repoint --url https://afk-hub.prd.cglab.com --org-id cglab');
+      .toBe('agenfk hub repoint --url https://afk-hub.prd.cglab.com --org-id cglab --carry-over');
   });
   it('strips a trailing slash from the URL', () => {
     expect(spokeRepointCommand({ hubUrl: 'https://hub.example.com/', orgId: 'foo' }))
-      .toBe('agenfk hub repoint --url https://hub.example.com --org-id foo');
+      .toBe('agenfk hub repoint --url https://hub.example.com --org-id foo --carry-over');
   });
   it('shell-quotes nothing for safe values (no surprises in the copy)', () => {
     // Both inputs already pass the strict orgId regex / URL parsing,

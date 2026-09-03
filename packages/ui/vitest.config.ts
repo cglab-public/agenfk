@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { testHomeEnv } from '../../scripts/vitest-home-pin.mjs';
 
 export default defineConfig({
   plugins: [react()],
@@ -7,6 +8,9 @@ export default defineConfig({
     __AGENFK_VERSION__: JSON.stringify('test'),
   },
   test: {
+    // HOME isolation (item 9c297075) — defense in depth: the UI specs do no
+    // home fs writes today, but a future one would land in the sandbox.
+    env: testHomeEnv(),
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     globals: true,

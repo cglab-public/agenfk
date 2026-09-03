@@ -7,11 +7,16 @@ import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import { HubConfig, RecordEventInput } from './types.js';
 import { resolveActor } from './identity.js';
 
-const HUB_CONFIG_PATH = path.join(os.homedir(), '.agenfk', 'hub.json');
+// Resolved at CALL time (item 9c297075): a module-level os.homedir() capture
+// froze the machine home at import time, so per-test HOME sandboxes never
+// applied under the Stryker runner (the 2026-08-31 hub.json clobber hole).
+export function hubConfigPath(): string {
+  return path.join(os.homedir(), '.agenfk', 'hub.json');
+}
 
 function readHubConfigFile(): HubConfig | null {
   try {
-    const raw = fs.readFileSync(HUB_CONFIG_PATH, 'utf8');
+    const raw = fs.readFileSync(hubConfigPath(), 'utf8');
     const cfg = JSON.parse(raw);
     if (cfg && typeof cfg.url === 'string' && typeof cfg.token === 'string' && typeof cfg.orgId === 'string') {
       return { url: cfg.url, token: cfg.token, orgId: cfg.orgId };
@@ -143,5 +148,3 @@ export class HubClient {
 
 /** orgId sentinel for events queued before `agenfk hub login`. */
 export const PENDING_ORG = '';
-
-export const HUB_CONFIG_FILE = HUB_CONFIG_PATH;
