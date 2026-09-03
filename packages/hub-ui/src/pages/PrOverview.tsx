@@ -193,20 +193,17 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
           {prs.map(p => {
             const size = SIZE_META.find(s => s.key === p.bucket);
             const openedAt = new Date(p.openedAt);
-            return (
-              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+            const rowBody = (
+              <>
                 {p.url ? (
-                  <a
-                    href={p.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-mono text-[13px] font-bold text-accent-text hover:underline shrink-0"
-                    title="Open on GitHub"
-                  >
+                  <span className="font-mono text-[13px] font-bold text-accent-text shrink-0">
                     #{p.prNumber}
-                  </a>
+                  </span>
                 ) : (
-                  <span className="font-mono text-[13px] font-bold text-ink-secondary shrink-0" title={`${p.repo} — no GitHub link (non-GitHub host)`}>
+                  <span
+                    className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
+                    title={`${p.repo} — no GitHub link (non-GitHub host)`}
+                  >
                     #{p.prNumber}
                   </span>
                 )}
@@ -216,7 +213,9 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                 </div>
                 <div className="text-right shrink-0">
                   {size && (
-                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold text-white" style={{ background: size.color }}>
+                    // size.text (not a fixed text-white): the ramp's light end
+                    // is near-white, so white-on-XS reads as a blank box.
+                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: size.color, color: size.text }}>
                       {size.label}
                     </span>
                   )}
@@ -224,6 +223,26 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                     {Number.isNaN(openedAt.getTime()) ? '' : openedAt.toISOString().slice(11, 19)} UTC
                   </div>
                 </div>
+              </>
+            );
+            // Whole row is the GitHub link (no nested anchors): the <a> IS the
+            // row container, so repo / model / badge / time all open the PR.
+            // Rows without a derived link stay inert.
+            return p.url ? (
+              <li key={`${p.repo}#${p.prNumber}`}>
+                <a
+                  href={p.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open on GitHub"
+                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-chip/40 transition-colors"
+                >
+                  {rowBody}
+                </a>
+              </li>
+            ) : (
+              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+                {rowBody}
               </li>
             );
           })}
