@@ -26,3 +26,4 @@ tmp.*.json
 /reports/
 .stryker-tmp/
 stryker.log
+mutation-testing/

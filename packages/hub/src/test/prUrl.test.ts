@@ -67,4 +67,50 @@ describe('prUrlFor', () => {
     expect(prUrlFor('git@github.com:acme/api.git', null, null)).toBeNull();
     expect(prUrlFor('git@github.com:acme/api.git', null, 0)).toBeNull();
   });
+
+  // Input-hygiene contract: stored remotes are canonical, but pre-fix rows
+  // and slugs can carry stray whitespace/control chars — the link must still
+  // resolve from them (pinning the trims + the noise-strip in both arms).
+  it('tolerates surrounding whitespace in a remote', () => {
+    expect(prUrlFor('  git@github.com:acme/api.git\n', null, 7))
+      .toBe('https://github.com/acme/api/pull/7');
+  });
+
+  it('strips embedded noise (spaces/control chars) from a remote before parsing', () => {
+    expect(prUrlFor('git@github.com:acme/api .git', null, 7))
+      .toBe('https://github.com/acme/api/pull/7');
+    // double noise run: the strip regex must be a quantified match, not a single-char one
+    expect(prUrlFor('git@github.com:acme/api\t.git', null, 7))
+      .toBe('https://github.com/acme/api/pull/7');
+  });
+
+  it('returns null for a non-empty remote that does not parse (no crash, no guess)', () => {
+    expect(prUrlFor('junk-without-any-separator', null, 4)).toBeNull();
+  });
+
+  it('treats a whitespace-only remote as missing and falls back to the slug', () => {
+    // The guard trims: a remote that is only whitespace must not short-circuit
+    // the slug fallback (it carries no host information).
+    expect(prUrlFor('   ', 'acme/api', 4))
+      .toBe('https://github.com/acme/api/pull/4');
+  });
+
+  it('does not accept a github-looking suffix hidden behind garbage (anchor contract)', () => {
+    // The parse regex is fully anchored: a string with a foreign prefix must
+    // fail to parse in its entirety rather than match a trailing fragment.
+    expect(prUrlFor('see https://x.example/ git@github.com:acme/api.git', null, 7)).toBeNull();
+  });
+
+  it('tolerates surrounding whitespace in a slug', () => {
+    expect(prUrlFor(null, '  acme/api ', 4))
+      .toBe('https://github.com/acme/api/pull/4');
+  });
+
+  it('strips embedded noise from a slug before matching', () => {
+    expect(prUrlFor(null, 'acme/ my-api', 4))
+      .toBe('https://github.com/acme/my-api/pull/4');
+    // double noise run in the slug arm
+    expect(prUrlFor(null, 'acme/  my-api', 4))
+      .toBe('https://github.com/acme/my-api/pull/4');
+  });
 });

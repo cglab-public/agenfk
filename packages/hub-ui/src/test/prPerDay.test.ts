@@ -63,6 +63,20 @@ describe('dayHeaderInfo', () => {
     expect(dayHeaderInfo('2026-07-14', '2026-07-14').isToday).toBe(true);
     expect(dayHeaderInfo('2026-07-13', '2026-07-14').isToday).toBe(false);
   });
+
+  it('normalises a full ISO timestamp input to its UTC calendar day', () => {
+    // The slice(0,10) + T00:00:00Z normalisation means a timestamp that leaked
+    // in (e.g. '2026-06-29T12:00:00Z') is read as its UTC day, not the
+    // embedded hour — 2026-06-29 is a Monday.
+    expect(dayHeaderInfo('2026-06-29T12:00:00Z')).toMatchObject({ weekday: 'Mon', dayNum: 29 });
+  });
+
+  it('rejects a non-10-char day instead of letting the engine misparse it', () => {
+    // '2026-06-2' (9 chars): with the T00:00:00Z suffix the string is invalid
+    // ISO and dayNum is NaN; without it, V8 leniently misparses it as a local
+    // date. The strict normalisation is the contract.
+    expect(dayHeaderInfo('2026-06-2').dayNum).toBeNaN();
+  });
 });
 
 describe('contributionPcts', () => {
@@ -108,6 +122,16 @@ describe('estimateTooltipSize', () => {
     // single-line tooltip: height does not depend on the text
     expect(b.height).toBe(a.height);
   });
+
+  // Exact-size contract (6px per mono glyph + 18px padding, 26px line): the
+  // clamping in placeTooltip is only as good as this estimate, so pin the
+  // formula rather than merely its monotonicity.
+  it('pins the documented size formula', () => {
+    expect(estimateTooltipSize('abc').width).toBe(3 * 6 + 18);
+    // empty text still gets a non-zero minimum box (Math.max(1, length))
+    expect(estimateTooltipSize('').width).toBe(1 * 6 + 18);
+    expect(estimateTooltipSize('abc').height).toBe(26);
+  });
 });
 
 // CGLAB-131 — the tooltip was rendered INSIDE the backdrop-blur card section,
@@ -150,6 +174,16 @@ describe('placeTooltip', () => {
     expect(p.y).toBe(36); // 10 + 20 + 6
   });
 
+  it('flips below at the top of the no-room band (top < height + gap + margin)', () => {
+    // top=30: room above = 30 - 6 - 26 = -2 < 8 → below (y = 30 + 20 + 6 = 56).
+    // Guards the sign of the gap term in the room-above comparison: a +/-
+    // flip in that comparison moves the flip threshold by 2*gap and this
+    // input sits inside the band where the two branches disagree.
+    const p = placeTooltip({ ...cell, top: 30 }, text, 1200);
+    expect(p.below).toBe(true);
+    expect(p.y).toBe(56);
+  });
+
   it('clamps to the left edge when the cell sits near it', () => {
     const long = 'x'.repeat(100);
     const { width: w } = estimateTooltipSize(long);
@@ -172,7 +206,10 @@ describe('placeTooltip', () => {
   it('does not blow up when the tooltip is wider than the viewport', () => {
     const huge = 'x'.repeat(5000);
     const p = placeTooltip({ left: 500, top: 300, width: 20, height: 20 }, huge, 800);
-    expect(Number.isFinite(p.x)).toBe(true);
+    // the degenerate branch centres the tooltip on the VIEWPORT (not the cell):
+    // pin the exact value, not just finiteness — a clamped coordinate here
+    // would be far off-screen.
+    expect(p.x).toBe(400); // viewportWidth / 2
     expect(Number.isFinite(p.y)).toBe(true);
   });
 });
