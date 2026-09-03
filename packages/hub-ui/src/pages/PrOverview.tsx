@@ -22,6 +22,16 @@ function fmtAverage(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1);
 }
 
+/** One stat tile under the volume chart (Total / Average / Max). */
+function VolumeStat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
+      <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">{label}</div>
+      <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{value}</div>
+    </div>
+  );
+}
+
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
   { key: '7d', label: '7d' },
@@ -580,18 +590,9 @@ export function PrOverviewPage() {
                 is per bucket over the WHOLE range (empty buckets included). */}
             {volume && (
               <div className="mt-4 flex gap-3 flex-wrap">
-                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Total</div>
-                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{volume.stats.total}</div>
-                </div>
-                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Average / {GRANULARITIES.find(g => g.key === gran)!.unit}</div>
-                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{fmtAverage(volume.stats.average)}</div>
-                </div>
-                <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
-                  <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">Max{volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}</div>
-                  <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{volume.stats.max}</div>
-                </div>
+                <VolumeStat label="Total" value={volume.stats.total} />
+                <VolumeStat label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
+                <VolumeStat label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
               </div>
             )}
           </section>
