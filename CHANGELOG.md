@@ -2,6 +2,22 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.8] — 2026-09-03
+
+### Fixed
+- **PR Overview drill-down modal** (CGLAB-131 follow-up, user-reported):
+  - Size badges rendered as blank "white boxes" — `text-white` on the ramp's
+    near-white light end (XS `#dbf7f0`, S `#7fe5ca`, M `#04cc98`). `SIZE_META`
+    now carries a per-step label color: dark primary ink (`#000f3b`) on the
+    light steps, white on the dark steps (L/XL). The badge is the only place
+    text sits on the fill, so the change is scoped to it.
+  - Rows with a derived GitHub link are now **whole-row links** (the `<a>` is
+    the row container — no nested anchors), so repo / model / badge / time all
+    open the PR; rows without a link stay inert.
+  - New tests: pure `SIZE_META` text-contrast pin + jsdom page test covering
+    the cell→modal flow, whole-row href without nested anchors, inert
+    no-link rows, and badge contrast per ramp step.
+
 ## [1.1.17-beta.7] — 2026-09-03
 
 ### Added
