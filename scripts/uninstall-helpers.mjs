@@ -9,18 +9,21 @@
 
 // Every hook variant the installer writes. Used both for bin removal and for
 // filtering hook entries out of every client's settings/hooks file.
-export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'];
+export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-test-guard'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
-// plus all three hook variants. On Windows each is a `.cmd` shim.
+// plus every hook variant. On Windows each is a `.cmd` shim.
 export function hookBinFilenames(platform) {
   const suffix = platform === 'win32' ? '.cmd' : '';
   return ['agenfk', ...HOOK_VARIANTS].map((n) => `${n}${suffix}`);
 }
 
 // Opencode plugin filenames the installer copies into ~/.config/opencode/plugins.
+// Listed explicitly rather than derived from HOOK_VARIANTS: not every hook ships
+// an Opencode plugin (the test guard is a Claude Code PreToolUse hook, because
+// only that client can turn the verdict into a developer-facing prompt).
 export function opencodePluginFilenames() {
-  return HOOK_VARIANTS.map((n) => `${n}.mjs`);
+  return ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'].map((n) => `${n}.mjs`);
 }
 
 // True if a single hook entry (from any client's hook array) references an AgenFK

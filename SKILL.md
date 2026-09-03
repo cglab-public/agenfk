@@ -223,6 +223,16 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
 - **End-to-end verification**: After implementing any feature, verify it works end-to-end by tracing the full path from UI interaction to backend response. Do not mark a feature as complete until you've confirmed the UI actually triggers the expected behavior.
 - **Evidence-based claims**: Before claiming a feature already exists or is implemented, search the actual codebase for the specific UI components, API endpoints, and database queries. Never assume implementation status without evidence.
 
+### Changing Existing Tests
+- **Existing tests are a contract**: NEVER rewrite, relax, skip (`.skip`, `xit`, `@pytest.mark.skip`, `t.Skip`, `@Ignore`) or delete an **existing** test to make your change pass. A failing existing test is a signal, not a chore — it may be the only guard on a real requirement.
+- **Ask, don't decide**: STOP and put the choice to the developer:
+  1. **Accept the change to the test** — it encoded behaviour that is now intentionally outdated. State which requirement changed.
+  2. **Keep the test as-is and fix the code** — the test caught a real regression.
+
+  Never choose for them, and never assume (1) because it is faster.
+- **New tests are free**: Adding new test cases or new test files never needs approval — the guard only covers test code that already exists.
+- **Mechanical backstop**: On Claude Code the `agenfk-test-guard` PreToolUse hook raises this prompt automatically on Edit/Write/NotebookEdit of an existing test file and on `rm`/`git rm` of one. Approving it means (1); denying it means (2) — restore the test untouched and fix the code under test. Other clients enforce the rule instructionally.
+
 ### Bug & Error Fixing
 - **Root cause first**: When debugging errors, investigate the root cause fully before applying fixes. Avoid adding workarounds (like force-relogin) that can create new problems (infinite loops). Trace errors from the symptom back to the actual source.
 - **One fix at a time**: Apply a single targeted fix, verify it resolves the issue, then move on. Do not stack multiple speculative fixes.

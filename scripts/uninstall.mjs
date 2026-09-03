@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
     HOOK_VARIANTS,
+    opencodePluginFilenames,
     stripAgenfkHookEntries,
     resolveConfirmation,
     summarizeResults,
@@ -177,7 +178,7 @@ async function run() {
         console.log("  - Gemini CLI workflow rules (~/.gemini/GEMINI.md) + AfterTool hook");
         console.log("  - AgenFK workflow rules from ~/.claude/CLAUDE.md");
         console.log("  - AgenFK Pre/PostToolUse hooks from ~/.claude/settings.json");
-        console.log("  - Hook scripts (gatekeeper, mcp-enforcer, pr-hook) from ~/.local/bin");
+        console.log("  - Hook scripts (gatekeeper, mcp-enforcer, pr-hook, test-guard) from ~/.local/bin");
         console.log("  - ~/.agenfk (config + verify token) and ~/.agenfk-system (the framework files)");
         console.log("");
     }
@@ -350,8 +351,8 @@ async function run() {
         console.log(`${GREEN}[6a] Removing Opencode plugins...${NC}`);
         const pluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
         let removed = false;
-        for (const variant of HOOK_VARIANTS) {
-            const dest = path.join(pluginsDir, `${variant}.mjs`);
+        for (const plugin of opencodePluginFilenames()) {
+            const dest = path.join(pluginsDir, plugin);
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);
                 removed = true;
