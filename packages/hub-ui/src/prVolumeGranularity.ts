@@ -56,7 +56,10 @@ const SHORT_MONTHS = [
 const emptyDist = (): SizeDist => ({ xs: 0, s: 0, m: 0, l: 0, xl: 0 });
 
 /** Monday of the ISO week containing `day` (YYYY-MM-DD, UTC) — a Sunday stays
- *  in the week that started on Monday. */
+ *  in the week that started on Monday.
+ *  Mutation note: the `'T00:00:00Z'` suffix is redundant with the slice (ESM
+ *  parses date-only strings as UTC), so its Stryker mutant is an equivalent —
+ *  kept for explicitness, not behaviour. */
 export function weekStartOf(day: string): string {
   const d = new Date(day.slice(0, 10) + 'T00:00:00Z');
   const dow = d.getUTCDay(); // 0=Sun … 6=Sat
@@ -85,6 +88,8 @@ const rangeLabelOf = (key: string, g: Granularity): string => {
   if (g === 'weekly') return `Week of ${key.slice(5)}`;
   if (g === 'monthly') return labelOf(key, g);
   return key.slice(0, 10); // daily: full date, as in the original daily tooltip
+  // (defensive: bucketKeyOf already yields date-only keys, so this slice is an
+  //  equivalent mutant — kept so the contract holds if the caller passes a raw day)
 };
 
 /** Re-bucket the per-day series into daily / weekly / monthly buckets spanning
@@ -99,6 +104,9 @@ export function buildVolumeSeries(
 ): VolumeSeries {
   const axisSet = new Set(axis);
   const points = new Map<string, DayPoint>();
+  // The `axisSet.has` guard is a write-side filter: out-of-range points are
+  // never read (the bucket loop below iterates `axis` only), so its Stryker
+  // mutant is an equivalent — kept to document intent and bound the map.
   for (const p of byDay) if (axisSet.has(p.day)) points.set(p.day, p);
 
   interface Acc {

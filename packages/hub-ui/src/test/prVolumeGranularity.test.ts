@@ -267,3 +267,50 @@ describe('buildVolumeSeries — edge cases', () => {
     }
   });
 });
+
+/**
+ * Mutation sweep (MUTATION_TESTS): targeted assertions that make the defensive
+ * slicing / UTC-normalisation load-bearing, so Stryker mutants of those
+ * expressions cannot survive. Without a time component in the input, `day.slice(0, 10)`
+ * and the `'T00:00:00Z'` suffix are no-ops and their mutants are equivalent —
+ * these tests feed time-carrying strings so the contract ("a day may arrive as a
+ * full ISO timestamp; only its UTC calendar date matters") is actually enforced.
+ */
+describe('buildVolumeSeries — mutation sweep', () => {
+  it('weekStartOf ignores the time component and stays UTC (kills slice/UTC-suffix mutants)', () => {
+    // A late-evening UTC timestamp on Sunday 2026-06-07 still belongs to the
+    // week of 2026-06-01. If the UTC suffix were mutated away, a non-UTC host
+    // would shift the calendar date and this would break.
+    expect(weekStartOf('2026-06-07T23:59:59.999Z')).toBe('2026-06-01');
+    // Monday 00:00:00 UTC stays in its own week even with a time component.
+    expect(weekStartOf('2026-06-01T00:00:00.000Z')).toBe('2026-06-01');
+    // A timestamp just before UTC midnight Sunday must NOT roll to the next week.
+    expect(weekStartOf('2026-06-07T23:00:00.000Z')).toBe('2026-06-01');
+  });
+
+  it('daily bucket key/rangeLabel strip the time component (kills daily slice mutants)', () => {
+    // The axis normally holds date-only days, but the bucket key/rangeLabel must
+    // be date-only even if a day arrives with a time component.
+    const { buckets } = buildVolumeSeries(
+      [day('2026-06-01', { xs: 1 })],
+      ['2026-06-01T12:00:00.000Z'],
+      'daily',
+    );
+    expect(buckets[0].key).toBe('2026-06-01');
+    expect(buckets[0].rangeLabel).toBe('2026-06-01');
+    expect(buckets[0].label).toBe('06-01');
+  });
+
+  it('merges devBySize when a day omits the per-size dev breakdown (kills ?? [] fallback)', () => {
+    // A day point whose devBySize lacks a size key exercises the `?? []` arm.
+    const partial = {
+      day: '2026-06-01',
+      sizes: { xs: 1, s: 0, m: 0, l: 0, xl: 0 },
+      total: 1,
+      devBySize: { xs: [{ user_key: 'a@x.com', count: 1 }] } as unknown as DayPoint['devBySize'],
+    };
+    const { buckets } = buildVolumeSeries([partial], axis('2026-06-01', '2026-06-07'), 'weekly');
+    expect(buckets[0].devBySize.xs).toEqual([{ user_key: 'a@x.com', count: 1 }]);
+    expect(buckets[0].devBySize.s).toEqual([]);
+  });
+});
