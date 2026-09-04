@@ -2,6 +2,45 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.15] — 2026-09-04
+
+### Fix — a model could be "Open weights" in Admin and "Unclassified / Commercial" on the dashboard
+
+Reported as: `deepseek-v4-pro-0813` shows DeepSeek / open weights in Admin →
+Models, but **Unclassified** *and* **Commercial** in the PR Overview. Verified
+against the production database — `model_meta` had 8 DeepSeek rows, all
+`source='seed'`, no admin edits. **The seed was never the problem.**
+
+Two independent bugs:
+
+1. **A join bug — the visible one.** Provider/license metadata is resolved from
+   the **raw reported id**, but `byModel` is keyed by the **canonical name** after
+   alias resolution. When a mapping exists the two keys differ, the lookup misses,
+   and the row ships with no `provider`/`licenseClass` at all. Production has
+   exactly this mapping: `deepseek/deepseek-v4-pro-0813` → `deepseek-v4-pro-0813`.
+   Its *unmapped* siblings classified correctly, which is what made this look like
+   bad data rather than a broken join. Fixed by carrying the raw id through
+   aggregation and resolving metadata through it.
+2. **A fabricated class — the reason it said "Commercial".** Both the server's
+   unclassified sentinel and the client's fallback hardcoded
+   `licenseClass: 'commercial'` for anything they could not classify. A model with
+   no established licence was therefore reported as *Commercial / API only* and
+   appeared in that facet — a claim about a licence nobody granted. `unclassified`
+   is now its own bucket end to end: visible, filterable, never an assertion. The
+   `model_meta` column stays CHECK-constrained to `open_weights|commercial` (it
+   stores facts); the API may report `unclassified` (it reports what is known).
+
+**Which models were affected:** every model reached through an alias mapping —
+in production that is all seven: `deepseek/deepseek-v4-flash`,
+`deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4-pro-0813`,
+`@cf/zai-org/glm-5.2`, `z-ai/glm-5.2`, `moonshotai/kimi-k3`, `qwen38-27b`. Any of
+them that looked Unclassified/Commercial should now show their real seed values.
+
+Tests: 3 hub e2e (mapped model keeps metadata, router-prefixed alias, genuinely
+unknown stays unclassified) and 2 client assertions that had been pinning the
+fabrication were flipped to pin unknown-instead-of-commercial. Full suite
+**2813 tests / 245 files** green.
+
 ## [1.1.17-beta.14] — 2026-09-04
 
 ### Fix — Admin → Models rendered two tables, and could not unmap
