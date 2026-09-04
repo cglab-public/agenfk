@@ -2,6 +2,71 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17] — 2026-09-04
+
+Stable release. Consolidates `v1.1.17-beta.1` … `v1.1.17-beta.15` (PR #175).
+
+### PR volume granularity (CGLAB-133)
+
+- The PR Overview reports PR **volume and size granularity** rather than a single
+  aggregate, so a team's PR throughput is legible instead of being one number.
+
+### Hub — model provider / license is configurable, not hardcoded
+
+- **New `model_meta` table** (SQLite + Postgres), keyed `(org_id, model)` with
+  `provider`, `license_class` (CHECK-constrained to `open_weights|commercial`),
+  `license`, `source` (`seed`|`admin`).
+- **Seeded automatically** from a curated 102-row table (each row checked against
+  the vendor's licence text / model card) on an org's first read. The table is the
+  source of truth afterwards, so a future seed refresh can never overwrite an
+  operator's corrections.
+- **Admin → Models is one table with inline editing.** One row per model name,
+  alias spellings nested underneath, provider / weights / licence edited in place
+  (Enter commits, Esc discards). A new model arrives **Unknown** and sorts to the
+  top rather than inheriting a vendor by string similarity. Family rules are
+  labelled (`from glm-`, `covers N`) so prefix matching is not invisible magic.
+  Unmap lives on the alias row, since unmapping is about a spelling.
+- **API**: `PUT`/`DELETE /v1/admin/models/meta`, `meta` on `GET /v1/admin/models`;
+  `/v1/prs/overview` returns `provider` / `licenseClass` / `license` per `byModel`
+  row.
+- **Unclassified is never reported as Commercial.** An unknown model has no
+  established licence; claiming one put models in the "Commercial / API only"
+  facet on no evidence. `unclassified` is its own bucket end to end.
+
+### PR Overview filters
+
+- Filters collapse into an accordion (`?filters=0` when collapsed) with an
+  "N active" summary, so a hidden filter cannot silently change the numbers.
+- **Model meta-filter** selects models by provider and open-weights/commercial.
+  It is a *selector* that writes model ids into the existing `?model=` CSV — no
+  new filter axis, so shared links restore the same view.
+
+### Fixes found in production during the betas
+
+- **Mapped models lost their provider metadata.** Metadata is resolved from the
+  raw reported id while `byModel` is keyed by the canonical name; with a mapping
+  the keys differed and the row shipped with no classification at all. Every
+  model reached through an alias mapping was affected.
+- **Admin → Models rendered two tables** and had lost its unmap control when the
+  sections were merged; both restored, plus mappings whose alias has not been
+  reported yet (previously counted but rendered nowhere).
+
+### Test suite: 218s → ~60s
+
+- Configurable bcrypt cost (`AGENFK_HUB_BCRYPT_ROUNDS`, prod default 11, pinned to
+  4 in tests) — the dominant cost was hashing in test setup.
+- Vitest split into `parallel` / `serial` projects, and hub specs drain the Fastify
+  app on teardown instead of leaking handles.
+- Full suite **2813 tests / 245 files**.
+
+### Notes
+
+- `normaliseModelId` does not fold `:`, so an Ollama-style id (`qwen3.8:27b`)
+  resolves through the shorter family rule rather than the specific artifact row.
+  Correct today; pinned in a test so client and server normalisers cannot drift.
+- `model_meta` was added to `ORG_ID_CHILD_TABLES`; without it an org rename would
+  orphan the rows and silently re-seed defaults.
+
 ## [1.1.17-beta.15] — 2026-09-04
 
 ### Fix — a model could be "Open weights" in Admin and "Unclassified / Commercial" on the dashboard
