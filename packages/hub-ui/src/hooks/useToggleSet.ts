@@ -74,6 +74,14 @@ export function useToggleSet(initial: Iterable<string> = [], opts: ToggleSetOpti
   return {
     set: s,
     toggle: (v: string) => setS(prev => { const n = new Set(prev); n.has(v) ? n.delete(v) : n.add(v); return n; }),
+    // Bulk add without removing anything already selected — the model
+    // meta-filter resolves a vendor/license choice to N model ids and must not
+    // clobber models the user picked individually.
+    addMany: (values: Iterable<string>) => setS(prev => {
+      const n = new Set(prev);
+      for (const v of values) n.add(v);
+      return n;
+    }),
     clear: () => setS(new Set()),
   };
 }

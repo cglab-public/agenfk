@@ -1,5 +1,6 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
 import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
+import type { ModelMeta } from '../util/modelMeta';
 import { prUrlFor } from '../util/remoteUrl.js';
 
 // One json_extract-shaped row per pr.opened / pr.updated event. Sizing fields are
@@ -36,6 +37,8 @@ interface NormRow {
   task: number;
   bug: number;
   model: string | null;
+  /** Model id as reported, before alias resolution. */
+  rawModel: string | null;
   harness: string | null;
   remoteUrl: string | null;
 }
@@ -63,6 +66,9 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
     // Resolved here, at the single funnel both the grouping and the filter read
     // through, so the two can never disagree about a PR's model.
     model: resolveModelId(r.model, mapping),
+    // The spelling as reported, kept because model_meta is resolved from raw
+    // ids and aliasing would otherwise make that metadata unreachable.
+    rawModel: r.model ?? null,
     harness: r.harness,
     remoteUrl: r.remote_url ?? null,
   };
@@ -83,7 +89,15 @@ export interface PrOverviewResult {
     devBySize: Record<SizeBucket, Array<{ user_key: string; count: number }>>;
   }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
-  byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
+  byModel: Array<{
+    model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist;
+    // Provider + license class from the admin-editable model_meta table, so the
+    // PR Overview can filter models by them without the browser holding a seed.
+    // `provider: 'unclassified'` when no row matches — surfaced, never guessed.
+    provider?: string;
+    licenseClass?: 'open_weights' | 'commercial';
+    license?: string;
+  }>;
   // CGLAB-131 drill-down: the resolved PR set itself — one entry per PR with
   // opener attribution and the LATEST sizing, exactly the set the heatmap
   // cells and the totals count. Ordered by open time, then repo#number.
@@ -129,11 +143,25 @@ export interface PrWindow {
    * already-resolved `models` if they resolved them themselves.
    */
   modelMapping?: ModelMapping | null;
+  /**
+   * Provider + license class per model id, from the admin-editable model_meta
+   * table, keyed by the CANONICAL name (after alias resolution).
+   */
+  modelMeta?: ReadonlyMap<string, ModelMeta> | null;
+  /**
+   * The same metadata keyed by the RAW reported id. Needed because a group can
+   * be reached through several spellings, and a caller that resolves metadata
+   * before aliasing cannot also key it by the canonical name. See the lookup in
+   * `byModel`.
+   */
+  modelMetaRaw?: ReadonlyMap<string, ModelMeta> | null;
 }
 
 interface ResolvedPr {
   user_key: string;
   model: string;
+  /** The model id exactly as reported, before alias resolution. */
+  rawModel: string | null;
   harness: string | null;
   openerAt: string;
   day: string;
@@ -172,6 +200,7 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
     resolved.push({
       user_key: opener.user_key,
       model: opener.model ?? 'unknown',
+      rawModel: opener.rawModel,
       harness: opener.harness ?? null,
       openerAt: opener.occurred_at,
       day: dayOf(opener.occurred_at),
@@ -206,7 +235,7 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   // day → size bucket → (developer → count), for slice tooltips.
   const dayDevMap = new Map<string, Record<SizeBucket, Map<string, number>>>();
   const devMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>();
-  const modelMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; harnesses: Set<string> }>();
+  const modelMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; harnesses: Set<string>; raw: Set<string> }>();
   const resized = { count: 0, grew: 0, shrank: 0 };
   const developers = new Set<string>();
   let sizePoints = 0;
@@ -229,9 +258,12 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     dev.daily[pr.day] = (dev.daily[pr.day] ?? 0) + 1;
     devMap.set(pr.user_key, dev);
 
-    const mdl = modelMap.get(pr.model) ?? { prs: 0, sizePoints: 0, sizes: emptyDist(), harnesses: new Set<string>() };
+    const mdl = modelMap.get(pr.model) ?? { prs: 0, sizePoints: 0, sizes: emptyDist(), harnesses: new Set<string>(), raw: new Set<string>() };
     mdl.prs++; mdl.sizePoints += pr.points; mdl.sizes[pr.bucket]++;
     if (pr.harness) mdl.harnesses.add(pr.harness);
+    // Remember the reported spelling behind this canonical name, so provider /
+    // license metadata resolved from raw ids can still be found after aliasing.
+    if (pr.rawModel) mdl.raw.add(pr.rawModel);
     modelMap.set(pr.model, mdl);
 
     // A PR is "resized" when a later sizing differs from the opener's.
@@ -271,7 +303,32 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     .sort((a, b) => b.prs - a.prs || b.sizePoints - a.sizePoints || a.user_key.localeCompare(b.user_key));
 
   const byModel = [...modelMap.entries()]
-    .map(([model, v]) => ({ model, prs: v.prs, sizePoints: v.sizePoints, sizes: v.sizes, harnesses: [...v.harnesses].sort() }))
+    .map(([model, v]) => {
+      // Look the metadata up by BOTH keys. `modelMeta` is keyed by the RAW
+      // reported id (it must be resolved before aliasing, since the seed is
+      // matched against what the agent actually sent), while `model` here is the
+      // CANONICAL name after alias resolution. When a mapping exists the two
+      // differ, and a single canonical lookup silently finds nothing — the row
+      // then ships with no provider/licenseClass and the UI renders it as
+      // "Unclassified / Commercial". That was the deepseek-v4-pro-0813 bug:
+      // `deepseek/deepseek-v4-pro-0813` mapped to `deepseek-v4-pro-0813`, so the
+      // canonical key missed and the model looked unclassified while its
+      // unmapped siblings classified fine.
+      const meta =
+        window?.modelMeta?.get(model)
+        ?? (v.raw ? [...v.raw].map(r => window?.modelMetaRaw?.get(r)).find(Boolean) : undefined)
+        ?? window?.modelMetaRaw?.get(model);
+      return {
+        model,
+        prs: v.prs,
+        sizePoints: v.sizePoints,
+        sizes: v.sizes,
+        harnesses: [...v.harnesses].sort(),
+        // Absent when the caller did not load metadata (e.g. a test that only
+        // exercises aggregation) — the UI then falls back to no meta-filter.
+        ...(meta ? { provider: meta.provider, licenseClass: meta.licenseClass, license: meta.license } : {}),
+      };
+    })
     .sort((a, b) => b.prs - a.prs || a.model.localeCompare(b.model));
 
   // The drill-down list: the same resolved PRs (already window/model/dev-

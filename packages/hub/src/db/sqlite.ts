@@ -321,6 +321,34 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_model_mappings_canonical
     ON model_mappings(org_id, canonical_model);
+
+  -- Admin-curated provider + license class per model (CGLAB-133 follow-up).
+  --
+  -- The hub stores model as free text an agent self-reports, with no provider
+  -- or license column, so the PR Overview's Provider / Open-weights /
+  -- Commercial facets have to come from somewhere. They ship seeded from
+  -- util/modelMetaSeed.ts and are inserted here on first read per org, then the
+  -- admin edits the rows — the table is the source of truth once populated.
+  --
+  -- Keyed on the model id AS STORED (not the canonical name), and matched by
+  -- prefix at read time, because one family spans both license classes:
+  -- qwen3.8-27b is Apache-2.0 open weights while qwen3.8-max is API-only, so a
+  -- family-level row would be wrong for one of them. Longest prefix wins.
+  --
+  -- source distinguishes a seeded row from an admin edit, so a future seed
+  -- refresh can update untouched rows without clobbering a deliberate override.
+  CREATE TABLE IF NOT EXISTS model_meta (
+    org_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    license_class TEXT NOT NULL CHECK (license_class IN ('open_weights','commercial')),
+    license TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'seed' CHECK (source IN ('seed','admin')),
+    updated_by_user_id TEXT,
+    updated_by_email TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (org_id, model)
+  );
 `;
 
 class SqliteAdapter implements HubDb {

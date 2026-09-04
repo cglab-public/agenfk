@@ -10,6 +10,7 @@ import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubRe
 import { compareSemver } from '../util/semver.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
+import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
@@ -274,7 +275,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // load. A materialized model column would replace it if that ever bites.
   router.get('/models', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const [mappings, seen] = await Promise.all([
+    const [mappings, seen, metaRows] = await Promise.all([
       ctx.db.all<Record<string, unknown>>(
         `SELECT alias_model, canonical_model, created_by_user_id, created_by_email, created_at
            FROM model_mappings WHERE org_id = ? ORDER BY canonical_model, alias_model`,
@@ -288,6 +289,8 @@ export function adminRouter(ctx: HubServerContext): Router {
           GROUP BY model`,
         [orgId],
       ),
+      // Seeded on first read, so the admin sees an editable table immediately.
+      loadModelMeta(ctx.db, orgId),
     ]);
 
     const mapped = new Map(mappings.map((m: any) => [m.alias_model as string, m.canonical_model as string]));
@@ -312,7 +315,88 @@ export function adminRouter(ctx: HubServerContext): Router {
         createdAt: m.created_at,
       })),
       observed,
+      meta: metaRows.map(m => ({
+        model: m.model,
+        provider: m.provider,
+        licenseClass: m.licenseClass,
+        license: m.license,
+        source: m.source,
+      })),
     });
+  });
+
+  // ── Model provider / license metadata (CGLAB-133 follow-up) ──────────────
+  // The table is seeded from util/modelMetaSeed.ts on first read and is the
+  // source of truth afterwards, so these routes are the ONLY way to correct a
+  // classification. Nothing here is inferred: an admin either sets a row or the
+  // model stays whatever the seed said.
+
+  router.put('/models/meta', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const model = validModelId(req.body?.model);
+    const provider = typeof req.body?.provider === 'string' ? req.body.provider.trim() : '';
+    const license = typeof req.body?.license === 'string' ? req.body.license.trim() : '';
+    const licenseClass = req.body?.licenseClass;
+
+    if (!model) {
+      return res.status(400).json({
+        error: `Body must be { model: string, provider: string, licenseClass: 'open_weights'|'commercial', license: string }, model non-empty and at most ${MODEL_ID_MAX_LENGTH} characters.`,
+      });
+    }
+    // Provider/license are free text on purpose — vendor naming is the admin's
+    // call — but they must not be blank, or the facet renders an empty chip and
+    // the licence tooltip says nothing.
+    if (!provider || provider.length > MODEL_ID_MAX_LENGTH || !license || license.length > MODEL_ID_MAX_LENGTH) {
+      return res.status(400).json({
+        error: `provider and license are required, each non-empty and at most ${MODEL_ID_MAX_LENGTH} characters.`,
+      });
+    }
+    if (!isLicenseClass(licenseClass)) {
+      return res.status(400).json({ error: "licenseClass must be 'open_weights' or 'commercial'." });
+    }
+    // A harness name would classify a runtime as a model; the resolver already
+    // refuses to match these, so refuse the row too rather than store dead data.
+    if (isHarnessName(model)) {
+      return res.status(400).json({
+        error: `"${model}" is an agent runtime, not a model — it is always shown as unclassified.`,
+      });
+    }
+
+    let updatedByEmail: string | null = null;
+    if (req.session?.userId) {
+      const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+      updatedByEmail = u?.email ?? null;
+    }
+
+    // Upsert, and mark source='admin': an explicit save is an override, and it
+    // must survive a future seed refresh.
+    await ctx.db.run(
+      `INSERT INTO model_meta (org_id, model, provider, license_class, license, source, updated_by_user_id, updated_by_email)
+       VALUES (?, ?, ?, ?, ?, 'admin', ?, ?)
+       ON CONFLICT(org_id, model) DO UPDATE SET
+         provider = excluded.provider,
+         license_class = excluded.license_class,
+         license = excluded.license,
+         source = 'admin',
+         updated_by_user_id = excluded.updated_by_user_id,
+         updated_by_email = excluded.updated_by_email,
+         updated_at = CURRENT_TIMESTAMP`,
+      [orgId, model, provider, licenseClass, license, req.session!.userId ?? null, updatedByEmail],
+    );
+    res.status(201).json({ model, provider, licenseClass, license, source: 'admin' });
+  });
+
+  router.delete('/models/meta/:model', guard, async (req: Request, res: Response) => {
+    const model = validModelId(decodeURIComponent(req.params.model));
+    if (!model) return res.status(400).json({ error: 'Invalid model id.' });
+    const r = await ctx.db.run(
+      'DELETE FROM model_meta WHERE org_id = ? AND model = ?',
+      [req.session!.orgId, model],
+    );
+    // Deleting a seeded row leaves that model unclassified until it is re-added
+    // (the seed only inserts when the org has NO rows at all), which is the
+    // honest outcome: the admin said "I don't know", and we do not guess.
+    res.json({ model, removed: r.changes > 0 });
   });
 
   router.post('/models/mappings', guard, async (req: Request, res: Response) => {

@@ -2,6 +2,269 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.15] — 2026-09-04
+
+### Fix — a model could be "Open weights" in Admin and "Unclassified / Commercial" on the dashboard
+
+Reported as: `deepseek-v4-pro-0813` shows DeepSeek / open weights in Admin →
+Models, but **Unclassified** *and* **Commercial** in the PR Overview. Verified
+against the production database — `model_meta` had 8 DeepSeek rows, all
+`source='seed'`, no admin edits. **The seed was never the problem.**
+
+Two independent bugs:
+
+1. **A join bug — the visible one.** Provider/license metadata is resolved from
+   the **raw reported id**, but `byModel` is keyed by the **canonical name** after
+   alias resolution. When a mapping exists the two keys differ, the lookup misses,
+   and the row ships with no `provider`/`licenseClass` at all. Production has
+   exactly this mapping: `deepseek/deepseek-v4-pro-0813` → `deepseek-v4-pro-0813`.
+   Its *unmapped* siblings classified correctly, which is what made this look like
+   bad data rather than a broken join. Fixed by carrying the raw id through
+   aggregation and resolving metadata through it.
+2. **A fabricated class — the reason it said "Commercial".** Both the server's
+   unclassified sentinel and the client's fallback hardcoded
+   `licenseClass: 'commercial'` for anything they could not classify. A model with
+   no established licence was therefore reported as *Commercial / API only* and
+   appeared in that facet — a claim about a licence nobody granted. `unclassified`
+   is now its own bucket end to end: visible, filterable, never an assertion. The
+   `model_meta` column stays CHECK-constrained to `open_weights|commercial` (it
+   stores facts); the API may report `unclassified` (it reports what is known).
+
+**Which models were affected:** every model reached through an alias mapping —
+in production that is all seven: `deepseek/deepseek-v4-flash`,
+`deepseek/deepseek-v4-flash-0731`, `deepseek/deepseek-v4-pro-0813`,
+`@cf/zai-org/glm-5.2`, `z-ai/glm-5.2`, `moonshotai/kimi-k3`, `qwen38-27b`. Any of
+them that looked Unclassified/Commercial should now show their real seed values.
+
+Tests: 3 hub e2e (mapped model keeps metadata, router-prefixed alias, genuinely
+unknown stays unclassified) and 2 client assertions that had been pinning the
+fabrication were flipped to pin unknown-instead-of-commercial. Full suite
+**2813 tests / 245 files** green.
+
+## [1.1.17-beta.14] — 2026-09-04
+
+### Fix — Admin → Models rendered two tables, and could not unmap
+
+Both regressions shipped in `v1.1.17-beta.13` and were caught in the deployed UI.
+
+- **The old mappings table was never deleted**, so the page showed it on top and
+  the new unified table below. The previous commit inserted the new component and
+  removed only the "Provider & license" section — the mappings `<section>` was
+  left behind.
+- **The unified table had no unmap control.** Unmap lived on the rows of the table
+  that got deleted, so the affordance disappeared with it. It now sits on each
+  **alias** row: unmapping is about a reported spelling, so it must not sit on the
+  model row where it would read as "unmap this model".
+
+Also restored what the deleted table showed and the new one silently dropped:
+
+- **"N unmapped"** warning for names that are each their own group — the exact
+  condition mapping exists to fix.
+- **Mappings whose alias has not been reported yet** now get a row, marked
+  "not reported yet", with unmap available. Previously they were counted in the
+  "N aliases" label but rendered nowhere, so a mapping you had just created was
+  invisible and irreversible until an agent happened to report that spelling.
+
+Tests: 3 new (unmap on the alias row, pending mapping visible and unmapbable, no
+unmap on the model row). The 4 page assertions that named the removed markup were
+retargeted to the new labels, not loosened. Full suite **2810 tests / 245 files**
+green.
+
+## [1.1.17-beta.13] — 2026-09-04
+
+### Hub — Models admin is one table now, edited inline
+
+The previous cut shipped two sections on Admin → Models — alias mappings, and a
+separate read-only "Provider & license" table with an add-form. They described
+the same thing, so they are one table now.
+
+- **One row per model name.** Aliases nest underneath it; Provider / Weights /
+  Licence sit on the same row. **Click a value to edit it in place** — Save and
+  Cancel in the row, Enter to commit, Esc to discard. The add-form is gone:
+  correcting a row and adding one are the same upsert against
+  `PUT /v1/admin/models/meta`.
+- **Classification attaches to the model name, never to a spelling.** Aliasing
+  keys on a reported spelling (`qwen38-27b` → `qwen3.8-27b`); provider and
+  licence key on the name the dashboard groups and filters by. Classifying a
+  spelling would let one model carry two licences depending on which agent
+  reported it, so alias rows are shown but not editable on that axis.
+- **A new model arrives Unknown.** No matching rule means the row reads
+  `Unknown` in amber, sorts to the top of the table, and offers "Classify this
+  model" — it does not inherit a vendor by string similarity. The header counts
+  how many are unknown.
+- **Prefix rules are visible, not magic.** A row classified by a family rule
+  says `from glm-` and `covers N`, so a rule governing models off-screen is
+  legible. Save is gated on the row actually changing, because saving an
+  untouched inherited rule would silently narrow the family rule to one model.
+- **Noise stays out of the way.** Only models actually reported are listed by
+  default; the ~100 seeded rules that matched nothing sit behind "Show all
+  classification rules". Without that, the page is mostly rules for models you
+  do not run.
+- Validation (blank provider, blank licence, invalid class, harness names) runs
+  as you type, not only on save.
+
+### Notes found while building this
+
+- **`normaliseModelId` does not fold `:`**, so an Ollama-style id
+  (`qwen3.8:27b`) normalises to `qwen3-8:27b` and resolves through the shorter
+  `qwen3-8` family rule rather than the specific `qwen3.8-27b` row. Both say
+  Apache-2.0, so the answer is correct today; the specificity loss only bites
+  where a family rule and its artifact rule disagree (as with `glm-5.3` vs
+  `glm-5.3-flash`). Pinned in a test rather than changed, so the client and
+  server normalisers cannot drift apart unnoticed.
+- Model names now appear twice in the DOM by design (datalist suggestions and
+  table rows), so the existing page tests were scoped to the table instead of
+  loosened.
+
+### Testing
+
+27 tests for the merge rules (longest-prefix wins, unknown stays unknown,
+inherited-rule narrowing, scope filtering), 15 for the table (inline save,
+classify-from-unknown, Save disabled on no-op and on invalid, delete leaves the
+model unknown, scope toggle). Full suite **2806 tests / 245 files** green.
+
+## [1.1.17-beta.12] — 2026-09-04
+
+### Hub — model provider/license is now configurable
+
+The Provider / Open-weights / Commercial facets shipped in `v1.1.17-beta.11`
+were a hardcoded table in the browser bundle with no way to change them. They
+are now a database table an admin edits.
+
+- **New `model_meta` table** (SQLite + Postgres), keyed `(org_id, model)` with
+  `provider`, `license_class` (`open_weights` | `commercial`, CHECK-constrained),
+  `license`, and `source` (`seed` | `admin`).
+- **Seeded automatically** — on an org’s first read the table is populated from
+  a curated 102-row seed (`packages/hub/src/util/modelMetaSeed.ts`, each row
+  checked against the vendor’s own licence text / model card). Works out of the
+  box; **the table is the source of truth afterwards**, so shipping a new seed
+  can never overwrite an operator’s corrections.
+- **Admin → Models** gains a “Provider & license” section: search the ~100 rows,
+  correct one, or add a model the seed does not cover. Admin-edited rows sort
+  first and are labelled, so the page is verifiable at a glance. Saving marks
+  `source='admin'`, which is what survives a future seed refresh.
+- **API**: `PUT /v1/admin/models/meta`, `DELETE /v1/admin/models/meta/:model`,
+  and `meta` on `GET /v1/admin/models`. `/v1/prs/overview` now returns
+  `provider` / `licenseClass` / `license` on each `byModel` row.
+- **The client-side seed was deleted.** Two copies would have meant an admin
+  edit in the UI silently not affecting what the browser filtered by — the
+  failure mode that makes a settings page worse than no settings page. The
+  facet now derives everything from the API response.
+- Matching stays **artifact-level, longest-prefix-wins**, on a normalised id
+  (router prefixes like `@cf/zai-org/…` stripped), because one family spans both
+  classes: `qwen3.8-27b` is Apache-2.0 open weights while `qwen3.8-max` is
+  API-only. Harness names (`claude-code`) are rejected by the API and never
+  classified as models. Unmatched models stay **unclassified** — visible and
+  filterable, never guessed.
+- **Org rename**: `model_meta` was added to `ORG_ID_CHILD_TABLES`. Without it,
+  renaming an org would orphan its metadata rows under the old id and silently
+  re-seed the org from defaults. Caught by the existing schema regression pin.
+
+### Testing
+
+- 20 new hub e2e tests (seeding once-per-org, admin override reaching the
+  dashboard, per-org isolation, validation, harness rejection, router-prefix
+  resolution), 18 for the admin helpers, 19 rewritten for the derivation-only
+  client module. Full suite **2764 tests / 243 files** green.
+
+## [1.1.17-beta.11] — 2026-09-04
+
+### Hub — PR Overview
+
+- **Collapsible filter bar** — the Project / Developer / Model facets were
+  stacked vertically and pushed the charts below the fold. They now live in an
+  accordion. Collapsing does **not** deactivate the filters: the header shows an
+  "N active" badge and a per-facet summary, so a hidden filter can never
+  silently change the numbers. Open/closed is stored in the URL (`filters=0`,
+  only when collapsed) rather than localStorage, so a shared or bookmarked link
+  restores the same layout like every other filter on the page. Open by default.
+- **Model meta-filter** — select/deselect models by **vendor** (Z.ai, Anthropic,
+  OpenAI, Alibaba, …) and by **license class** (**Open weights** / **Commercial
+  · API only**) instead of searching a long model list one chip at a time.
+  - It is a *selector*, not a new filter axis: a click resolves to model ids and
+    writes them into the existing `?model=` CSV. **No API or SQL change**, and a
+    shared link restores the same view. It only *adds* — models you picked
+    individually are never dropped.
+  - Each chip shows how many models it would add, and a vendor with nothing left
+    to add is disabled rather than hidden, so "already all selected" is legible.
+  - A per-selection breakdown lists each selected model's vendor, class and
+    exact licence, so the classification is verifiable rather than a claim.
+- **Model provider/license seed** (`modelMeta.ts`) — the hub stores `model` as
+  free text an agent self-reports and has no provider or license column, so
+  these facets are derived from a curated, artifact-level table (sources: each
+  vendor's own licence text / model card, checked Sep 2026). Deliberate choices:
+  - **Artifact-level, longest-prefix-wins**, because one family spans both
+    classes: `qwen3.8-27b` is Apache-2.0 open weights while `qwen3.8-max` is
+    API-only, and `glm-5.3-flash` is MIT while `glm-5.3` is a bespoke licence.
+    A family-level rule is wrong for one of every such pair, silently.
+  - **Unmatched models are "Unclassified", never guessed** — a visible,
+    filterable bucket, so a new model is not silently mislabelled.
+  - Router prefixes are stripped before matching (`@cf/zai-org/glm-5.2`,
+    `openrouter/anthropic/claude-opus-4-8`), and **harness names are not
+    models**: `claude-code` is reported in the model axis and must not classify
+    as an Anthropic model.
+  - Per product decision, **downloadable weights win ties**, so bespoke-licence
+    models (Kimi K3, GLM-5.3, Qwen3.8-Flash-Next, Llama 4) count as open
+    weights. That makes this axis open **weights**, not open **source** — the UI
+    says so and the tooltip names the actual licence.
+  - Display/filter only: nothing is persisted and the stored model id is never
+    rewritten. Admin-curated overrides remain a follow-up.
+
+### Testing
+
+- 33 unit tests for `modelMeta` (the split-family traps, harness strings,
+  router prefixes, the no-guess contract) and 16 page/component tests for the
+  accordion + meta-filter. Full suite 2740 tests / 241 files green.
+
+## [1.1.17-beta.10] — 2026-09-03
+
+Carries the CGLAB-133 hub changes forward from `v1.1.17-beta.9` and adds the
+test-suite performance work. Deployed to production hub
+(`afk-hub.cglab.com`, verified via `/healthz`).
+
+### Hub — PR Overview
+
+- **Selectable granularity** (CGLAB-133, #175) — the "PR volume by size" chart
+  buckets **daily / weekly (ISO, Mon–Sun) / monthly**, with **Total / Avg / Max**
+  stats under the chart. Re-bucketed client-side from the API's existing
+  per-UTC-day `byDay` array, so no API or SQL change and counts stay identical
+  to the heatmap and the per-cell drill-down. Week starts are UTC-anchored (a
+  Sunday stays in the week that began Monday); `average` divides by every bucket
+  in the range including empty ones, `max` names its bucket and breaks ties to
+  the earliest. Tooltips carry the bucket's non-empty days. New pure module
+  `prVolumeGranularity.ts` (24 unit tests + mutation-sweep assertions).
+
+### Testing
+
+- **Full-suite wall clock: ~218s → ~58s** (3.7×) from the two changes below.
+  Measured on the same machine, same 238 files / 2667 tests.
+- **bcrypt cost is now configurable** via `AGENFK_HUB_BCRYPT_ROUNDS`
+  (production default unchanged at 11, clamped to bcryptjs' valid 4..31,
+  non-numeric falls back to the default). The vitest env pins it to 4: the hub
+  suite performs ~238 **synchronous** bcrypt ops (114 user creations + 124
+  logins) which at rounds=11 cost ~23s of blocked worker per full run. The hash
+  format is identical at cost 4, so signup/login/rotation paths stay exercised
+  end to end — new `bcrypt-rounds.test.ts` pins the default, the clamping, lazy
+  env reads, and that a reduced-cost hash still verifies.
+- **Split vitest projects by filesystem coupling** (`vitest.config.ts`): the
+  fs-free packages (core, hub-ui, ui, flow-editor, plus storage-sqlite/telemetry,
+  which use per-file mkdtemp dirs or a mocked `os.homedir()`) now run their
+  files concurrently in a `parallel` project, while server/hub/cli stay in a
+  serial project. The previous blanket `fileParallelism: false` was serialising
+  ~90 files that had nothing to contend over. Timeouts, aliases, the HOME pin
+  and the coverage gate are shared from `scripts/vitest-shared-config.mjs` so
+  the two projects cannot drift.
+- **Hub test teardown now drains the ephemeral supertest listener** before
+  closing the WAL-mode DB (`packages/hub/src/test/helpers/drainApp.ts`, applied
+  to 38 hub specs). `supertest(app)` leaves the Express app listening on an
+  ephemeral port, so a response still draining could fail its write after
+  `db.close()` and reset the socket, surfacing `read ECONNRESET` on whichever
+  spec ran next. **Not a complete fix**: the same socket-reset flake still
+  appears ~1 run in 5, now in
+  `packages/server/src/test/item-reparent.test.ts`, a separate pre-existing
+  issue in the server suite (it moves between files run-to-run and passes in
+  isolation). Accepted as known flakiness.
+
 ## [1.1.17-beta.9] — 2026-09-03
 
 ### Added

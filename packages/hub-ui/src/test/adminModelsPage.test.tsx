@@ -58,25 +58,54 @@ beforeEach(() => {
 
 afterEach(() => { cleanup(); });
 
+/**
+ * Scope a text query to the models table.
+ *
+ * Model names appear twice on this page by design — as datalist suggestions in
+ * the "add a mapping" form and as rows in the table — so an unscoped getByText
+ * finds duplicates. Querying within the table keeps the assertion about the row
+ * rather than about whichever element happens to come first.
+ */
+function inTable<T extends HTMLElement = HTMLElement>(text: RegExp | string, opts?: { exact?: boolean }) {
+  const table = document.querySelector('table');
+  if (!table) throw new Error('models table not rendered');
+  const matcher = (n: string) => (typeof text === 'string'
+    ? (opts?.exact === false ? n.includes(text) : n.trim() === text)
+    : text.test(n));
+  const hits = [...table.querySelectorAll('td,th,div,span')].filter(el =>
+    el.children.length === 0 && matcher(el.textContent ?? ''));
+  if (!hits.length) throw new Error(`no table cell matching ${String(text)}`);
+  return hits[0] as T;
+}
+
+/** Cells (not leaf nodes) whose text contains `text` — alias rows split the
+ * spelling across child spans, so matching leaves only would miss them. */
+const inTableText = (text: string) => {
+  const table = document.querySelector('table');
+  if (!table) throw new Error('models table not rendered');
+  return [...table.querySelectorAll('td,th,tr')].filter(el =>
+    (el.textContent ?? '').includes(text));
+};
+
 describe('AdminModels', () => {
   it('shows the desired name as the group, with the reported spelling under it', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText('qwen3.8:27b')).toBeInTheDocument());
+    await waitFor(() => expect(inTable('qwen3.8:27b')).toBeInTheDocument());
     // the alias is shown as folded in, not as its own model
-    expect(screen.getByText('qwen38-27b')).toBeInTheDocument();
+    expect(inTableText('qwen38-27b').length).toBeGreaterThan(0);
     // and the group total is the sum, not either row alone
-    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(inTable('3')).toBeInTheDocument();
   });
 
   it('leaves an unmapped model as its own row', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText('glm-5.2')).toBeInTheDocument());
-    expect(screen.getByText('40')).toBeInTheDocument();
+    await waitFor(() => expect(inTable('glm-5.2')).toBeInTheDocument());
+    expect(inTable('40')).toBeInTheDocument();
   });
 
   it('posts the trimmed pair when adding', async () => {
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.change(screen.getByLabelText(/reported today as/i), { target: { value: '  qwen-3.8-27b  ' } });
     fireEvent.change(screen.getByLabelText(/show as \(desired name\)/i), { target: { value: '  qwen3.8:27b ' } });
@@ -89,7 +118,7 @@ describe('AdminModels', () => {
 
   it('blocks a mapping of a name to itself without hitting the server', async () => {
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.change(screen.getByLabelText(/reported today as/i), { target: { value: 'glm-5.2' } });
     fireEvent.change(screen.getByLabelText(/show as \(desired name\)/i), { target: { value: 'glm-5.2' } });
@@ -102,7 +131,7 @@ describe('AdminModels', () => {
   it('surfaces a server conflict instead of failing silently', async () => {
     post.mockRejectedValue({ response: { data: { error: '"qwen38-27b" is already mapped to "other".' } } });
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.change(screen.getByLabelText(/reported today as/i), { target: { value: 'brand-new' } });
     fireEvent.change(screen.getByLabelText(/show as \(desired name\)/i), { target: { value: 'qwen3.8:27b' } });
@@ -114,25 +143,25 @@ describe('AdminModels', () => {
   it('deletes the alias of the row it was clicked on', async () => {
     vi.spyOn(window, 'confirm').mockImplementation(() => true);
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
-    fireEvent.click(screen.getByTitle(/unmap "qwen38-27b"/i));
+    fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
     await waitFor(() => expect(del).toHaveBeenCalledWith('/v1/admin/models/mappings/qwen38-27b'));
   });
 
   it('does not delete when the confirmation is declined', async () => {
     vi.spyOn(window, 'confirm').mockImplementation(() => false);
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
-    fireEvent.click(screen.getByTitle(/unmap "qwen38-27b"/i));
+    fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
     await new Promise(r => setTimeout(r, 20));
     expect(del).not.toHaveBeenCalled();
   });
 
   it('invalidates the PR Overview queries, which is what this page actually changes', async () => {
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.change(screen.getByLabelText(/reported today as/i), { target: { value: 'x-alias' } });
     fireEvent.change(screen.getByLabelText(/show as \(desired name\)/i), { target: { value: 'x-name' } });
@@ -149,12 +178,12 @@ describe('AdminModels', () => {
   it('explains an empty hub rather than showing a blank table', async () => {
     get.mockResolvedValue({ data: { mappings: [], observed: [] } });
     renderPage();
-    await waitFor(() => expect(screen.getByText(/no PR events with a model/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no models reported yet/i)).toBeInTheDocument());
   });
 
   it('offers observed ids and existing desired names as suggestions', async () => {
     renderPage();
-    await waitFor(() => screen.getByText('glm-5.2'));
+    await waitFor(() => inTable('glm-5.2'));
     // datalist elements are only useful if the inputs actually point at them.
     const aliasInput = screen.getByLabelText(/reported today as/i) as HTMLInputElement;
     const canonicalInput = screen.getByLabelText(/show as \(desired name\)/i) as HTMLInputElement;
