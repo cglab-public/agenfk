@@ -37,8 +37,11 @@ const group = (canonicalModel: string, prs = 1, aliases: string[] = []): ModelGr
   canonicalSeen: true, unusedMappings: [], createdBy: null,
 });
 
-function Harness({ groups = [], metaRows = [], loading = false, onError = () => {} }: {
-  groups?: unknown[]; metaRows?: unknown[]; loading?: boolean; onError?: (m: string | null) => void;
+function Harness({ groups = [], metaRows = [], loading = false, onError = () => {},
+  onUnmap = () => {}, unmappedCount = 0, unusedCount = 0 }: {
+  groups?: unknown[]; metaRows?: unknown[]; loading?: boolean;
+  onError?: (m: string | null) => void; onUnmap?: (alias: string) => void;
+  unmappedCount?: number; unusedCount?: number;
 } = {}) {
   const [qc] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   const [invalidate] = useState(() => vi.fn());
@@ -46,7 +49,8 @@ function Harness({ groups = [], metaRows = [], loading = false, onError = () => 
     <QueryClientProvider client={qc}>
       <ModelTable
         groups={groups as ModelGroup[]} metaRows={metaRows as never} loading={loading}
-        onError={onError} invalidate={invalidate}
+        onError={onError} invalidate={invalidate} onUnmap={onUnmap} unmapping={false}
+        unmappedCount={unmappedCount} unusedCount={unusedCount}
       />
     </QueryClientProvider>
   );
@@ -203,4 +207,49 @@ describe('Models table', () => {
     render(<Harness groups={[]} metaRows={[]} />);
     expect(screen.getByText('No models reported yet.')).toBeInTheDocument();
   });
+  describe('unmap (regression: the unified table must not lose it)', () => {
+    it('offers unmap on each alias row', async () => {
+      const onUnmap = vi.fn();
+      render(<Harness
+        groups={[group('glm-5.2', 12, ['glm52'])]}
+        metaRows={[meta('glm-5.2', 'Z.ai')]}
+        onUnmap={onUnmap}
+      />);
+      const btn = screen.getByRole('button', { name: /unmap glm52/i });
+      fireEvent.click(btn);
+      expect(onUnmap).toHaveBeenCalledWith('glm52');
+    });
+
+    it('shows a mapping whose alias was never reported, and lets it be unmapped', () => {
+      const g = group('glm-5.2', 12);
+      g.unusedMappings = [{
+        aliasModel: 'glm-5-2-beta', canonicalModel: 'glm-5.2',
+        createdByUserId: null, createdByEmail: null, createdAt: '2026-09-01T00:00:00Z',
+      }];
+      render(<Harness groups={[g]} metaRows={[meta('glm-5.2', 'Z.ai')]} unusedCount={1} onUnmap={vi.fn()} />);
+      // "waiting, not broken" — visible and reversible before it is ever reported.
+      expect(screen.getByText(/glm-5-2-beta/)).toBeInTheDocument();
+      expect(screen.getByText('not reported yet')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /unmap glm-5-2-beta/i })).toBeEnabled();
+    });
+
+    it('does not offer unmap on the model row itself', () => {
+      render(<Harness groups={[group('glm-5.2', 12)]} metaRows={[meta('glm-5.2', 'Z.ai')]} />);
+      expect(screen.queryByRole('button', { name: /^unmap glm-5\.2$/i })).not.toBeInTheDocument();
+    });
+  });
+
+  it('warns about unmapped names that are each their own group', () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ModelTable
+          groups={[group('glm-5.2', 5)] as any} metaRows={[] as any} loading={false}
+          onError={() => {}} invalidate={vi.fn()} onUnmap={() => {}} unmapping={false}
+          unmappedCount={3} unusedCount={0}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText(/3 unmapped/)).toBeInTheDocument();
+  });
+
 });

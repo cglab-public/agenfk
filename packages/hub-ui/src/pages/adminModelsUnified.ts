@@ -46,7 +46,7 @@ export interface UnifiedRow {
   prs: number;
   /** Reported spellings folded into this name, plus mappings never observed. */
   aliasCount: number;
-  aliases: Array<{ model: string; prs: number }>;
+  aliases: Array<{ model: string; prs: number; reported: boolean }>;
   meta: AppliedMeta | null;
   /**
    * True when no model_meta row matches at all. This is the state a newly
@@ -122,7 +122,15 @@ export function buildUnifiedRows(
       canonicalModel: g.canonicalModel,
       prs: g.prs,
       aliasCount: g.aliases.filter(a => a.model !== g.canonicalModel).length + g.unusedMappings.length,
-      aliases: g.aliases.map(a => ({ model: a.model, prs: a.prs })),
+      // A mapping whose alias has never been reported still gets a row: it is
+      // waiting, not broken, and without it the admin cannot unmap a mapping
+      // they just created until the agent happens to report that spelling.
+      aliases: [
+        ...g.aliases
+          .filter(a => a.model !== g.canonicalModel)
+          .map(a => ({ model: a.model, prs: a.prs, reported: true })),
+        ...g.unusedMappings.map(mm => ({ model: mm.aliasModel, prs: 0, reported: false })),
+      ],
       meta: hit ? {
         provider: hit.row.provider,
         licenseClass: hit.row.licenseClass,

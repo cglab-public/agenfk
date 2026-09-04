@@ -78,11 +78,13 @@ function inTable<T extends HTMLElement = HTMLElement>(text: RegExp | string, opt
   return hits[0] as T;
 }
 
+/** Cells (not leaf nodes) whose text contains `text` — alias rows split the
+ * spelling across child spans, so matching leaves only would miss them. */
 const inTableText = (text: string) => {
   const table = document.querySelector('table');
   if (!table) throw new Error('models table not rendered');
-  return [...table.querySelectorAll('*')].filter(el =>
-    el.children.length === 0 && (el.textContent ?? '').includes(text));
+  return [...table.querySelectorAll('td,th,tr')].filter(el =>
+    (el.textContent ?? '').includes(text));
 };
 
 describe('AdminModels', () => {
@@ -143,7 +145,7 @@ describe('AdminModels', () => {
     renderPage();
     await waitFor(() => inTable('glm-5.2'));
 
-    fireEvent.click(screen.getByTitle(/unmap "qwen38-27b"/i));
+    fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
     await waitFor(() => expect(del).toHaveBeenCalledWith('/v1/admin/models/mappings/qwen38-27b'));
   });
 
@@ -152,7 +154,7 @@ describe('AdminModels', () => {
     renderPage();
     await waitFor(() => inTable('glm-5.2'));
 
-    fireEvent.click(screen.getByTitle(/unmap "qwen38-27b"/i));
+    fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
     await new Promise(r => setTimeout(r, 20));
     expect(del).not.toHaveBeenCalled();
   });
@@ -176,7 +178,7 @@ describe('AdminModels', () => {
   it('explains an empty hub rather than showing a blank table', async () => {
     get.mockResolvedValue({ data: { mappings: [], observed: [] } });
     renderPage();
-    await waitFor(() => expect(screen.getByText(/no PR events with a model/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no models reported yet/i)).toBeInTheDocument());
   });
 
   it('offers observed ids and existing desired names as suggestions', async () => {

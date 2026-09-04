@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trash2, AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { api } from '../api';
-import { fmtDate } from '../dates';
 import {
   groupModels, validateMapping, knownCanonicalNames,
   MappingRow, ObservedModel,
@@ -146,178 +145,21 @@ export function AdminModels() {
         )}
       </section>
 
-      <section className={cardCls}>
-        <header className="flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-ink">
-              Models <span className="text-ink-tertiary font-normal">({groups.length})</span>
-            </h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
-              Every model name shown on the dashboards, with the reported spellings folded into it.
-            </p>
-          </div>
-          {unmappedCount > 0 && (
-            <span
-              className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 cursor-help"
-              title="These names are each their own group. Map the ones that are really the same model."
-            >
-              <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
-              {unmappedCount} unmapped
-            </span>
-          )}
-        </header>
-
-        {data.isLoading && <p className="mt-3 text-sm text-ink-tertiary">Loading…</p>}
-
-        {!data.isLoading && groups.length === 0 && (
-          <p className="mt-3 text-sm text-ink-tertiary">No PR events with a model have been reported yet.</p>
-        )}
-
-        {unusedCount > 0 && (
-          <p className="mt-2 text-[11px] text-ink-tertiary">
-            {unusedCount} {unusedCount === 1 ? 'mapping is' : 'mappings are'} listed below but that spelling
-            has not been reported yet — the mapping is waiting, not broken.
-          </p>
-        )}
-
-        <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
-                <th className="px-5 py-2 text-left font-semibold">Desired name</th>
-                <th className="px-5 py-2 text-left font-semibold">Mapped from</th>
-                <th className="px-5 py-2 text-right font-semibold">PRs</th>
-                <th className="px-5 py-2 text-left font-semibold">Mapped by</th>
-                <th className="px-5 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map(g => (
-                <ModelGroupRows
-                  key={g.canonicalModel}
-                  group={g}
-                  onDelete={(a) => {
-                    if (window.confirm(`Stop mapping "${a}"? Dashboards will show it as its own model again.`)) {
-                      remove.mutate(a);
-                    }
-                  }}
-                  deleting={remove.isPending}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <ModelTable
         groups={groups}
         metaRows={data.data?.meta ?? []}
         loading={data.isLoading}
         onError={setError}
         invalidate={invalidate}
+        onUnmap={(alias) => {
+          if (window.confirm(`Stop mapping "${alias}"? Dashboards will show it as its own model again.`)) {
+            remove.mutate(alias);
+          }
+        }}
+        unmapping={remove.isPending}
+        unmappedCount={unmappedCount}
+        unusedCount={unusedCount}
       />
     </div>
-  );
-}
-
-function ModelGroupRows({ group, onDelete, deleting }: {
-  group: ReturnType<typeof groupModels>[number];
-  onDelete: (aliasModel: string) => void;
-  deleting: boolean;
-}) {
-  // Every row of the group is a spelling that folds into the desired name, so
-  // every one of them gets an unmap control. Rendering only the tail would
-  // leave a group with a single alias — the common case — with no way back.
-  const rows = [
-    ...group.aliases
-      .filter(a => a.model !== group.canonicalModel)
-      .map(a => ({
-        key: a.model,
-        reported: a.model,
-        prs: a.prs,
-        mappedAt: null as string | null,
-      })),
-    ...group.unusedMappings.map(mm => ({
-      key: mm.aliasModel,
-      reported: mm.aliasModel,
-      prs: 0,
-      mappedAt: mm.createdAt,
-    })),
-  ];
-
-  return (
-    <>
-      <tr className="border-t border-border-soft">
-        <td className="px-5 py-2 align-top" rowSpan={Math.max(rows.length, 1)}>
-          <div className="font-mono text-[12px] font-semibold text-ink">{group.canonicalModel}</div>
-          {group.createdBy && (
-            <div className="mt-0.5 text-[10px] text-ink-tertiary">by {group.createdBy}</div>
-          )}
-        </td>
-        {rows.length === 0 ? (
-          <td className="px-5 py-2 text-[11px] text-ink-tertiary italic" colSpan={2}>
-            Reported as this exact name — nothing mapped
-          </td>
-        ) : (
-          <td className="px-5 py-2 text-[11px]" colSpan={2}>
-            <AliasCell row={rows[0]} />
-          </td>
-        )}
-        <td className="px-5 py-2 text-right align-top font-mono text-[12px] text-ink-secondary">
-          {group.prs}
-        </td>
-        <td className="px-5 py-2 align-top">
-          {rows.length > 0 && (
-            <UnmapButton alias={rows[0].reported} onDelete={onDelete} deleting={deleting} />
-          )}
-        </td>
-      </tr>
-      {rows.slice(1).map(r => (
-        <tr key={r.key} className="border-t border-border-soft/50">
-          <td className="px-5 py-2 text-[11px]" colSpan={2}>
-            <AliasCell row={r} indent />
-          </td>
-          <td />
-          <td className="px-5 py-2 text-right">
-            <UnmapButton alias={r.reported} onDelete={onDelete} deleting={deleting} />
-          </td>
-        </tr>
-      ))}
-    </>
-  );
-}
-
-function AliasCell({ row, indent }: {
-  row: { reported: string; prs: number; mappedAt: string | null };
-  indent?: boolean;
-}) {
-  return (
-    <>
-      {indent && <span className="text-ink-tertiary/60 mr-1">↳</span>}
-      <span className="font-mono text-ink-secondary">{row.reported}</span>
-      {row.prs > 0
-        ? <span className="ml-1 font-mono text-ink-secondary">{row.prs}</span>
-        : <span className="ml-1 italic text-ink-tertiary">not reported yet</span>}
-      {row.mappedAt && (
-        <span className="ml-1 text-ink-tertiary">· mapped {fmtDate(row.mappedAt)}</span>
-      )}
-    </>
-  );
-}
-
-function UnmapButton({ alias, onDelete, deleting }: {
-  alias: string;
-  onDelete: (aliasModel: string) => void;
-  deleting: boolean;
-}) {
-  return (
-    <button
-      disabled={deleting}
-      onClick={() => onDelete(alias)}
-      className="text-ink-tertiary hover:text-red-500 disabled:opacity-40"
-      title={`Unmap "${alias}"`}
-    >
-      <Trash2 className="w-3.5 h-3.5" />
-    </button>
   );
 }

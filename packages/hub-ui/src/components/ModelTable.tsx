@@ -16,7 +16,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Check, Pencil, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, Pencil, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { LICENSE_CLASSES, validateMetaRow, isHarnessName, licenseClassLabel } from '../pages/adminModelMeta';
 import {
@@ -35,6 +35,17 @@ interface Props {
   loading: boolean;
   onError: (msg: string | null) => void;
   invalidate: () => void;
+  /**
+   * Remove an alias→canonical mapping. The unified table replaced the old
+   * mappings table, so unmap lives here now — on the alias row, never the
+   * model row: unmapping is about a spelling, not about the model.
+   */
+  onUnmap: (aliasModel: string) => void;
+  unmapping: boolean;
+  /** Names that are each their own group — the thing mapping exists to fix. */
+  unmappedCount: number;
+  /** Mappings whose alias has not been reported yet. */
+  unusedCount: number;
 }
 
 interface Draft {
@@ -43,7 +54,7 @@ interface Draft {
   license: string;
 }
 
-export function ModelTable({ groups, metaRows, loading, onError, invalidate }: Props) {
+export function ModelTable({ groups, metaRows, loading, onError, invalidate, onUnmap, unmapping, unmappedCount, unusedCount }: Props) {
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<'observed' | 'all'>('observed');
   const [editing, setEditing] = useState<string | null>(null);
@@ -150,22 +161,39 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate }: P
           )}
         </div>
 
-        <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer shrink-0">
-          <input
-            type="checkbox"
-            checked={scope === 'all'}
-            onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
-            className="accent-brand"
-          />
-          Show all classification rules
-          <span
-            title="Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited."
-            className="cursor-help"
-          >
-            ⓘ
-          </span>
-        </label>
+        <div className="flex items-center gap-3 shrink-0">
+          <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={scope === 'all'}
+              onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
+              className="accent-brand"
+            />
+            Show all classification rules
+            <span
+              title="Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited."
+              className="cursor-help"
+            >
+              ⓘ
+            </span>
+          </label>
+        </div>
       </header>
+
+      {unmappedCount > 0 && (
+        <p className="mt-2 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
+          {unmappedCount} unmapped — these names are each their own group. Use “add a mapping”
+          above to fold spellings of the same model together.
+        </p>
+      )}
+
+      {unusedCount > 0 && (
+        <p className="mt-2 text-[11px] text-ink-tertiary">
+          {unusedCount} {unusedCount === 1 ? 'mapping is' : 'mappings are'} listed below but that
+          spelling has not been reported yet — the mapping is waiting, not broken.
+        </p>
+      )}
 
       <input
         value={query}
@@ -214,6 +242,8 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate }: P
                   onCancel={() => { setEditing(null); setRowError(null); }}
                   onChange={(d) => { setDraft(d); setRowError(isDirty(row, d) ? rowProblem(row.canonicalModel, d) : null); }}
                   onSave={() => commit(row)}
+                  onUnmap={onUnmap}
+                  unmapping={unmapping}
                   onDelete={() => {
                     if (window.confirm(`Delete the classification for "${row.canonicalModel}"? It will show as unknown until re-added.`)) {
                       remove.mutate(row.meta?.matchedKey ?? row.canonicalModel);
@@ -234,7 +264,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate }: P
   );
 }
 
-function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel, onChange, onSave, onDelete }: {
+function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping }: {
   row: UnifiedRow;
   editing: boolean;
   draft: Draft;
@@ -246,6 +276,8 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
   onChange: (d: Draft) => void;
   onSave: () => void;
   onDelete: () => void;
+  onUnmap: (aliasModel: string) => void;
+  unmapping: boolean;
 }) {
   const inherited = row.meta && !row.meta.exact;
 
@@ -359,15 +391,28 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
       </tr>
 
       {/* Alias spellings folded into this name — shown, but not individually
-          classifiable: one model must not have two licences. */}
-      {!editing && row.aliases.filter(a => a.model !== row.canonicalModel).map(a => (
+          classifiable: one model must not have two licences. They DO get an
+          unmap control, since unmapping is about a spelling, not the model. */}
+      {!editing && row.aliases.map(a => (
         <tr key={a.model} className="border-t border-border-soft/50">
-          <td className="px-5 py-1 pl-9 text-[11px] text-ink-tertiary font-mono" colSpan={2}>
+          <td className="px-5 py-1 pl-9 text-[11px] text-ink-tertiary font-mono">
             <span className="text-ink-tertiary/70">↳</span> {a.model}
-            {a.prs > 0 && <span className="ml-1">({a.prs})</span>}
+            {a.reported
+              ? a.prs > 0 && <span className="ml-1">({a.prs})</span>
+              : <span className="ml-1 italic">not reported yet</span>}
           </td>
-          <td className="px-3 py-1 text-[10px] text-ink-tertiary italic" colSpan={4}>
-            maps to {row.canonicalModel}
+          <td className="px-3 py-1 text-[10px] text-ink-tertiary italic">maps to {row.canonicalModel}</td>
+          <td className="px-3 py-1" colSpan={2} />
+          <td className="px-3 py-1 text-right whitespace-nowrap">
+            <button
+              onClick={() => onUnmap(a.model)}
+              disabled={unmapping}
+              aria-label={`Unmap ${a.model}`}
+              title={`Stop mapping "${a.model}" — dashboards will show it as its own model again`}
+              className="p-1 rounded text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
           </td>
         </tr>
       ))}
