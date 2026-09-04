@@ -45,6 +45,19 @@ export interface ModelMeta extends ModelMetaRow {
 }
 
 /**
+ * The license-class value sent on the wire for an unclassified model.
+ *
+ * The `model_meta` column is CHECK-constrained to open_weights|commercial, so
+ * the table cannot hold "unknown" — but the API must not report a licence class
+ * it never established. Reporting `commercial` for an unknown model made it
+ * appear under the "Commercial / API only" facet on the dashboard, which is a
+ * claim about a licence nobody granted. `unclassified` is a real, filterable
+ * bucket; `commercial` is an assertion.
+ */
+export const UNCLASSIFIED_LICENSE_CLASS = 'unclassified' as const;
+export type LicenseClassWire = LicenseClass | typeof UNCLASSIFIED_LICENSE_CLASS;
+
+/**
  * Normalise a reported model id for matching.
  *
  * Router/provider prefixes are stripped because the same artifact reaches the
@@ -86,7 +99,9 @@ export function isHarnessName(model: string): boolean {
 const UNCLASSIFIED_META: ModelMeta = {
   model: '',
   provider: UNCLASSIFIED,
-  licenseClass: 'commercial',
+  // See UNCLASSIFIED_LICENSE_CLASS: never claim a class for a model we could
+  // not classify.
+  licenseClass: UNCLASSIFIED_LICENSE_CLASS as unknown as LicenseClass,
   license: 'Unknown — no model_meta row matches',
   source: 'seed',
   unclassified: true,

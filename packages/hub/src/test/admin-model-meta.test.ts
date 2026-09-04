@@ -273,5 +273,49 @@ describe('admin model_meta', () => {
       const row = await byModel('claude-code');
       expect(row.provider).toBe('unclassified');
     });
+    /**
+     * The bug: model_meta is resolved from the RAW reported id, but byModel is
+     * keyed by the CANONICAL name after alias resolution. With a mapping in
+     * place the canonical lookup found nothing, so the row shipped with no
+     * provider/licenseClass and the UI rendered a model that had a perfectly
+     * good seed row as "Unclassified / Commercial" — while its unmapped
+     * siblings classified fine. That inconsistency is what made it look like a
+     * data problem rather than a join bug.
+     */
+    it('attaches provider to a model reached through a mapping', async () => {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
+        .send({ events: [prEvent('deepseek/deepseek-v4-pro-0813')] });
+      await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+        .send({ aliasModel: 'deepseek/deepseek-v4-pro-0813', canonicalModel: 'deepseek-v4-pro-0813' });
+
+      const row = await byModel('deepseek-v4-pro-0813');
+      expect(row?.provider).toBe('DeepSeek');
+      expect(row?.licenseClass).toBe('open_weights');
+    });
+
+    it('attaches metadata through a router-prefixed alias the seed matches by prefix', async () => {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
+        .send({ events: [prEvent('@cf/zai-org/glm-5.2')] });
+      await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+        .send({ aliasModel: '@cf/zai-org/glm-5.2', canonicalModel: 'glm-5.2' });
+      const row = await byModel('glm-5.2');
+      expect(row?.provider).toBe('Z.ai');
+    });
+
+    it('leaves a genuinely unknown model without provider metadata', async () => {
+      await supertest(app)
+        .post('/v1/events').set('Authorization', `Bearer ${await token()}`)
+        .send({ events: [prEvent('totally-new-9000')] });
+      const row = await byModel('totally-new-9000');
+      expect(row).toBeDefined();
+      // Explicitly 'unclassified', not omitted and not guessed. The UI needs a
+      // value to put in a facet; what it must never do is turn the gap into
+      // 'commercial'.
+      expect(row?.provider).toBe('unclassified');
+      expect(row?.licenseClass).toBe('unclassified');
+    });
   });
+
 });

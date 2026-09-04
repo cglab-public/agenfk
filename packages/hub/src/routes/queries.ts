@@ -9,6 +9,7 @@ import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
+import { resolveModelId } from '../util/modelMapping.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -274,7 +275,17 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const rawModels = [...new Set(currentRows.map(r => r.model).filter((m): m is string => typeof m === 'string' && m.length > 0))];
     const modelMeta = resolveModelMetaAll(rawModels, modelMetaRows);
 
-    const result = aggregatePrOverview(currentRows, { from: f.from, to: f.to, models, developers: f.users, modelMapping, modelMeta });
+    const result = aggregatePrOverview(currentRows, {
+      from: f.from, to: f.to, models, developers: f.users, modelMapping,
+      // Keyed by the canonical name, for callers that filter that way, AND by
+      // the raw reported id, which is what the aggregator needs to attach
+      // metadata to an alias-resolved group. Passing only one of the two is how
+      // a mapped model lost its provider in production.
+      modelMeta: resolveModelMetaAll(
+        [...new Set(rawModels.map(m => resolveModelId(m, modelMapping) ?? m))], modelMetaRows,
+      ),
+      modelMetaRaw: modelMeta,
+    });
 
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened

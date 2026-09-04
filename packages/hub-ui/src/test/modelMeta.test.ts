@@ -15,7 +15,7 @@ import {
 } from '../modelMeta';
 
 const rows = (
-  ...specs: Array<[string, string?, ('open_weights' | 'commercial')?, string?]>
+  ...specs: Array<[string, string?, ('open_weights' | 'commercial' | 'unclassified')?, string?]>
 ): ModelFacetRow[] =>
   specs.map(([model, provider, licenseClass, license]) => ({
     model, provider, licenseClass, license,
@@ -47,8 +47,11 @@ describe('modelMeta', () => {
     expect(modelMeta('glm-9.9-not-in-response', FIXTURE).provider).toBe(UNCLASSIFIED);
   });
 
-  it('treats a missing licenseClass as commercial, the conservative reading', () => {
-    expect(modelMeta('x', rows(['x', 'Acme', undefined, 'MIT'])).licenseClass).toBe('commercial');
+  it('leaves a missing licenseClass unclassified rather than claiming commercial', () => {
+    // The old behaviour called an unknown model "Commercial / API only", which
+    // put a model with no established licence into the commercial facet — a
+    // claim the data never supported. Unknown must stay its own bucket.
+    expect(modelMeta('x', rows(['x', 'Acme', undefined, 'MIT'])).licenseClass).toBe(UNCLASSIFIED);
   });
 
   it('is empty-safe', () => {
@@ -71,9 +74,12 @@ describe('providersFor / licenseClassesFor', () => {
       .toEqual(['Alibaba']);
   });
 
-  it('omits an absent license class', () => {
+  it('omits an absent license class and orders unclassified last', () => {
     expect(licenseClassesFor(rows(['a', 'Z.ai', 'open_weights']))).toEqual(['open_weights']);
-    expect(licenseClassesFor(FIXTURE)).toEqual(['open_weights', 'commercial']);
+    expect(licenseClassesFor(FIXTURE)).toEqual(['open_weights', 'commercial', UNCLASSIFIED]);
+    // An unknown model contributes its own facet value, not 'commercial'.
+    expect(licenseClassesFor(rows(['a', 'Z.ai', 'open_weights'], ['b', 'New Lab', undefined, '']))).toEqual(
+      ['open_weights', UNCLASSIFIED]);
   });
 });
 

@@ -37,6 +37,8 @@ interface NormRow {
   task: number;
   bug: number;
   model: string | null;
+  /** Model id as reported, before alias resolution. */
+  rawModel: string | null;
   harness: string | null;
   remoteUrl: string | null;
 }
@@ -64,6 +66,9 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
     // Resolved here, at the single funnel both the grouping and the filter read
     // through, so the two can never disagree about a PR's model.
     model: resolveModelId(r.model, mapping),
+    // The spelling as reported, kept because model_meta is resolved from raw
+    // ids and aliasing would otherwise make that metadata unreachable.
+    rawModel: r.model ?? null,
     harness: r.harness,
     remoteUrl: r.remote_url ?? null,
   };
@@ -140,16 +145,23 @@ export interface PrWindow {
   modelMapping?: ModelMapping | null;
   /**
    * Provider + license class per model id, from the admin-editable model_meta
-   * table. Keyed by the model id as it appears in `byModel` (i.e. after alias
-   * resolution), which is why the caller resolves aliases first and looks up
-   * the canonical name here.
+   * table, keyed by the CANONICAL name (after alias resolution).
    */
   modelMeta?: ReadonlyMap<string, ModelMeta> | null;
+  /**
+   * The same metadata keyed by the RAW reported id. Needed because a group can
+   * be reached through several spellings, and a caller that resolves metadata
+   * before aliasing cannot also key it by the canonical name. See the lookup in
+   * `byModel`.
+   */
+  modelMetaRaw?: ReadonlyMap<string, ModelMeta> | null;
 }
 
 interface ResolvedPr {
   user_key: string;
   model: string;
+  /** The model id exactly as reported, before alias resolution. */
+  rawModel: string | null;
   harness: string | null;
   openerAt: string;
   day: string;
@@ -188,6 +200,7 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
     resolved.push({
       user_key: opener.user_key,
       model: opener.model ?? 'unknown',
+      rawModel: opener.rawModel,
       harness: opener.harness ?? null,
       openerAt: opener.occurred_at,
       day: dayOf(opener.occurred_at),
@@ -222,7 +235,7 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   // day → size bucket → (developer → count), for slice tooltips.
   const dayDevMap = new Map<string, Record<SizeBucket, Map<string, number>>>();
   const devMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>();
-  const modelMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; harnesses: Set<string> }>();
+  const modelMap = new Map<string, { prs: number; sizePoints: number; sizes: SizeDist; harnesses: Set<string>; raw: Set<string> }>();
   const resized = { count: 0, grew: 0, shrank: 0 };
   const developers = new Set<string>();
   let sizePoints = 0;
@@ -245,9 +258,12 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     dev.daily[pr.day] = (dev.daily[pr.day] ?? 0) + 1;
     devMap.set(pr.user_key, dev);
 
-    const mdl = modelMap.get(pr.model) ?? { prs: 0, sizePoints: 0, sizes: emptyDist(), harnesses: new Set<string>() };
+    const mdl = modelMap.get(pr.model) ?? { prs: 0, sizePoints: 0, sizes: emptyDist(), harnesses: new Set<string>(), raw: new Set<string>() };
     mdl.prs++; mdl.sizePoints += pr.points; mdl.sizes[pr.bucket]++;
     if (pr.harness) mdl.harnesses.add(pr.harness);
+    // Remember the reported spelling behind this canonical name, so provider /
+    // license metadata resolved from raw ids can still be found after aliasing.
+    if (pr.rawModel) mdl.raw.add(pr.rawModel);
     modelMap.set(pr.model, mdl);
 
     // A PR is "resized" when a later sizing differs from the opener's.
@@ -288,7 +304,20 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
 
   const byModel = [...modelMap.entries()]
     .map(([model, v]) => {
-      const meta = window?.modelMeta?.get(model);
+      // Look the metadata up by BOTH keys. `modelMeta` is keyed by the RAW
+      // reported id (it must be resolved before aliasing, since the seed is
+      // matched against what the agent actually sent), while `model` here is the
+      // CANONICAL name after alias resolution. When a mapping exists the two
+      // differ, and a single canonical lookup silently finds nothing — the row
+      // then ships with no provider/licenseClass and the UI renders it as
+      // "Unclassified / Commercial". That was the deepseek-v4-pro-0813 bug:
+      // `deepseek/deepseek-v4-pro-0813` mapped to `deepseek-v4-pro-0813`, so the
+      // canonical key missed and the model looked unclassified while its
+      // unmapped siblings classified fine.
+      const meta =
+        window?.modelMeta?.get(model)
+        ?? (v.raw ? [...v.raw].map(r => window?.modelMetaRaw?.get(r)).find(Boolean) : undefined)
+        ?? window?.modelMetaRaw?.get(model);
       return {
         model,
         prs: v.prs,

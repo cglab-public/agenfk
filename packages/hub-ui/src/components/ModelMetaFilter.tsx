@@ -27,7 +27,7 @@ import { useMemo } from 'react';
 import {
   modelMeta, providersFor, licenseClassesFor, modelsMatching,
   LICENSE_CLASS_LABEL, UNCLASSIFIED,
-  type LicenseClass, type ModelFacetRow,
+  type FacetClass, type ModelFacetRow,
 } from '../modelMeta';
 
 interface Props {
@@ -67,7 +67,7 @@ export function ModelMetaFilter({ rows, selected, onApply }: Props) {
   if (rows.length <= 1 || providers.length === 0) return null;
 
   const applyProvider = (p: string) => onApply(modelsMatching(rows, new Set([p]), new Set()));
-  const applyClass = (c: LicenseClass) => onApply(modelsMatching(rows, new Set(), new Set([c])));
+  const applyClass = (c: FacetClass) => onApply(modelsMatching(rows, new Set(), new Set([c])));
 
   return (
     <div className="space-y-2">

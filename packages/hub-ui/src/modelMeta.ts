@@ -18,6 +18,9 @@ export type LicenseClass = 'open_weights' | 'commercial';
 /** Synthetic facet value for models the server could not classify. */
 export const UNCLASSIFIED = 'unclassified';
 
+/** A license-class facet value: a real class, or the unknown bucket. */
+export type FacetClass = LicenseClass | typeof UNCLASSIFIED;
+
 /** The slice of a `byModel` entry this module needs. */
 export interface ModelFacetRow {
   model: string;
@@ -28,13 +31,18 @@ export interface ModelFacetRow {
 
 export interface ModelMeta {
   provider: string;
-  licenseClass: LicenseClass;
+  licenseClass: FacetClass;
   license: string;
 }
 
 const UNKNOWN: ModelMeta = {
   provider: UNCLASSIFIED,
-  licenseClass: 'commercial',
+  // `unclassified`, NOT `commercial`. The old value claimed "Commercial / API
+  // only" for any model it could not classify, so a model that merely lacked a
+  // model_meta row was reported as having a licence it was never shown to have
+  // — and appeared in the "Commercial" facet. An unknown must stay unknown:
+  // visible, filterable, and never a claim about a licence.
+  licenseClass: UNCLASSIFIED,
   license: 'Unknown — no model_meta row matches',
 };
 
@@ -47,12 +55,12 @@ const UNKNOWN: ModelMeta = {
  */
 export function modelMeta(model: string, rows: readonly ModelFacetRow[]): ModelMeta {
   const hit = rows.find(r => r.model === model);
-  if (!hit || !hit.provider) return { ...UNKNOWN };
+  if (!hit || !hit.provider || hit.provider === UNCLASSIFIED) return { ...UNKNOWN };
   return {
     provider: hit.provider,
-    // Absent class is treated as commercial — the conservative reading, which
-    // does not claim a licence the model may not grant.
-    licenseClass: hit.licenseClass === 'open_weights' ? 'open_weights' : 'commercial',
+    // A row with a provider but no class is still unknown on that axis; it is
+    // not evidence of a commercial licence.
+    licenseClass: hit.licenseClass === 'commercial' ? 'commercial' : hit.licenseClass === 'open_weights' ? 'open_weights' : UNCLASSIFIED,
     license: hit.license ?? '',
   };
 }
@@ -64,10 +72,10 @@ export function providersFor(rows: readonly ModelFacetRow[]): string[] {
     a === UNCLASSIFIED ? 1 : b === UNCLASSIFIED ? -1 : a.localeCompare(b));
 }
 
-/** License classes present, in canonical display order. */
-export function licenseClassesFor(rows: readonly ModelFacetRow[]): LicenseClass[] {
+/** License classes present, in canonical display order. `unclassified` last. */
+export function licenseClassesFor(rows: readonly ModelFacetRow[]): FacetClass[] {
   const set = new Set(rows.map(r => modelMeta(r.model, rows).licenseClass));
-  return (['open_weights', 'commercial'] as LicenseClass[]).filter(c => set.has(c));
+  return (['open_weights', 'commercial', UNCLASSIFIED] as FacetClass[]).filter(c => set.has(c));
 }
 
 /**
@@ -118,7 +126,8 @@ export function resolveMetaSelection(
   return [...new Set([...explicit, ...modelsMatching(rows, providers, classes)])];
 }
 
-export const LICENSE_CLASS_LABEL: Record<LicenseClass, string> = {
+export const LICENSE_CLASS_LABEL: Record<FacetClass, string> = {
   open_weights: 'Open weights',
   commercial: 'Commercial / API only',
+  [UNCLASSIFIED]: 'Unclassified',
 };
