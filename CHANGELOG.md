@@ -2,6 +2,55 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.10] — 2026-09-03
+
+Carries the CGLAB-133 hub changes forward from `v1.1.17-beta.9` and adds the
+test-suite performance work. Deployed to production hub
+(`afk-hub.cglab.com`, verified via `/healthz`).
+
+### Hub — PR Overview
+
+- **Selectable granularity** (CGLAB-133, #175) — the "PR volume by size" chart
+  buckets **daily / weekly (ISO, Mon–Sun) / monthly**, with **Total / Avg / Max**
+  stats under the chart. Re-bucketed client-side from the API's existing
+  per-UTC-day `byDay` array, so no API or SQL change and counts stay identical
+  to the heatmap and the per-cell drill-down. Week starts are UTC-anchored (a
+  Sunday stays in the week that began Monday); `average` divides by every bucket
+  in the range including empty ones, `max` names its bucket and breaks ties to
+  the earliest. Tooltips carry the bucket's non-empty days. New pure module
+  `prVolumeGranularity.ts` (24 unit tests + mutation-sweep assertions).
+
+### Testing
+
+- **Full-suite wall clock: ~218s → ~58s** (3.7×) from the two changes below.
+  Measured on the same machine, same 238 files / 2667 tests.
+- **bcrypt cost is now configurable** via `AGENFK_HUB_BCRYPT_ROUNDS`
+  (production default unchanged at 11, clamped to bcryptjs' valid 4..31,
+  non-numeric falls back to the default). The vitest env pins it to 4: the hub
+  suite performs ~238 **synchronous** bcrypt ops (114 user creations + 124
+  logins) which at rounds=11 cost ~23s of blocked worker per full run. The hash
+  format is identical at cost 4, so signup/login/rotation paths stay exercised
+  end to end — new `bcrypt-rounds.test.ts` pins the default, the clamping, lazy
+  env reads, and that a reduced-cost hash still verifies.
+- **Split vitest projects by filesystem coupling** (`vitest.config.ts`): the
+  fs-free packages (core, hub-ui, ui, flow-editor, plus storage-sqlite/telemetry,
+  which use per-file mkdtemp dirs or a mocked `os.homedir()`) now run their
+  files concurrently in a `parallel` project, while server/hub/cli stay in a
+  serial project. The previous blanket `fileParallelism: false` was serialising
+  ~90 files that had nothing to contend over. Timeouts, aliases, the HOME pin
+  and the coverage gate are shared from `scripts/vitest-shared-config.mjs` so
+  the two projects cannot drift.
+- **Hub test teardown now drains the ephemeral supertest listener** before
+  closing the WAL-mode DB (`packages/hub/src/test/helpers/drainApp.ts`, applied
+  to 38 hub specs). `supertest(app)` leaves the Express app listening on an
+  ephemeral port, so a response still draining could fail its write after
+  `db.close()` and reset the socket, surfacing `read ECONNRESET` on whichever
+  spec ran next. **Not a complete fix**: the same socket-reset flake still
+  appears ~1 run in 5, now in
+  `packages/server/src/test/item-reparent.test.ts`, a separate pre-existing
+  issue in the server suite (it moves between files run-to-run and passes in
+  isolation). Accepted as known flakiness.
+
 ## [1.1.17-beta.9] — 2026-09-03
 
 ### Added
