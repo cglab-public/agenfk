@@ -2,6 +2,35 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.14] — 2026-09-04
+
+### Fix — Admin → Models rendered two tables, and could not unmap
+
+Both regressions shipped in `v1.1.17-beta.13` and were caught in the deployed UI.
+
+- **The old mappings table was never deleted**, so the page showed it on top and
+  the new unified table below. The previous commit inserted the new component and
+  removed only the "Provider & license" section — the mappings `<section>` was
+  left behind.
+- **The unified table had no unmap control.** Unmap lived on the rows of the table
+  that got deleted, so the affordance disappeared with it. It now sits on each
+  **alias** row: unmapping is about a reported spelling, so it must not sit on the
+  model row where it would read as "unmap this model".
+
+Also restored what the deleted table showed and the new one silently dropped:
+
+- **"N unmapped"** warning for names that are each their own group — the exact
+  condition mapping exists to fix.
+- **Mappings whose alias has not been reported yet** now get a row, marked
+  "not reported yet", with unmap available. Previously they were counted in the
+  "N aliases" label but rendered nowhere, so a mapping you had just created was
+  invisible and irreversible until an agent happened to report that spelling.
+
+Tests: 3 new (unmap on the alias row, pending mapping visible and unmapbable, no
+unmap on the model row). The 4 page assertions that named the removed markup were
+retargeted to the new labels, not loosened. Full suite **2810 tests / 245 files**
+green.
+
 ## [1.1.17-beta.13] — 2026-09-04
 
 ### Hub — Models admin is one table now, edited inline
