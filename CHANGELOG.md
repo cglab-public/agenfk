@@ -2,6 +2,59 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.13] — 2026-09-04
+
+### Hub — Models admin is one table now, edited inline
+
+The previous cut shipped two sections on Admin → Models — alias mappings, and a
+separate read-only "Provider & license" table with an add-form. They described
+the same thing, so they are one table now.
+
+- **One row per model name.** Aliases nest underneath it; Provider / Weights /
+  Licence sit on the same row. **Click a value to edit it in place** — Save and
+  Cancel in the row, Enter to commit, Esc to discard. The add-form is gone:
+  correcting a row and adding one are the same upsert against
+  `PUT /v1/admin/models/meta`.
+- **Classification attaches to the model name, never to a spelling.** Aliasing
+  keys on a reported spelling (`qwen38-27b` → `qwen3.8-27b`); provider and
+  licence key on the name the dashboard groups and filters by. Classifying a
+  spelling would let one model carry two licences depending on which agent
+  reported it, so alias rows are shown but not editable on that axis.
+- **A new model arrives Unknown.** No matching rule means the row reads
+  `Unknown` in amber, sorts to the top of the table, and offers "Classify this
+  model" — it does not inherit a vendor by string similarity. The header counts
+  how many are unknown.
+- **Prefix rules are visible, not magic.** A row classified by a family rule
+  says `from glm-` and `covers N`, so a rule governing models off-screen is
+  legible. Save is gated on the row actually changing, because saving an
+  untouched inherited rule would silently narrow the family rule to one model.
+- **Noise stays out of the way.** Only models actually reported are listed by
+  default; the ~100 seeded rules that matched nothing sit behind "Show all
+  classification rules". Without that, the page is mostly rules for models you
+  do not run.
+- Validation (blank provider, blank licence, invalid class, harness names) runs
+  as you type, not only on save.
+
+### Notes found while building this
+
+- **`normaliseModelId` does not fold `:`**, so an Ollama-style id
+  (`qwen3.8:27b`) normalises to `qwen3-8:27b` and resolves through the shorter
+  `qwen3-8` family rule rather than the specific `qwen3.8-27b` row. Both say
+  Apache-2.0, so the answer is correct today; the specificity loss only bites
+  where a family rule and its artifact rule disagree (as with `glm-5.3` vs
+  `glm-5.3-flash`). Pinned in a test rather than changed, so the client and
+  server normalisers cannot drift apart unnoticed.
+- Model names now appear twice in the DOM by design (datalist suggestions and
+  table rows), so the existing page tests were scoped to the table instead of
+  loosened.
+
+### Testing
+
+27 tests for the merge rules (longest-prefix wins, unknown stays unknown,
+inherited-rule narrowing, scope filtering), 15 for the table (inline save,
+classify-from-unknown, Save disabled on no-op and on invalid, delete leaves the
+model unknown, scope toggle). Full suite **2806 tests / 245 files** green.
+
 ## [1.1.17-beta.12] — 2026-09-04
 
 ### Hub — model provider/license is now configurable
