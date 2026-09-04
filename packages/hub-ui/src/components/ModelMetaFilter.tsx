@@ -1,0 +1,151 @@
+/**
+ * Meta-filter over the model list (CGLAB-133 follow-up).
+ *
+ * Lets the user select/deselect models by vendor (Z.ai, Anthropic, OpenAI, …)
+ * and by license class (open weights / commercial API), instead of searching a
+ * long model list one chip at a time.
+ *
+ * It is a SELECTOR, not a filter axis: clicking "Anthropic" puts Anthropic's
+ * models into the same `?model=` CSV the Model facet already uses. Two
+ * consequences that shape the design:
+ *
+ *  - No backend change — the server already accepts a model CSV — and a shared
+ *    link restores the exact same view, because the result is plain model ids.
+ *  - It only ADDS models. Removing a vendor is done by removing the models from
+ *    the Model facet, not by unclicking a vendor, because "which models are
+ *    selected" is the real state and a vendor chip cannot un-select models the
+ *    user picked individually without surprising them. The copy says so rather
+ *    than implying a toggle it does not implement.
+ *
+ * Counts per option are the number of models that selection would add, so the
+ * chip is informative before it is clicked and an empty vendor is visible as
+ * empty rather than missing.
+ */
+import { useMemo } from 'react';
+import { modelMeta, providersFor, licenseClassesFor, modelsMatching, LICENSE_CLASS_LABEL, UNCLASSIFIED, type LicenseClass } from '../modelMeta';
+
+interface Props {
+  /** All models currently available in the window (the facet's option list). */
+  models: string[];
+  /** Models already selected in the Model facet. */
+  selected: Set<string>;
+  /** Add the models this selection resolves to. */
+  onApply: (modelsToAdd: string[]) => void;
+}
+
+export function ModelMetaFilter({ models, selected, onApply }: Props) {
+  const providers = useMemo(() => providersFor(models), [models]);
+  const classes = useMemo(() => licenseClassesFor(models), [models]);
+
+  // How many models each option would ADD (already-selected ones excluded), so
+  // a chip that does nothing reads as 0 instead of looking broken.
+  const counts = useMemo(() => {
+    const byProvider = new Map<string, number>();
+    for (const p of providers) {
+      byProvider.set(p, modelsMatching(models, new Set([p]), new Set())
+        .filter(m => !selected.has(m)).length);
+    }
+    const byClass = new Map<string, number>();
+    for (const c of classes) {
+      byClass.set(c, modelsMatching(models, new Set(), new Set([c]))
+        .filter(m => !selected.has(m)).length);
+    }
+    return { byProvider, byClass };
+  }, [models, selected, providers, classes]);
+
+  if (models.length <= 1) return null;
+
+  const applyProvider = (p: string) =>
+    onApply(modelsMatching(models, new Set([p]), new Set()));
+  const applyClass = (c: LicenseClass) =>
+    onApply(modelsMatching(models, new Set(), new Set([c])));
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-ink-tertiary">
+        Select by vendor or license — adds the matching models to the selection.
+      </p>
+
+      <div>
+        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Provider</h4>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {providers.map(p => {
+            const n = counts.byProvider.get(p) ?? 0;
+            const label = p === UNCLASSIFIED ? 'Unclassified' : p;
+            return (
+              <button
+                key={p}
+                // A vendor with nothing left to add is disabled rather than
+                // hidden, so "all of Anthropic is already selected" is legible.
+                disabled={n === 0}
+                onClick={() => applyProvider(p)}
+                title={p === UNCLASSIFIED
+                  ? 'Models not in the vendor seed — selecting adds all of them'
+                  : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
+                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                  n === 0
+                    ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
+                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+              >
+                {label}
+                <span className="ml-1 text-ink-tertiary">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Weights</h4>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {classes.map(c => {
+            const n = counts.byClass.get(c) ?? 0;
+            return (
+              <button
+                key={c}
+                disabled={n === 0}
+                onClick={() => applyClass(c)}
+                title={c === 'open_weights'
+                  ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
+                  : 'No downloadable weights — hosted API only.'}
+                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                  n === 0
+                    ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
+                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+              >
+                {LICENSE_CLASS_LABEL[c]}
+                <span className="ml-1 text-ink-tertiary">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Show the license of what is selected, so "Open weights" is verifiable
+          rather than a claim the reader has to trust. */}
+      {selected.size > 0 && (
+        <details className="text-[11px]">
+          <summary className="cursor-pointer text-ink-tertiary hover:text-ink-secondary">
+            License of {selected.size} selected model{selected.size === 1 ? '' : 's'}
+          </summary>
+          <ul className="mt-1.5 space-y-0.5 max-h-32 overflow-y-auto">
+            {[...selected].sort().map(m => {
+              const meta = modelMeta(m);
+              return (
+                <li key={m} className="font-mono text-[10.5px] text-ink-tertiary truncate">
+                  <span className="text-ink-secondary">{m}</span>
+                  {' — '}
+                  {meta.provider === UNCLASSIFIED ? 'unclassified' : meta.provider}
+                  {' · '}
+                  {LICENSE_CLASS_LABEL[meta.licenseClass]}
+                  {' · '}
+                  {meta.license}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}

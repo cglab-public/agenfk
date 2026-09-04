@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
+import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion';
+import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -292,6 +294,9 @@ export function PrOverviewPage() {
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
+  // Accordion open/closed lives in the URL like every other filter, so a shared
+  // or bookmarked link restores the same layout. Absent param = open.
+  const [filtersOpen, setFiltersOpen] = useState(() => parseFiltersOpen(searchParams.get('filters')));
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -306,8 +311,10 @@ export function PrOverviewPage() {
       p.set('range', range); // omit the default to keep the URL clean
     }
     if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
+    // Only the non-default (collapsed) state is written, so the common URL stays clean.
+    if (!filtersOpen) p.set('filters', '0');
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -459,6 +466,16 @@ export function PrOverviewPage() {
         </div>
       </header>
 
+      <FilterAccordion
+        activeCount={[projectSel.set, devSel.set, modelSel.set].filter(s => s.size > 0).length}
+        activeSummary={[
+          ...(projectSel.set.size ? [`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`] : []),
+          ...(devSel.set.size ? [`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`] : []),
+          ...(modelSel.set.size ? [`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`] : []),
+        ]}
+        initialOpen={filtersOpen}
+        onOpenChange={setFiltersOpen}
+      >
       <FacetMultiselect
         label="Project (git remote)"
         options={projects.data?.projects ?? []}
@@ -489,6 +506,13 @@ export function PrOverviewPage() {
         inlineThreshold={6}
         placeholder="Search models…"
       />
+
+      <ModelMetaFilter
+        models={modelOptions}
+        selected={modelSel.set}
+        onApply={modelSel.addMany}
+      />
+      </FilterAccordion>
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
       {d && d.totals.prs === 0 && (

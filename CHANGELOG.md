@@ -2,6 +2,55 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.11] — 2026-09-04
+
+### Hub — PR Overview
+
+- **Collapsible filter bar** — the Project / Developer / Model facets were
+  stacked vertically and pushed the charts below the fold. They now live in an
+  accordion. Collapsing does **not** deactivate the filters: the header shows an
+  "N active" badge and a per-facet summary, so a hidden filter can never
+  silently change the numbers. Open/closed is stored in the URL (`filters=0`,
+  only when collapsed) rather than localStorage, so a shared or bookmarked link
+  restores the same layout like every other filter on the page. Open by default.
+- **Model meta-filter** — select/deselect models by **vendor** (Z.ai, Anthropic,
+  OpenAI, Alibaba, …) and by **license class** (**Open weights** / **Commercial
+  · API only**) instead of searching a long model list one chip at a time.
+  - It is a *selector*, not a new filter axis: a click resolves to model ids and
+    writes them into the existing `?model=` CSV. **No API or SQL change**, and a
+    shared link restores the same view. It only *adds* — models you picked
+    individually are never dropped.
+  - Each chip shows how many models it would add, and a vendor with nothing left
+    to add is disabled rather than hidden, so "already all selected" is legible.
+  - A per-selection breakdown lists each selected model's vendor, class and
+    exact licence, so the classification is verifiable rather than a claim.
+- **Model provider/license seed** (`modelMeta.ts`) — the hub stores `model` as
+  free text an agent self-reports and has no provider or license column, so
+  these facets are derived from a curated, artifact-level table (sources: each
+  vendor's own licence text / model card, checked Sep 2026). Deliberate choices:
+  - **Artifact-level, longest-prefix-wins**, because one family spans both
+    classes: `qwen3.8-27b` is Apache-2.0 open weights while `qwen3.8-max` is
+    API-only, and `glm-5.3-flash` is MIT while `glm-5.3` is a bespoke licence.
+    A family-level rule is wrong for one of every such pair, silently.
+  - **Unmatched models are "Unclassified", never guessed** — a visible,
+    filterable bucket, so a new model is not silently mislabelled.
+  - Router prefixes are stripped before matching (`@cf/zai-org/glm-5.2`,
+    `openrouter/anthropic/claude-opus-4-8`), and **harness names are not
+    models**: `claude-code` is reported in the model axis and must not classify
+    as an Anthropic model.
+  - Per product decision, **downloadable weights win ties**, so bespoke-licence
+    models (Kimi K3, GLM-5.3, Qwen3.8-Flash-Next, Llama 4) count as open
+    weights. That makes this axis open **weights**, not open **source** — the UI
+    says so and the tooltip names the actual licence.
+  - Display/filter only: nothing is persisted and the stored model id is never
+    rewritten. Admin-curated overrides remain a follow-up.
+
+### Testing
+
+- 33 unit tests for `modelMeta` (the split-family traps, harness strings,
+  router prefixes, the no-guess contract) and 16 page/component tests for the
+  accordion + meta-filter. Full suite 2740 tests / 241 files green.
+
 ## [1.1.17-beta.10] — 2026-09-03
 
 Carries the CGLAB-133 hub changes forward from `v1.1.17-beta.9` and adds the
