@@ -8,6 +8,7 @@ import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregat
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
+import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -229,6 +230,11 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // the filter values go through the same mapping so a saved link to
     // `?model=qwen38-27b` still finds the group now filed under `qwen3.8:27b`.
     const modelMapping = await loadModelMappings(ctx.db, orgId);
+    // Provider + license class come from the admin-editable model_meta table
+    // (seeded on first read). Keyed on the CANONICAL name, because that is what
+    // byModel groups under after alias resolution — keying on the raw reported id
+    // would leave every aliased model unclassified.
+    const modelMetaRows = await loadModelMeta(ctx.db, orgId);
 
     // Fetch PR events with only the UPPER time bound applied in SQL (`upTo`). The
     // lower bound (`from`) and the model filter are intentionally NOT pushed down:
@@ -259,7 +265,16 @@ export function queriesRouter(ctx: HubServerContext): Router {
       );
     };
 
-    const result = aggregatePrOverview(await fetchRows(f.to), { from: f.from, to: f.to, models, developers: f.users, modelMapping });
+    // Provider/license metadata is resolved from the RAW reported ids, not from
+    // the aggregated byModel list: the aggregator applies alias resolution and
+    // needs the metadata at that moment. resolveModelMeta matches on a
+    // normalised prefix, so an admin row for "qwen3.8-27b" still resolves a PR
+    // reported as "qwen38-27b" or "@cf/zai-org/glm-5.2".
+    const currentRows = await fetchRows(f.to);
+    const rawModels = [...new Set(currentRows.map(r => r.model).filter((m): m is string => typeof m === 'string' && m.length > 0))];
+    const modelMeta = resolveModelMetaAll(rawModels, modelMetaRows);
+
+    const result = aggregatePrOverview(currentRows, { from: f.from, to: f.to, models, developers: f.users, modelMapping, modelMeta });
 
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened

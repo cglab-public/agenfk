@@ -287,6 +287,22 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_model_mappings_canonical
     ON model_mappings(org_id, canonical_model);
+
+  -- Admin-curated provider + license class per model (CGLAB-133 follow-up).
+  -- Mirrors the SQLite DDL; see the comment there for why this is keyed per
+  -- artifact and matched by prefix rather than per family.
+  CREATE TABLE IF NOT EXISTS model_meta (
+    org_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    license_class TEXT NOT NULL CHECK (license_class IN ('open_weights','commercial')),
+    license TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'seed' CHECK (source IN ('seed','admin')),
+    updated_by_user_id TEXT,
+    updated_by_email TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, model)
+  );
 `;
 
 /**

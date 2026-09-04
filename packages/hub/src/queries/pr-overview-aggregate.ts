@@ -1,5 +1,6 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
 import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
+import type { ModelMeta } from '../util/modelMeta';
 import { prUrlFor } from '../util/remoteUrl.js';
 
 // One json_extract-shaped row per pr.opened / pr.updated event. Sizing fields are
@@ -83,7 +84,15 @@ export interface PrOverviewResult {
     devBySize: Record<SizeBucket, Array<{ user_key: string; count: number }>>;
   }>;
   byDeveloper: Array<{ user_key: string; prs: number; sizePoints: number; sizes: SizeDist; daily: Record<string, number> }>;
-  byModel: Array<{ model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist }>;
+  byModel: Array<{
+    model: string; harnesses: string[]; prs: number; sizePoints: number; sizes: SizeDist;
+    // Provider + license class from the admin-editable model_meta table, so the
+    // PR Overview can filter models by them without the browser holding a seed.
+    // `provider: 'unclassified'` when no row matches — surfaced, never guessed.
+    provider?: string;
+    licenseClass?: 'open_weights' | 'commercial';
+    license?: string;
+  }>;
   // CGLAB-131 drill-down: the resolved PR set itself — one entry per PR with
   // opener attribution and the LATEST sizing, exactly the set the heatmap
   // cells and the totals count. Ordered by open time, then repo#number.
@@ -129,6 +138,13 @@ export interface PrWindow {
    * already-resolved `models` if they resolved them themselves.
    */
   modelMapping?: ModelMapping | null;
+  /**
+   * Provider + license class per model id, from the admin-editable model_meta
+   * table. Keyed by the model id as it appears in `byModel` (i.e. after alias
+   * resolution), which is why the caller resolves aliases first and looks up
+   * the canonical name here.
+   */
+  modelMeta?: ReadonlyMap<string, ModelMeta> | null;
 }
 
 interface ResolvedPr {
@@ -271,7 +287,19 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     .sort((a, b) => b.prs - a.prs || b.sizePoints - a.sizePoints || a.user_key.localeCompare(b.user_key));
 
   const byModel = [...modelMap.entries()]
-    .map(([model, v]) => ({ model, prs: v.prs, sizePoints: v.sizePoints, sizes: v.sizes, harnesses: [...v.harnesses].sort() }))
+    .map(([model, v]) => {
+      const meta = window?.modelMeta?.get(model);
+      return {
+        model,
+        prs: v.prs,
+        sizePoints: v.sizePoints,
+        sizes: v.sizes,
+        harnesses: [...v.harnesses].sort(),
+        // Absent when the caller did not load metadata (e.g. a test that only
+        // exercises aggregation) — the UI then falls back to no meta-filter.
+        ...(meta ? { provider: meta.provider, licenseClass: meta.licenseClass, license: meta.license } : {}),
+      };
+    })
     .sort((a, b) => b.prs - a.prs || a.model.localeCompare(b.model));
 
   // The drill-down list: the same resolved PRs (already window/model/dev-

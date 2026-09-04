@@ -25,6 +25,18 @@ const get = api.get as unknown as ReturnType<typeof vi.fn>;
 
 const MODELS = ['claude-opus-4-8', 'glm-5.2', 'qwen3.8-27b', 'qwen3.8-max'];
 
+/**
+ * What the hub resolves from its model_meta table for each fixture model. The
+ * client no longer classifies anything itself, so a page test that wants a
+ * vendor chip has to have the API return it.
+ */
+const SERVER_META: Record<string, { provider: string; licenseClass: 'open_weights' | 'commercial'; license: string }> = {
+  'claude-opus-4-8': { provider: 'Anthropic', licenseClass: 'commercial', license: 'Proprietary (API only)' },
+  'glm-5.2': { provider: 'Z.ai', licenseClass: 'open_weights', license: 'MIT' },
+  'qwen3.8-27b': { provider: 'Alibaba', licenseClass: 'open_weights', license: 'Apache-2.0' },
+  'qwen3.8-max': { provider: 'Alibaba', licenseClass: 'commercial', license: 'Proprietary (API only)' },
+};
+
 function makeOverview(models: string[]) {
   return {
     period: { from: '2026-08-10T00:00:00.000Z', to: '2026-08-22T23:59:59.999Z' },
@@ -33,7 +45,11 @@ function makeOverview(models: string[]) {
     resized: { count: 0, grew: 0, shrank: 0 },
     byDay: [],
     byDeveloper: [{ user_key: 'alice@acme.com', prs: models.length, sizePoints: models.length * 4, sizes: { xs: models.length, s: 0, m: 0, l: 0, xl: 0 }, daily: {} }],
-    byModel: models.map(m => ({ model: m, harnesses: [], prs: 1, sizePoints: 4, sizes: { xs: 1, s: 0, m: 0, l: 0, xl: 0 } })),
+    byModel: models.map(m => ({
+      model: m, harnesses: [], prs: 1, sizePoints: 4, sizes: { xs: 1, s: 0, m: 0, l: 0, xl: 0 },
+      // Resolved server-side from the model_meta table and sent on each row.
+      ...SERVER_META[m],
+    })),
     previous: { prs: 1, sizePoints: 4 },
   };
 }

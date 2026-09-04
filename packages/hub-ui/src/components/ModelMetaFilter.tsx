@@ -11,54 +11,63 @@
  *
  *  - No backend change — the server already accepts a model CSV — and a shared
  *    link restores the exact same view, because the result is plain model ids.
- *  - It only ADDS models. Removing a vendor is done by removing the models from
- *    the Model facet, not by unclicking a vendor, because "which models are
+ *  - It only ADDS models. Removing a vendor is done by removing models from the
+ *    Model facet, not by unclicking a vendor, because "which models are
  *    selected" is the real state and a vendor chip cannot un-select models the
  *    user picked individually without surprising them. The copy says so rather
  *    than implying a toggle it does not implement.
  *
- * Counts per option are the number of models that selection would add, so the
- * chip is informative before it is clicked and an empty vendor is visible as
- * empty rather than missing.
+ * Provider and license class are NOT computed here — they arrive on each
+ * `byModel` row from the server's model_meta table, which an admin edits in
+ * Admin → Models. Counts per option are the number of models that selection
+ * would add, so a chip is informative before it is clicked and an exhausted
+ * vendor reads as exhausted rather than missing.
  */
 import { useMemo } from 'react';
-import { modelMeta, providersFor, licenseClassesFor, modelsMatching, LICENSE_CLASS_LABEL, UNCLASSIFIED, type LicenseClass } from '../modelMeta';
+import {
+  modelMeta, providersFor, licenseClassesFor, modelsMatching,
+  LICENSE_CLASS_LABEL, UNCLASSIFIED,
+  type LicenseClass, type ModelFacetRow,
+} from '../modelMeta';
 
 interface Props {
-  /** All models currently available in the window (the facet's option list). */
-  models: string[];
+  /**
+   * The API's `byModel` rows for the current window. Each carries the
+   * provider/licenseClass resolved server-side from the model_meta table.
+   */
+  rows: ModelFacetRow[];
   /** Models already selected in the Model facet. */
   selected: Set<string>;
   /** Add the models this selection resolves to. */
   onApply: (modelsToAdd: string[]) => void;
 }
 
-export function ModelMetaFilter({ models, selected, onApply }: Props) {
-  const providers = useMemo(() => providersFor(models), [models]);
-  const classes = useMemo(() => licenseClassesFor(models), [models]);
+export function ModelMetaFilter({ rows, selected, onApply }: Props) {
+  const providers = useMemo(() => providersFor(rows), [rows]);
+  const classes = useMemo(() => licenseClassesFor(rows), [rows]);
 
   // How many models each option would ADD (already-selected ones excluded), so
   // a chip that does nothing reads as 0 instead of looking broken.
   const counts = useMemo(() => {
     const byProvider = new Map<string, number>();
     for (const p of providers) {
-      byProvider.set(p, modelsMatching(models, new Set([p]), new Set())
+      byProvider.set(p, modelsMatching(rows, new Set([p]), new Set())
         .filter(m => !selected.has(m)).length);
     }
     const byClass = new Map<string, number>();
     for (const c of classes) {
-      byClass.set(c, modelsMatching(models, new Set(), new Set([c]))
+      byClass.set(c, modelsMatching(rows, new Set(), new Set([c]))
         .filter(m => !selected.has(m)).length);
     }
     return { byProvider, byClass };
-  }, [models, selected, providers, classes]);
+  }, [rows, selected, providers, classes]);
 
-  if (models.length <= 1) return null;
+  // Nothing to filter on: one model, or no metadata at all (e.g. the overview
+  // was served by a hub that predates model_meta).
+  if (rows.length <= 1 || providers.length === 0) return null;
 
-  const applyProvider = (p: string) =>
-    onApply(modelsMatching(models, new Set([p]), new Set()));
-  const applyClass = (c: LicenseClass) =>
-    onApply(modelsMatching(models, new Set(), new Set([c])));
+  const applyProvider = (p: string) => onApply(modelsMatching(rows, new Set([p]), new Set()));
+  const applyClass = (c: LicenseClass) => onApply(modelsMatching(rows, new Set(), new Set([c])));
 
   return (
     <div className="space-y-2">
@@ -80,7 +89,7 @@ export function ModelMetaFilter({ models, selected, onApply }: Props) {
                 disabled={n === 0}
                 onClick={() => applyProvider(p)}
                 title={p === UNCLASSIFIED
-                  ? 'Models not in the vendor seed — selecting adds all of them'
+                  ? 'Models the hub could not classify — configure them in Admin → Models'
                   : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
                   n === 0
@@ -121,7 +130,7 @@ export function ModelMetaFilter({ models, selected, onApply }: Props) {
         </div>
       </div>
 
-      {/* Show the license of what is selected, so "Open weights" is verifiable
+      {/* Show the licence of what is selected, so "Open weights" is verifiable
           rather than a claim the reader has to trust. */}
       {selected.size > 0 && (
         <details className="text-[11px]">
@@ -130,7 +139,7 @@ export function ModelMetaFilter({ models, selected, onApply }: Props) {
           </summary>
           <ul className="mt-1.5 space-y-0.5 max-h-32 overflow-y-auto">
             {[...selected].sort().map(m => {
-              const meta = modelMeta(m);
+              const meta = modelMeta(m, rows);
               return (
                 <li key={m} className="font-mono text-[10.5px] text-ink-tertiary truncate">
                   <span className="text-ink-secondary">{m}</span>
@@ -138,8 +147,7 @@ export function ModelMetaFilter({ models, selected, onApply }: Props) {
                   {meta.provider === UNCLASSIFIED ? 'unclassified' : meta.provider}
                   {' · '}
                   {LICENSE_CLASS_LABEL[meta.licenseClass]}
-                  {' · '}
-                  {meta.license}
+                  {meta.license ? ` · ${meta.license}` : ''}
                 </li>
               );
             })}

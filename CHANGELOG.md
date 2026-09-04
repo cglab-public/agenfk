@@ -2,6 +2,50 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.17-beta.12] — 2026-09-04
+
+### Hub — model provider/license is now configurable
+
+The Provider / Open-weights / Commercial facets shipped in `v1.1.17-beta.11`
+were a hardcoded table in the browser bundle with no way to change them. They
+are now a database table an admin edits.
+
+- **New `model_meta` table** (SQLite + Postgres), keyed `(org_id, model)` with
+  `provider`, `license_class` (`open_weights` | `commercial`, CHECK-constrained),
+  `license`, and `source` (`seed` | `admin`).
+- **Seeded automatically** — on an org’s first read the table is populated from
+  a curated 102-row seed (`packages/hub/src/util/modelMetaSeed.ts`, each row
+  checked against the vendor’s own licence text / model card). Works out of the
+  box; **the table is the source of truth afterwards**, so shipping a new seed
+  can never overwrite an operator’s corrections.
+- **Admin → Models** gains a “Provider & license” section: search the ~100 rows,
+  correct one, or add a model the seed does not cover. Admin-edited rows sort
+  first and are labelled, so the page is verifiable at a glance. Saving marks
+  `source='admin'`, which is what survives a future seed refresh.
+- **API**: `PUT /v1/admin/models/meta`, `DELETE /v1/admin/models/meta/:model`,
+  and `meta` on `GET /v1/admin/models`. `/v1/prs/overview` now returns
+  `provider` / `licenseClass` / `license` on each `byModel` row.
+- **The client-side seed was deleted.** Two copies would have meant an admin
+  edit in the UI silently not affecting what the browser filtered by — the
+  failure mode that makes a settings page worse than no settings page. The
+  facet now derives everything from the API response.
+- Matching stays **artifact-level, longest-prefix-wins**, on a normalised id
+  (router prefixes like `@cf/zai-org/…` stripped), because one family spans both
+  classes: `qwen3.8-27b` is Apache-2.0 open weights while `qwen3.8-max` is
+  API-only. Harness names (`claude-code`) are rejected by the API and never
+  classified as models. Unmatched models stay **unclassified** — visible and
+  filterable, never guessed.
+- **Org rename**: `model_meta` was added to `ORG_ID_CHILD_TABLES`. Without it,
+  renaming an org would orphan its metadata rows under the old id and silently
+  re-seed the org from defaults. Caught by the existing schema regression pin.
+
+### Testing
+
+- 20 new hub e2e tests (seeding once-per-org, admin override reaching the
+  dashboard, per-org isolation, validation, harness rejection, router-prefix
+  resolution), 18 for the admin helpers, 19 rewritten for the derivation-only
+  client module. Full suite **2764 tests / 243 files** green.
+
 ## [1.1.17-beta.11] — 2026-09-04
 
 ### Hub — PR Overview

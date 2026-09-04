@@ -7,6 +7,10 @@ import {
   groupModels, validateMapping, knownCanonicalNames,
   MappingRow, ObservedModel,
 } from './modelMappings';
+import {
+  ModelMetaRow, LICENSE_CLASSES, validateMetaRow, isHarnessName,
+  sortMetaRows, filterMetaRows, licenseClassLabel,
+} from './adminModelMeta';
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
@@ -15,6 +19,7 @@ const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] te
 interface ModelsResponse {
   mappings: MappingRow[];
   observed: ObservedModel[];
+  meta?: ModelMetaRow[];
 }
 
 /**
@@ -205,7 +210,200 @@ export function AdminModels() {
           </table>
         </div>
       </section>
+
+      <ModelMetaSection
+        rows={data.data?.meta ?? []}
+        loading={data.isLoading}
+        onError={setError}
+        invalidate={invalidate}
+      />
     </div>
+  );
+}
+
+/**
+ * Provider + license class per model, feeding the PR Overview's meta-filter.
+ *
+ * The table is seeded automatically on first read, so this is a list to
+ * correct rather than one to build from scratch. Saving marks the row
+ * admin-sourced, which is what protects it from any future seed refresh.
+ */
+function ModelMetaSection({ rows, loading, onError, invalidate }: {
+  rows: ModelMetaRow[];
+  loading: boolean;
+  onError: (msg: string | null) => void;
+  invalidate: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [model, setModel] = useState('');
+  const [provider, setProvider] = useState('');
+  const [license, setLicense] = useState('');
+  const [licenseClass, setLicenseClass] = useState<string>('open_weights');
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: async (body: {
+      model: string; provider: string; license: string; licenseClass: string;
+    }) => (await api.put('/v1/admin/models/meta', body)).data,
+    onSuccess: () => {
+      setLocalError(null); onError(null); setModel(''); setProvider(''); setLicense('');
+      invalidate();
+    },
+    onError: (e: any) => {
+      const msg = e?.response?.data?.error ?? 'Could not save the model metadata.';
+      setLocalError(msg); onError(msg);
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: async (m: string) =>
+      (await api.delete(`/v1/admin/models/meta/${encodeURIComponent(m)}`)).data,
+    onSuccess: () => { setLocalError(null); onError(null); invalidate(); },
+    onError: (e: any) => {
+      const msg = e?.response?.data?.error ?? 'Could not delete the row.';
+      setLocalError(msg); onError(msg);
+    },
+  });
+
+  const visible = useMemo(
+    () => filterMetaRows(sortMetaRows(rows), query),
+    [rows, query],
+  );
+  const adminCount = rows.filter(r => r.source === 'admin').length;
+
+  const submit = () => {
+    const problem = validateMetaRow({ model, provider, license, licenseClass })
+      ?? (isHarnessName(model)
+        ? `"${model.trim()}" is an agent runtime, not a model — it is always shown as unclassified.`
+        : null);
+    if (problem) { setLocalError(problem); return; }
+    setLocalError(null);
+    save.mutate({
+      model: model.trim(), provider: provider.trim(),
+      license: license.trim(), licenseClass,
+    });
+  };
+
+  return (
+    <section className={cardCls}>
+      <header>
+        <h3 className="text-sm font-semibold text-ink">
+          Provider &amp; license <span className="text-ink-tertiary font-normal">({rows.length})</span>
+        </h3>
+        <p className="mt-0.5 text-xs text-ink-tertiary">
+          Drives the PR Overview’s Provider and Weights filters. Seeded from each vendor’s
+          published licence; edit a row to correct it. “Open weights” means the weights are
+          downloadable — it does not mean the licence is open source.
+        </p>
+        {adminCount > 0 && (
+          <p className="mt-1 text-[11px] text-ink-tertiary">{adminCount} edited by an admin (shown first).</p>
+        )}
+      </header>
+
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-2">
+        <input
+          value={model} onChange={e => setModel(e.target.value)}
+          placeholder="Model id, e.g. glm-5.2"
+          aria-label="Model id"
+          className={`${inputCls} font-mono text-[12px]`}
+        />
+        <input
+          value={provider} onChange={e => setProvider(e.target.value)}
+          placeholder="Provider, e.g. Z.ai"
+          aria-label="Provider"
+          className={inputCls}
+        />
+        <select
+          value={licenseClass} onChange={e => setLicenseClass(e.target.value)}
+          aria-label="License class"
+          className={inputCls}
+        >
+          {LICENSE_CLASSES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        <input
+          value={license} onChange={e => setLicense(e.target.value)}
+          placeholder="Licence, e.g. MIT"
+          aria-label="License name"
+          className={inputCls}
+        />
+      </div>
+
+      <div className="mt-2 flex items-center gap-3 flex-wrap">
+        <button onClick={submit} disabled={save.isPending} className={primaryBtnCls}>
+          {save.isPending ? 'Saving…' : 'Save model metadata'}
+        </button>
+        <span className="text-[11px] text-ink-tertiary">
+          Saves as an admin override. Matching is by prefix, longest first, so a specific
+          id beats its family.
+        </span>
+      </div>
+
+      {localError && (
+        <p className="mt-2 text-[12px] text-rose-600 dark:text-rose-400">{localError}</p>
+      )}
+
+      <input
+        value={query} onChange={e => setQuery(e.target.value)}
+        placeholder="Filter by model, provider or licence…"
+        aria-label="Filter model metadata"
+        className={`mt-4 ${inputCls}`}
+      />
+
+      {loading && <p className="mt-3 text-sm text-ink-tertiary">Loading…</p>}
+      {!loading && rows.length === 0 && (
+        <p className="mt-3 text-sm text-ink-tertiary">No metadata rows yet.</p>
+      )}
+
+      {visible.length > 0 && (
+        <div className="mt-3 -mx-5 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+                <th className="px-5 py-2 text-left font-semibold">Model</th>
+                <th className="px-5 py-2 text-left font-semibold">Provider</th>
+                <th className="px-5 py-2 text-left font-semibold">Weights</th>
+                <th className="px-5 py-2 text-left font-semibold">Licence</th>
+                <th className="px-5 py-2 text-left font-semibold">Source</th>
+                <th className="px-5 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(r => (
+                <tr key={`${r.source}:${r.model}`} className="border-t border-border-soft hover:bg-chip/50">
+                  <td className="px-5 py-2 font-mono text-[12px] text-ink-secondary">{r.model}</td>
+                  <td className="px-5 py-2 text-[12px] text-ink">{r.provider}</td>
+                  <td className="px-5 py-2 text-[12px] text-ink-secondary">{licenseClassLabel(r.licenseClass)}</td>
+                  <td className="px-5 py-2 text-[12px] text-ink-tertiary">{r.license}</td>
+                  <td className="px-5 py-2 text-[11px]">
+                    {r.source === 'admin'
+                      ? <span className="text-accent-text">admin</span>
+                      : <span className="text-ink-tertiary">seed</span>}
+                  </td>
+                  <td className="px-5 py-2 text-right">
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`Delete metadata for "${r.model}"? It will show as unclassified until re-added.`)) {
+                          remove.mutate(r.model);
+                        }
+                      }}
+                      disabled={remove.isPending}
+                      aria-label={`Delete metadata for ${r.model}`}
+                      className="text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!loading && query && visible.length === 0 && rows.length > 0 && (
+        <p className="mt-3 text-sm text-ink-tertiary">No rows match “{query}”.</p>
+      )}
+    </section>
   );
 }
 

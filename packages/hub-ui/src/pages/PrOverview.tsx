@@ -508,7 +508,7 @@ export function PrOverviewPage() {
       />
 
       <ModelMetaFilter
-        models={modelOptions}
+        rows={optionsData?.byModel ?? []}
         selected={modelSel.set}
         onApply={modelSel.addMany}
       />
