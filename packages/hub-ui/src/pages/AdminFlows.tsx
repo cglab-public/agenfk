@@ -19,6 +19,12 @@ import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
 import { useTheme } from '../ThemeContext';
+import {
+  PUBLIC_REGISTRY_REPO,
+  registryFormError,
+  registrySaveLabel,
+  MOVE_BACK_TO_PUBLIC_CONFIRM,
+} from './adminFlowRegistry';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
@@ -182,6 +188,8 @@ export function AdminFlows() {
           );
         })}
       </div>
+
+      <RegistryRepoPanel />
 
       <FlowEditorModal
         isOpen={editorOpen}
@@ -465,5 +473,177 @@ function AddOverridePicker({
         </ul>
       )}
     </div>
+  );
+}
+
+// ── Registry repo panel (CGLAB-138) ────────────────────────────────────────
+//
+// Where the admin points this org's flow registry. Defaults to the public
+// community registry; pointing it at a private repo copies the community flows
+// across once. The token is write-only from here — the server never returns it,
+// so the form shows "a token is stored" and leaves the field blank.
+
+interface RegistryConfig {
+  repo: string;
+  branch: string;
+  isPublic: boolean;
+  hasToken: boolean;
+  copiedAt: string | null;
+}
+
+function RegistryRepoPanel() {
+  const qc = useQueryClient();
+  const { data: cfg } = useQuery<RegistryConfig>({
+    queryKey: ['admin-registry-config'],
+    queryFn: async () => (await api.get('/v1/admin/registry-config')).data,
+  });
+  const [repo, setRepo] = useState('');
+  const [token, setToken] = useState('');
+  // Seed the repo field once the config arrives; keep it untouched afterwards
+  // so a half-typed edit is never wiped by a background refetch.
+  useEffect(() => {
+    if (cfg && !repo) setRepo(cfg.repo);
+  }, [cfg, repo]);
+
+  const hasStoredToken = Boolean(cfg?.hasToken);
+  // The token field only matters for a private target. Deriving it from the
+  // repo rather than from `cfg.isPublic` keeps the field correct while the
+  // admin is mid-edit, before the save has changed the stored config.
+  const showToken = repo.trim() !== '' && repo.trim() !== PUBLIC_REGISTRY_REPO;
+  const error = registryFormError({ repo, token, hasStoredToken });
+  const movingToPublic = repo.trim() === PUBLIC_REGISTRY_REPO && !cfg?.isPublic;
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, string> = { repo: repo.trim() };
+      if (token.trim()) body.token = token.trim();
+      return (await api.put('/v1/admin/registry-config', body)).data;
+    },
+    onSuccess: () => {
+      setToken('');
+      qc.invalidateQueries({ queryKey: ['admin-registry-config'] });
+      qc.invalidateQueries({ queryKey: ['admin-registry-flows'] });
+    },
+  });
+
+  const sync = useMutation({
+    mutationFn: async () => (await api.post('/v1/admin/registry-config/sync', {})).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-registry-config'] }),
+  });
+
+  // `copied`/`failed`/`truncated` are optional on this type because `save.data`
+  // is `unknown` until the mutation resolves — the optionality is about the
+  // response existing at all, not about `truncated` being absent from a
+  // response. The server always sends it (CopyResult.truncated is non-optional),
+  // and the route test pins it on both the truncated and the normal path.
+  const result = save.data as { copied?: number; failed?: string[]; truncated?: boolean } | undefined;
+
+  return (
+    <section
+      className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4 space-y-3"
+      data-testid="admin-registry-panel"
+    >
+      <div>
+        <h3 className="text-xs font-semibold text-ink uppercase tracking-wide">Flow registry</h3>
+        <p className="mt-0.5 text-xs text-ink-tertiary">
+          Where this org&apos;s installations browse and install flows. Pointing it at your own
+          repository copies the community flows into it once; you can move back at any time.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-ink-tertiary">Current:</span>
+        <code className="px-1.5 py-0.5 rounded bg-chip text-ink">{cfg?.repo ?? '…'}</code>
+        {cfg?.isPublic ? (
+          <span className="text-ink-tertiary">(public community registry)</span>
+        ) : (
+          <span className="text-emerald-600 dark:text-emerald-400">
+            (org registry{cfg?.copiedAt ? ' · community flows copied' : ' · copy pending'})
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          data-testid="admin-registry-repo"
+          className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+          placeholder="owner/agenfk-flows"
+          value={repo}
+          onChange={(e) => setRepo(e.target.value)}
+        />
+        {showToken && (
+          <input
+            data-testid="admin-registry-token"
+            type="password"
+            className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+            placeholder={hasStoredToken ? 'token stored — blank keeps it' : 'GitHub token (contents:write)'}
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        )}
+      </div>
+
+      {error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-error">
+          {error}
+        </p>
+      )}
+
+      {movingToPublic && (
+        <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="admin-registry-confirm">
+          {MOVE_BACK_TO_PUBLIC_CONFIRM}
+        </p>
+      )}
+
+      {result && typeof result.copied === 'number' && (
+        <p className="text-xs text-ink-tertiary" data-testid="admin-registry-result">
+          {result.copied > 0
+            ? `${result.copied} community flow(s) copied into ${repo.trim()}.`
+            : 'Registry updated.'}
+          {Array.isArray(result.failed) && result.failed.length > 0 && (
+            <span className="text-rose-600 dark:text-rose-400">
+              {' '}Failed: {result.failed.join(', ')} — use Retry copy.
+            </span>
+          )}
+          {result.truncated && (
+            <span className="text-amber-700 dark:text-amber-300">
+              {' '}The source registry has more flows than one run copies — use Retry copy to continue.
+            </span>
+          )}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <button
+          data-testid="admin-registry-save"
+          disabled={!!error || save.isPending}
+          onClick={() => {
+            // Moving back to public is reversible but changes what every
+            // installation reads, so it earns an explicit click.
+            if (movingToPublic && !window.confirm(MOVE_BACK_TO_PUBLIC_CONFIRM)) return;
+            save.mutate();
+          }}
+          className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {save.isPending ? 'Saving…' : registrySaveLabel({ repo, token, hasStoredToken })}
+        </button>
+        {!cfg?.isPublic && (
+          <button
+            data-testid="admin-registry-sync"
+            disabled={sync.isPending}
+            onClick={() => sync.mutate()}
+            className="px-3 py-1.5 rounded-lg border border-border-soft text-xs text-ink-tertiary disabled:opacity-40"
+          >
+            {sync.isPending ? 'Copying…' : 'Retry copy'}
+          </button>
+        )}
+      </div>
+
+      {save.error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-save-error">
+          {(save.error as Error).message}
+        </p>
+      )}
+    </section>
   );
 }

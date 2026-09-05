@@ -129,6 +129,18 @@ const SCHEMA_PG = `
     email_allowlist TEXT
   );
 
+  -- Per-org registry choice (CGLAB-138). Mirrors the SQLite table; see the
+  -- comment there for why the token is stored encrypted and why reads are
+  -- authenticated with it.
+  CREATE TABLE IF NOT EXISTS org_settings (
+    org_id TEXT PRIMARY KEY,
+    registry_repo TEXT,
+    registry_branch TEXT NOT NULL DEFAULT 'main',
+    registry_token_enc TEXT,
+    registry_copied_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS flows (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,

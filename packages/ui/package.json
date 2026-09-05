@@ -1,7 +1,7 @@
 {
   "name": "ui",
   "private": true,
-  "version": "1.1.17",
+  "version": "1.1.18-beta.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@agenfk/flow-editor": "1.1.17",
+    "@agenfk/flow-editor": "1.1.18-beta.2",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/manrope": "^5.3.0",
     "@tailwindcss/postcss": "^4.3.3",

@@ -15,6 +15,19 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
+import {
+  PUBLIC_REGISTRY_REPO,
+  getRegistryConfig,
+  resolveRegistryRead,
+  registryToken,
+  saveRegistryConfig,
+  isValidRegistryBranch,
+  isValidRegistrySlug,
+  probeWriteAccess,
+  copyCommunityFlows,
+  ghHeaders,
+  listRegistryFiles,
+} from '../services/flowRegistry.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -1516,9 +1529,10 @@ export function adminRouter(ctx: HubServerContext): Router {
   // Mirrors the local server's /registry/flows surface so the FlowEditorModal
   // running inside hub-ui can browse and install community flows without
   // talking to a per-installation agenfk server.
-  const REGISTRY_OWNER = process.env.AGENFK_REGISTRY_OWNER ?? 'cglab-public';
-  const REGISTRY_REPO = process.env.AGENFK_REGISTRY_REPO ?? 'agenfk-flows';
-  const REGISTRY_BRANCH = process.env.AGENFK_REGISTRY_BRANCH ?? 'main';
+  // CGLAB-138: the repo is no longer a process-wide env constant. Each org
+  // resolves its own — the public community registry by default, or a private
+  // repo its admin chose. Reads carry the org's token when one applies,
+  // because an anonymous fetch 404s on a private repo.
   const GITHUB_API = 'https://api.github.com';
 
   interface RegistryFlowEntry {
@@ -1531,10 +1545,109 @@ export function adminRouter(ctx: HubServerContext): Router {
     steps?: { name: string; label: string }[];
   }
 
-  router.get('/registry/flows', guard, async (_req: Request, res: Response) => {
-    const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows?ref=${REGISTRY_BRANCH}`;
+  // ── Per-org registry config (CGLAB-138) ─────────────────────────────
+  // The admin of a hub-connected company points the org's flow registry at an
+  // EXISTING repo of their own. GET never returns the token — only that one
+  // exists — because the UI has no legitimate reason to render a secret.
+  router.get('/registry-config', guard, async (req: Request, res: Response) => {
+    res.json(await getRegistryConfig(ctx.db, req.session!.orgId));
+  });
+
+  router.put('/registry-config', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const b = req.body ?? {};
+
+    const repo = typeof b.repo === 'string' ? b.repo.trim() : '';
+    if (!isValidRegistrySlug(repo)) {
+      return res.status(400).json({ error: 'repo must be "owner/repo" using only letters, digits, dot, dash, underscore' });
+    }
+    const token = typeof b.token === 'string' && b.token.trim() ? b.token.trim() : null;
+    const current = await getRegistryConfig(ctx.db, orgId);
+    // Validate the RAW value, not the trimmed one. `trim()` strips a trailing
+    // newline, and `$` in a JS regex matches before a trailing newline, so
+    // validating post-trim would wave "main\n" straight through into the
+    // column. The trim below is for storage, not for the decision.
+    if (b.branch !== undefined && !isValidRegistryBranch(b.branch)) {
+      return res.status(400).json({ error: 'branch must be a git ref name: letters, digits, dot, dash, underscore, and internal slashes' });
+    }
+    const branch = typeof b.branch === 'string' && b.branch.trim() ? b.branch.trim() : current.branch;
+    const toPublic = repo === PUBLIC_REGISTRY_REPO;
+
+    // A private target is unreadable by the fleet without a token and
+    // un-writable by the copy. Refuse before touching GitHub.
+    if (!toPublic && !token && !current.hasToken) {
+      return res.status(400).json({ error: 'a private registry repo requires a GitHub token with contents:write on it' });
+    }
+
+    // Act with a freshly supplied token, else the stored one.
+    let effectiveToken = token;
+    if (!effectiveToken && !toPublic) {
+      effectiveToken = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    }
+
+    // FAIL THE SAVE: probe write access BEFORE persisting anything, so an
+    // admin is never left believing the org points at a repo it cannot write.
+    if (!toPublic) {
+      const probe = await probeWriteAccess(fetch, repo, effectiveToken!);
+      if (!probe.ok) {
+        return res.status(422).json({ error: `cannot write to ${repo}: ${probe.error}. No changes were saved.` });
+      }
+    }
+
+    // Moving back to public needs NO reverse copy — the community flows are
+    // already public, and writing them into a repo the org has no relationship
+    // with would be pointless and would leak the org's credential in the diff.
+    if (toPublic) {
+      await saveRegistryConfig(ctx.db, orgId, { repo, branch, token, secretKey: ctx.config.secretKey, copiedAt: null });
+      res.json({ ...(await getRegistryConfig(ctx.db, orgId)), copied: 0, failed: [] });
+      return;
+    }
+
+    // One-time copy of the community flows present at switch time. A failed
+    // copy does NOT roll the setting back: the repo is reachable (we just
+    // probed it) and `sync` exists to finish the job. Rolling back would
+    // strand the org with a half-copied repo and no way to complete it.
+    const copy = await copyCommunityFlows(
+      fetch, PUBLIC_REGISTRY_REPO, current.branch, repo, branch,
+      effectiveToken!, `hub:${orgId}`,
+    );
+
+    await saveRegistryConfig(ctx.db, orgId, {
+      repo, branch, token, secretKey: ctx.config.secretKey,
+      copiedAt: new Date().toISOString(),
+    });
+    res.json({
+      ...(await getRegistryConfig(ctx.db, orgId)),
+      copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated,
+    });
+  });
+
+  // Re-run the copy after a partial or failed one. Tops up the repo the org
+  // already points at; does not re-probe-and-switch.
+  router.post('/registry-config/sync', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const cfg = await getRegistryConfig(ctx.db, orgId);
+    if (cfg.isPublic) {
+      return res.status(409).json({ error: 'the org is on the public registry - there is nowhere to copy to' });
+    }
+    const token = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    if (!token) return res.status(409).json({ error: 'no registry token stored for this org' });
+
+    const copy = await copyCommunityFlows(
+      fetch, PUBLIC_REGISTRY_REPO, cfg.branch, cfg.repo, cfg.branch, token, `hub:${orgId}`,
+    );
+    await saveRegistryConfig(ctx.db, orgId, {
+      repo: cfg.repo, branch: cfg.branch, secretKey: ctx.config.secretKey,
+      copiedAt: new Date().toISOString(),
+    });
+    res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
+  });
+
+  router.get('/registry/flows', guard, async (req: Request, res: Response) => {
+    const { repo, branch, token } = await resolveRegistryRead(ctx.db, req.session!.orgId, ctx.config.secretKey);
+    const url = `${GITHUB_API}/repos/${repo}/contents/flows?ref=${encodeURIComponent(branch)}`;
     try {
-      const resp = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-hub' } });
+      const resp = await fetch(url, { headers: ghHeaders(token) });
       if (resp.status === 404) return res.json([]);
       if (!resp.ok) return res.status(resp.status).json({ error: 'Failed to fetch registry' });
       const entries: any = await resp.json();
@@ -1543,7 +1656,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       const flows: RegistryFlowEntry[] = await Promise.all(
         jsonFiles.map(async (file: any) => {
           try {
-            const r = await fetch(file.download_url, { headers: { 'User-Agent': 'agenfk-hub' } });
+            const r = await fetch(file.download_url, { headers: ghHeaders(token) });
             if (!r.ok) throw new Error(`download ${r.status}`);
             const content: any = await r.json();
             return {
@@ -1572,9 +1685,10 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.post('/flows/install', guard, async (req: Request, res: Response) => {
     const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
-    const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}?ref=${REGISTRY_BRANCH}`;
+    const { repo, branch, token } = await resolveRegistryRead(ctx.db, req.session!.orgId, ctx.config.secretKey);
+    const url = `${GITHUB_API}/repos/${repo}/contents/flows/${encodeURIComponent(filename)}?ref=${encodeURIComponent(branch)}`;
     try {
-      const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-hub' } });
+      const r = await fetch(url, { headers: ghHeaders(token) });
       if (!r.ok) return res.status(r.status).json({ error: 'Failed to fetch registry file' });
       const fileInfo: any = await r.json();
       const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');

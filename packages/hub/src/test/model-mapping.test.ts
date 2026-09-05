@@ -38,6 +38,34 @@ describe('resolveModelId', () => {
   it('is identity with no mappings configured', () => {
     expect(resolveModelId('qwen38-27b', EMPTY_MODEL_MAPPING)).toBe('qwen38-27b');
   });
+
+  // A harness may report the artifact through its route. pi reports
+  // `coding4/qwen38-27b` after the deterministic-model fix where it once reported
+  // the bare `qwen38-27b`; without the prefix fallback every such PR would slip
+  // past the admin's alias and form its own dashboard group.
+  it('maps a provider-qualified id via its bare artifact name', () => {
+    expect(resolveModelId('coding4/qwen38-27b', map)).toBe('qwen3.8:27b');
+    // multi-segment routes (OpenRouter style) resolve on the last segment
+    expect(resolveModelId('openrouter/anthropic/claude-opus-4-8', new Map([['claude-opus-4-8', 'Opus']]))).toBe('Opus');
+  });
+
+  it('prefers an exact alias over the bare-name fallback', () => {
+    const both = new Map([['coding4/qwen38-27b', 'routed'], ['qwen38-27b', 'canonical']]);
+    expect(resolveModelId('coding4/qwen38-27b', both)).toBe('routed');
+  });
+
+  it('does NOT fold a provider-qualified near-miss that no alias names', () => {
+    // Still exact on the artifact: the fallback strips a prefix, it does not
+    // normalise spelling.
+    expect(resolveModelId('coding4/qwen38-7b', map)).toBe('coding4/qwen38-7b');
+    expect(resolveModelId('coding4/Qwen38-27b', map)).toBe('coding4/Qwen38-27b');
+  });
+
+  it('leaves a bare-name-only slash value alone when nothing matches', () => {
+    expect(resolveModelId('glm-5.2', map)).toBe('glm-5.2');
+    expect(resolveModelId('/', map)).toBe('/');
+    expect(resolveModelId('coding4/', map)).toBe('coding4/');
+  });
 });
 
 describe('resolveModelFilter', () => {

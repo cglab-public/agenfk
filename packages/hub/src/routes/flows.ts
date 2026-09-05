@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { resolveEffectiveFlow } from '../services/flowResolution.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
+import { resolveRegistryRead, ghHeaders, listRegistryFiles } from '../services/flowRegistry.js';
 
 /**
  * Client-facing flow distribution: a connected agenfk installation calls
@@ -77,6 +79,92 @@ export function flowsRouter(ctx: HubServerContext): Router {
       };
     });
     res.json({ flows, defaultFlowId });
+  });
+
+  // ── Registry proxy for connected installations (CGLAB-138) ──────────
+  //
+  // A client's FlowEditorModal browses through the LOCAL server's
+  // /registry/flows. When the installation belongs to an org that moved to a
+  // private registry, the local server cannot do that read itself: the org's
+  // GitHub token lives on the hub and must not be copied onto every laptop. So
+  // the client asks the hub, which answers with the catalogue of ITS chosen
+  // repo — the same repo the hub admin sees. One source of truth.
+  //
+  // The response carries `repo` so the client can show which registry the
+  // entries came from; a list of flows with no label is how a private repo
+  // gets mistaken for the public one.
+  router.get('/registry/flows', requireKey, async (req: Request, res: Response) => {
+    const orgId = req.hubApiKey!.orgId;
+    try {
+      const { repo, branch, token } = await resolveRegistryRead(ctx.db, orgId, ctx.config.secretKey);
+      const files = await listRegistryFiles(fetch, repo, branch, token);
+      const flows = await Promise.all(files.map(async (file) => {
+        try {
+          const r = await fetch(file.download_url, { headers: ghHeaders(token) });
+          if (!r.ok) throw new Error(`download ${r.status}`);
+          const content: any = await r.json();
+          return {
+            filename: file.name,
+            name: content.name ?? file.name.replace('.json', ''),
+            author: content.author,
+            version: content.version,
+            stepCount: Array.isArray(content.steps) ? content.steps.length : 0,
+            description: content.description,
+            steps: Array.isArray(content.steps)
+              ? content.steps.map((s: any) => ({ name: s.name ?? '', label: s.label ?? s.name ?? '' }))
+              : undefined,
+          };
+        } catch {
+          return { filename: file.name, name: file.name.replace('.json', ''), stepCount: 0 };
+        }
+      }));
+      res.json({ repo, branch, flows });
+    } catch (e: any) {
+      // Never answer 200-with-empty here. An installation that cannot learn its
+      // org registry must see a failure, not an empty catalogue it may then
+      // assume is authoritative.
+      res.status(502).json({ error: 'Failed to fetch registry', detail: e?.message });
+    }
+  });
+
+  // Install one registry flow on behalf of a connected installation. The
+  // installation cannot fetch this itself — a private org repo is readable
+  // only with the hub-held token — so the hub fetches and hands back the
+  // definition, and the client creates it locally.
+  router.post('/registry/flows/install', requireKey, async (req: Request, res: Response) => {
+    const orgId = req.hubApiKey!.orgId;
+    const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
+    if (!filename) return res.status(400).json({ error: 'filename is required' });
+    try {
+      const { repo, branch, token } = await resolveRegistryRead(ctx.db, orgId, ctx.config.secretKey);
+      const url = `https://api.github.com/repos/${repo}/contents/flows/${encodeURIComponent(filename)}?ref=${encodeURIComponent(branch)}`;
+      const r = await fetch(url, { headers: ghHeaders(token) });
+      if (!r.ok) return res.status(r.status).json({ error: 'Failed to fetch registry file' });
+      const fileInfo: any = await r.json();
+      const raw = Buffer.from(fileInfo.content, 'base64').toString('utf8');
+      const flowData = JSON.parse(raw);
+      // Normalise exactly as the hub admin install does, so a flow behaves the
+      // same however it arrived.
+      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
+      const middle = rawSteps
+        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
+        .map((s: any, i: number) => ({
+          id: randomUUID(),
+          name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
+          label: (typeof s.label === 'string' && s.label.trim()) ? s.label : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
+          order: i + 1,
+          exitCriteria: s.exitCriteria ?? '',
+          isSpecial: s.isSpecial ?? false,
+        }));
+      const steps = [
+        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        ...middle,
+        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
+      ];
+      res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps } });
+    } catch (e: any) {
+      res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
+    }
   });
 
   router.put('/flows/selection', requireKey, async (req: Request, res: Response) => {
