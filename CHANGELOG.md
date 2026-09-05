@@ -21,6 +21,11 @@ All notable changes to AgEnFK are documented here.
   answers an anonymous fetch of a private repo with `404`, so a private registry
   cannot be served to a fleet otherwise.
 - **Reversible.** Moving back to the public repo needs no reverse copy.
+- **Branch is validated, not just the repo.** A malformed ref is worse than a
+  malformed repo: GitHub answers an unknown `ref` with `404`, and an empty
+  registry is read as `404`, so a stored-but-unusable branch would show an admin
+  a registry of **zero flows and no error**. `isValidRegistryBranch` rejects it
+  at the storage boundary and at the route, before any GitHub call.
 - **No silent public fall-back.** When the Hub is unreachable, a connected
   installation's `/registry/flows` returns `502` rather than showing the
   community catalogue the org deliberately sealed away.
