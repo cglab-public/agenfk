@@ -131,6 +131,23 @@ const SCHEMA_SQLITE = `
     email_allowlist TEXT
   );
 
+  -- Per-org registry choice (CGLAB-138). An admin of a hub-connected company
+  -- points the org's flow registry at an EXISTING repo of their own. The token
+  -- is a fine-grained PAT (contents:write on that repo) held encrypted, the
+  -- same way auth_config holds its OAuth secrets — it must never be read back
+  -- out of the API, only used hub-side. Reads are authenticated with it too:
+  -- the pre-existing registry read was an anonymous fetch, which 404s on a
+  -- private repo, so a private target is only servable fleet-wide if the hub
+  -- itself can authenticate. NULL repo = the public community registry.
+  CREATE TABLE IF NOT EXISTS org_settings (
+    org_id TEXT PRIMARY KEY,
+    registry_repo TEXT,
+    registry_branch TEXT NOT NULL DEFAULT 'main',
+    registry_token_enc TEXT,
+    registry_copied_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS flows (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -400,10 +417,17 @@ class SqliteAdapter implements HubDb {
 }
 
 export async function openSqliteDb(dbPath: string): Promise<HubDb> {
-  const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // ':memory:' is a real SQLite filename, not a sentinel we intercept — but the
+  // mkdir below would try to create a directory named '.' for it, and WAL is
+  // unsupported on memory databases (the pragma silently no-ops, so it is
+  // skipped for clarity). Tests use this to avoid the tmpdir entirely.
+  const inMemory = dbPath === ':memory:';
+  if (!inMemory) {
+    const dir = path.dirname(dbPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
   const raw = new DatabaseSync(dbPath);
-  raw.prepare('PRAGMA journal_mode = WAL').run();
+  if (!inMemory) raw.prepare('PRAGMA journal_mode = WAL').run();
   raw.prepare('PRAGMA foreign_keys = ON').run();
   raw.exec(SCHEMA_SQLITE);
   raw.exec("DELETE FROM events WHERE type = 'tokens.logged'");

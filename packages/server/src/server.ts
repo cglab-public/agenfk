@@ -1635,6 +1635,38 @@ interface RegistryFlowEntry {
 }
 
 app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
+  // A hub-connected installation asks the hub which registry its org uses
+  // (CGLAB-138). Two reasons this must be the hub and not a local config read:
+  // the org's GitHub token lives on the hub and must not be copied onto every
+  // laptop, and the admin's choice is org-wide — a per-machine override would
+  // let one workstation browse flows its org deliberately sealed away.
+  if (hubClient.isEnabled && hubClient.hubConfig) {
+    const { url, token } = hubClient.hubConfig;
+    try {
+      const r = await (globalThis.fetch as any)(`${url.replace(/\/$/, "")}/v1/registry/flows`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      });
+      if (!r.ok) {
+        // Do NOT fall through to the public registry on failure. An org that
+        // moved to a private repo would be shown the community catalogue it
+        // moved away from, and would have no signal that it was looking at the
+        // wrong thing.
+        return res.status(502).json({
+          error: `Hub registry unavailable (${r.status}); not falling back to the public registry`,
+          hubEnabled: true,
+        });
+      }
+      const body = await r.json();
+      return res.json(body.flows ?? []);
+    } catch (e: any) {
+      return res.status(502).json({
+        error: `Hub unreachable (${e?.message ?? "error"}); not falling back to the public registry`,
+        hubEnabled: true,
+      });
+    }
+  }
+
   const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows?ref=${REGISTRY_BRANCH}`;
   try {
     const { data: entries } = await axios.get(url, {
@@ -1689,6 +1721,41 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
 app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
   const { filename } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required' });
+
+  // Same hub-first rule as the browse route above: an org on a private registry
+  // must not be able to install from the public one behind its admin's back,
+  // and cannot read its own private repo without the hub-held token.
+  if (hubClient.isEnabled && hubClient.hubConfig) {
+    const { url: hubUrl, token: hubToken } = hubClient.hubConfig;
+    try {
+      const r = await (globalThis.fetch as any)(`${hubUrl.replace(/\/$/, "")}/v1/registry/flows/install`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hubToken}`, Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ filename }),
+      });
+      if (!r.ok) {
+        return res.status(502).json({
+          error: `Hub registry install failed (${r.status}); not falling back to the public registry`,
+          hubEnabled: true,
+        });
+      }
+      const body = await r.json();
+      const created = await storage.createFlow({
+        id: uuidv4(),
+        name: body.flow?.name ?? filename,
+        description: body.flow?.description,
+        steps: (body.flow?.steps ?? []).map((s: any) => ({ ...s, id: uuidv4() })),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return res.json(created);
+    } catch (e: any) {
+      return res.status(502).json({
+        error: `Hub unreachable (${e?.message ?? "error"}); not falling back to the public registry`,
+        hubEnabled: true,
+      });
+    }
+  }
 
   const url = `${GITHUB_API}/repos/${REGISTRY_OWNER}/${REGISTRY_REPO}/contents/flows/${encodeURIComponent(filename)}?ref=${REGISTRY_BRANCH}`;
   try {

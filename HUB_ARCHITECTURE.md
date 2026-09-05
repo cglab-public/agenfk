@@ -553,6 +553,93 @@ Flow definitions are authored in the hub admin UI (powered by
 `registry/flows` endpoint, set per-org defaults, and assign overrides at
 project scope.
 
+### 6.1 Per-org registry repo (CGLAB-138)
+
+By default every org browses the public community registry
+(`cglab-public/agenfk-flows`). An **admin** can point the org at an **existing**
+repo of their own — Admin → Flows → Flow registry.
+
+Code: `packages/hub/src/services/flowRegistry.ts`, routes under
+`/v1/admin/registry-config` and `/v1/registry/flows`.
+
+| Endpoint | Auth | Behaviour |
+| --- | --- | --- |
+| GET `/v1/admin/registry-config` | admin session | Current repo + `hasToken`. **Never returns the token.** |
+| PUT `/v1/admin/registry-config` | admin session | Probe → copy → persist. `422` and **no write** if the probe fails. |
+| POST `/v1/admin/registry-config/sync` | admin session | Re-run the copy (idempotent by content). |
+| GET `/v1/admin/registry/flows` | admin session | Browse the org's repo. |
+| GET `/v1/registry/flows` | api_key | Proxy for a connected installation. |
+| POST `/v1/registry/flows/install` | api_key | Fetch one flow file for an installation to create locally. |
+
+Three properties are deliberate:
+
+- **Fail the save.** `probeWriteAccess` runs *before* anything is persisted. A
+  setting that saved but cannot be written to is worse than a rejected save —
+  the admin would believe the fleet points at a private repo that serves
+  nothing.
+- **The token lives on the hub.** Stored `encryptSecret`-encrypted in
+  `org_settings.registry_token_enc`, the same pattern as `auth_config`'s OAuth
+  secrets. It is never returned by any endpoint and never copied to a laptop.
+  Reads are authenticated with it because GitHub answers an anonymous fetch of
+  a private repo with `404` — without a hub-held token a private registry
+  simply cannot be served to a fleet.
+- **No silent public fall-back.** When the hub is unreachable, the local
+  server's `/registry/flows` returns `502` rather than falling back to the
+  public registry. An org that sealed itself away must never be shown the
+  community catalogue because the hub had a bad minute.
+
+The copy is **one-time**, not a mirror: it imports the community flows present
+at switch time. Moving back to the public repo needs **no reverse copy** — the
+community flows are already public, and writing them into a repo the org has no
+relationship with would leak the org's credential into the commit author.
+
+#### 6.1.1 Mutation testing: what the score does not say
+
+`flowRegistry.ts` finishes at **92.2%** mutation score (306/332 killed, 0
+uncovered); `adminFlowRegistry.ts` at **100%**. The 26 survivors are not 26
+holes, and the split matters more than the percentage.
+
+**Genuinely equivalent — unkillable by any test.** A guard whose removal
+changes nothing observable, because a check further down rejects the same bad
+input and produces the identical result:
+
+- `if (!resp.ok)` in the copy loop — GitHub error bodies are never valid flow
+  documents, so the `!flow?.name || !Array.isArray(flow.steps)` validation two
+  lines below fails the same file into the same `failed` entry. Deleting the
+  guard entirely still yields `{ copied: 0, failed: ['gone.json'] }`.
+- `typeof meta !== 'object'` in `probeWriteAccess` — an array or string body has
+  no string `full_name`, so the next clause rejects it with the same message.
+- `.catch(() => null)` → `undefined`, and the `?.` in `meta?.permissions?.push`
+  and `serializeRegistryFlow`'s `flow?.name` — callers validate before reaching
+  them, so `null` vs `undefined` never surfaces.
+
+These are defence in depth: they keep the *reason* for a failure legible and
+survive future edits to the checks below them, but no test can distinguish
+them. Killing them would mean asserting on internals that carry no behaviour.
+
+**Real gaps, found and fixed.** The first pass showed 38 survivors; ~20 tests
+were written against them and the score did not move. The tests were wrong:
+
+- Several let the fake `throw` on `PUT`, then asserted `failed: ['x.json']`. The
+  loop's `catch` records a thrown write under that same filename, so the test
+  passed against correct code **and** against the mutant — it could not fail.
+  Fixed by having the fake *record* writes and asserting `writeAttempts === []`:
+  the mechanism, not just the outcome.
+- A comment claimed a test killed `!flow?.name || ...` → `&&` while it killed
+  nothing. The comment was written from intent, not from a run.
+- `toMatchObject` hid extra fields; copy-result assertions now use `toEqual`.
+- A verification script checked the pre-mutation backup rather than the live
+  file, reporting "SURVIVED" for mutants it had never applied.
+
+`scripts/killcheck-cglab138.sh` is the fix for the last two: it applies one
+mutant, greps the **live** file to confirm the replacement landed, runs the
+tests, and prints KILLED / SURVIVED / NO-OP. Every claim above was made against
+that output rather than against a plausible reading of the code.
+
+A mutation score is only as honest as the tests behind it, and a test that
+reports the same result for correct and broken code is worse than no test — it
+looks like coverage.
+
 ---
 
 ## 7. Fleet upgrade flow (end to end)

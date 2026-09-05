@@ -2,6 +2,35 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.18-beta.1] — 2026-09-05
+
+### Hub — admin-settable private flow registry (CGLAB-138)
+
+- **Per-org flow registry.** A Hub admin can point their org's flow registry at
+  an **existing** repository of their own instead of the public
+  `cglab-public/agenfk-flows`. Admin → Flows → Flow registry.
+- **The save fails if the repo cannot be written.** Write access is probed
+  before anything is persisted, so an admin is never left believing the fleet
+  points at a registry that serves nothing.
+- **One-time community copy.** Switching copies the community flows present at
+  that moment into the org repo; it is not a mirror. A re-runnable *Retry copy*
+  recovers a partial run and is idempotent by content.
+- **Token held on the hub, encrypted.** A fine-grained PAT (`contents:write`) is
+  stored `encryptSecret`-encrypted in the new `org_settings` table and is never
+  returned by any endpoint. Registry reads are authenticated with it — GitHub
+  answers an anonymous fetch of a private repo with `404`, so a private registry
+  cannot be served to a fleet otherwise.
+- **Reversible.** Moving back to the public repo needs no reverse copy.
+- **No silent public fall-back.** When the Hub is unreachable, a connected
+  installation's `/registry/flows` returns `502` rather than showing the
+  community catalogue the org deliberately sealed away.
+
+### Fixed
+
+- **Pi harness misreported the model in PR registration.** The session's live
+  model is used instead of the `settings.json` `defaultModel`, which is a
+  configured default and not the model actually answering.
+
 ## [1.1.17] — 2026-09-04
 
 Stable release. Consolidates `v1.1.17-beta.1` … `v1.1.17-beta.15` (PR #175).
