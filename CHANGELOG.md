@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [1.1.18-beta.1] — 2026-09-05
+## [1.1.18-beta.2] — 2026-09-05
 
 ### Hub — admin-settable private flow registry (CGLAB-138)
 
@@ -29,6 +29,8 @@ All notable changes to AgEnFK are documented here.
 - **No silent public fall-back.** When the Hub is unreachable, a connected
   installation's `/registry/flows` returns `502` rather than showing the
   community catalogue the org deliberately sealed away.
+
+## [1.1.18-beta.1] — 2026-09-05
 
 ### Fixed
 
