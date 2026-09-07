@@ -567,7 +567,7 @@ Code: `packages/hub/src/services/flowRegistry.ts`, routes under
 | GET `/v1/admin/registry-config` | admin session | Current repo + `hasToken`. **Never returns the token.** |
 | PUT `/v1/admin/registry-config` | admin session | Probe → copy → persist. `422` and **no write** if the probe fails. |
 | POST `/v1/admin/registry-config/sync` | admin session | Re-run the copy (idempotent by content). |
-| GET `/v1/admin/registry/flows` | admin session | Browse the org's repo. |
+| GET `/v1/admin/registry/flows` | admin session | Browse a registry. `?source=org` (default) \| `community`. |
 | GET `/v1/registry/flows` | api_key | Proxy for a connected installation. |
 | POST `/v1/registry/flows/install` | api_key | Fetch one flow file for an installation to create locally. |
 
@@ -592,6 +592,43 @@ The copy is **one-time**, not a mirror: it imports the community flows present
 at switch time. Moving back to the public repo needs **no reverse copy** — the
 community flows are already public, and writing them into a repo the org has no
 relationship with would leak the org's credential into the commit author.
+
+#### 6.1.2 Browsing both registries
+
+`resolveRegistryRead` answers **one repo per org**, so after a switch to a
+private repo the real community catalogue becomes invisible and uninstallable
+from the hub UI. The one-time copy masks this at switch time (the org repo
+starts as a superset), but any flow published to community afterwards is
+unreachable.
+
+`resolveRegistrySource(db, orgId, secretKey, source)` adds a second axis:
+`source` is `'org' | 'community'`, absent meaning `'org'` for back-compat.
+
+Two rules, both load-bearing:
+
+- **The caller picks a SOURCE, never a repo.** This route holds the org's
+  `contents:write` PAT. Accepting `?repo=owner/name` would make it a proxy that
+  spends that credential against any repo the token can reach — a cross-tenant
+  read driven by a server-side secret. Only two names are reachable and both are
+  ones the server already knows; a `repo` in the query is ignored, and a
+  `source` that is not exactly `org` or `community` is a **400**, not a silent
+  fallback to the org repo (a stale client would otherwise show private flows
+  under a "Community" heading — the exact confusion the feature exists to
+  remove).
+- **`source=community` never sends the org token.** The PAT is scoped to the
+  org's repo; attaching it to a public cglab-owned repo leaks the credential to
+  a repo the org has no relationship with and into GitHub's access logs.
+  Anonymous is also simply what a public repo needs. Pinned by tests on both
+  browse and install.
+
+`source=community` keeps the org's configured **branch** — a second branch
+setting for the community repo would be left at `main` by everyone.
+
+The UI shows the switcher only when the org actually has a private registry
+(`showRegistrySourcePicker`); with one registry, two options that do the same
+thing read as a broken control. The shared `FlowEditorModal` gained two
+host-supplied, optional props — `tabLabels` and `registryToolbar` — so the
+standalone client is untouched and keeps its "My Flows" / "Community" wording.
 
 #### 6.1.1 Mutation testing: what the score does not say
 

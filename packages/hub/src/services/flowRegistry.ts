@@ -144,6 +144,74 @@ export async function resolveRegistryRead(
   return { repo: cfg.repo, branch: cfg.branch, token };
 }
 
+/**
+ * Which registry a browse/install should read: the org's own repo, or the
+ * public community one.
+ *
+ * This exists because an org can point its registry at a private repo, after
+ * which `resolveRegistryRead` has exactly one answer per org — so the real
+ * community catalogue becomes invisible and uninstallable from the hub UI. The
+ * one-time copy hides that at switch time (the org repo starts as a superset),
+ * but any flow published to community afterwards is unreachable.
+ *
+ * The caller picks a SOURCE, never a repo. That distinction is the security
+ * boundary: this route holds the org's `contents:write` PAT, so accepting an
+ * `owner/repo` from the request would make it a proxy that spends that
+ * credential against any repo the token can reach — a cross-tenant read driven
+ * by a server-side secret. Only two names are ever reachable, and both are
+ * ones the server already knows.
+ *
+ * Returns `ok: false` rather than throwing so the route answers 400 instead of
+ * a 500 that would read like a server fault.
+ */
+export type RegistrySource = 'org' | 'community';
+
+export type ResolvedRegistrySource =
+  | { ok: true; repo: string; branch: string; token: string | null }
+  | { ok: false; error: string };
+
+export async function resolveRegistrySource(
+  db: HubDb,
+  orgId: string,
+  secretKey: string,
+  source: unknown,
+): Promise<ResolvedRegistrySource> {
+  const cfg = await getRegistryConfig(db, orgId);
+
+  // Absent or empty means "the org's registry" — the behaviour every existing
+  // caller (and the shipped hub-ui client) already depends on.
+  if (source === undefined || source === null || source === '') {
+    return {
+      ok: true,
+      repo: cfg.repo,
+      branch: cfg.branch,
+      token: cfg.isPublic ? null : await registryToken(db, orgId, secretKey),
+    };
+  }
+
+  // Exact match, no trim and no case-folding: `source` is an enum, and a client
+  // with a casing or whitespace bug should hear about it rather than be routed
+  // to a repo it did not ask for.
+  if (source !== 'org' && source !== 'community') {
+    return { ok: false, error: 'source must be "org" or "community"' };
+  }
+
+  if (source === 'community') {
+    // Never the org's token. The PAT is scoped to the org's repo; attaching it
+    // to a public cglab-owned repo leaks the credential to a repo the org has
+    // no relationship with and into GitHub's access logs. Anonymous is also
+    // simply what a public repo needs.
+    return { ok: true, repo: PUBLIC_REGISTRY_REPO, branch: cfg.branch, token: null };
+  }
+
+  return {
+    ok: true,
+    repo: cfg.repo,
+    branch: cfg.branch,
+    token: cfg.isPublic ? null : await registryToken(db, orgId, secretKey),
+  };
+}
+
 export function ghHeaders(token: string | null): Record<string, string> {
   const h: Record<string, string> = {
     Accept: 'application/vnd.github+json',

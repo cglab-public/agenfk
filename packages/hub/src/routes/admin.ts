@@ -18,7 +18,7 @@ import { loadModelMappings } from '../util/modelMapping.js';
 import {
   PUBLIC_REGISTRY_REPO,
   getRegistryConfig,
-  resolveRegistryRead,
+  resolveRegistrySource,
   registryToken,
   saveRegistryConfig,
   isValidRegistryBranch,
@@ -1644,7 +1644,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/registry/flows', guard, async (req: Request, res: Response) => {
-    const { repo, branch, token } = await resolveRegistryRead(ctx.db, req.session!.orgId, ctx.config.secretKey);
+    const resolved = await resolveRegistrySource(
+      ctx.db, req.session!.orgId, ctx.config.secretKey, req.query?.source,
+    );
+    if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+    const { repo, branch, token } = resolved;
     const url = `${GITHUB_API}/repos/${repo}/contents/flows?ref=${encodeURIComponent(branch)}`;
     try {
       const resp = await fetch(url, { headers: ghHeaders(token) });
@@ -1685,7 +1689,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.post('/flows/install', guard, async (req: Request, res: Response) => {
     const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
-    const { repo, branch, token } = await resolveRegistryRead(ctx.db, req.session!.orgId, ctx.config.secretKey);
+    const resolved = await resolveRegistrySource(
+      ctx.db, req.session!.orgId, ctx.config.secretKey, req.body?.source,
+    );
+    if (!resolved.ok) return res.status(400).json({ error: resolved.error });
+    const { repo, branch, token } = resolved;
     const url = `${GITHUB_API}/repos/${repo}/contents/flows/${encodeURIComponent(filename)}?ref=${encodeURIComponent(branch)}`;
     try {
       const r = await fetch(url, { headers: ghHeaders(token) });

@@ -4,6 +4,25 @@ All notable changes to AgEnFK are documented here.
 
 ## [1.1.18-beta.2] — 2026-09-05
 
+### Hub — browse the community registry alongside a private one
+
+- After an org points its registry at a private repo, the hub could only ever
+  read that one repo — so the real community catalogue became invisible and
+  uninstallable, and any flow published to community afterwards was
+  unreachable. Admin → Flows → the registry tab now offers a **switcher**
+  between the org's repo and Community.
+- **The caller picks a source, never a repo.** `?source=org|community` is an
+  enum; an `owner/repo` in the query is ignored. This route holds the org's
+  `contents:write` PAT, so a caller-supplied repo would make it a cross-tenant
+  proxy on a server-side credential.
+- **Community reads are always anonymous.** The org's PAT is scoped to the org's
+  repo; sending it to the public repo would leak the credential to a repo the
+  org has no relationship with.
+- **Tab captions now say what they list.** "My Flows" → **"Org Flows"** in the
+  hub admin (it is the org-wide catalogue, not a personal list), and the
+  registry tab is named for the repo it is actually reading instead of always
+  claiming "Community". The standalone client is unchanged.
+
 ### Hub — admin-settable private flow registry (CGLAB-138)
 
 - **Per-org flow registry.** A Hub admin can point their org's flow registry at

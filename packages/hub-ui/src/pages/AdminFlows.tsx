@@ -10,7 +10,8 @@
  * stays focused on flow definition; assignment management would be
  * confusing inside the agenfk client where it has no analogue.
  */
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import clsx from 'clsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
@@ -24,6 +25,9 @@ import {
   registryFormError,
   registrySaveLabel,
   resolveTabLabels,
+  showRegistrySourcePicker,
+  registrySourceOptions,
+  type RegistrySource,
   MOVE_BACK_TO_PUBLIC_CONFIRM,
 } from './adminFlowRegistry';
 
@@ -61,13 +65,28 @@ const flowClient: FlowClient = {
   },
 };
 
-const registryClient: RegistryClient = {
-  browseRegistry: async () => (await api.get('/v1/admin/registry/flows')).data,
-  installFromRegistry: async (filename) => flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename })).data),
-  publishToRegistry: async () => {
-    throw new Error('Publishing to the community registry is not supported from the Hub admin yet. Use your local agenfk client.');
-  },
-};
+/**
+ * The hub's RegistryClient. `source` selects which registry the server reads:
+ * the org's own repo, or the public community one. It is a factory rather than
+ * a const because the selection lives in component state, and the shared
+ * editor's browse/install must follow it.
+ *
+ * `source` is sent as an opaque enum the server maps to a repo. The UI never
+ * names a repo — that is the tenancy boundary, since the server holds the
+ * org's contents:write PAT and would otherwise be a proxy for any repo it can
+ * reach.
+ */
+export function makeRegistryClient(getSource: () => RegistrySource): RegistryClient {
+  return {
+    browseRegistry: async () =>
+      (await api.get('/v1/admin/registry/flows', { params: { source: getSource() } })).data,
+    installFromRegistry: async (filename) =>
+      flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename, source: getSource() })).data),
+    publishToRegistry: async () => {
+      throw new Error('Publishing to the community registry is not supported from the Hub admin yet. Use your local agenfk client.');
+    },
+  };
+}
 
 export function AdminFlows() {
   const qc = useQueryClient();
@@ -77,6 +96,13 @@ export function AdminFlows() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [initialFlowId, setInitialFlowId] = useState<string | undefined>(undefined);
   const [expandedFlowId, setExpandedFlowId] = useState<string | null>(null);
+  // Which registry the editor's second tab reads. Held in a ref-like getter so
+  // the module-level client factory below can read the current value without
+  // being rebuilt on every render (a new client object each render would
+  // retrigger the editor's registry query indefinitely).
+  const [registrySource, setRegistrySource] = useState<RegistrySource>('org');
+  const sourceRef = useRef<RegistrySource>('org');
+  sourceRef.current = registrySource;
 
   const { data: flows = [] } = useQuery<Flow[]>({
     queryKey: ['admin-flows'],
@@ -95,6 +121,15 @@ export function AdminFlows() {
     queryFn: async () => (await api.get('/v1/admin/registry-config')).data,
   });
   const tabLabels = resolveTabLabels({
+    isPublic: registryCfg?.isPublic ?? null,
+    repo: registryCfg?.repo ?? null,
+  });
+
+  // Built once; reads the live source through the ref so switching registries
+  // does not hand the editor a new client object (which would remount its
+  // query). The query key below is what actually drives a refetch.
+  const [registryClient] = useState(() => makeRegistryClient(() => sourceRef.current));
+  const showSourcePicker = showRegistrySourcePicker({
     isPublic: registryCfg?.isPublic ?? null,
     repo: registryCfg?.repo ?? null,
   });
@@ -212,7 +247,41 @@ export function AdminFlows() {
         initialFlowId={initialFlowId}
         flowClient={flowClient}
         registryClient={registryClient}
-        tabLabels={tabLabels}
+        tabLabels={{
+          myFlows: tabLabels.myFlows,
+          // While the picker is showing, the tab names the repo it is CURRENTLY
+          // reading — not the org's default — otherwise switching source would
+          // relist the panel under a caption describing the other repo.
+          registry: registrySource === 'community'
+            ? 'Community'
+            : tabLabels.registry,
+        }}
+        registryToolbar={showSourcePicker ? (
+          <div className="flex items-center gap-1.5" data-testid="registry-source-picker">
+            {registrySourceOptions({
+              isPublic: registryCfg?.isPublic ?? null,
+              repo: registryCfg?.repo ?? null,
+            }).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                data-testid={`registry-source-${opt.value}`}
+                onClick={() => {
+                  setRegistrySource(opt.value);
+                  sourceRef.current = opt.value;
+                }}
+                className={clsx(
+                  'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+                  registrySource === opt.value
+                    ? 'border-brand text-ink bg-chip font-semibold'
+                    : 'border-border-soft text-ink-tertiary hover:text-ink',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        ) : undefined}
         theme={theme}
       />
     </div>

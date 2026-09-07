@@ -551,3 +551,182 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     expect(r.body.hasToken).toBe(false);
   });
 });
+
+// ── Browsing BOTH registries (the gap CGLAB-138 left open) ─────────────────
+//
+// resolveRegistryRead answers one repo per org, so once an admin points at a
+// private repo there is no way in the UI to see the real community catalogue.
+// The one-time copy hides this at switch time (the org repo starts as a
+// superset) — but the moment community gains a flow the org lacks, it is
+// invisible and uninstallable.
+//
+// The fix is a `source` SELECTOR, not a free `repo` parameter. An admin
+// supplying an arbitrary owner/repo would turn this route into a proxy that
+// spends the hub's stored GitHub token against any repo that token can reach —
+// a cross-tenant read on a server-side credential. So the caller picks between
+// two names the server already knows and never supplies a name at all.
+describe('hub admin: browse community alongside the org registry', () => {
+  // Own app/db rather than reusing the block above: this one needs the org
+  // already switched to a private repo in every case, and sharing state across
+  // describe blocks would make the order of runs load-bearing.
+  let app: any;
+  let ctx: any;
+  let db: any;
+  let cookieAdmin: string;
+  let cookieView: string;
+
+  beforeEach(async () => {
+    db = await openSqliteDb(':memory:');
+    const out = await createHubApp({
+      dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'test-session-secret',
+      defaultOrgId: 'org-a', db,
+    });
+    app = out.app;
+    ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
+    await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
+    cookieAdmin = await loginAs(app, 'admin@x', 'longenough1');
+    cookieView = await loginAs(app, 'view@x', 'longenough1');
+  });
+
+  afterEach(async () => {
+    await db.close();
+    vi.unstubAllGlobals();
+  });
+
+  /** Stub a GitHub fake and point the org at its private repo. */
+  const switchToPrivate = async () => {
+    const gh = githubFake({ writeOk: true, privateRead: true });
+    vi.stubGlobal('fetch', gh.fn);
+    const r = await supertest(app).put('/v1/admin/registry-config')
+      .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    gh.calls.length = 0; // keep only post-switch traffic
+    return gh;
+  };
+
+  it('source=community lists the PUBLIC repo even when the org is on a private one', async () => {
+    const gh = await switchToPrivate();
+    const r = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    expect(r.body.map((f: any) => f.name).sort()).toEqual(['Lean Flow', 'TDD Flow']);
+    expect(gh.calls.filter((c) => c.url.includes('/contents/flows?') && c.url.includes(PUBLIC_REPO))).toHaveLength(1);
+  });
+
+  it('source=community reads the public repo ANONYMOUSLY — the org token must not ride along', async () => {
+    // The leak this feature could easily introduce: the hub holds a
+    // contents:write PAT for the ORG's repo. Attaching it to a request for the
+    // public community repo hands that credential to a repo the org has no
+    // relationship with, and writes it into GitHub's access logs.
+    const gh = await switchToPrivate();
+    await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    const publicCalls = gh.calls.filter((c) => c.url.includes(PUBLIC_REPO));
+    expect(publicCalls.length).toBeGreaterThan(0);
+    for (const c of publicCalls) expect(c.auth, `${c.method} ${c.url}`).toBeUndefined();
+  });
+
+  it('source=org lists the org repo, authenticated', async () => {
+    const gh = await switchToPrivate();
+    const r = await supertest(app).get('/v1/admin/registry/flows?source=org').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    const listing = gh.calls.find((c) => c.url.includes(ORG_REPO) && c.url.includes('/contents/flows?'));
+    expect(listing).toBeDefined();
+    expect(listing!.auth).toBeDefined(); // private repo needs the token
+  });
+
+  it('no source param behaves exactly as source=org', async () => {
+    // Back-compat: the shipped hub-ui client sends no source at all.
+    const gh = await switchToPrivate();
+    const plain = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    expect(plain.status).toBe(200);
+    expect(plain.body.length).toBeGreaterThan(0);
+    expect(gh.calls.some((c) => c.url.includes(ORG_REPO))).toBe(true);
+  });
+
+  it('source=community on a PUBLIC org lists the public repo (same thing, no error)', async () => {
+    const gh = githubFake({ writeOk: true, privateRead: true });
+    vi.stubGlobal('fetch', gh.fn);
+    const r = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    expect(r.body.map((f: any) => f.name).sort()).toEqual(['Lean Flow', 'TDD Flow']);
+  });
+
+  it('an unknown source is rejected rather than silently falling back', async () => {
+    // Falling back to the org repo would be the friendly choice and the wrong
+    // one: a stale or typo'd client would quietly show private flows under a
+    // "Community" heading — the exact confusion this feature exists to remove.
+    await switchToPrivate();
+    const r = await supertest(app).get('/v1/admin/registry/flows?source=other').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/source/i);
+  });
+
+  it('a repo name in the query is IGNORED — the caller cannot choose a repo', async () => {
+    // The tenancy guard. `?repo=victim/corp-secrets` must not be honoured: the
+    // hub would fetch it with the org's stored PAT. Only the two names the
+    // server already knows are reachable.
+    const gh = await switchToPrivate();
+    const r = await supertest(app)
+      .get('/v1/admin/registry/flows?source=org&repo=victim/corp-secrets').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    const listings = gh.calls.filter((c) => c.url.includes('/contents/flows'));
+    expect(listings.length).toBeGreaterThan(0);
+    for (const c of listings) {
+      expect(c.url.includes('victim'), c.url).toBe(false);
+      expect(c.url.includes(ORG_REPO) || c.url.includes(PUBLIC_REPO), c.url).toBe(true);
+    }
+  });
+
+  it('a source value shaped like a repo slug is still rejected', async () => {
+    // Defence in depth: `?source=victim/corp-secrets` must not be read as a
+    // repo. source is an enum, never a name.
+    const gh = await switchToPrivate();
+    const r = await supertest(app)
+      .get('/v1/admin/registry/flows?source=victim%2Fcorp-secrets').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(400);
+    expect(gh.calls.some((c) => c.url.includes('victim'))).toBe(false);
+  });
+
+  it('source=community install works while the org is on a private repo', async () => {
+    await switchToPrivate();
+    const r = await supertest(app).post('/v1/admin/flows/install')
+      .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'community' });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    expect(r.body.name).toBe('TDD Flow');
+  });
+
+  it('source=community install does not send the org token to the public repo', async () => {
+    const gh = await switchToPrivate();
+    const r = await supertest(app).post('/v1/admin/flows/install')
+      .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'community' });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    for (const c of gh.calls.filter((c) => c.url.includes(PUBLIC_REPO))) {
+      expect(c.auth, `${c.method} ${c.url}`).toBeUndefined();
+    }
+  });
+
+  it('install defaults to the org repo when no source is given', async () => {
+    // After the switch the org repo holds the copied flows, so the shipped
+    // hub-ui client keeps working untouched.
+    await switchToPrivate();
+    const r = await supertest(app).post('/v1/admin/flows/install')
+      .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json' });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+  });
+
+  it('install rejects an unknown source', async () => {
+    await switchToPrivate();
+    const r = await supertest(app).post('/v1/admin/flows/install')
+      .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'victim' });
+    expect(r.status).toBe(400);
+  });
+
+  it('source is rejected for a non-admin on both routes', async () => {
+    await switchToPrivate();
+    const g = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieView);
+    expect(g.status).toBe(403);
+    const p = await supertest(app).post('/v1/admin/flows/install')
+      .set('Cookie', cookieView).send({ filename: 'tdd-flow.json', source: 'community' });
+    expect(p.status).toBe(403);
+  });
+});

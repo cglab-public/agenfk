@@ -77,3 +77,36 @@ describe('hub flow-editor tab labels', () => {
     expect(resolveTabLabels({ isPublic: false, repo: 'acme/flows' }).registry).toBe('acme/flows');
   });
 });
+
+// ── Source selector ────────────────────────────────────────────────────────
+import { showRegistrySourcePicker, registrySourceOptions } from '../pages/adminFlowRegistry';
+
+describe('registry source picker visibility', () => {
+  it('is hidden while the org is on the public registry', () => {
+    // Both options would resolve to the same repo — two choices that do the
+    // same thing read as a broken control.
+    expect(showRegistrySourcePicker({ isPublic: true, repo: 'cglab-public/agenfk-flows' })).toBe(false);
+  });
+
+  it('is hidden while the config is still loading', () => {
+    expect(showRegistrySourcePicker({})).toBe(false);
+    expect(showRegistrySourcePicker({ isPublic: null, repo: null })).toBe(false);
+  });
+
+  it('appears once the org has a private registry', () => {
+    expect(showRegistrySourcePicker({ isPublic: false, repo: 'cglab-PRIVATE/agenfk-flows' })).toBe(true);
+  });
+
+  it('names each option so the two are distinguishable', () => {
+    const opts = registrySourceOptions({ isPublic: false, repo: 'acme/flows' });
+    expect(opts.map((o) => o.value)).toEqual(['org', 'community']);
+    expect(opts.map((o) => o.label)).toEqual(['acme/flows', 'Community']);
+    // Labels must not collide, or the picker is unreadable.
+    expect(new Set(opts.map((o) => o.label)).size).toBe(2);
+  });
+
+  it('falls back to a generic label when the repo is unknown', () => {
+    const opts = registrySourceOptions({});
+    expect(opts[0].label.length).toBeGreaterThan(0);
+  });
+});

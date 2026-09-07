@@ -1127,3 +1127,110 @@ describe('saveRegistryConfig — storage-boundary validation', () => {
     expect((await getRegistryConfig(db, 'org-1')).branch).toBe('main');
   });
 });
+
+// ── resolveRegistrySource: the tenancy boundary ────────────────────────────
+describe('resolveRegistrySource', () => {
+  let db: any;
+  beforeEach(async () => {
+    const { openSqliteDb } = await import('../db/sqlite');
+    db = await openSqliteDb(':memory:');
+  });
+  afterEach(async () => { if (db?.close) await db.close(); });
+
+  const KEY = 'b'.repeat(64);
+
+  const setPrivate = async () => {
+    const { saveRegistryConfig } = await import('../services/flowRegistry');
+    await saveRegistryConfig(db, 'org-a', { repo: 'acme/flows', branch: 'main', token: 'ghp_org_secret', secretKey: KEY });
+  };
+
+  const call = async (orgId: string, source: unknown) => {
+    const { resolveRegistrySource } = await import('../services/flowRegistry');
+    return resolveRegistrySource(db, orgId, KEY, source);
+  };
+
+  it('undefined source resolves to the org\'s configured repo (back-compat)', async () => {
+    await setPrivate();
+    const r = await call('org-a', undefined);
+    expect(r).toMatchObject({ ok: true, repo: 'acme/flows', branch: 'main' });
+    expect(r.token).toBe('ghp_org_secret');
+  });
+
+  it('empty-string source also resolves to the org repo', async () => {
+    await setPrivate();
+    const r = await call('org-a', '');
+    expect(r.ok && r.repo).toBe('acme/flows');
+  });
+
+  it('source=org resolves to the org repo', async () => {
+    await setPrivate();
+    const r = await call('org-a', 'org');
+    expect(r.ok && r.repo).toBe('acme/flows');
+  });
+
+  it('source=community resolves to the PUBLIC repo and NO token', async () => {
+    // The credential rule. The org's PAT is scoped to acme/flows; sending it
+    // to cglab-public would leak it into a repo the org has no relationship
+    // with and into GitHub's access logs. Anonymous is also simply correct for
+    // a public repo.
+    await setPrivate();
+    const r = await call('org-a', 'community');
+    expect(r).toMatchObject({ ok: true, repo: PUBLIC_REGISTRY_REPO, token: null });
+  });
+
+  it('source=community keeps the configured BRANCH', async () => {
+    // Community is a different repo, but the org's branch choice is about how
+    // it reads registries generally; reusing it avoids a second setting that
+    // would almost always be left at main anyway.
+    const { saveRegistryConfig } = await import('../services/flowRegistry');
+    await saveRegistryConfig(db, 'org-a', { repo: 'acme/flows', branch: 'release/2.0', token: 'ghp', secretKey: KEY });
+    const r = await call('org-a', 'community');
+    expect(r.ok && r.branch).toBe('release/2.0');
+  });
+
+  it('rejects an unknown source with ok:false rather than throwing', async () => {
+    // The route turns ok:false into a 400. Throwing would surface as a 500 and
+    // read like a server fault for what is a bad request.
+    await setPrivate();
+    const r = await call('org-a', 'victim/flows');
+    expect(r.ok).toBe(false);
+    expect((r as any).error).toMatch(/source/i);
+  });
+
+  it('rejects non-string sources', async () => {
+    await setPrivate();
+    for (const bad of [42, {}, [], true]) {
+      expect((await call('org-a', bad)).ok, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it('never returns a repo other than the org\'s or the public one', async () => {
+    // The invariant the whole design rests on, asserted directly: no value of
+    // `source` yields a third repo.
+    await setPrivate();
+    for (const src of [undefined, '', 'org', 'community', 'Org', 'COMMUNITY', 'x', 'a/b', '../x', 'null']) {
+      const r = await call('org-a', src);
+      if (!r.ok) continue;
+      const repo = (r as any).repo;
+      expect([PUBLIC_REGISTRY_REPO, 'acme/flows'], String(src)).toContain(repo);
+    }
+  });
+
+  it('a public org gets no token for either source', async () => {
+    // Public orgs have no stored token and must not send one; asserting both
+    // sources here so the anonymous path is pinned for the common case too.
+    for (const src of [undefined, 'community', 'org']) {
+      const r = await call('org-public-never-set', src);
+      expect(r.ok, String(src)).toBe(true);
+      expect((r as any).token, String(src)).toBeNull();
+    }
+  });
+
+  it('is case-sensitive on purpose', async () => {
+    // 'COMMUNITY' failing is deliberate, not an oversight: the route 400s on it,
+    // so a client with a casing bug learns about it immediately instead of
+    // silently reading the wrong repo.
+    await setPrivate();
+    expect((await call('org-a', 'COMMUNITY')).ok).toBe(false);
+  });
+});

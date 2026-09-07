@@ -18,6 +18,8 @@ interface FlowEditorHost {
   theme: 'light' | 'dark';
   /** Tab captions, supplied by the host. See `FlowEditorModalPublicProps`. */
   tabLabels: { myFlows: string; registry: string };
+  /** Optional host control above the registry search box. */
+  registryToolbar?: React.ReactNode;
 }
 
 const DEFAULT_HOST_TAB_LABELS = { myFlows: 'My Flows', registry: 'Community' };
@@ -123,6 +125,8 @@ interface FlowEditorModalProps {
    * tab shows.
    */
   tabLabels?: { myFlows?: string; registry?: string };
+  /** Optional host control above the registry search box (registry switcher). */
+  registryToolbar?: React.ReactNode;
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -1077,6 +1081,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
   const tabLabels = useTabLabels();
+  const { registryToolbar } = useHost();
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -1300,6 +1305,11 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           {/* Community tab content */}
           {activeTab === 'community' && (
             <div className="flex-1 flex flex-col overflow-hidden">
+              {registryToolbar && (
+                <div className="px-3 pt-2 shrink-0" data-testid="registry-toolbar">
+                  {registryToolbar}
+                </div>
+              )}
               <div className="px-3 py-2 shrink-0">
                 <div className="relative">
                   <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -1601,22 +1611,25 @@ export type FlowEditorModalPublicProps = (FlowEditorModalProps | LegacyProps) & 
    * the org catalogue and the second may be a private repo.
    */
   tabLabels?: { myFlows?: string; registry?: string };
+  /** Optional host control above the registry search box (registry switcher). */
+  registryToolbar?: React.ReactNode;
 };
 
 export const FlowEditorModal: React.FC<FlowEditorModalPublicProps> = ({
-  flowClient, registryClient, theme = 'light', tabLabels, ...rest
+  flowClient, registryClient, theme = 'light', tabLabels, registryToolbar, ...rest
 }) => {
   const host = React.useMemo<FlowEditorHost>(
     () => ({
       flowClient,
       registryClient,
       theme,
+      registryToolbar,
       tabLabels: {
         myFlows: tabLabels?.myFlows || DEFAULT_HOST_TAB_LABELS.myFlows,
         registry: tabLabels?.registry || DEFAULT_HOST_TAB_LABELS.registry,
       },
     }),
-    [flowClient, registryClient, theme, tabLabels?.myFlows, tabLabels?.registry],
+    [flowClient, registryClient, theme, tabLabels?.myFlows, tabLabels?.registry, registryToolbar],
   );
   return (
     <HostContext.Provider value={host}>

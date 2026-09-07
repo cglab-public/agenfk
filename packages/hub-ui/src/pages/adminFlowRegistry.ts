@@ -125,3 +125,40 @@ function truncateLabel(value: string): string {
   // org prefix does, and every flow repo here shares the org.
   return `…${value.slice(-(MAX_REGISTRY_LABEL - 1))}`;
 }
+
+// ── Registry source selector ───────────────────────────────────────────────
+
+/** Which registry the browse/install surface reads. Mirrors the server enum. */
+export type RegistrySource = 'org' | 'community';
+
+/**
+ * Whether the source selector is worth showing.
+ *
+ * While the org is on the public registry, both sources resolve to the same
+ * repo — the control would be two options that do the same thing, which reads
+ * as a broken toggle. It only earns its space once a private repo exists to
+ * choose between.
+ */
+export function showRegistrySourcePicker(cfg: {
+  isPublic?: boolean | null;
+  repo?: string | null;
+}): boolean {
+  const repo = (cfg.repo ?? '').trim();
+  if (!repo || repo === PUBLIC_REGISTRY_REPO) return false;
+  return cfg.isPublic !== true;
+}
+
+/**
+ * The caption for the org option. Named for the repo it points at so the admin
+ * can tell the two apart at a glance rather than trusting an abstract "Org".
+ */
+export function registrySourceOptions(cfg: {
+  isPublic?: boolean | null;
+  repo?: string | null;
+}): Array<{ value: RegistrySource; label: string }> {
+  const repo = (cfg.repo ?? '').trim() || 'Org registry';
+  return [
+    { value: 'org', label: repo === PUBLIC_REGISTRY_REPO ? 'This registry' : repo },
+    { value: 'community', label: 'Community' },
+  ];
+}
