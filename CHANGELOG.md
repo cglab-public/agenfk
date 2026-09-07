@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [1.1.18-beta.2] — 2026-09-05
+## [1.1.18-beta.3] — 2026-09-07
 
 ### Hub — browse the community registry alongside a private one
 
@@ -22,6 +22,8 @@ All notable changes to AgEnFK are documented here.
   hub admin (it is the org-wide catalogue, not a personal list), and the
   registry tab is named for the repo it is actually reading instead of always
   claiming "Community". The standalone client is unchanged.
+
+## [1.1.18-beta.2] — 2026-09-05
 
 ### Hub — admin-settable private flow registry (CGLAB-138)
 
