@@ -23,6 +23,7 @@ import {
   PUBLIC_REGISTRY_REPO,
   registryFormError,
   registrySaveLabel,
+  resolveTabLabels,
   MOVE_BACK_TO_PUBLIC_CONFIRM,
 } from './adminFlowRegistry';
 
@@ -84,6 +85,18 @@ export function AdminFlows() {
   const { data: assignments = [] } = useQuery<Assignment[]>({
     queryKey: ['admin-flow-assignments'],
     queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
+  });
+
+  // Read here as well as in RegistryRepoPanel: the editor's tab captions depend
+  // on which repo the registry currently resolves to. Same queryKey, so react-
+  // query shares the one request — this is not a second fetch.
+  const { data: registryCfg } = useQuery<RegistryConfig>({
+    queryKey: ['admin-registry-config'],
+    queryFn: async () => (await api.get('/v1/admin/registry-config')).data,
+  });
+  const tabLabels = resolveTabLabels({
+    isPublic: registryCfg?.isPublic ?? null,
+    repo: registryCfg?.repo ?? null,
   });
 
   const orgAssignment = assignments.find(a => a.scope === 'org');
@@ -199,6 +212,7 @@ export function AdminFlows() {
         initialFlowId={initialFlowId}
         flowClient={flowClient}
         registryClient={registryClient}
+        tabLabels={tabLabels}
         theme={theme}
       />
     </div>

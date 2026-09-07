@@ -16,7 +16,11 @@ interface FlowEditorHost {
   flowClient: FlowClient;
   registryClient: RegistryClient;
   theme: 'light' | 'dark';
+  /** Tab captions, supplied by the host. See `FlowEditorModalPublicProps`. */
+  tabLabels: { myFlows: string; registry: string };
 }
+
+const DEFAULT_HOST_TAB_LABELS = { myFlows: 'My Flows', registry: 'Community' };
 
 const HostContext = createContext<FlowEditorHost | null>(null);
 
@@ -28,6 +32,7 @@ function useHost(): FlowEditorHost {
 const useFlowClient = (): FlowClient => useHost().flowClient;
 const useRegistryClient = (): RegistryClient => useHost().registryClient;
 const useEditorTheme = (): 'light' | 'dark' => useHost().theme;
+const useTabLabels = () => useHost().tabLabels;
 import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
 
 // Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
@@ -109,6 +114,15 @@ interface FlowEditorModalProps {
   // was offering a guaranteed failure. The hub admin leaves this false: over
   // there, hub-sourced flows are exactly the ones you are meant to edit.
   hubManagedReadOnly?: boolean;
+  /**
+   * Tab captions. Defaults to "My Flows" / "Community", which is correct for
+   * the standalone client. The hub admin overrides them: its first tab is the
+   * org-wide catalogue rather than a personal list, and its registry tab lists
+   * whatever repo the org configured — after CGLAB-138 that is often a PRIVATE
+   * repo, where the word "Community" would describe the opposite of what the
+   * tab shows.
+   */
+  tabLabels?: { myFlows?: string; registry?: string };
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -1062,6 +1076,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
+  const tabLabels = useTabLabels();
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -1266,7 +1281,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
-              My Flows
+              {tabLabels.myFlows}
             </button>
             <button
               data-testid="tab-community"
@@ -1278,7 +1293,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
-              Community
+              {tabLabels.registry}
             </button>
           </div>
 
@@ -1580,14 +1595,28 @@ export type FlowEditorModalPublicProps = (FlowEditorModalProps | LegacyProps) & 
   flowClient: FlowClient;
   registryClient: RegistryClient;
   theme?: 'light' | 'dark';
+  /**
+   * Tab captions. Omit for the standalone client's wording ("My Flows" /
+   * "Community"). The hub admin passes its own, because there the first tab is
+   * the org catalogue and the second may be a private repo.
+   */
+  tabLabels?: { myFlows?: string; registry?: string };
 };
 
 export const FlowEditorModal: React.FC<FlowEditorModalPublicProps> = ({
-  flowClient, registryClient, theme = 'light', ...rest
+  flowClient, registryClient, theme = 'light', tabLabels, ...rest
 }) => {
   const host = React.useMemo<FlowEditorHost>(
-    () => ({ flowClient, registryClient, theme }),
-    [flowClient, registryClient, theme],
+    () => ({
+      flowClient,
+      registryClient,
+      theme,
+      tabLabels: {
+        myFlows: tabLabels?.myFlows || DEFAULT_HOST_TAB_LABELS.myFlows,
+        registry: tabLabels?.registry || DEFAULT_HOST_TAB_LABELS.registry,
+      },
+    }),
+    [flowClient, registryClient, theme, tabLabels?.myFlows, tabLabels?.registry],
   );
   return (
     <HostContext.Provider value={host}>

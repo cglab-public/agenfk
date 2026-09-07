@@ -65,3 +65,63 @@ export function registrySaveLabel(state: RegistryFormState): string {
  */
 export const MOVE_BACK_TO_PUBLIC_CONFIRM =
   'Move this org back to the public community registry? Your private repo keeps its flows, but installations will browse the public one again.';
+
+// ── Tab labels ─────────────────────────────────────────────────────────────
+
+export interface TabLabels {
+  myFlows: string;
+  registry: string;
+}
+
+/**
+ * Labels the hub admin passes to the shared FlowEditorModal.
+ *
+ * The shared editor hardcodes "My Flows" / "Community", which is right for the
+ * standalone agenfk client and wrong here. In the hub admin the first tab lists
+ * the ORG's flow catalogue (`/v1/admin/flows`) — the one every installation
+ * inherits — so "My" is misleading; and the second lists whatever
+ * `resolveRegistryRead` resolves to, which after CGLAB-138 is the org's own
+ * private repo for any org that configured one. A tab labelled "Community"
+ * showing `cglab-PRIVATE/agenfk-flows` is not describing the thing it shows.
+ */
+export const DEFAULT_TAB_LABELS: TabLabels = {
+  myFlows: 'Org Flows',
+  registry: 'Community',
+};
+
+/** Longest registry label, so a long org/repo cannot push the second tab out
+ * of the modal's two-button flex row. */
+const MAX_REGISTRY_LABEL = 32;
+
+/**
+ * Resolve the registry tab's label from the org's current config.
+ *
+ * The repo slug wins over the `isPublic` flag wherever they disagree: the
+ * server derives `isPublic` from the slug and the slug is what
+ * `resolveRegistryRead` actually reads, so trusting the flag would let a
+ * private repo be labelled "Community" — the exact bug this exists to prevent.
+ * A missing config (still loading) yields "Community", the pre-CGLAB-138
+ * wording, rather than an empty or half-formed label.
+ */
+export function resolveTabLabels(cfg: {
+  isPublic?: boolean | null;
+  repo?: string | null;
+}): TabLabels {
+  const repo = (cfg.repo ?? '').trim();
+  const isPublic = repo === PUBLIC_REGISTRY_REPO
+    ? true
+    : repo === ''
+      ? true // nothing resolved yet — fall back to the neutral wording
+      : cfg.isPublic === true;
+  return {
+    myFlows: DEFAULT_TAB_LABELS.myFlows,
+    registry: isPublic ? DEFAULT_TAB_LABELS.registry : truncateLabel(repo),
+  };
+}
+
+function truncateLabel(value: string): string {
+  if (value.length <= MAX_REGISTRY_LABEL) return value;
+  // Keep the tail: the repo name identifies the registry far better than the
+  // org prefix does, and every flow repo here shares the org.
+  return `…${value.slice(-(MAX_REGISTRY_LABEL - 1))}`;
+}
