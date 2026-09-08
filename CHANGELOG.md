@@ -2,6 +2,36 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.18-beta.4] — 2026-09-08
+
+### Hub — the flow editor's footer buttons now say what they write
+
+`Save` / `Publish` / `Use this Flow` read as one pipeline. They were three
+unrelated writes, and two of them promised more than they did.
+
+- **Publish is capability-gated, not decorative.** `RegistryClient.publishToRegistry`
+  is now optional. The hub holds the org's registry PAT and has no publish
+  route, so the hub admin omits the method and the editor no longer renders a
+  button that could only throw. Authors who need a registry PR use
+  `agenfk flow publish <id> [--registry owner/repo]`.
+- **Labels name the write.** The hub host now passes
+  **"Save & publish to org"** / **"Published to org"** / **"Set as org
+  default"** — the last one being the literal badge the flows list renders for
+  the same assignment. The registry-config form's button is renamed **"Save
+  registry repo"**, so the page no longer shows two Save buttons.
+- **Binding saves first.** "Set as org default" used to bind the id it already
+  had, so with unsaved edits in the panel it assigned the version already on the
+  server and reported success while **silently dropping the edits**. It now
+  persists before binding, and a failed save means no bind.
+- **A newly created flow is no longer a dead end.** Two footers used to be
+  chosen by read-only-ness, which stranded a flow with no id yet: no Save (it
+  lived in the other branch) and no Publish (that branch gated on `flow?.id`).
+  One footer now gates per capability.
+- **Two pre-existing bugs fixed on the way:** the "Saved" badge could never
+  display — a save churned selection state, remounting the panel by `key` and
+  discarding the dirty baseline — and the load effect keyed on the `flow` object
+  rather than `flow?.id`, so it re-ran with a stale object after every save.
+
 ## [1.1.18-beta.3] — 2026-09-07
 
 ### Hub — browse the community registry alongside a private one
