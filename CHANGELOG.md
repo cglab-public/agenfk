@@ -2,6 +2,55 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.18] — 2026-09-08
+
+Stable, cumulative over `1.1.18-beta.1`–`.4`. Everything here shipped to the
+hub in production on this date.
+
+### Hub — admin-settable private flow registry (CGLAB-138)
+
+- **Per-org flow registry.** A hub admin points their org's flow registry at an
+  existing private repo; community flows are copied into it once, on select,
+  rather than referenced across repos.
+- **Browse the community registry alongside a private one.** Pointing the org at
+  a private repo used to make the real community catalogue invisible and
+  uninstallable. The registry tab now offers a switcher between the org's repo
+  and Community.
+- **The caller picks a source, never a repo.** `?source=org|community` is an
+  enum and an `owner/repo` in the query is ignored — this route holds the org's
+  `contents:write` PAT, so a caller-supplied repo would turn it into a
+  cross-tenant proxy on a server-side credential. Community reads are always
+  anonymous for the same reason.
+
+### Hub — flow editor labels and footer CTAs
+
+- **Tab captions say what they list.** "My Flows" → **"Org Flows"** in the hub
+  admin, and the registry tab is named for the repo it is actually reading
+  instead of always claiming "Community".
+- **Footer buttons name the write.** `Save` / `Publish` / `Use this Flow` read
+  as one pipeline but were three unrelated writes. The hub now labels them
+  **"Save & publish to org"** / **"Published to org"** / **"Set as org
+  default"**, and the registry-config form's button is **"Save registry repo"**
+  so the page no longer shows two Save buttons.
+- **Publish is capability-gated.** `RegistryClient.publishToRegistry` is now
+  optional; the hub has no publish route, so it omits the method and the editor
+  no longer renders a button that could only throw. Use
+  `agenfk flow publish <id> [--registry owner/repo]` for a registry PR.
+- **Binding saves first.** "Set as org default" used to bind the id it already
+  had, so with unsaved edits it assigned the server's version, reported success,
+  and **silently dropped the edits**. It now persists before binding; a failed
+  save means no bind.
+- **A newly created flow is no longer a dead end.** Two footers were chosen by
+  read-only-ness, stranding a flow with no id: no Save (other branch) and no
+  Publish (that branch gated on `flow?.id`). One footer now gates per
+  capability.
+
+### CLI / pi harness
+
+- **The pi harness no longer misreports the model** in PR registration —
+  `settings.json` `defaultModel` is a startup default, not the live model, and
+  it was overwriting a correct `--model`.
+
 ## [1.1.18-beta.4] — 2026-09-08
 
 ### Hub — the flow editor's footer buttons now say what they write
