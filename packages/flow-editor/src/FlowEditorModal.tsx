@@ -16,7 +16,15 @@ interface FlowEditorHost {
   flowClient: FlowClient;
   registryClient: RegistryClient;
   theme: 'light' | 'dark';
+  /** Tab captions, supplied by the host. See `FlowEditorModalPublicProps`. */
+  tabLabels: { myFlows: string; registry: string };
+  /** Footer CTA captions, supplied by the host. */
+  labels: FlowEditorLabels;
+  /** Optional host control above the registry search box. */
+  registryToolbar?: React.ReactNode;
 }
+
+const DEFAULT_HOST_TAB_LABELS = { myFlows: 'My Flows', registry: 'Community' };
 
 const HostContext = createContext<FlowEditorHost | null>(null);
 
@@ -28,6 +36,8 @@ function useHost(): FlowEditorHost {
 const useFlowClient = (): FlowClient => useHost().flowClient;
 const useRegistryClient = (): RegistryClient => useHost().registryClient;
 const useEditorTheme = (): 'light' | 'dark' => useHost().theme;
+const useTabLabels = () => useHost().tabLabels;
+const useEditorLabels = (): FlowEditorLabels => useHost().labels;
 import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
 
 // Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
@@ -67,6 +77,36 @@ const RESERVED_NAMES = new Set([
 ]);
 
 const BUILTIN_ID = '__builtin__';
+
+/**
+ * Footer CTA captions. The editor's own wording is correct for the standalone
+ * client; a host that binds flows at a different scope overrides them so the
+ * button names the write it performs. See `DEFAULT_EDITOR_LABELS`.
+ */
+export interface FlowEditorLabels {
+  save: string;
+  /**
+   * Confirmation shown in the Save button's place after a clean save. A
+   * separate caption rather than a suffix rule: English past tense is not
+   * mechanical, and appending "d" to the hub's "Save & publish to org" reads
+   * as "Save & publish to orgd".
+   */
+  saved: string;
+  useFlow: string;
+}
+
+/**
+ * Standalone-client captions. "Save" persists a personal flow and "Use this
+ * Flow" makes it this project's active flow — both accurate when one machine
+ * owns the whole lifecycle. The hub admin passes different strings because
+ * over there Save is the fleet-wide publish and "Use this Flow" only writes
+ * an assignment row; see `EDITOR_LABELS_HUB` in hub-ui.
+ */
+export const DEFAULT_EDITOR_LABELS: FlowEditorLabels = {
+  save: 'Save',
+  saved: 'Saved',
+  useFlow: 'Use this Flow',
+};
 
 function generateUUID(): string {
   return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
@@ -109,6 +149,30 @@ interface FlowEditorModalProps {
   // was offering a guaranteed failure. The hub admin leaves this false: over
   // there, hub-sourced flows are exactly the ones you are meant to edit.
   hubManagedReadOnly?: boolean;
+  /**
+   * Tab captions. Defaults to "My Flows" / "Community", which is correct for
+   * the standalone client. The hub admin overrides them: its first tab is the
+   * org-wide catalogue rather than a personal list, and its registry tab lists
+   * whatever repo the org configured — after CGLAB-138 that is often a PRIVATE
+   * repo, where the word "Community" would describe the opposite of what the
+   * tab shows.
+   */
+  tabLabels?: { myFlows?: string; registry?: string };
+  /**
+   * Footer CTA captions. Defaults to "Save" / "Use this Flow", which is right
+   * for the standalone client. The hub admin overrides them: there, saving the
+   * row IS the fleet-wide publish (the bumped `version` is the ETag every
+   * installation polls), and the selection button writes an org-default
+   * assignment rather than "using" anything. Same reasoning as `tabLabels`.
+   */
+  /**
+   * Footer CTA captions, supplied by the host. Read from host context rather
+   * than as a prop, so it follows the same path as `tabLabels` and every
+   * nested editor sees one host.
+   */
+  labels?: Partial<FlowEditorLabels>;
+  /** Optional host control above the registry search box (registry switcher). */
+  registryToolbar?: React.ReactNode;
 }
 
 // Keep legacy Props alias so KanbanBoard can pass open= until it's updated
@@ -137,6 +201,43 @@ function makeBlankStep(order: number): FlowStep {
     order,
     exitCriteria: '',
   };
+}
+
+/**
+ * The flow definition in the shape the save mutation sends it: `name`,
+ * `description`, and steps with `order` authoritative from array position.
+ *
+ * Used both to build the payload and to baseline the dirty check, so the two
+ * are comparable. The projection is deliberately narrow and ordered:
+ *
+ * - **Step ids are excluded.** Both servers run steps through
+ *   `normalizeFlowSteps`, which re-issues an id for any step that arrives
+ *   without one or with a duplicate. A baseline that carried the id the editor
+ *   generated could never match the row that came back, so every save would
+ *   leave the panel looking dirty.
+ * - **Keys are emitted in a fixed order and absent fields are dropped.**
+ *   `JSON.stringify` follows insertion order, so a baseline built from the
+ *   loaded row and a comparison built from the edited state would disagree on
+ *   key order alone. `{ exitCriteria: '' }` and `{}` are also the same step to
+ *   the server, which drops empty fields on the round-trip.
+ */
+function serializeDefinition(
+  name: string,
+  description: string,
+  steps: FlowStep[],
+): string {
+  const canonical = (Array.isArray(steps) ? steps : [])
+    .map((s, i) => ({
+      name: s?.name ?? '',
+      label: s?.label ?? '',
+      order: i,
+      ...(s?.exitCriteria ? { exitCriteria: s.exitCriteria } : {}),
+      ...(s?.color ? { color: s.color } : {}),
+      ...(s?.icon ? { icon: s.icon } : {}),
+      ...(s?.isAnchor ? { isAnchor: true } : {}),
+    }))
+    .sort((a, b) => a.order - b.order);
+  return JSON.stringify({ name, description, steps: canonical });
 }
 
 // ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
@@ -213,15 +314,31 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
   const registryClient = useRegistryClient();
+  const labels = useEditorLabels();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
+  // The definition as last persisted, as the editor serialises it. `saved`
+  // alone cannot answer "is there an unsaved edit?": it is a badge flag that
+  // every keystroke clears, so it cannot distinguish a freshly-loaded row from
+  // a loaded row the admin has since renamed. "Use this Flow" needs that
+  // distinction — it binds an id, and binding while the panel holds edits
+  // silently assigns the version that is already on the server.
+  const [persisted, setPersisted] = useState<string | null>(null);
   const [openIconPickerIndex, setOpenIconPickerIndex] = useState<number | null>(null);
   // CGLAB-109: which step's exit criteria are open in the popup editor.
   const [exitCriteriaEditIndex, setExitCriteriaEditIndex] = useState<number | null>(null);
 
+  // Loads a freshly-selected flow into the form. Keyed on the flow's IDENTITY,
+  // not on the object: saving a new flow hands the parent a new `flow` for the
+  // same row, and re-running this effect would reset the form to the stale
+  // object the sidebar still holds (pre-save name) and drop the "Saved" badge
+  // and the dirty baseline the save just established. A refetch that returns
+  // genuinely edited content for the SAME id is deliberately not re-loaded —
+  // that would clobber an admin's in-progress edits mid-typing.
+  const flowId = flow?.id ?? null;
   useEffect(() => {
     if (flow) {
       setName(flow.name);
@@ -234,6 +351,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         })
         .sort((a, b) => a.order - b.order);
       setSteps(flowSteps);
+      // Baseline the dirty check on the SAME canonical shape the save mutation
+      // sends, so a round-trip through the editor is not itself a change.
+      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
     } else {
       setName('');
       setDescription('');
@@ -241,9 +361,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       const blank = makeBlankStep(1);
       done.order = 2;
       setSteps([todo, blank, done]);
+      // Nothing persisted at all — an unsaved new flow is dirty by definition.
+      setPersisted(null);
     }
     setSaved(false);
-  }, [flow]);
+    // `flow` is read but intentionally not a dependency — see the note above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowId]);
 
   // Validate: any non-anchor step name that matches a reserved name is invalid
   const reservedNameError = steps.some(s => {
@@ -305,57 +429,93 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   }, []);
 
   // ── Mutations ────────────────────────────────────────────────────────────────
+
+  /**
+   * Persist the panel as it currently stands. Shared by the Save button and by
+   * the two actions that cannot mean anything until the definition is on the
+   * server (binding, publishing).
+   */
+  const persist = useCallback(async (): Promise<Flow> => {
+    const payload: Partial<Flow> = {
+      name,
+      description,
+      // order is authoritative from array position; ids are backfilled so a
+      // flow loaded without them (MCP create_flow never sent ids) still
+      // satisfies the Hub's id rule.
+      steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
+    };
+    return flow?.id
+      ? flowClient.updateFlow(flow.id, payload)
+      : flowClient.createFlow(payload);
+  }, [flow?.id, name, description, steps, flowClient]);
+
+  /**
+   * Re-baseline the dirty check after a write.
+   *
+   * The baseline comes from the SERVER's response, not from what the panel
+   * sent. Both servers normalise steps on the way in — `normalizeFlowSteps`
+   * whitelists the fields and re-issues duplicate or missing ids — so
+   * comparing the panel against the request would leave a legitimate write
+   * looking permanently dirty, and every subsequent bind/publish would fire a
+   * redundant save.
+   */
+  const rebaseOn = useCallback((savedFlow: Flow | undefined | null) => {
+    if (!savedFlow) return;
+    setPersisted(serializeDefinition(
+      savedFlow.name,
+      savedFlow.description ?? '',
+      [...(savedFlow.steps ?? [])].sort((a, b) => a.order - b.order),
+    ));
+  }, []);
+
   const saveMutation = useMutation({
-    mutationFn: async () => {
-      const payload: Partial<Flow> = {
-        name,
-        description,
-        // order is authoritative from array position; ids are backfilled so a
-        // flow loaded without them (MCP create_flow never sent ids) still
-        // satisfies the Hub's id rule.
-        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
-      };
-      if (flow?.id) {
-        return flowClient.updateFlow(flow.id, payload);
-      }
-      return flowClient.createFlow(payload);
-    },
+    mutationFn: persist,
     onSuccess: (savedFlow) => {
       queryClient.invalidateQueries({ queryKey: ['flows'] });
       queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
+      rebaseOn(savedFlow);
       setSaved(true);
       onSaved(savedFlow);
     },
   });
 
   const useFlowMutation = useMutation({
+    // Binding an id is only meaningful once the definition behind that id is
+    // stored. This mutation used to bind `flow.id` straight away, so with
+    // unsaved edits in the panel it assigned the version already on the server
+    // and reported success — the admin's edits were silently dropped. Save
+    // first, then bind the id that now points at those edits.
+    //
+    // The bind happens HERE, not in onSuccess. Saving a brand-new flow makes
+    // the parent adopt its id, which remounts this panel; a success callback
+    // firing into a component that has already unmounted would bind whatever
+    // id its closure still held — for a new flow, `undefined`, which the host
+    // reads as "clear the binding" rather than "bind what I just created".
     mutationFn: async () => {
-      if (flow?.id) {
-        await flowClient.setProjectFlow(projectId, flow.id);
-        return flow;
-      }
-      const payload: Partial<Flow> = {
-        name,
-        description,
-        // order is authoritative from array position; ids are backfilled so a
-        // flow loaded without them (MCP create_flow never sent ids) still
-        // satisfies the Hub's id rule.
-        steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
-      };
-      const created = await flowClient.createFlow(payload);
-      await flowClient.setProjectFlow(projectId, created.id);
-      return created;
+      const current = isDirty ? await persist() : (flow as Flow);
+      await flowClient.setProjectFlow(projectId, current.id);
+      return current;
     },
-    onSuccess: (result) => {
+    onSuccess: (current) => {
+      rebaseOn(current);
       queryClient.invalidateQueries({ queryKey: ['flows'] });
       queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setSaved(true);
-      onSaved(result);
+      onSaved(current);
     },
   });
 
   const isBusy = saveMutation.isPending || useFlowMutation.isPending;
+
+  /**
+   * Whether the panel holds an edit the server does not have. An unsaved new
+   * flow (no persisted baseline) is always dirty; an existing flow is dirty
+   * when its serialised definition differs from the one it was loaded with or
+   * last saved.
+   */
+  const isDirty = persisted === null || serializeDefinition(name, description, steps) !== persisted;
+
   // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
   // the latter is only ever "Request failed with status code N".
   const failure = saveMutation.error ?? useFlowMutation.error ?? null;
@@ -365,6 +525,18 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // reject never leaves the browser, and the reason is pinned to its step.
   const definitionIssues = flowDefinitionIssues(name, steps);
   const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+
+  /**
+   * Whether this panel can write its definition at all. The two read-only
+   * cases — the built-in default flow and a hub-owned flow on a client that
+   * may only read it — are where the server refuses the write outright.
+   */
+  const canSave = !isReadOnly;
+
+  /** Why Save/Publish are dead. Surfaced as the button's tooltip. */
+  const saveBlockedReason = reservedNameError
+    ? 'A step uses a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED)'
+    : definitionIssues[0]?.message ?? 'Fix the highlighted step first';
 
   // Every reason Save is blocked MUST be visible somewhere, or the user is left
   // with a dead button and no way to fix it — the exact failure mode this whole
@@ -384,26 +556,45 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
-  // ── Publish to Community ─────────────────────────────────────────────────
+  // ── Publish to registry ──────────────────────────────────────────────────
   const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct' } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
+  /**
+   * Whether this host can publish at all. Optional on `RegistryClient` because
+   * the hub admin cannot (its PAT is hub-held and there is no publish route),
+   * and a button wired to a function that only rejects is not an action — it
+   * is a way to discover a dead end.
+   */
+  const canPublish = typeof registryClient.publishToRegistry === 'function';
+
   const publishMutation = useMutation({
+    // Publishing pushes the SERVER's copy of the flow, so unsaved edits would
+    // not be in it. Save first when there are any, then publish the id that
+    // carries them — the same ordering rule as the bind path above.
     mutationFn: async () => {
-      if (!flow?.id) throw new Error('Flow must be saved before publishing.');
-      return registryClient.publishToRegistry(flow.id);
+      if (!canPublish) throw new Error('This host cannot publish flows.');
+      let id = flow?.id;
+      if (isDirty || !id) {
+        const saved = await persist();
+        rebaseOn(saved);
+        id = saved?.id;
+      }
+      if (!id) throw new Error('Flow must be saved before publishing.');
+      return registryClient.publishToRegistry!(id);
     },
     onSuccess: (data) => {
       setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
       setPublishError(null);
+      setSaved(true);
     },
     onError: (e: unknown) => {
       setPublishError(extractApiError(e, 'Failed to publish.'));
     },
   });
 
-  // Rendered by BOTH footers — the read-only footer also offers Publish now, and
-  // a button whose outcome renders somewhere else is a silent failure.
+  // Rendered alongside the footer that owns the button — a button whose
+  // outcome renders in a different footer is a silent failure.
   const publishFeedback = (
     <>
       {publishResult && (
@@ -766,103 +957,92 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         )}
       </div>
 
-      {/* Footer — sticky bottom */}
-      {isReadOnly ? (
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
-         <div className="flex items-center gap-3 flex-wrap">
-          {/* A hub-managed flow used to render the editable footer, which carried
-              Publish. Keep it reachable here rather than silently dropping the
-              capability along with Save. */}
-          {isHubManaged && flow?.id && (
-            <button
-              data-testid="publish-flow-btn"
-              type="button"
-              disabled={publishMutation.isPending}
-              onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-              {publishMutation.isPending ? 'Publishing…' : 'Publish'}
-            </button>
-          )}
-          {onUseDefault && canSelectFlow && (
-            <button
-              data-testid="use-default-flow-btn"
-              type="button"
-              onClick={onUseDefault}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
-            >
-              <GitBranch size={15} />
-              Use this Flow
-            </button>
-          )}
-          {onClone && (
-            <button
-              data-testid="clone-to-edit-btn"
-              type="button"
-              onClick={onClone}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
-            >
-              <CopyPlus size={15} />
-              Clone to Edit
-            </button>
-          )}
-          <button
-            data-testid="cancel-panel-btn"
-            type="button"
-            onClick={onClose}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-          >
-            Close
-          </button>
-         </div>
-         {publishFeedback}
-        </div>
-      ) : (
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <button
-              data-testid="save-flow-btn"
-              type="button"
-              disabled={isSaveDisabled}
-              onClick={() => saveMutation.mutate()}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {saved ? <Check size={15} /> : <Save size={15} />}
-              {isBusy ? 'Saving…' : saved ? 'Saved' : 'Save'}
-            </button>
+      {/* Footer — sticky bottom.
 
-            <div className="flex items-center gap-2">
-              {flow?.id && (
-                <button
-                  data-testid="publish-flow-btn"
-                  type="button"
-                  disabled={publishMutation.isPending}
-                  onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-                  {publishMutation.isPending ? 'Publishing…' : 'Publish'}
-                </button>
-              )}
-              {canSelectFlow && (
-                <button
-                  data-testid="use-flow-btn"
-                  type="button"
-                  disabled={isSaveDisabled}
-                  onClick={() => useFlowMutation.mutate()}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-                >
-                  <GitBranch size={15} />
-                  Use this Flow
-                </button>
-              )}
-            </div>
+          ONE footer, gated per capability rather than on `isReadOnly`. The two
+          variants used to be chosen by read-only-ness, which is the wrong axis:
+          it left a newly created flow (no id yet, so it took the read-only
+          branch) with neither Save — which lived in the editable branch — nor
+          Publish, which the read-only branch gated on `flow?.id`. Each control
+          now renders iff the host can perform that action, and every control
+          shares one row so a button's outcome always renders beside it. */}
+      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3" data-testid="flow-footer">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            {canSave && (
+              <button
+                data-testid="save-flow-btn"
+                type="button"
+                disabled={isSaveDisabled}
+                onClick={() => saveMutation.mutate()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {saved ? <Check size={15} /> : <Save size={15} />}
+                {isBusy ? 'Saving…' : saved && !isDirty ? labels.saved : labels.save}
+              </button>
+            )}
+            {onClone && (
+              <button
+                data-testid="clone-to-edit-btn"
+                type="button"
+                onClick={onClone}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
+              >
+                <CopyPlus size={15} />
+                Clone to Edit
+              </button>
+            )}
           </div>
 
-          {publishFeedback}
+          <div className="flex items-center gap-2 flex-wrap">
+            {canPublish && (
+              <button
+                data-testid="publish-flow-btn"
+                type="button"
+                disabled={publishMutation.isPending || isSaveDisabled}
+                title={isSaveDisabled ? saveBlockedReason : 'Publish this flow to the registry'}
+                onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+                {publishMutation.isPending ? 'Publishing…' : 'Publish'}
+              </button>
+            )}
+            {onUseDefault && canSelectFlow && (
+              <button
+                data-testid="use-default-flow-btn"
+                type="button"
+                onClick={onUseDefault}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
+              >
+                <GitBranch size={15} />
+                {labels.useFlow}
+              </button>
+            )}
+            {canSelectFlow && !isReadOnly && (
+              <button
+                data-testid="use-flow-btn"
+                type="button"
+                disabled={isSaveDisabled}
+                onClick={() => useFlowMutation.mutate()}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+              >
+                <GitBranch size={15} />
+                {labels.useFlow}
+              </button>
+            )}
+            <button
+              data-testid="cancel-panel-btn"
+              type="button"
+              onClick={onClose}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              Close
+            </button>
+          </div>
         </div>
-      )}
+        {publishFeedback}
+      </div>
 
       {/* Exit criteria popup (CGLAB-109) — nested above this modal's z-50. */}
       {exitCriteriaEditIndex !== null && steps[exitCriteriaEditIndex] && (
@@ -1062,6 +1242,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
+  const tabLabels = useTabLabels();
+  const { registryToolbar } = useHost();
 
   const queryClient = useQueryClient();
   const flowClient = useFlowClient();
@@ -1076,6 +1258,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   // clonedFlow holds a not-yet-saved clone being edited
   const [clonedFlow, setClonedFlow] = useState<(Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined }) | null>(null);
+  // A new flow the panel has just written. `isNewFlow` has to drop after the
+  // save (the row exists now), but the panel is keyed on that state — so the
+  // id has to live in the parent, which survives the remount, or the freshly
+  // created flow loses its identity the moment it is saved and Publish can
+  // never find an id to publish.
+  const [createdFlow, setCreatedFlow] = useState<Flow | null>(null);
   // Community tab state
   const [selectedRegistryFlow, setSelectedRegistryFlow] = useState<RegistryFlow | null>(null);
   const [communitySearch, setCommunitySearch] = useState('');
@@ -1125,7 +1313,12 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     ? (clonedFlow as unknown as Flow)
     : selectedFlowId === BUILTIN_ID
     ? (builtinFlow ?? null)
-    : flows.find(f => f.id === selectedFlowId) ?? null;
+    : (createdFlow && createdFlow.id === selectedFlowId
+        // A flow saved from the New Flow panel: the sidebar list will not hold
+        // it until its refetch lands, and the object the save returned is
+        // strictly fresher than anything the list could answer with.
+        ? createdFlow
+        : flows.find(f => f.id === selectedFlowId)) ?? null;
 
   // If this is a legacy-props invocation the passed `flow` wins as initial selection
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -1182,9 +1375,18 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   if (!isOpen) return null;
 
   const handleFlowSaved = (flow: Flow) => {
-    setSelectedFlowId(flow.id);
-    setIsNewFlow(false);
-    setClonedFlow(null);
+    setCreatedFlow(flow);
+    // The panel is keyed on the selection, so touching `isNewFlow` /
+    // `selectedFlowId` REMOUNTS it — wiping the "Saved" badge, the dirty
+    // baseline and any publish link the admin is looking at. When the row the
+    // save just produced is already the selected one there is nothing to
+    // switch to, so the state is left alone and the panel survives. It only
+    // needs to change when the selection genuinely moves.
+    if (isNewFlow || isEditingClone || selectedFlowId !== flow.id) {
+      setSelectedFlowId(flow.id);
+      setIsNewFlow(false);
+      setClonedFlow(null);
+    }
   };
 
   const handleCommunityInstall = (installed: Flow) => {
@@ -1193,6 +1395,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     setSelectedFlowId(installed.id);
     setIsNewFlow(false);
     setClonedFlow(null);
+    setCreatedFlow(null);
   };
 
   const handleCommunityClone = (installed: Flow) => {
@@ -1202,6 +1405,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     setClonedFlow(copy);
     setIsNewFlow(false);
     setSelectedFlowId(null);
+    setCreatedFlow(null);
   };
 
   const effectiveActiveFlowId = activeFlowId;
@@ -1220,6 +1424,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
     setClonedFlow(copy);
     setIsNewFlow(false);
     setSelectedFlowId(null);
+    setCreatedFlow(null);
   };
 
   return (
@@ -1266,7 +1471,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
-              My Flows
+              {tabLabels.myFlows}
             </button>
             <button
               data-testid="tab-community"
@@ -1278,13 +1483,18 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
-              Community
+              {tabLabels.registry}
             </button>
           </div>
 
           {/* Community tab content */}
           {activeTab === 'community' && (
             <div className="flex-1 flex flex-col overflow-hidden">
+              {registryToolbar && (
+                <div className="px-3 pt-2 shrink-0" data-testid="registry-toolbar">
+                  {registryToolbar}
+                </div>
+              )}
               <div className="px-3 py-2 shrink-0">
                 <div className="relative">
                   <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -1406,6 +1616,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       setSelectedFlowId(flow.id);
                       setIsNewFlow(false);
                       setClonedFlow(null);
+                      setCreatedFlow(null);
                     }
                   }}
                 >
@@ -1547,7 +1758,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               <GitBranch size={40} className="opacity-30" />
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button
-                onClick={() => { setIsNewFlow(true); setClonedFlow(null); }}
+                onClick={() => { setIsNewFlow(true); setClonedFlow(null); setCreatedFlow(null); }}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
               >
                 <Plus size={14} />
@@ -1580,14 +1791,46 @@ export type FlowEditorModalPublicProps = (FlowEditorModalProps | LegacyProps) & 
   flowClient: FlowClient;
   registryClient: RegistryClient;
   theme?: 'light' | 'dark';
+  /**
+   * Tab captions. Omit for the standalone client's wording ("My Flows" /
+   * "Community"). The hub admin passes its own, because there the first tab is
+   * the org catalogue and the second may be a private repo.
+   */
+  tabLabels?: { myFlows?: string; registry?: string };
+  /**
+   * Footer CTA captions. Omit for the standalone client's wording ("Save" /
+   * "Use this Flow"). The hub admin passes its own, because there saving is
+   * the fleet-wide publish and the selection button writes an org default.
+   */
+  labels?: Partial<FlowEditorLabels>;
+  /** Optional host control above the registry search box (registry switcher). */
+  registryToolbar?: React.ReactNode;
 };
 
 export const FlowEditorModal: React.FC<FlowEditorModalPublicProps> = ({
-  flowClient, registryClient, theme = 'light', ...rest
+  flowClient, registryClient, theme = 'light', tabLabels, labels, registryToolbar, ...rest
 }) => {
   const host = React.useMemo<FlowEditorHost>(
-    () => ({ flowClient, registryClient, theme }),
-    [flowClient, registryClient, theme],
+    () => ({
+      flowClient,
+      registryClient,
+      theme,
+      registryToolbar,
+      tabLabels: {
+        myFlows: tabLabels?.myFlows || DEFAULT_HOST_TAB_LABELS.myFlows,
+        registry: tabLabels?.registry || DEFAULT_HOST_TAB_LABELS.registry,
+      },
+      labels: {
+        save: labels?.save?.trim() || DEFAULT_EDITOR_LABELS.save,
+        saved: labels?.saved?.trim() || DEFAULT_EDITOR_LABELS.saved,
+        useFlow: labels?.useFlow?.trim() || DEFAULT_EDITOR_LABELS.useFlow,
+      },
+    }),
+    [
+      flowClient, registryClient, theme, registryToolbar,
+      tabLabels?.myFlows, tabLabels?.registry,
+      labels?.save, labels?.saved, labels?.useFlow,
+    ],
   );
   return (
     <HostContext.Provider value={host}>

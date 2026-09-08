@@ -3,6 +3,7 @@
  */
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { FlowEditorModal } from '../components/FlowEditorModal';
+import { FlowEditorModal as SharedFlowEditorModal, type RegistryClient } from '@agenfk/flow-editor';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
@@ -1536,6 +1537,384 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     expect(api.updateFlow).not.toHaveBeenCalled();
   });
 });
+
+// ── Footer CTAs: capability-gated, not read-only-gated ──────────────────────
+//
+// The footer used to branch on `isReadOnly`, which produced three separate
+// confusions the admin reported as "Save / Publish / Use this flow — rather
+// confusing":
+//   1. A host with no registry publish path still rendered a Publish button
+//      wired to a client method that can only throw.
+//   2. "Use this Flow" bound the flow id it already had, so unsaved edits were
+//      silently dropped while the button looked like the primary action.
+//   3. A freshly created flow rendered the read-only footer, which offered
+//      neither Save (editable footer) nor Publish (gated on `flow?.id`).
+// The footer is now capability-driven: each CTA renders iff its host can do it.
+describe('flow editor footer CTAs', () => {
+  const NEW_FLOW = { ...SAMPLE_FLOW, id: 'created-flow' };
+
+  const HUB_FLOW_LOCAL: Flow = {
+    ...SAMPLE_FLOW,
+    id: 'flow-hub',
+    name: 'TDD Flow',
+    source: 'hub',
+    hubFlowId: 'hub-tdd',
+  };
+
+  // This block sits at module scope (it is not nested in the big
+  // `FlowEditorModal` describe), so it owns its fixtures — same shapes the
+  // sibling blocks use.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([SAMPLE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
+  });
+
+  afterEach(() => cleanup());
+
+  const renderEditor = () =>
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+  const openFlow = async (testId: string) => {
+    renderEditor();
+    await waitFor(() => screen.getByTestId(testId));
+    fireEvent.click(screen.getByTestId(testId));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+  };
+
+  /** Drive the panel into the "new flow" state with a valid, saveable name. */
+  const startNewFlow = async () => {
+    renderEditor();
+    await waitFor(() => screen.getByTestId('new-flow-btn'));
+    fireEvent.click(screen.getByTestId('new-flow-btn'));
+    await waitFor(() => screen.getByTestId('flow-name-input'));
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Brand New' } });
+    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+  };
+
+  /** The JSON the editor would send for the current panel state. */
+  const lastWrite = () => {
+    const updateCall = vi.mocked(api.updateFlow).mock.calls[0];
+    const createCall = vi.mocked(api.createFlow).mock.calls[0];
+    return (updateCall?.[1] ?? createCall?.[0]) as Partial<Flow>;
+  };
+
+  /**
+   * Render the SHARED editor with an explicit host, so a test can hand it a
+   * client that lacks a capability. The `../components/FlowEditorModal` wrapper
+   * builds its clients from the mocked api object, and a mocked method set to
+   * `undefined` still counts as present — which is exactly the distinction
+   * capability-gating turns on, so it has to be tested at the real boundary.
+   */
+  const renderHosted = (
+    overrides: Partial<React.ComponentProps<typeof SharedFlowEditorModal>> = {},
+  ) =>
+    render(
+      <SharedFlowEditorModal
+        isOpen={true}
+        onClose={() => {}}
+        projectId={PROJECT_ID}
+        flowClient={{
+          listFlows: () => api.listFlows(),
+          getDefaultFlow: () => api.getDefaultFlow(),
+          createFlow: (p) => api.createFlow(p),
+          updateFlow: (id, p) => api.updateFlow(id, p),
+          deleteFlow: (id) => api.deleteFlow(id),
+          setProjectFlow: (projectId, flowId) => api.setProjectFlow(projectId, flowId),
+        }}
+        registryClient={{
+          browseRegistry: () => api.browseRegistry(),
+          installFromRegistry: (f) => api.installFromRegistry(f),
+          publishToRegistry: (id) => api.publishToRegistry(id),
+        }}
+        theme="light"
+        {...overrides}
+      />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+
+  /** A RegistryClient with `publishToRegistry` genuinely absent, not stubbed. */
+  const registryClientWithoutPublish = (): RegistryClient => ({
+    browseRegistry: () => api.browseRegistry(),
+    installFromRegistry: (f: string) => api.installFromRegistry(f),
+  });
+
+  // ── 1. Publish is capability-gated ────────────────────────────────────────
+
+  it('hides Publish when the host has no registry publish path', async () => {
+    // The hub admin's RegistryClient has no publish: the org's PAT lives on the
+    // hub and the hub has no publish route, so its client omits the method
+    // rather than carrying one that can only throw. A button that can only
+    // error is not an action.
+    renderHosted({ registryClient: registryClientWithoutPublish() });
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+
+    expect(screen.queryByTestId('publish-flow-btn')).toBeNull();
+    // Save is unaffected — losing publish must not cost the admin their editor.
+    expect(screen.getByTestId('save-flow-btn')).toBeDefined();
+  });
+
+  it('offers Publish when the host can publish', async () => {
+    await openFlow('flow-item-flow-1');
+
+    expect(screen.getByTestId('publish-flow-btn')).toBeDefined();
+  });
+
+  // ── 3. "Use this Flow" cannot bind an unsaved edit ────────────────────────
+
+  it('saves the pending edit before binding, so the assignment is not stale', async () => {
+    const callOrder: string[] = [];
+    vi.mocked(api.updateFlow).mockImplementation(async () => {
+      callOrder.push('updateFlow');
+      return SAMPLE_FLOW;
+    });
+    vi.mocked(api.setProjectFlow).mockImplementation(async () => {
+      callOrder.push('setProjectFlow');
+    });
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('use-flow-btn'));
+
+    await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+    // The rename is what gets persisted — before the bind, not instead of it.
+    expect(lastWrite().name).toBe('Renamed');
+    await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalledWith(PROJECT_ID, 'flow-1'));
+    // The bind must not have fired before the save resolved — that is the race
+    // this test exists for, and it is what made the button bind the old version.
+    expect(callOrder).toEqual(['updateFlow', 'setProjectFlow']);
+  });
+
+  it('binds without a redundant write when nothing changed', async () => {
+    vi.mocked(api.setProjectFlow).mockResolvedValue(undefined);
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.click(screen.getByTestId('use-flow-btn'));
+
+    await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalledWith(PROJECT_ID, 'flow-1'));
+    expect(api.updateFlow).not.toHaveBeenCalled();
+    expect(api.createFlow).not.toHaveBeenCalled();
+  });
+
+  it('refuses to bind a dirty flow whose save failed, rather than binding the old version', async () => {
+    vi.mocked(api.updateFlow).mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 409'), {
+        isAxiosError: true,
+        response: { status: 409, data: { error: 'flow is managed by the Hub' } },
+      })
+    );
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('use-flow-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('flow-editor-error')).toBeDefined());
+    expect(api.setProjectFlow).not.toHaveBeenCalled();
+  });
+
+  // ── 4. A newly created flow is never a dead end ───────────────────────────
+
+  it('offers both Save and Publish on a newly created flow', async () => {
+    // The read-only footer gated Publish on `flow?.id`, which is undefined for
+    // an unsaved flow — so the new-flow panel showed neither Save (other
+    // footer) nor Publish (this gate).
+    await startNewFlow();
+
+    expect(screen.getByTestId('save-flow-btn')).toBeDefined();
+    expect(screen.getByTestId('publish-flow-btn')).toBeDefined();
+  });
+
+  it('publishes the flow created by Save, not a stale id', async () => {
+    vi.mocked(api.createFlow).mockResolvedValue(NEW_FLOW);
+    vi.mocked(api.publishToRegistry).mockResolvedValue({ url: 'https://example.test/pr/9', kind: 'pr' });
+    await startNewFlow();
+
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    await waitFor(() => expect(api.publishToRegistry).toHaveBeenCalledWith('created-flow'));
+    expect(screen.getByTestId('publish-success-link')).toBeDefined();
+  });
+
+  // ── Save clears the dirty state ───────────────────────────────────────────
+  //
+  // The dirty flag is what decides whether bind/publish must write first. A
+  // save that leaves it set would fire a redundant write on every following
+  // action — and `rebaseOn` is the only thing that clears it, so a mutant that
+  // drops the re-baseline is invisible to every other test here.
+
+  it('a successful Save clears the dirty state, so the next bind does not re-write', async () => {
+    // Both servers answer a write with the stored row, so the fake echoes the
+    // name back — that response is what the dirty baseline is rebuilt from.
+    vi.mocked(api.updateFlow).mockResolvedValue({ ...SAMPLE_FLOW, name: 'Renamed' });
+    vi.mocked(api.setProjectFlow).mockResolvedValue(undefined);
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+    // The badge is the visible half of the same fact.
+    expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).textContent).toContain('Saved');
+
+    // Clean now. Binding must not pay for a second write.
+    fireEvent.click(screen.getByTestId('use-flow-btn'));
+    await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalledWith(PROJECT_ID, 'flow-1'));
+    expect(api.updateFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it('the baseline comes from the server response, not the request', async () => {
+    // Both servers run steps through normalizeFlowSteps (field whitelist, ids
+    // re-issued for duplicates/missing ones). A baseline built from what the
+    // panel SENT would leave a legitimate write permanently dirty.
+    const serverNormalized: Flow = {
+      ...SAMPLE_FLOW,
+      name: 'Renamed',
+      steps: SAMPLE_FLOW.steps.map(s => ({ ...s, exitCriteria: s.exitCriteria ?? '' })),
+    };
+    vi.mocked(api.updateFlow).mockResolvedValue(serverNormalized);
+    vi.mocked(api.setProjectFlow).mockResolvedValue(undefined);
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByTestId('use-flow-btn'));
+    await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalled());
+    expect(api.updateFlow).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes the edits made since the last save, not the stored version', async () => {
+    // Publish pushes the SERVER's copy. Without save-first, an edit typed after
+    // the last save would silently not be in what gets published.
+    vi.mocked(api.updateFlow).mockResolvedValue({ ...SAMPLE_FLOW, name: 'Renamed' });
+    vi.mocked(api.publishToRegistry).mockResolvedValue({ url: 'https://example.test/pr/9', kind: 'pr' });
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+
+    await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+    expect(lastWrite().name).toBe('Renamed');
+    await waitFor(() => expect(api.publishToRegistry).toHaveBeenCalledWith('flow-1'));
+  });
+
+  // ── Publish is blocked for exactly the reasons Save is ────────────────────
+
+  it('disables Publish when the definition is unsaveable, with the reason as tooltip', async () => {
+    // Publish pushes the server's copy, and the way to fix a broken definition
+    // is to save a fixed one. Offering Publish on a flow that cannot be saved
+    // means a click that can only push the stale version.
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+
+    const publish = screen.getByTestId('publish-flow-btn') as HTMLButtonElement;
+    await waitFor(() => expect(publish.disabled).toBe(true));
+    // A dead button must say why — the same rule Save already follows.
+    expect(publish.title).toBeTruthy();
+    expect(api.publishToRegistry).not.toHaveBeenCalled();
+  });
+
+  it('re-enables Publish once the definition is valid again', async () => {
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    await waitFor(() =>
+      expect((screen.getByTestId('publish-flow-btn') as HTMLButtonElement).disabled).toBe(true));
+
+    fireEvent.change(screen.getByTestId('step-name-3'), { target: { value: 'REFACTOR' } });
+
+    await waitFor(() =>
+      expect((screen.getByTestId('publish-flow-btn') as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  // ── The "Saved" badge uses the HOST's caption ─────────────────────────────
+
+  it('uses the host\'s confirmation caption, not the editor default', async () => {
+    // The hub host renames Save; the confirmation has to follow it, or the
+    // button flips from "Save & publish to org" to the standalone "Saved" and
+    // the admin loses the fact that saving was the publish. Also why `saved`
+    // is its own caption rather than a suffix rule: appending "d" to the hub's
+    // caption would read "Save & publish to orgd".
+    vi.mocked(api.updateFlow).mockResolvedValue(SAMPLE_FLOW);
+    renderHosted({
+      labels: {
+        save: 'Save & publish to org',
+        saved: 'Published to org',
+        useFlow: 'Set as org default',
+      },
+    });
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('save-flow-btn'));
+
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('save-flow-btn').textContent).toBe('Published to org'));
+  });
+
+  it('renders ONE footer for a new flow, with both buttons in it', async () => {
+    // The two footers used to be picked by read-only-ness, which split Save and
+    // Publish across them. One footer now, so a button's outcome can never
+    // render somewhere the user isn't looking.
+    await startNewFlow();
+
+    const panel = screen.getByTestId('editor-panel');
+    const footers = Array.from(panel.querySelectorAll('[data-testid="flow-footer"]'));
+    expect(footers).toHaveLength(1);
+    expect(footers[0].querySelector('[data-testid="save-flow-btn"]')).not.toBeNull();
+    expect(footers[0].querySelector('[data-testid="publish-flow-btn"]')).not.toBeNull();
+  });
+
+  it('renders the publish outcome inside the same footer as the button', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue({ url: 'https://example.test/pr/9', kind: 'pr' });
+    await openFlow('flow-item-flow-1');
+
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    await waitFor(() => expect(screen.getByTestId('publish-success-link')).toBeDefined());
+
+    const footer = screen.getByTestId('flow-footer');
+    expect(footer.contains(screen.getByTestId('publish-flow-btn'))).toBe(true);
+    expect(footer.contains(screen.getByTestId('publish-success-link'))).toBe(true);
+  });
+
+  it('the read-only builtin flow offers no Save and no activation, only Clone', async () => {
+    // The builtin default has no row to write and is not a publishable
+    // definition; its actions are Clone to Edit and reverting to default.
+    renderEditor();
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+
+    expect(screen.queryByTestId('save-flow-btn')).toBeNull();
+    expect(screen.queryByTestId('use-flow-btn')).toBeNull();
+    expect(screen.getByTestId('clone-to-edit-btn')).toBeDefined();
+    expect(screen.getByTestId('use-default-flow-btn')).toBeDefined();
+  });
+
+  it('a hub-owned flow on a hub-connected client offers no Save', async () => {
+    // The local server 409s any write to a source='hub' flow, so Save must not
+    // be offered here (BUG 269eeec8 (b)).
+    vi.mocked(api.listFlows).mockResolvedValue([HUB_FLOW_LOCAL]);
+    renderEditor();
+    await waitFor(() => screen.getByTestId('flow-item-flow-hub'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-hub'));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+
+    expect(screen.getByTestId('hub-managed-badge')).toBeDefined();
+    expect(screen.queryByTestId('save-flow-btn')).toBeNull();
+  });
+});
+
 
 // ── CGLAB-109: Exit Criteria popup editor (markdown + preview + tokens) ─────
 // The flow builder's exit criteria were a short inline textarea. The new

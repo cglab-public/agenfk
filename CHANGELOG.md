@@ -2,6 +2,93 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.18-beta.4] — 2026-09-08
+
+### Hub — the flow editor's footer buttons now say what they write
+
+`Save` / `Publish` / `Use this Flow` read as one pipeline. They were three
+unrelated writes, and two of them promised more than they did.
+
+- **Publish is capability-gated, not decorative.** `RegistryClient.publishToRegistry`
+  is now optional. The hub holds the org's registry PAT and has no publish
+  route, so the hub admin omits the method and the editor no longer renders a
+  button that could only throw. Authors who need a registry PR use
+  `agenfk flow publish <id> [--registry owner/repo]`.
+- **Labels name the write.** The hub host now passes
+  **"Save & publish to org"** / **"Published to org"** / **"Set as org
+  default"** — the last one being the literal badge the flows list renders for
+  the same assignment. The registry-config form's button is renamed **"Save
+  registry repo"**, so the page no longer shows two Save buttons.
+- **Binding saves first.** "Set as org default" used to bind the id it already
+  had, so with unsaved edits in the panel it assigned the version already on the
+  server and reported success while **silently dropping the edits**. It now
+  persists before binding, and a failed save means no bind.
+- **A newly created flow is no longer a dead end.** Two footers used to be
+  chosen by read-only-ness, which stranded a flow with no id yet: no Save (it
+  lived in the other branch) and no Publish (that branch gated on `flow?.id`).
+  One footer now gates per capability.
+- **Two pre-existing bugs fixed on the way:** the "Saved" badge could never
+  display — a save churned selection state, remounting the panel by `key` and
+  discarding the dirty baseline — and the load effect keyed on the `flow` object
+  rather than `flow?.id`, so it re-ran with a stale object after every save.
+
+## [1.1.18-beta.3] — 2026-09-07
+
+### Hub — browse the community registry alongside a private one
+
+- After an org points its registry at a private repo, the hub could only ever
+  read that one repo — so the real community catalogue became invisible and
+  uninstallable, and any flow published to community afterwards was
+  unreachable. Admin → Flows → the registry tab now offers a **switcher**
+  between the org's repo and Community.
+- **The caller picks a source, never a repo.** `?source=org|community` is an
+  enum; an `owner/repo` in the query is ignored. This route holds the org's
+  `contents:write` PAT, so a caller-supplied repo would make it a cross-tenant
+  proxy on a server-side credential.
+- **Community reads are always anonymous.** The org's PAT is scoped to the org's
+  repo; sending it to the public repo would leak the credential to a repo the
+  org has no relationship with.
+- **Tab captions now say what they list.** "My Flows" → **"Org Flows"** in the
+  hub admin (it is the org-wide catalogue, not a personal list), and the
+  registry tab is named for the repo it is actually reading instead of always
+  claiming "Community". The standalone client is unchanged.
+
+## [1.1.18-beta.2] — 2026-09-05
+
+### Hub — admin-settable private flow registry (CGLAB-138)
+
+- **Per-org flow registry.** A Hub admin can point their org's flow registry at
+  an **existing** repository of their own instead of the public
+  `cglab-public/agenfk-flows`. Admin → Flows → Flow registry.
+- **The save fails if the repo cannot be written.** Write access is probed
+  before anything is persisted, so an admin is never left believing the fleet
+  points at a registry that serves nothing.
+- **One-time community copy.** Switching copies the community flows present at
+  that moment into the org repo; it is not a mirror. A re-runnable *Retry copy*
+  recovers a partial run and is idempotent by content.
+- **Token held on the hub, encrypted.** A fine-grained PAT (`contents:write`) is
+  stored `encryptSecret`-encrypted in the new `org_settings` table and is never
+  returned by any endpoint. Registry reads are authenticated with it — GitHub
+  answers an anonymous fetch of a private repo with `404`, so a private registry
+  cannot be served to a fleet otherwise.
+- **Reversible.** Moving back to the public repo needs no reverse copy.
+- **Branch is validated, not just the repo.** A malformed ref is worse than a
+  malformed repo: GitHub answers an unknown `ref` with `404`, and an empty
+  registry is read as `404`, so a stored-but-unusable branch would show an admin
+  a registry of **zero flows and no error**. `isValidRegistryBranch` rejects it
+  at the storage boundary and at the route, before any GitHub call.
+- **No silent public fall-back.** When the Hub is unreachable, a connected
+  installation's `/registry/flows` returns `502` rather than showing the
+  community catalogue the org deliberately sealed away.
+
+## [1.1.18-beta.1] — 2026-09-05
+
+### Fixed
+
+- **Pi harness misreported the model in PR registration.** The session's live
+  model is used instead of the `settings.json` `defaultModel`, which is a
+  configured default and not the model actually answering.
+
 ## [1.1.17] — 2026-09-04
 
 Stable release. Consolidates `v1.1.17-beta.1` … `v1.1.17-beta.15` (PR #175).

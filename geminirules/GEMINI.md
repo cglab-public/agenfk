@@ -180,7 +180,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Resume integration(s) | `agenfk integration resume <platform\|all> [-y/--yes]` |
 | Install/uninstall workflow rules & skills | `agenfk skills install [-g/--global][-p/--project]` · `agenfk skills uninstall [-g/--global][-p/--project]` · `agenfk skills status` |
 | Enable/disable telemetry | `agenfk config set telemetry <true\|false>` |
-| Set the community flow registry | `agenfk config set flowRegistry <owner/repo>` |
+| Set the community flow registry (local only — a Hub-connected org follows its admin's setting) | `agenfk config set flowRegistry <owner/repo>` |
 | Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` |
 | Configure GitHub Issues import | `agenfk github setup [--owner <owner>][--repo <repo>]` · `agenfk github status` · `agenfk github disconnect` |
 

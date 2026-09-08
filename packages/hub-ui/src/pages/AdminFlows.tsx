@@ -10,7 +10,8 @@
  * stays focused on flow definition; assignment management would be
  * confusing inside the agenfk client where it has no analogue.
  */
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import clsx from 'clsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight } from 'lucide-react';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
@@ -19,6 +20,17 @@ import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
 import { useTheme } from '../ThemeContext';
+import {
+  PUBLIC_REGISTRY_REPO,
+  registryFormError,
+  registryConfigSaveLabel,
+  EDITOR_LABELS_HUB,
+  resolveTabLabels,
+  showRegistrySourcePicker,
+  registrySourceOptions,
+  type RegistrySource,
+  MOVE_BACK_TO_PUBLIC_CONFIRM,
+} from './adminFlowRegistry';
 
 const HUB_PROJECT_TOKEN = 'org-default'; // pseudo-projectId — hub binds to org-default assignment
 
@@ -54,13 +66,38 @@ const flowClient: FlowClient = {
   },
 };
 
-const registryClient: RegistryClient = {
-  browseRegistry: async () => (await api.get('/v1/admin/registry/flows')).data,
-  installFromRegistry: async (filename) => flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename })).data),
-  publishToRegistry: async () => {
-    throw new Error('Publishing to the community registry is not supported from the Hub admin yet. Use your local agenfk client.');
-  },
-};
+/**
+ * The hub's RegistryClient. `source` selects which registry the server reads:
+ * the org's own repo, or the public community one. It is a factory rather than
+ * a const because the selection lives in component state, and the shared
+ * editor's browse/install must follow it.
+ *
+ * `source` is sent as an opaque enum the server maps to a repo. The UI never
+ * names a repo — that is the tenancy boundary, since the server holds the
+ * org's contents:write PAT and would otherwise be a proxy for any repo it can
+ * reach.
+ *
+ * There is deliberately **no `publishToRegistry`.** Publishing writes to the
+ * registry repo, and the only credential for that is the org's `contents:write`
+ * PAT — which lives encrypted on the hub and is never copied to a browser, and
+ * the hub exposes no publish route (its `writeRegistryFile` is used solely by
+ * the one-time community copy when an admin points the org at a private repo).
+ * This client used to carry a method that only threw; the method is optional on
+ * `RegistryClient` now, so omitting it hides the editor's Publish button
+ * instead of rendering a control that can only fail.
+ *
+ * Authors who do need to publish a flow to a repo do it from their own
+ * machine, where `gh` holds their credentials:
+ * `agenfk flow publish <id> [--registry owner/repo]`.
+ */
+export function makeRegistryClient(getSource: () => RegistrySource): RegistryClient {
+  return {
+    browseRegistry: async () =>
+      (await api.get('/v1/admin/registry/flows', { params: { source: getSource() } })).data,
+    installFromRegistry: async (filename) =>
+      flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename, source: getSource() })).data),
+  };
+}
 
 export function AdminFlows() {
   const qc = useQueryClient();
@@ -70,6 +107,13 @@ export function AdminFlows() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [initialFlowId, setInitialFlowId] = useState<string | undefined>(undefined);
   const [expandedFlowId, setExpandedFlowId] = useState<string | null>(null);
+  // Which registry the editor's second tab reads. Held in a ref-like getter so
+  // the module-level client factory below can read the current value without
+  // being rebuilt on every render (a new client object each render would
+  // retrigger the editor's registry query indefinitely).
+  const [registrySource, setRegistrySource] = useState<RegistrySource>('org');
+  const sourceRef = useRef<RegistrySource>('org');
+  sourceRef.current = registrySource;
 
   const { data: flows = [] } = useQuery<Flow[]>({
     queryKey: ['admin-flows'],
@@ -78,6 +122,27 @@ export function AdminFlows() {
   const { data: assignments = [] } = useQuery<Assignment[]>({
     queryKey: ['admin-flow-assignments'],
     queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
+  });
+
+  // Read here as well as in RegistryRepoPanel: the editor's tab captions depend
+  // on which repo the registry currently resolves to. Same queryKey, so react-
+  // query shares the one request — this is not a second fetch.
+  const { data: registryCfg } = useQuery<RegistryConfig>({
+    queryKey: ['admin-registry-config'],
+    queryFn: async () => (await api.get('/v1/admin/registry-config')).data,
+  });
+  const tabLabels = resolveTabLabels({
+    isPublic: registryCfg?.isPublic ?? null,
+    repo: registryCfg?.repo ?? null,
+  });
+
+  // Built once; reads the live source through the ref so switching registries
+  // does not hand the editor a new client object (which would remount its
+  // query). The query key below is what actually drives a refetch.
+  const [registryClient] = useState(() => makeRegistryClient(() => sourceRef.current));
+  const showSourcePicker = showRegistrySourcePicker({
+    isPublic: registryCfg?.isPublic ?? null,
+    repo: registryCfg?.repo ?? null,
   });
 
   const orgAssignment = assignments.find(a => a.scope === 'org');
@@ -183,6 +248,8 @@ export function AdminFlows() {
         })}
       </div>
 
+      <RegistryRepoPanel />
+
       <FlowEditorModal
         isOpen={editorOpen}
         onClose={() => setEditorOpen(false)}
@@ -191,6 +258,47 @@ export function AdminFlows() {
         initialFlowId={initialFlowId}
         flowClient={flowClient}
         registryClient={registryClient}
+        // Footer captions. In the hub admin, saving the row IS the fleet-wide
+        // publish — the bumped `version` is the ETag every installation polls
+        // at `GET /v1/flows/active` — and the selection button writes an
+        // org-default assignment rather than "using" anything. Left as the
+        // editor's own wording, both read as a pipeline that does not exist.
+        labels={EDITOR_LABELS_HUB}
+        tabLabels={{
+          myFlows: tabLabels.myFlows,
+          // While the picker is showing, the tab names the repo it is CURRENTLY
+          // reading — not the org's default — otherwise switching source would
+          // relist the panel under a caption describing the other repo.
+          registry: registrySource === 'community'
+            ? 'Community'
+            : tabLabels.registry,
+        }}
+        registryToolbar={showSourcePicker ? (
+          <div className="flex items-center gap-1.5" data-testid="registry-source-picker">
+            {registrySourceOptions({
+              isPublic: registryCfg?.isPublic ?? null,
+              repo: registryCfg?.repo ?? null,
+            }).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                data-testid={`registry-source-${opt.value}`}
+                onClick={() => {
+                  setRegistrySource(opt.value);
+                  sourceRef.current = opt.value;
+                }}
+                className={clsx(
+                  'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+                  registrySource === opt.value
+                    ? 'border-brand text-ink bg-chip font-semibold'
+                    : 'border-border-soft text-ink-tertiary hover:text-ink',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        ) : undefined}
         theme={theme}
       />
     </div>
@@ -465,5 +573,177 @@ function AddOverridePicker({
         </ul>
       )}
     </div>
+  );
+}
+
+// ── Registry repo panel (CGLAB-138) ────────────────────────────────────────
+//
+// Where the admin points this org's flow registry. Defaults to the public
+// community registry; pointing it at a private repo copies the community flows
+// across once. The token is write-only from here — the server never returns it,
+// so the form shows "a token is stored" and leaves the field blank.
+
+interface RegistryConfig {
+  repo: string;
+  branch: string;
+  isPublic: boolean;
+  hasToken: boolean;
+  copiedAt: string | null;
+}
+
+function RegistryRepoPanel() {
+  const qc = useQueryClient();
+  const { data: cfg } = useQuery<RegistryConfig>({
+    queryKey: ['admin-registry-config'],
+    queryFn: async () => (await api.get('/v1/admin/registry-config')).data,
+  });
+  const [repo, setRepo] = useState('');
+  const [token, setToken] = useState('');
+  // Seed the repo field once the config arrives; keep it untouched afterwards
+  // so a half-typed edit is never wiped by a background refetch.
+  useEffect(() => {
+    if (cfg && !repo) setRepo(cfg.repo);
+  }, [cfg, repo]);
+
+  const hasStoredToken = Boolean(cfg?.hasToken);
+  // The token field only matters for a private target. Deriving it from the
+  // repo rather than from `cfg.isPublic` keeps the field correct while the
+  // admin is mid-edit, before the save has changed the stored config.
+  const showToken = repo.trim() !== '' && repo.trim() !== PUBLIC_REGISTRY_REPO;
+  const error = registryFormError({ repo, token, hasStoredToken });
+  const movingToPublic = repo.trim() === PUBLIC_REGISTRY_REPO && !cfg?.isPublic;
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, string> = { repo: repo.trim() };
+      if (token.trim()) body.token = token.trim();
+      return (await api.put('/v1/admin/registry-config', body)).data;
+    },
+    onSuccess: () => {
+      setToken('');
+      qc.invalidateQueries({ queryKey: ['admin-registry-config'] });
+      qc.invalidateQueries({ queryKey: ['admin-registry-flows'] });
+    },
+  });
+
+  const sync = useMutation({
+    mutationFn: async () => (await api.post('/v1/admin/registry-config/sync', {})).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-registry-config'] }),
+  });
+
+  // `copied`/`failed`/`truncated` are optional on this type because `save.data`
+  // is `unknown` until the mutation resolves — the optionality is about the
+  // response existing at all, not about `truncated` being absent from a
+  // response. The server always sends it (CopyResult.truncated is non-optional),
+  // and the route test pins it on both the truncated and the normal path.
+  const result = save.data as { copied?: number; failed?: string[]; truncated?: boolean } | undefined;
+
+  return (
+    <section
+      className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4 space-y-3"
+      data-testid="admin-registry-panel"
+    >
+      <div>
+        <h3 className="text-xs font-semibold text-ink uppercase tracking-wide">Flow registry</h3>
+        <p className="mt-0.5 text-xs text-ink-tertiary">
+          Where this org&apos;s installations browse and install flows. Pointing it at your own
+          repository copies the community flows into it once; you can move back at any time.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-ink-tertiary">Current:</span>
+        <code className="px-1.5 py-0.5 rounded bg-chip text-ink">{cfg?.repo ?? '…'}</code>
+        {cfg?.isPublic ? (
+          <span className="text-ink-tertiary">(public community registry)</span>
+        ) : (
+          <span className="text-emerald-600 dark:text-emerald-400">
+            (org registry{cfg?.copiedAt ? ' · community flows copied' : ' · copy pending'})
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          data-testid="admin-registry-repo"
+          className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+          placeholder="owner/agenfk-flows"
+          value={repo}
+          onChange={(e) => setRepo(e.target.value)}
+        />
+        {showToken && (
+          <input
+            data-testid="admin-registry-token"
+            type="password"
+            className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+            placeholder={hasStoredToken ? 'token stored — blank keeps it' : 'GitHub token (contents:write)'}
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        )}
+      </div>
+
+      {error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-error">
+          {error}
+        </p>
+      )}
+
+      {movingToPublic && (
+        <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="admin-registry-confirm">
+          {MOVE_BACK_TO_PUBLIC_CONFIRM}
+        </p>
+      )}
+
+      {result && typeof result.copied === 'number' && (
+        <p className="text-xs text-ink-tertiary" data-testid="admin-registry-result">
+          {result.copied > 0
+            ? `${result.copied} community flow(s) copied into ${repo.trim()}.`
+            : 'Registry updated.'}
+          {Array.isArray(result.failed) && result.failed.length > 0 && (
+            <span className="text-rose-600 dark:text-rose-400">
+              {' '}Failed: {result.failed.join(', ')} — use Retry copy.
+            </span>
+          )}
+          {result.truncated && (
+            <span className="text-amber-700 dark:text-amber-300">
+              {' '}The source registry has more flows than one run copies — use Retry copy to continue.
+            </span>
+          )}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <button
+          data-testid="admin-registry-save"
+          disabled={!!error || save.isPending}
+          onClick={() => {
+            // Moving back to public is reversible but changes what every
+            // installation reads, so it earns an explicit click.
+            if (movingToPublic && !window.confirm(MOVE_BACK_TO_PUBLIC_CONFIRM)) return;
+            save.mutate();
+          }}
+          className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {save.isPending ? 'Saving…' : registryConfigSaveLabel({ repo, token, hasStoredToken })}
+        </button>
+        {!cfg?.isPublic && (
+          <button
+            data-testid="admin-registry-sync"
+            disabled={sync.isPending}
+            onClick={() => sync.mutate()}
+            className="px-3 py-1.5 rounded-lg border border-border-soft text-xs text-ink-tertiary disabled:opacity-40"
+          >
+            {sync.isPending ? 'Copying…' : 'Retry copy'}
+          </button>
+        )}
+      </div>
+
+      {save.error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-save-error">
+          {(save.error as Error).message}
+        </p>
+      )}
+    </section>
   );
 }

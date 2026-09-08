@@ -25,6 +25,9 @@ tmp.*.json
 # Mutation testing artifacts (StrykerJS — MUTATION_TESTS flow step)
 /reports/
 .stryker-tmp/
+# Scoped Stryker runs use their own tempDirName so parallel runs don't collide
+# (see tempDirName in stryker.*.config.mjs).
+.stryker-tmp-*/
 stryker.log
 # pi coding-agent local session artifacts (subagent transcripts, clipboard)
 /.pi/

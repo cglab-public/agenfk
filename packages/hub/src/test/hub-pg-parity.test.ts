@@ -37,6 +37,49 @@ async function bootHubOnPg(): Promise<Fixture> {
   return { app: out.app, db, cookie, token };
 }
 
+/**
+ * Per-org flow registry (CGLAB-138) on Postgres.
+ *
+ * This exists because the first version of the org_settings table was invalid
+ * Postgres DDL — `updated_at TEXT DEFAULT (now() at time zone 'utc')` yields a
+ * timestamptz that cannot default a TEXT column, so the CREATE TABLE threw and
+ * every pg-backed boot failed. A SQLite-only test suite passed and never saw
+ * it. The save path also emits `datetime('now')`, which only works on Postgres
+ * because the dialect translator rewrites it — so both the DDL and the runtime
+ * SQL are asserted here.
+ */
+describe('PG parity: per-org flow registry (CGLAB-138)', () => {
+  it('boots on Postgres with the org_settings table present', async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const r = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.repo).toBe('cglab-public/agenfk-flows');
+    expect(r.body.isPublic).toBe(true);
+    await db.close();
+  });
+
+  it('upserts and updates org_settings on Postgres (datetime(\'now\') rewrite)', async () => {
+    const { db } = await bootHubOnPg();
+    const { saveRegistryConfig, getRegistryConfig, registryToken } = await import('../services/flowRegistry');
+
+    // INSERT branch.
+    await saveRegistryConfig(db, 'org', {
+      repo: 'acme/flows', token: 'ghp_pg_token', secretKey: SECRET,
+      copiedAt: '2026-05-03T10:00:00Z',
+    });
+    expect((await getRegistryConfig(db, 'org')).repo).toBe('acme/flows');
+    expect(await registryToken(db, 'org', SECRET)).toBe('ghp_pg_token');
+
+    // UPDATE branch — this is the statement carrying datetime('now').
+    await saveRegistryConfig(db, 'org', { repo: 'acme/other', secretKey: SECRET });
+    const cfg = await getRegistryConfig(db, 'org');
+    expect(cfg.repo).toBe('acme/other');
+    // A blank token means "keep the stored one", not "clear it".
+    expect(cfg.hasToken).toBe(true);
+    await db.close();
+  });
+});
+
 const sample = (overrides: any = {}) => ({
   eventId: 'e-' + Math.random().toString(36).slice(2),
   installationId: 'inst-1',

@@ -27,10 +27,32 @@ export const EMPTY_MODEL_MAPPING: ModelMapping = new Map();
  * Returns the input unchanged when nothing is mapped. Unknown and empty ids
  * pass through so the dashboard still shows the raw value rather than dropping
  * the PR or showing a blank row.
+ *
+ * Matching is alias-keyed, NOT normalised: an alias is a literal spelling the
+ * admin chose (the seed itself keeps `:` as a size separator, so `qwen3.8:27b`
+ * and `qwen-3.8-27b` are deliberately different aliases for one canonical name),
+ * and `model_mappings` has a CHECK that two aliases cannot share a canonical —
+ * so one alias can never mean two models. Normalising here would invent a
+ * matching rule the admin table does not have.
  */
 export function resolveModelId(model: string | null, mapping: ModelMapping): string | null {
   if (!model) return model;
-  return mapping.get(model) ?? model;
+  const hit = mapping.get(model);
+  if (hit !== undefined) return hit;
+  // A harness may report the same artifact through its route, e.g. pi now
+  // reports `coding4/qwen38-27b` where it once reported `qwen38-27b` (the
+  // provider prefix disambiguates settings.json's defaultProvider + defaultModel
+  // split). Without this, every provider-qualified report would slip past the
+  // admin's alias and split into its own dashboard group next to the mapped one.
+  // The prefix names the reseller, not the artifact — the same reason
+  // modelMeta.normaliseModelId strips it on the licence axis.
+  const slash = model.lastIndexOf('/');
+  if (slash >= 0) {
+    const bare = model.slice(slash + 1);
+    const bareHit = bare ? mapping.get(bare) : undefined;
+    if (bareHit !== undefined) return bareHit;
+  }
+  return model;
 }
 
 /**

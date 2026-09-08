@@ -553,6 +553,152 @@ Flow definitions are authored in the hub admin UI (powered by
 `registry/flows` endpoint, set per-org defaults, and assign overrides at
 project scope.
 
+The editor's three footer controls are three unrelated writes, not a pipeline,
+and the hub host labels them to say so (`EDITOR_LABELS_HUB`):
+
+| Control | Writes | Reach |
+| --- | --- | --- |
+| **Save & publish to org** | `POST/PUT /v1/admin/flows/:id`, `version + 1` | every installation on its next poll |
+| **Set as org default** | `PUT /v1/admin/flow-assignments` (scope `org`) | installations with no more specific assignment |
+| **Publish** | — | **absent in the hub admin**; the hub holds the org's registry PAT and has no publish route, so the hub's `RegistryClient` omits the optional `publishToRegistry` and the button is not rendered |
+
+Two rules the editor now enforces, both because a control used to promise more
+than it did:
+
+- **Binding saves first.** "Set as org default" writes an assignment row for an
+  id. It used to bind `flow.id` immediately, so with unsaved edits in the panel
+  it assigned the version already on the server and reported success — the
+  admin's edits were dropped with no error. The save now resolves before the
+  bind, and a failed save means no bind.
+- **One footer, gated per capability.** The two footers used to be selected by
+  read-only-ness, which stranded a newly created flow (no id yet, so it took the
+  read-only branch) with neither Save — which lived in the other branch — nor
+  Publish, which that branch gated on `flow?.id`.
+
+### 6.1 Per-org registry repo (CGLAB-138)
+
+By default every org browses the public community registry
+(`cglab-public/agenfk-flows`). An **admin** can point the org at an **existing**
+repo of their own — Admin → Flows → Flow registry.
+
+Code: `packages/hub/src/services/flowRegistry.ts`, routes under
+`/v1/admin/registry-config` and `/v1/registry/flows`.
+
+| Endpoint | Auth | Behaviour |
+| --- | --- | --- |
+| GET `/v1/admin/registry-config` | admin session | Current repo + `hasToken`. **Never returns the token.** |
+| PUT `/v1/admin/registry-config` | admin session | Probe → copy → persist. `422` and **no write** if the probe fails. |
+| POST `/v1/admin/registry-config/sync` | admin session | Re-run the copy (idempotent by content). |
+| GET `/v1/admin/registry/flows` | admin session | Browse a registry. `?source=org` (default) \| `community`. |
+| GET `/v1/registry/flows` | api_key | Proxy for a connected installation. |
+| POST `/v1/registry/flows/install` | api_key | Fetch one flow file for an installation to create locally. |
+
+Three properties are deliberate:
+
+- **Fail the save.** `probeWriteAccess` runs *before* anything is persisted. A
+  setting that saved but cannot be written to is worse than a rejected save —
+  the admin would believe the fleet points at a private repo that serves
+  nothing.
+- **The token lives on the hub.** Stored `encryptSecret`-encrypted in
+  `org_settings.registry_token_enc`, the same pattern as `auth_config`'s OAuth
+  secrets. It is never returned by any endpoint and never copied to a laptop.
+  Reads are authenticated with it because GitHub answers an anonymous fetch of
+  a private repo with `404` — without a hub-held token a private registry
+  simply cannot be served to a fleet.
+- **No silent public fall-back.** When the hub is unreachable, the local
+  server's `/registry/flows` returns `502` rather than falling back to the
+  public registry. An org that sealed itself away must never be shown the
+  community catalogue because the hub had a bad minute.
+
+The copy is **one-time**, not a mirror: it imports the community flows present
+at switch time. Moving back to the public repo needs **no reverse copy** — the
+community flows are already public, and writing them into a repo the org has no
+relationship with would leak the org's credential into the commit author.
+
+#### 6.1.2 Browsing both registries
+
+`resolveRegistryRead` answers **one repo per org**, so after a switch to a
+private repo the real community catalogue becomes invisible and uninstallable
+from the hub UI. The one-time copy masks this at switch time (the org repo
+starts as a superset), but any flow published to community afterwards is
+unreachable.
+
+`resolveRegistrySource(db, orgId, secretKey, source)` adds a second axis:
+`source` is `'org' | 'community'`, absent meaning `'org'` for back-compat.
+
+Two rules, both load-bearing:
+
+- **The caller picks a SOURCE, never a repo.** This route holds the org's
+  `contents:write` PAT. Accepting `?repo=owner/name` would make it a proxy that
+  spends that credential against any repo the token can reach — a cross-tenant
+  read driven by a server-side secret. Only two names are reachable and both are
+  ones the server already knows; a `repo` in the query is ignored, and a
+  `source` that is not exactly `org` or `community` is a **400**, not a silent
+  fallback to the org repo (a stale client would otherwise show private flows
+  under a "Community" heading — the exact confusion the feature exists to
+  remove).
+- **`source=community` never sends the org token.** The PAT is scoped to the
+  org's repo; attaching it to a public cglab-owned repo leaks the credential to
+  a repo the org has no relationship with and into GitHub's access logs.
+  Anonymous is also simply what a public repo needs. Pinned by tests on both
+  browse and install.
+
+`source=community` keeps the org's configured **branch** — a second branch
+setting for the community repo would be left at `main` by everyone.
+
+The UI shows the switcher only when the org actually has a private registry
+(`showRegistrySourcePicker`); with one registry, two options that do the same
+thing read as a broken control. The shared `FlowEditorModal` gained two
+host-supplied, optional props — `tabLabels` and `registryToolbar` — so the
+standalone client is untouched and keeps its "My Flows" / "Community" wording.
+
+#### 6.1.1 Mutation testing: what the score does not say
+
+`flowRegistry.ts` finishes at **92.2%** mutation score (306/332 killed, 0
+uncovered); `adminFlowRegistry.ts` at **100%**. The 26 survivors are not 26
+holes, and the split matters more than the percentage.
+
+**Genuinely equivalent — unkillable by any test.** A guard whose removal
+changes nothing observable, because a check further down rejects the same bad
+input and produces the identical result:
+
+- `if (!resp.ok)` in the copy loop — GitHub error bodies are never valid flow
+  documents, so the `!flow?.name || !Array.isArray(flow.steps)` validation two
+  lines below fails the same file into the same `failed` entry. Deleting the
+  guard entirely still yields `{ copied: 0, failed: ['gone.json'] }`.
+- `typeof meta !== 'object'` in `probeWriteAccess` — an array or string body has
+  no string `full_name`, so the next clause rejects it with the same message.
+- `.catch(() => null)` → `undefined`, and the `?.` in `meta?.permissions?.push`
+  and `serializeRegistryFlow`'s `flow?.name` — callers validate before reaching
+  them, so `null` vs `undefined` never surfaces.
+
+These are defence in depth: they keep the *reason* for a failure legible and
+survive future edits to the checks below them, but no test can distinguish
+them. Killing them would mean asserting on internals that carry no behaviour.
+
+**Real gaps, found and fixed.** The first pass showed 38 survivors; ~20 tests
+were written against them and the score did not move. The tests were wrong:
+
+- Several let the fake `throw` on `PUT`, then asserted `failed: ['x.json']`. The
+  loop's `catch` records a thrown write under that same filename, so the test
+  passed against correct code **and** against the mutant — it could not fail.
+  Fixed by having the fake *record* writes and asserting `writeAttempts === []`:
+  the mechanism, not just the outcome.
+- A comment claimed a test killed `!flow?.name || ...` → `&&` while it killed
+  nothing. The comment was written from intent, not from a run.
+- `toMatchObject` hid extra fields; copy-result assertions now use `toEqual`.
+- A verification script checked the pre-mutation backup rather than the live
+  file, reporting "SURVIVED" for mutants it had never applied.
+
+`scripts/killcheck-cglab138.sh` is the fix for the last two: it applies one
+mutant, greps the **live** file to confirm the replacement landed, runs the
+tests, and prints KILLED / SURVIVED / NO-OP. Every claim above was made against
+that output rather than against a plausible reading of the code.
+
+A mutation score is only as honest as the tests behind it, and a test that
+reports the same result for correct and broken code is worse than no test — it
+looks like coverage.
+
 ---
 
 ## 7. Fleet upgrade flow (end to end)
@@ -759,7 +905,15 @@ The hub UI is a React/Vite SPA served by the hub itself. Its main views:
 - **Admin → Users** — invite admins/viewers, manage roles.
 - **Admin → Flows** — author/edit flow definitions (via
   `@agenfk/flow-editor`), assign them to org/project scope, install from
-  the community registry.
+  the community registry. **Saving a flow here is the publish**: the write
+  bumps `flows.version`, which is the ETag of `GET /v1/flows/active`, so every
+  installation picks it up on its next poll (§6). There is no separate publish
+  step and no Publish button — the hub holds the org's registry `contents:write`
+  PAT and exposes no route that spends it, so the hub's `RegistryClient`
+  simply omits `publishToRegistry` (optional on the interface) and the editor
+  hides the button. Authors who need to push a flow to a registry repo do it
+  from their own machine, where `gh` holds their credentials:
+  `agenfk flow publish <id> [--registry owner/repo]`.
 - **Admin → Installations** — list of every installation that has spoken
   to the hub, with their last-known running version and last-seen
   timestamp. Divergence between `agenfk_version` here and the

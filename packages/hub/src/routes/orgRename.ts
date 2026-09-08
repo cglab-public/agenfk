@@ -21,6 +21,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'installations',
   'model_mappings',
   'model_meta',
+  'org_settings',
   'repoint_campaigns',
   'rollups_daily',
   'upgrade_directives',
