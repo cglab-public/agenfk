@@ -4,7 +4,9 @@ import {
   isValidRegistrySlug,
   registryFormError,
   registrySaveLabel,
+  registryConfigSaveLabel,
   MOVE_BACK_TO_PUBLIC_CONFIRM,
+  EDITOR_LABELS_HUB,
 } from '../pages/adminFlowRegistry';
 import { isValidRegistrySlug as serverIsValidRegistrySlug } from '../../../hub/src/services/flowRegistry.js';
 
@@ -110,5 +112,75 @@ describe('admin flow registry form — edge branches', () => {
     const bad = registryFormError({ repo: 'nope', token: '', hasStoredToken: true });
     const token = registryFormError({ repo: 'acme/flows', token: '', hasStoredToken: false });
     expect(new Set([empty, bad, token]).size).toBe(3);
+  });
+});
+
+// ── Editor footer labels ───────────────────────────────────────────────────
+//
+// The three footer CTAs read as one pipeline (Save → Publish → Use this Flow)
+// when they are three unrelated writes. These pin the hub-admin wording.
+describe('EDITOR_LABELS_HUB', () => {
+  it('says Save is the publish, because saving the row is what fans it out', () => {
+    expect(EDITOR_LABELS_HUB.save).toMatch(/save/i);
+    expect(EDITOR_LABELS_HUB.save).toMatch(/publish/i);
+    expect(EDITOR_LABELS_HUB.save).toMatch(/org/i);
+  });
+
+  it('names the assignment the button actually writes, not "use"', () => {
+    // The button only writes a flow_assignments row for the id it already has,
+    // so "Use this Flow" promises an action it does not take.
+    expect(EDITOR_LABELS_HUB.useFlow).toMatch(/org default/i);
+  });
+
+  it('does not reuse the word "publish" for the assignment button', () => {
+    // Two buttons claiming to publish is the confusion this removes.
+    expect(EDITOR_LABELS_HUB.useFlow).not.toMatch(/publish/i);
+  });
+
+  it('labels the two editor buttons differently', () => {
+    expect(EDITOR_LABELS_HUB.save).not.toBe(EDITOR_LABELS_HUB.useFlow);
+  });
+
+  it('gives the confirmation its own caption, past-tensed by the host not by rule', () => {
+    // Appending "d" to the save caption would render "Save & publish to orgd".
+    expect(EDITOR_LABELS_HUB.saved).toBeTruthy();
+    expect(EDITOR_LABELS_HUB.saved).not.toBe(`${EDITOR_LABELS_HUB.save}d`);
+    expect(EDITOR_LABELS_HUB.saved).toMatch(/publish/i);
+  });
+
+  it('matches the badge the flows list renders for the same assignment', () => {
+    // AdminFlows renders an "Org default" badge on the row this button sets.
+    // Substring, not equality: the button is a verb phrase, the badge a noun.
+    expect(EDITOR_LABELS_HUB.useFlow.toLowerCase()).toContain('org default');
+  });
+});
+
+// ── Two "Save" buttons on one page ─────────────────────────────────────────
+// Admin → Flows renders the flow editor's Save and the registry-config form's
+// Save. Both said "Save". They write unrelated things.
+describe('registryConfigSaveLabel', () => {
+  it('names the registry form plainly, so it is not the editor save', () => {
+    expect(registryConfigSaveLabel({ repo: PUBLIC_REGISTRY_REPO, token: '', hasStoredToken: true }))
+      .toBe('Save registry repo');
+  });
+
+  it('keeps the copy warning when the target is private', () => {
+    // The slow part still has to be advertised; only the plain case is renamed.
+    expect(registryConfigSaveLabel({ repo: 'acme/flows', token: 'x', hasStoredToken: false }))
+      .toMatch(/copy/i);
+  });
+
+  it('never collapses back onto the editor save label', () => {
+    expect(registryConfigSaveLabel({ repo: '', token: '', hasStoredToken: false }))
+      .not.toBe(EDITOR_LABELS_HUB.save);
+    expect(registryConfigSaveLabel({ repo: '', token: '', hasStoredToken: false }))
+      .not.toBe('Save');
+  });
+
+  it('is distinct from the editor label for every repo state', () => {
+    for (const repo of ['', '   ', PUBLIC_REGISTRY_REPO, 'acme/flows', '  acme/flows  ']) {
+      expect(registryConfigSaveLabel({ repo, token: '', hasStoredToken: true }), repo)
+        .not.toBe(EDITOR_LABELS_HUB.save);
+    }
   });
 });

@@ -59,6 +59,48 @@ export function registrySaveLabel(state: RegistryFormState): string {
 }
 
 /**
+ * The same form's button, named so it cannot be confused with the flow
+ * editor's Save. The page shows both, and until now both said "Save" while
+ * writing entirely different things: one writes a flow definition, this one
+ * points the org's whole registry at a different repo.
+ */
+export function registryConfigSaveLabel(state: RegistryFormState): string {
+  const base = registrySaveLabel(state);
+  return base === 'Save' ? 'Save registry repo' : base;
+}
+
+// ── Editor footer labels ───────────────────────────────────────────────────
+
+/**
+ * Footer captions for the shared flow editor, when it runs in the hub admin.
+ *
+ * The editor ships standalone-client wording — "Save" and "Use this Flow" —
+ * and both are misleading here, in the same way "My Flows" / "Community" were
+ * (see `resolveTabLabels`).
+ *
+ * - **Save *is* the publish.** `PUT /v1/admin/flows/:id` writes the org's
+ *   flow row and bumps its `version`; that version is the ETag of
+ *   `GET /v1/flows/active`, which is exactly what every installation polls.
+ *   Nothing else has to happen for the change to reach the fleet, so a bare
+ *   "Save" advertises half an action and leaves the admin hunting for a
+ *   publish step that does not exist.
+ * - **"Use this Flow" does not save.** It writes a `flow_assignments` row for
+ *   the id it already has. "Set as org default" is the literal name of the
+ *   badge the flows list renders for that same assignment, so the button and
+ *   the row finally say the same thing.
+ *
+ * `saved` is the confirmation the Save button shows in its place after a clean
+ * write. It is its own caption rather than a suffix rule because English past
+ * tense is not mechanical — appending "d" to "Save & publish to org" reads as
+ * "Save & publish to orgd".
+ */
+export const EDITOR_LABELS_HUB = {
+  save: 'Save & publish to org',
+  saved: 'Published to org',
+  useFlow: 'Set as org default',
+} as const
+
+/**
  * Confirmation copy for moving back to the public registry. Worth an explicit
  * click: after this, the org's installs read the public repo again and any
  * private-only flows stop being offered.

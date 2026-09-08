@@ -23,7 +23,8 @@ import { useTheme } from '../ThemeContext';
 import {
   PUBLIC_REGISTRY_REPO,
   registryFormError,
-  registrySaveLabel,
+  registryConfigSaveLabel,
+  EDITOR_LABELS_HUB,
   resolveTabLabels,
   showRegistrySourcePicker,
   registrySourceOptions,
@@ -75,6 +76,19 @@ const flowClient: FlowClient = {
  * names a repo — that is the tenancy boundary, since the server holds the
  * org's contents:write PAT and would otherwise be a proxy for any repo it can
  * reach.
+ *
+ * There is deliberately **no `publishToRegistry`.** Publishing writes to the
+ * registry repo, and the only credential for that is the org's `contents:write`
+ * PAT — which lives encrypted on the hub and is never copied to a browser, and
+ * the hub exposes no publish route (its `writeRegistryFile` is used solely by
+ * the one-time community copy when an admin points the org at a private repo).
+ * This client used to carry a method that only threw; the method is optional on
+ * `RegistryClient` now, so omitting it hides the editor's Publish button
+ * instead of rendering a control that can only fail.
+ *
+ * Authors who do need to publish a flow to a repo do it from their own
+ * machine, where `gh` holds their credentials:
+ * `agenfk flow publish <id> [--registry owner/repo]`.
  */
 export function makeRegistryClient(getSource: () => RegistrySource): RegistryClient {
   return {
@@ -82,9 +96,6 @@ export function makeRegistryClient(getSource: () => RegistrySource): RegistryCli
       (await api.get('/v1/admin/registry/flows', { params: { source: getSource() } })).data,
     installFromRegistry: async (filename) =>
       flattenAdminFlow((await api.post('/v1/admin/flows/install', { filename, source: getSource() })).data),
-    publishToRegistry: async () => {
-      throw new Error('Publishing to the community registry is not supported from the Hub admin yet. Use your local agenfk client.');
-    },
   };
 }
 
@@ -247,6 +258,12 @@ export function AdminFlows() {
         initialFlowId={initialFlowId}
         flowClient={flowClient}
         registryClient={registryClient}
+        // Footer captions. In the hub admin, saving the row IS the fleet-wide
+        // publish — the bumped `version` is the ETag every installation polls
+        // at `GET /v1/flows/active` — and the selection button writes an
+        // org-default assignment rather than "using" anything. Left as the
+        // editor's own wording, both read as a pipeline that does not exist.
+        labels={EDITOR_LABELS_HUB}
         tabLabels={{
           myFlows: tabLabels.myFlows,
           // While the picker is showing, the tab names the repo it is CURRENTLY
@@ -708,7 +725,7 @@ function RegistryRepoPanel() {
           }}
           className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {save.isPending ? 'Saving…' : registrySaveLabel({ repo, token, hasStoredToken })}
+          {save.isPending ? 'Saving…' : registryConfigSaveLabel({ repo, token, hasStoredToken })}
         </button>
         {!cfg?.isPublic && (
           <button

@@ -553,6 +553,28 @@ Flow definitions are authored in the hub admin UI (powered by
 `registry/flows` endpoint, set per-org defaults, and assign overrides at
 project scope.
 
+The editor's three footer controls are three unrelated writes, not a pipeline,
+and the hub host labels them to say so (`EDITOR_LABELS_HUB`):
+
+| Control | Writes | Reach |
+| --- | --- | --- |
+| **Save & publish to org** | `POST/PUT /v1/admin/flows/:id`, `version + 1` | every installation on its next poll |
+| **Set as org default** | `PUT /v1/admin/flow-assignments` (scope `org`) | installations with no more specific assignment |
+| **Publish** | — | **absent in the hub admin**; the hub holds the org's registry PAT and has no publish route, so the hub's `RegistryClient` omits the optional `publishToRegistry` and the button is not rendered |
+
+Two rules the editor now enforces, both because a control used to promise more
+than it did:
+
+- **Binding saves first.** "Set as org default" writes an assignment row for an
+  id. It used to bind `flow.id` immediately, so with unsaved edits in the panel
+  it assigned the version already on the server and reported success — the
+  admin's edits were dropped with no error. The save now resolves before the
+  bind, and a failed save means no bind.
+- **One footer, gated per capability.** The two footers used to be selected by
+  read-only-ness, which stranded a newly created flow (no id yet, so it took the
+  read-only branch) with neither Save — which lived in the other branch — nor
+  Publish, which that branch gated on `flow?.id`.
+
 ### 6.1 Per-org registry repo (CGLAB-138)
 
 By default every org browses the public community registry
@@ -883,7 +905,15 @@ The hub UI is a React/Vite SPA served by the hub itself. Its main views:
 - **Admin → Users** — invite admins/viewers, manage roles.
 - **Admin → Flows** — author/edit flow definitions (via
   `@agenfk/flow-editor`), assign them to org/project scope, install from
-  the community registry.
+  the community registry. **Saving a flow here is the publish**: the write
+  bumps `flows.version`, which is the ETag of `GET /v1/flows/active`, so every
+  installation picks it up on its next poll (§6). There is no separate publish
+  step and no Publish button — the hub holds the org's registry `contents:write`
+  PAT and exposes no route that spends it, so the hub's `RegistryClient`
+  simply omits `publishToRegistry` (optional on the interface) and the editor
+  hides the button. Authors who need to push a flow to a registry repo do it
+  from their own machine, where `gh` holds their credentials:
+  `agenfk flow publish <id> [--registry owner/repo]`.
 - **Admin → Installations** — list of every installation that has spoken
   to the hub, with their last-known running version and last-seen
   timestamp. Divergence between `agenfk_version` here and the

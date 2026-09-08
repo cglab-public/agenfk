@@ -61,5 +61,18 @@ export interface FlowClient {
 export interface RegistryClient {
   browseRegistry(): Promise<RegistryFlow[]>;
   installFromRegistry(filename: string): Promise<Flow>;
-  publishToRegistry(flowId: string): Promise<{ url: string; kind: 'pr' | 'existing' | 'direct'; note?: string }>;
+  /**
+   * Push a saved flow to the registry repo (fork + PR, or a direct push for a
+   * repo owner). **Optional because not every host can do it.**
+   *
+   * The standalone agenfk client can: its local server shells out to `gh` on
+   * the author's machine, where the credentials live. The Hub admin cannot —
+   * the org's `contents:write` PAT is held encrypted on the hub and is never
+   * copied to a laptop, and the hub exposes no publish route (only the
+   * one-time community copy used when an admin points the org at a private
+   * repo). Its client simply omits this method and the editor hides the
+   * button, rather than rendering a control wired to a function that can only
+   * reject.
+   */
+  publishToRegistry?(flowId: string): Promise<{ url: string; kind: 'pr' | 'existing' | 'direct'; note?: string }>;
 }
