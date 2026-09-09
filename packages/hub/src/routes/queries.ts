@@ -4,7 +4,7 @@ import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
-import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregate.js';
+import { aggregatePrOverview, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -227,6 +227,14 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // Multi-select: a CSV of models, same parseList semantics as users/projects.
     // A single-value ?model=x link keeps working (one-element list).
     const models = parseList(req.query.model as string | undefined);
+    // PR-number search (?pr=57 | #57 | a pasted PR URL). When it parses it
+    // supersedes the date window, the model filter and the developer filter —
+    // see PrWindow.prNumber. The projects filter is NOT superseded and needs no
+    // special handling here: it stays inside `f` and keeps being pushed into SQL
+    // as remote_url IN (...), which is what stops #57 matching every repo.
+    // Passed through uncast: a repeated ?pr= arrives as an array and the parser
+    // handles that shape rather than throwing.
+    const prNumber = parsePrNumberFilter(req.query.pr);
     // Admin alias -> canonical. Resolved inside the aggregator for the rows, and
     // the filter values go through the same mapping so a saved link to
     // `?model=qwen38-27b` still finds the group now filed under `qwen3.8:27b`.
@@ -247,6 +255,12 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // users (developer) filter is opener-based, applied in the aggregator — not
     // pushed to SQL, for the same reason as model: filtering events by user_key
     // would hide the opener of a PR re-sized by someone else and misattribute it.
+    //
+    // A PR search lifts the upper bound too (`to: null` below). The bound exists
+    // to keep "latest sizing wins" honest inside the requested window; for a
+    // search the window is irrelevant, and honouring it would drop the re-size
+    // events that happen to fall after `to` and report a stale size for the very
+    // PR the user asked about.
     const fetchRows = async (upTo: string | null): Promise<PrEventRow[]> => {
       const base = applyEventFilters(orgId, { ...f, types: null, itemTypes: null, users: null, from: null, to: upTo });
       const where = [...base.where, `type IN ('pr.opened', 'pr.updated')`];
@@ -271,12 +285,18 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // needs the metadata at that moment. resolveModelMeta matches on a
     // normalised prefix, so an admin row for "qwen3.8-27b" still resolves a PR
     // reported as "qwen38-27b" or "@cf/zai-org/glm-5.2".
-    const currentRows = await fetchRows(f.to);
+    const currentRows = await fetchRows(prNumber != null ? null : f.to);
     const rawModels = [...new Set(currentRows.map(r => r.model).filter((m): m is string => typeof m === 'string' && m.length > 0))];
     const modelMeta = resolveModelMetaAll(rawModels, modelMetaRows);
 
     const result = aggregatePrOverview(currentRows, {
-      from: f.from, to: f.to, models, developers: f.users, modelMapping,
+      // In search mode the window, model and developer predicates are dropped at
+      // the source, so the aggregator's own override is not the only thing
+      // keeping them out — a caller reading this route sees the intent too.
+      ...(prNumber != null
+        ? { prNumber }
+        : { from: f.from, to: f.to, models, developers: f.users }),
+      modelMapping,
       // Keyed by the canonical name, for callers that filter that way, AND by
       // the raw reported id, which is what the aggregator needs to attach
       // metadata to an alias-resolved group. Passing only one of the two is how
@@ -287,11 +307,28 @@ export function queriesRouter(ctx: HubServerContext): Router {
       modelMetaRaw: modelMeta,
     });
 
+    // The period the numbers actually cover. Normally the requested window; for
+    // a PR search the span of the matched PR's own OPEN time, so a client
+    // rendering a time axis spans the answer instead of a window that excluded
+    // it. Null when the search matched nothing — there is no period to claim.
+    let period = { from: f.from, to: f.to };
+    if (prNumber != null) {
+      let first: string | null = null;
+      let last: string | null = null;
+      for (const p of result.prs) {
+        if (first === null || p.openedAt < first) first = p.openedAt;
+        if (last === null || p.openedAt > last) last = p.openedAt;
+      }
+      period = { from: first, to: last };
+    }
+
     // Previous equal-length window for deltas — only when a lower bound is set.
     // The previous window's upper bound is EXCLUSIVE of `from` so a PR opened
     // exactly at `from` is counted in the current window only, never both.
+    // A PR search skips it: the search ignores the window, so a "previous
+    // period" comparison would be a number from a query nobody asked for.
     let previous: { prs: number; sizePoints: number } | null = null;
-    if (f.from) {
+    if (f.from && prNumber == null) {
       const toMs = (f.to ? new Date(f.to) : new Date()).getTime();
       const fromMs = new Date(f.from).getTime();
       if (Number.isFinite(toMs) && Number.isFinite(fromMs) && toMs > fromMs) {
@@ -303,7 +340,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       }
     }
 
-    res.json({ period: { from: f.from, to: f.to }, ...result, previous });
+    res.json({ period, ...result, previous });
   });
 
   return router;

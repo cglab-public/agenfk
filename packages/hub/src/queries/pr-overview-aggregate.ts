@@ -74,6 +74,38 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
   };
 }
 
+/**
+ * Parse the PR-number search out of a query param.
+ *
+ * Accepts the three spellings a developer actually has to hand: the bare number
+ * (`57`), the number with the `#` they copied out of GitHub (`#57`), and a
+ * pasted PR URL (`https://github.com/acme/api/pull/57/files`). GitLab's
+ * `merge_requests` path is accepted too — the hub sizes PRs from any host, only
+ * the derived *link* is GitHub-specific.
+ *
+ * Anything else returns null, meaning **no filter** rather than "match nothing".
+ * That asymmetry is deliberate: a half-typed box (`12a`) or a hand-edited link
+ * must not blank the overview and leave the reader thinking the data is gone.
+ * The UI parses the same grammar client-side (`hub-ui/src/prSearch.ts`) so the
+ * box and the server cannot disagree about what the text means.
+ */
+export function parsePrNumberFilter(raw: unknown): number | null {
+  if (raw == null) return null;
+  // Repeated ?pr= params arrive as an array from Express — take the first entry
+  // rather than throwing, the same defence parseList gives the other filters.
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s) return null;
+  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull|merge_requests)\/(\d+)/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  // Past the safe-integer range the stored number and this one are no longer
+  // exactly comparable, so a "match" would be a rounding coincidence.
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 type SizeDist = Record<SizeBucket, number>;
 
 export interface PrOverviewResult {
@@ -155,6 +187,23 @@ export interface PrWindow {
    * `byModel`.
    */
   modelMetaRaw?: ReadonlyMap<string, ModelMeta> | null;
+  /**
+   * PR-number search. When it parses to a number it **supersedes** every other
+   * predicate on this window — `from`, `to`, `models` and `developers` are all
+   * ignored and the answer is the PR with that number.
+   *
+   * The override is the feature. A PR is a thing you are looking for, not a
+   * point in a reporting window: someone arriving with "#57" should not have to
+   * widen the date range, clear the model facet and clear the developer facet
+   * first. The three superseded axes are attributes of the answer, not
+   * preconditions of finding it.
+   *
+   * Not superseded here: the project (git remote). That filter is applied in SQL
+   * upstream of this function, and it is the one that has to stay — a PR number
+   * is unique per repo, not per org, so `#57` exists in every repo the org has
+   * ever reported.
+   */
+  prNumber?: number | string | null;
 }
 
 interface ResolvedPr {
@@ -224,11 +273,21 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     ? new Set(window.models.map(m => resolveModelId(m, mapping) as string))
     : null;
   const devFilter = window?.developers && window.developers.length ? new Set(window.developers) : null;
+  // Parsed here (not passed through raw) so the same grammar decides both "is
+  // there a search?" and "what number?" — an unparseable value falls back to the
+  // windowed filters instead of silently matching nothing.
+  const prNumber = parsePrNumberFilter(window?.prNumber);
   const prs = resolvePrs(rows, mapping).filter(pr =>
-    (!from || pr.openerAt >= from)
-    && (!to || pr.openerAt <= to)
-    && (!modelFilter || modelFilter.has(pr.model))
-    && (!devFilter || devFilter.has(pr.user_key)),
+    prNumber !== null
+      // Search mode: number only. The window, model and developer predicates
+      // above are deliberately not consulted — see PrWindow.prNumber. Note this
+      // runs after resolvePrs(), so the PR keeps its opener attribution and its
+      // latest sizing exactly as the windowed path computes them.
+      ? pr.prNumber === prNumber
+      : (!from || pr.openerAt >= from)
+        && (!to || pr.openerAt <= to)
+        && (!modelFilter || modelFilter.has(pr.model))
+        && (!devFilter || devFilter.has(pr.user_key)),
   );
 
   const byDayMap = new Map<string, SizeDist>();

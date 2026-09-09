@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion';
@@ -10,6 +10,7 @@ import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
 
@@ -297,6 +298,16 @@ export function PrOverviewPage() {
   // Accordion open/closed lives in the URL like every other filter, so a shared
   // or bookmarked link restores the same layout. Absent param = open.
   const [filtersOpen, setFiltersOpen] = useState(() => parseFiltersOpen(searchParams.get('filters')));
+  // PR-number search. The raw text is kept (so "#" and a half-typed box survive
+  // the keystroke that produced them) and parsed on every render; only the
+  // parsed number reaches the URL and the API, which is why a shared link says
+  // ?pr=57 however the user spelled it in the box.
+  const [prQuery, setPrQuery] = useState<string>(searchParams.get('pr') ?? '');
+  const prNumber = parsePrQuery(prQuery);
+  // A PR search supersedes the date window, the model filter and the developer
+  // filter. Project (git remote) is the one filter it respects — a PR number is
+  // unique per repo, not per org.
+  const searchActive = prNumber !== null;
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -311,10 +322,13 @@ export function PrOverviewPage() {
       p.set('range', range); // omit the default to keep the URL clean
     }
     if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
+    // The parsed number, not the raw box text — links stay short and a pasted URL
+    // does not end up in the address bar of everyone you share with.
+    if (prNumber !== null) p.set('pr', String(prNumber));
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, prQuery, prNumber, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -335,11 +349,22 @@ export function PrOverviewPage() {
   }, [projectSel.set, from, toParam]);
 
   const dataQs = useMemo(() => {
+    // Search mode: projects + the number, and nothing else. The superseded
+    // filters are dropped from the request rather than sent alongside it, so the
+    // server can never disagree with the user about what "PR #57" means — and a
+    // stale ?model= left in the URL from before the search cannot quietly narrow
+    // the answer to zero rows.
+    if (prNumber !== null) {
+      const p = new URLSearchParams();
+      if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+      p.set('pr', String(prNumber));
+      return p.toString();
+    }
     const p = new URLSearchParams(baseQs);
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, prNumber]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -349,8 +374,10 @@ export function PrOverviewPage() {
   // Model + developer dropdown options come from the overview UNFILTERED by
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
-  // once a model or developer is selected.
-  const filtersActive = modelSel.set.size > 0 || devSel.set.size > 0;
+  // once a model or developer is selected. Under a PR search those two facets are
+  // superseded and disabled, so there is nothing to populate them with — and a
+  // second, windowed request would be pure waste.
+  const filtersActive = !searchActive && (modelSel.set.size > 0 || devSel.set.size > 0);
   const optionsQuery = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
@@ -369,7 +396,13 @@ export function PrOverviewPage() {
 
   const d = overview.data;
   const to = d?.period.to ?? (toParam || new Date().toISOString());
-  const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
+  // Under a PR search the server reports the period the answer actually covers —
+  // the matched PR's own open time. The selected range is superseded and may well
+  // exclude that PR, so the day axis spans the answer instead of the window;
+  // otherwise the heatmap would have no column for the PR being shown.
+  const axisFrom = searchActive ? (d?.period.from ?? from) : from;
+  const axisTo = searchActive ? (d?.period.to ?? to) : to;
+  const axis = useMemo(() => (d ? buildDayAxis(axisFrom, axisTo) : []), [d, axisFrom, axisTo]);
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const volumeBuckets = volume?.buckets ?? [];
@@ -426,7 +459,10 @@ export function PrOverviewPage() {
                 <button
                   key={r.key}
                   onClick={() => pickRange(r.key)}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${active
+                  // Superseded by a PR search: disabled, not hidden, and the
+                  // selection survives so clearing the search restores it.
+                  disabled={searchActive}
+                  className={`px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${active
                     ? 'bg-surface text-accent-text shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
@@ -442,7 +478,8 @@ export function PrOverviewPage() {
               max={customTo || undefined}
               onChange={e => setCustomFrom(e.target.value)}
               aria-label="From date"
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1"
+              disabled={searchActive}
+              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
             />
             <span>→</span>
             <input
@@ -451,12 +488,14 @@ export function PrOverviewPage() {
               min={customFrom || undefined}
               onChange={e => setCustomTo(e.target.value)}
               aria-label="To date"
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1"
+              disabled={searchActive}
+              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
             />
             {(customFrom || customTo) && (
               <button
                 onClick={() => { setCustomFrom(''); setCustomTo(''); }}
-                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
+                disabled={searchActive}
+                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Clear date range"
               >
                 ✕
@@ -467,15 +506,72 @@ export function PrOverviewPage() {
       </header>
 
       <FilterAccordion
-        activeCount={[projectSel.set, devSel.set, modelSel.set].filter(s => s.size > 0).length}
+        activeCount={
+          // Counts what the numbers on screen actually reflect, so a collapsed bar
+          // cannot hide a live filter. The superseded facets are deliberately NOT
+          // counted while a search is on — they hold a selection but change nothing.
+          (searchActive ? 1 : 0)
+          + (projectSel.set.size ? 1 : 0)
+          + (!searchActive && devSel.set.size ? 1 : 0)
+          + (!searchActive && modelSel.set.size ? 1 : 0)
+        }
         activeSummary={[
+          ...(searchActive ? [`PR #${prNumber}`] : []),
           ...(projectSel.set.size ? [`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(devSel.set.size ? [`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(modelSel.set.size ? [`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`] : []),
+          ...(!searchActive && devSel.set.size ? [`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`] : []),
+          ...(!searchActive && modelSel.set.size ? [`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`] : []),
         ]}
         initialOpen={filtersOpen}
         onOpenChange={setFiltersOpen}
       >
+      {/* PR search sits with the other filters (it IS one) but first, and stays
+          outside the accordion's fold of facet rows because it outranks them. */}
+      <div>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <label
+            htmlFor="pr-number-search"
+            className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary"
+          >
+            PR number
+          </label>
+          {prQuery !== '' && (
+            <button
+              onClick={() => setPrQuery('')}
+              aria-label="Clear PR search"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-tertiary hover:text-danger-muted"
+            >
+              <X className="w-3 h-3" /> Clear
+            </button>
+          )}
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-border-brand">
+          <Search className="w-3.5 h-3.5 text-ink-tertiary shrink-0" aria-hidden="true" />
+          <input
+            id="pr-number-search"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            value={prQuery}
+            onChange={e => setPrQuery(e.target.value)}
+            placeholder="57, #57, or paste a PR URL…"
+            aria-describedby="pr-search-note"
+            className="flex-1 min-w-0 bg-transparent outline-none text-[12px] font-mono text-ink placeholder:text-ink-tertiary"
+          />
+        </div>
+        <p id="pr-search-note" className="mt-1.5 text-[11px] text-ink-tertiary">
+          {searchActive ? (
+            <>
+              Showing <b className="text-ink-secondary">PR #{prNumber}</b> only — the date, model and
+              developer filters do not apply to a PR search. Project (git remote) still does, because
+              a PR number is only unique within one repo.
+            </>
+          ) : (
+            'Find one PR by number — accepts 57, #57 or a pasted PR URL. It overrides the date, model'
+            + ' and developer filters; Project still applies.'
+          )}
+        </p>
+      </div>
+
       <FacetMultiselect
         label="Project (git remote)"
         options={projects.data?.projects ?? []}
@@ -495,6 +591,7 @@ export function PrOverviewPage() {
         onClear={devSel.clear}
         inlineThreshold={6}
         placeholder="Search developers…"
+        disabled={searchActive}
       />
 
       <FacetMultiselect
@@ -505,19 +602,26 @@ export function PrOverviewPage() {
         onClear={modelSel.clear}
         inlineThreshold={6}
         placeholder="Search models…"
+        disabled={searchActive}
       />
 
       <ModelMetaFilter
         rows={optionsData?.byModel ?? []}
         selected={modelSel.set}
         onApply={modelSel.addMany}
+        disabled={searchActive}
       />
       </FilterAccordion>
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
       {d && d.totals.prs === 0 && (
         <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
-          No PRs registered for this project and period.
+          {/* A search that misses must say which PR it missed, and whether a
+              project filter narrowed it. "No PRs for this project and period"
+              would be actively wrong here — the period is not in play. */}
+          {searchActive
+            ? `No PR #${prNumber} found ${projectSel.set.size ? 'in the selected project' : 'in any project'} — it may belong to a different project, or was never reported through AgEnFK.`
+            : 'No PRs registered for this project and period.'}
         </div>
       )}
 
