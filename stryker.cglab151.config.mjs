@@ -42,11 +42,13 @@ export default {
   // A mutant that hangs an 827-line component used to cost 120s of dead waiting;
   // these specs run in well under a second, so 30s is already generous.
   timeoutMS: 30_000,
-  // 4, not 1. The four specs here are jsdom-only — no DB, no tmpdir, no
+  // 2, not 4. These four specs are jsdom-only — no DB, no tmpdir, no
   // process.env (verified) — so there is no shared filesystem state to race on,
-  // which is the only reason the hub run stays serial. 8 performance cores on
-  // this box; leaving headroom because each worker drives its own vitest.
-  concurrency: 4,
+  // which is the only reason the hub run stays serial. But this machine carries
+  // several agent sessions at once and swap was nearly full when a 4-worker run
+  // here got its test runners reaped mid-sweep. Concurrency is memory budget,
+  // not speed preference.
+  concurrency: 2,
   // info, not warn: the per-mutant verdict lines are the only honest progress
   // signal this tool gives, and their absence is what made a healthy 15-minute
   // run look like a hang.

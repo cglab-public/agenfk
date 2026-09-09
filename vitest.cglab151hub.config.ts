@@ -11,25 +11,32 @@ import { sharedResolve, sharedTest } from './scripts/vitest-shared-config.mjs';
  *
  * WHY `pr-overview-pr-search-route.test.ts` AND NOT `queries.test.ts`
  *
- * Both cover the route. Only one of them can drive a mutant phase. A hub spec
- * booted on a FILE-backed sqlite database finishes Stryker's dry run and then
- * returns zero verdicts at 0% CPU, indefinitely, and it took three wrong
- * diagnoses to find out why (see the full write-up at the top of the route spec):
+ * Both cover the route. The route spec is used here because it is cheap and
+ * self-contained: it boots the app on `openSqliteDb(':memory:')` rather than the
+ * file-backed path queries.test.ts uses, so it runs in ~0.6s and shares no
+ * filesystem state.
  *
- *   - `openSqliteDb` runs on `node:sqlite`'s synchronous DatabaseSync with WAL
- *     on for any file path — a blocked statement parks the entire thread;
- *   - the hub tests key their DB file on `process.pid`, and worker threads share
- *     the parent's pid (verified: main pid=22501/threadId=0, worker
- *     pid=22501/threadId=1), so every worker computes the same path;
- *   - Stryker's vitest runner forces `pool: 'threads'`.
+ * That swap also removes a genuine trap — though it turned out NOT to be what
+ * stalled this branch's sweeps, so it is recorded as a hazard, not as the fix:
+ * `openSqliteDb` runs on `node:sqlite`'s synchronous DatabaseSync with WAL on for
+ * any file path (a blocked statement parks the whole thread); hub tests key their
+ * DB file on `process.pid`; worker threads SHARE the parent's pid (verified: main
+ * pid=22501/threadId=0, worker pid=22501/threadId=1); and Stryker's vitest runner
+ * forces `pool: 'threads'`. File-backed hub specs therefore do contend on one WAL
+ * database across threads of one process. `:memory:` is private per connection, so
+ * this spec cannot contend. Making the pid-keyed paths unique repo-wide is worth
+ * its own story — it is also why `npm test` runs with file parallelism off.
  *
- * So the dry run and the mutant runs contend on one WAL database inside one
- * process. The route spec uses `openSqliteDb(':memory:')` — private per
- * connection, nothing to contend on — and the mutant phase runs.
- *
- * That is a repo-level trap, not a CGLAB-151 one: it is also why `npm test` runs
- * with file parallelism off. Making the pid-keyed paths unique (or `:memory:`)
- * across the hub suite is worth its own story.
+ * WHAT REALLY STALLED THE SWEEPS: memory pressure, three times. Check this before
+ * diagnosing any stall as a lock. The system log of one dead run is unambiguous —
+ * Stryker created 4 test-runner processes, the dry run succeeded, and two seconds
+ * later the box reported critical memory pressure. The workers were reaped and
+ * Stryker's main process waited forever for verdicts from processes that no longer
+ * existed. Signature: main alive at 0% CPU, no vitest children, no sandbox writes,
+ * zero verdicts, and a leftover `.stryker-tmp-*` (a clean exit removes it). Look at
+ * `sysctl vm.swapusage` and `memory_pressure -Q` FIRST. This box runs several
+ * agent sessions at once, so keep `concurrency` low — that is not a tuning
+ * preference, it is what stops the sweep being killed mid-flight.
  */
 export default defineConfig({
   define: { __AGENFK_VERSION__: JSON.stringify('test') },

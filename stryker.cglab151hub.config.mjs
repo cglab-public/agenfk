@@ -19,11 +19,12 @@
 // Run through the HOME guard (never bare `npx stryker run`):
 //   npm run test:stryker -- run stryker.cglab151hub.config.mjs
 //
-// If it ever looks stuck, read vitest.cglab151hub.config.ts first — the last time
-// this looked hung it was a shared WAL file, not a hang. And do not SIGKILL a
-// run to find out: Stryker only cleans its sandbox on a normal exit, and the next
-// run copies the repo including the abandoned sandbox, nested, until file
-// discovery really does wedge. `rm -rf .stryker-tmp-*` if you must stop one.
+// If it ever looks stuck, check `sysctl vm.swapusage` and `memory_pressure -Q`
+// BEFORE believing any theory about locks — see vitest.cglab151hub.config.ts for
+// what actually stalled this branch (the OS reaping Stryker's test runners). And
+// do not SIGKILL a run to investigate: Stryker cleans its sandbox only on a
+// normal exit, and the next run copies the repo including the abandoned sandbox,
+// nested. `rm -rf .stryker-tmp-*` if you must stop one.
 export default {
   mutate: [
     'packages/hub/src/queries/pr-overview-aggregate.ts',
@@ -43,11 +44,11 @@ export default {
   // Generous for a spec that boots an app (~0.6s), still 4x shorter than the
   // 120s default that turned every hanging mutant into a two-minute stall.
   timeoutMS: 30_000,
-  // 3, not 1. Nothing in this suite shares the filesystem any more: the two
+  // 2, not 3. Nothing in this suite shares the filesystem any more: the two
   // aggregate specs are pure functions and the route spec runs on an in-memory
-  // database. It stays below the hub-ui run's 4 because a mutant that does reach
-  // the DB costs more, and oversubscribing makes that worse.
-  concurrency: 3,
+  // database. It stays low because this box runs several agent sessions at once
+  // and each worker is a full vitest process — see stryker.cglab151.config.mjs.
+  concurrency: 2,
   // info, not warn — the verdict lines are the only honest progress signal, and
   // their absence is what made healthy long runs look like hangs.
   logLevel: 'info',

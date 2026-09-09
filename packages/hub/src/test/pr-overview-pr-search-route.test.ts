@@ -2,14 +2,11 @@
 //
 // These are the PR-search route tests, and they boot the app on an IN-MEMORY
 // sqlite database (`openSqliteDb(':memory:')` injected through createHubApp's
-// `db` escape hatch) instead of the file-backed path queries.test.ts uses. That
-// is deliberate, and it is not a downgrade — it is the same engine, minus a file
-// nobody should have shared.
+// `db` escape hatch) instead of the file-backed path queries.test.ts uses. Same
+// engine, same SQL — the difference is that nothing is shared.
 //
-// The reason this matters is a trap that cost this branch three misdiagnoses, so
-// it is written down here. A hub spec booted on a FILE-backed sqlite database
-// completes a Stryker dry run and then never returns a single mutant verdict —
-// it parks at 0% CPU forever. Three facts explain it:
+// The sharing is a real trap, recorded here because it cost this branch several
+// wrong turns before the actual culprit (memory pressure) was found:
 //
 //   1. `openSqliteDb` uses `node:sqlite`'s **DatabaseSync** and turns on WAL for
 //      any file-backed path (db/sqlite.ts). Synchronous driver: a blocked
@@ -21,11 +18,14 @@
 //   3. Stryker's vitest runner **forces `pool: 'threads'`**
 //      (@stryker-mutator/vitest-runner/dist/src/vitest-test-runner.js).
 //
-// Put together: under Stryker, the dry run and every mutant run open the same
-// WAL database from different threads of one process. The second open blocks, the
-// sync driver turns that into a parked thread, and Stryker waits for a verdict
-// that can never arrive. `:memory:` is a private database per connection, so
-// there is nothing to contend on — and the mutant phase runs.
+// So a file-backed hub spec on a threads pool does contend on one WAL database
+// inside one process, and a sync driver turns that into a parked thread.
+// `:memory:` is private per connection, so this spec cannot contend — which is
+// why it is the one used for mutation sweeps. To be clear about causation: this
+// hazard was NOT what stalled this branch. The OS was reaping Stryker's
+// test-runner workers under memory pressure. Both are written up in
+// vitest.cglab151hub.config.ts, along with the rule that came out of it — check
+// swap and memory pressure before believing any hang.
 //
 // This is also why `npm test` has to run with file parallelism off. Fixing the
 // pid-keyed paths repo-wide is a story of its own; this file just stops being
