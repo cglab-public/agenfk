@@ -42,6 +42,11 @@ describe('parsePrQuery', () => {
     expect(parsePrQuery('https://gitlab.com/acme/api/-/merge_requests/57')).toBe(57);
   });
 
+  it('parses a Bitbucket pull-request URL (same argument as GitLab: any host)', () => {
+    expect(parsePrQuery('https://bitbucket.org/acme/api/pull-requests/57/diff')).toBe(57);
+    expect(parsePrQuery('https://bitbucket.org/acme/api/pull-requests/57')).toBe(57);
+  });
+
   it('takes the number from the URL, not from a repo or org that also has digits', () => {
     expect(parsePrQuery('https://github.com/acme2/api2/pull/57')).toBe(57);
   });

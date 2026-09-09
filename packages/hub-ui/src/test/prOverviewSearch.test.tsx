@@ -303,6 +303,43 @@ describe('PR search and the collapsed filter bar', () => {
   });
 });
 
+describe('Project stays live under the search', () => {
+  const OTHER = 'git@github.com:acme/web.git';
+
+  it('re-queries with the newly selected project while the search is active', async () => {
+    // Project is the one filter a PR search respects, so changing it has to
+    // re-run the search. If it silently stopped being a dependency of the query,
+    // the page would keep showing acme/api's #57 with the chip reading acme/web
+    // — a stale filter you cannot see.
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE, OTHER] } };
+      const q = new URLSearchParams(url.split('?')[1] ?? '');
+      const pr = q.get('pr');
+      return { data: pr ? makeSearchHit(Number(pr)) : makeOverview(['claude-opus-4-8', 'glm-5.2']) };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=57']}>
+          <PrOverviewPage />
+          <UrlProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(searchQuery()).not.toBeNull());
+    const before = overviewUrls().length;
+
+    fireEvent.click(await screen.findByRole('button', { name: 'acme/web' }));
+
+    await waitFor(() => {
+      const after = overviewUrls().slice(before).map(u => qs(u)).filter(q => q.get('pr') === '57');
+      expect(after.length).toBeGreaterThan(0);
+      expect(after.at(-1)!.get('projects')).toBe(OTHER);
+    });
+    // …and still no superseded filter rides along.
+    expect(qs(overviewUrls().at(-1)!).get('from')).toBeNull();
+  });
+});
+
 describe('PR search result state', () => {
   it('names the PR in the empty state when nothing matches', async () => {
     get.mockImplementation(async (url: string) => {
@@ -329,5 +366,51 @@ describe('PR search result state', () => {
     expect(screen.getByText('Total PRs')).toBeInTheDocument();
     // no delta badge: a comparison window is meaningless for one PR
     expect(screen.getByText('— no prior period')).toBeInTheDocument();
+  });
+
+  it('shows EVERY matched PR when one number hits two repos months apart', async () => {
+    // The case the owner signed off: with no Project selected, #57 exists once
+    // per repo. Two repos means two open dates, and those dates can be further
+    // apart than the day axis can span (buildDayAxis caps at 366 columns).
+    // Deriving the axis from a date range would then silently drop the later PR
+    // from the volume chart AND from the heatmap — so the KPI tile would count 2
+    // PRs, the chart would draw 1, and the dropped PR would have no cell to
+    // click. The axis must come from the data, not from a window.
+    const far = makeOverview(['glm-5.2', 'claude-opus-4-8']);
+    const twoRepos = {
+      ...far,
+      period: { from: '2025-02-10T11:00:00.000Z', to: '2026-04-01T09:00:00.000Z' },
+      totals: { prs: 2, sizePoints: 12, developers: 2, medianBucket: 'm' },
+      byDay: [
+        { day: '2025-02-10', sizes: { xs: 0, s: 0, m: 1, l: 0, xl: 0 }, total: 1, devBySize: { xs: [], s: [], m: [{ user_key: 'bob@acme.com', count: 1 }], l: [], xl: [] } },
+        { day: '2026-04-01', sizes: { xs: 0, s: 1, m: 0, l: 0, xl: 0 }, total: 1, devBySize: { xs: [], s: [{ user_key: 'carol@acme.com', count: 1 }], m: [], l: [], xl: [] } },
+      ],
+      byDeveloper: [
+        { user_key: 'bob@acme.com', prs: 1, sizePoints: 8, sizes: { xs: 0, s: 0, m: 1, l: 0, xl: 0 }, daily: { '2025-02-10': 1 } },
+        { user_key: 'carol@acme.com', prs: 1, sizePoints: 4, sizes: { xs: 0, s: 1, m: 0, l: 0, xl: 0 }, daily: { '2026-04-01': 1 } },
+      ],
+      prs: [
+        { repo: 'acme/api', prNumber: 57, url: 'https://github.com/acme/api/pull/57', user_key: 'bob@acme.com', model: 'glm-5.2', harness: null, openedAt: '2025-02-10T11:00:00.000Z', day: '2025-02-10', points: 8, bucket: 'm' },
+        { repo: 'acme/web', prNumber: 57, url: 'https://github.com/acme/web/pull/57', user_key: 'carol@acme.com', model: 'claude-opus-4-8', harness: null, openedAt: '2026-04-01T09:00:00.000Z', day: '2026-04-01', points: 4, bucket: 's' },
+      ],
+      previous: null,
+    };
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      return { data: twoRepos };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=57']}>
+          <PrOverviewPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('Weighted size');
+    // The volume chart's own total must agree with the KPI tile above it.
+    expect(screen.getByText('Total').parentElement).toHaveTextContent('2');
+    // And both PRs must be reachable — one drillable cell per matched day.
+    expect(screen.getAllByRole('button', { name: /open list/i })).toHaveLength(2);
   });
 });

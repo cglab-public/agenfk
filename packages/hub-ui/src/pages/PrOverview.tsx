@@ -396,13 +396,23 @@ export function PrOverviewPage() {
 
   const d = overview.data;
   const to = d?.period.to ?? (toParam || new Date().toISOString());
-  // Under a PR search the server reports the period the answer actually covers —
-  // the matched PR's own open time. The selected range is superseded and may well
-  // exclude that PR, so the day axis spans the answer instead of the window;
-  // otherwise the heatmap would have no column for the PR being shown.
-  const axisFrom = searchActive ? (d?.period.from ?? from) : from;
-  const axisTo = searchActive ? (d?.period.to ?? to) : to;
-  const axis = useMemo(() => (d ? buildDayAxis(axisFrom, axisTo) : []), [d, axisFrom, axisTo]);
+  // Under a PR search the day axis is the days the matched PRs actually appear
+  // on, NOT a contiguous range. Two reasons, both load-bearing:
+  //  - the selected range is superseded, so it may well exclude the PR entirely;
+  //  - with no Project selected, one number matches a PR per repo, and those PRs
+  //    can be months or years apart. A contiguous axis over that span runs into
+  //    buildDayAxis's 366-column cap, and every day past the cap vanishes from
+  //    the volume chart and the heatmap — the KPI tile would count 2 PRs while
+  //    the chart drew 1, and the dropped PR would have no cell to drill into.
+  // An axis built from the data cannot truncate, because it is the data.
+  const searchDays = useMemo(
+    () => (searchActive && d ? [...new Set(d.byDay.map(x => x.day))].sort() : []),
+    [searchActive, d],
+  );
+  const axis = useMemo(
+    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to)) : []),
+    [d, searchActive, searchDays, from, to],
+  );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const volumeBuckets = volume?.buckets ?? [];

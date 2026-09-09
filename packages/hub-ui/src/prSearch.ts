@@ -19,9 +19,10 @@
  * shared — change one, change both.
  */
 
-/** `57` / `#57`, and the number inside a pasted GitHub PR or GitLab MR URL. */
+/** `57` / `#57`, and the number inside a pasted GitHub PR, GitLab MR or
+ *  Bitbucket pull-request URL. */
 const PR_NUMBER_RE = /^#?(\d+)$/;
-const PR_URL_RE = /\/(?:pull|merge_requests)\/(\d+)/;
+const PR_URL_RE = /\/(?:pull-requests|pull|merge_requests)\/(\d+)/;
 
 export function parsePrQuery(raw: string): number | null {
   if (!raw) return null;

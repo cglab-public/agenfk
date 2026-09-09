@@ -80,8 +80,8 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
  * Accepts the three spellings a developer actually has to hand: the bare number
  * (`57`), the number with the `#` they copied out of GitHub (`#57`), and a
  * pasted PR URL (`https://github.com/acme/api/pull/57/files`). GitLab's
- * `merge_requests` path is accepted too — the hub sizes PRs from any host, only
- * the derived *link* is GitHub-specific.
+ * `merge_requests` and Bitbucket's `pull-requests` paths are accepted too — the
+ * hub sizes PRs from any host, only the derived *link* is GitHub-specific.
  *
  * Anything else returns null, meaning **no filter** rather than "match nothing".
  * That asymmetry is deliberate: a half-typed box (`12a`) or a hand-edited link
@@ -98,7 +98,7 @@ export function parsePrNumberFilter(raw: unknown): number | null {
   if (typeof value !== 'string') return null;
   const s = value.trim();
   if (!s) return null;
-  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull|merge_requests)\/(\d+)/.exec(s);
+  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull-requests|pull|merge_requests)\/(\d+)/.exec(s);
   if (!m) return null;
   const n = Number(m[1]);
   // Past the safe-integer range the stored number and this one are no longer

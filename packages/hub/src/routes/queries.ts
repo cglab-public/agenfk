@@ -307,10 +307,13 @@ export function queriesRouter(ctx: HubServerContext): Router {
       modelMetaRaw: modelMeta,
     });
 
-    // The period the numbers actually cover. Normally the requested window; for
-    // a PR search the span of the matched PR's own OPEN time, so a client
-    // rendering a time axis spans the answer instead of a window that excluded
-    // it. Null when the search matched nothing — there is no period to claim.
+    // What period these numbers relate to. Normally the requested window. Under
+    // a PR search it is the span of the matched PRs' OPEN times — and
+    // deliberately nothing more. It is NOT a window to render a time axis from:
+    // the search ignores ranges, a re-size can sit months outside this span, and
+    // with no project selected the span crosses unrelated repos. A consumer that
+    // lays out days should use `byDay`, which lists exactly the days that carry
+    // data. Null when the search matched nothing — there is no period to claim.
     let period = { from: f.from, to: f.to };
     if (prNumber != null) {
       let first: string | null = null;

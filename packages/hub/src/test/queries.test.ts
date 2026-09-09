@@ -721,6 +721,34 @@ describe('GET /v1/prs/overview', () => {
       expect(r.body.prs[0].prNumber).toBe(2);
     });
 
+    it('accepts a Bitbucket pull-request URL (the hub sizes PRs from any host)', async () => {
+      const url = encodeURIComponent('https://bitbucket.org/acme/api/pull-requests/2/diff');
+      const r = await supertest(app).get(`/v1/prs/overview?pr=${url}`).set('Cookie', cookie);
+      expect(r.status).toBe(200);
+      expect(r.body.totals.prs).toBe(1);
+      expect(r.body.prs[0].prNumber).toBe(2);
+    });
+
+    it('cannot reach another org\'s PR — org scoping survives the search', async () => {
+      // The search is the one path that reads the org's WHOLE PR event stream
+      // with no time bound, which is exactly where a dropped `org_id = ?` would
+      // show up: org-b would be handed org-a's PR numbers, repos, opener emails
+      // and model names. If the number is ever pushed down into SQL (the obvious
+      // optimisation), this is the test that has to keep passing.
+      await ctx.db.run(`INSERT INTO orgs (id, name) VALUES ('org-b', 'org-b')`);
+      await createPasswordUser(ctx.db, 'org-b', 'adminb@x', 'longenough1', 'admin');
+      const loginB = await supertest(app).post('/auth/login').send({ email: 'adminb@x', password: 'longenough1' });
+      const cookieB = loginB.headers['set-cookie']?.[0] ?? '';
+
+      const here = await supertest(app).get('/v1/prs/overview?pr=1').set('Cookie', cookie);
+      expect(here.body.totals.prs).toBe(1);
+
+      const abroad = await supertest(app).get('/v1/prs/overview?pr=1').set('Cookie', cookieB);
+      expect(abroad.status).toBe(200);
+      expect(abroad.body.totals.prs).toBe(0);
+      expect(abroad.body.prs).toEqual([]);
+    });
+
     it('applies no search for a value that is not a PR number (never zero the page, never a 500)', async () => {
       for (const raw of ['abc', '0', '-1', '', '12a']) {
         const r = await supertest(app).get(`/v1/prs/overview?pr=${encodeURIComponent(raw)}`).set('Cookie', cookie);
