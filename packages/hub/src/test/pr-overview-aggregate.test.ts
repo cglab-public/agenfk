@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { aggregatePrOverview, PrEventRow } from '../queries/pr-overview-aggregate';
+import type { ModelMeta } from '../util/modelMeta';
 
 // Helper to build a raw json_extract-shaped row.
 const row = (o: Partial<PrEventRow>): PrEventRow => ({
@@ -566,5 +567,50 @@ describe('pr-overview-aggregate mutation sweep (pure)', () => {
     ]);
     expect(r.byModel.find(m => m.model === 'h-model')!.harnesses)
       .toEqual(['alpha-harness', 'zeta-harness']);
+  });
+
+  // Surfaced by the CGLAB-151 mutation sweep: this metadata path had no pure
+  // spec, so it was only ever exercised through the HTTP route — and a route
+  // spec cannot drive a Stryker mutant phase here. Six mutants survived on it.
+  // It is the machinery behind a real production defect (a mapped model showing
+  // "Unclassified / Commercial" on the dashboard while its unmapped siblings
+  // classified fine), so it deserves a spec in its own right.
+  describe('model metadata behind an alias', () => {
+    const ALIAS = 'deepseek/deepseek-v4-pro-0813';
+    const CANONICAL = 'deepseek-v4-pro-0813';
+    const MAPPING = new Map([[ALIAS, CANONICAL]]);
+    const meta = (model: string, provider: string): ModelMeta => ({
+      model, provider, licenseClass: 'open_weights', license: 'MIT', source: 'seed', unclassified: false,
+    });
+
+    it('resolves provider metadata through the RAW reported id when the canonical key misses', () => {
+      // model_meta is keyed on what the agent actually sent, because it has to
+      // be resolved before aliasing. After aliasing the group is named by the
+      // canonical id, so a single canonical lookup silently finds nothing and
+      // the row ships with no provider — the UI then renders "Unclassified".
+      const r = aggregatePrOverview([row({ model: ALIAS })], {
+        modelMapping: MAPPING,
+        modelMeta: new Map(),          // canonical key deliberately absent
+        modelMetaRaw: new Map([[ALIAS, meta(ALIAS, 'DeepSeek')]]),
+      });
+      expect(r.byModel).toHaveLength(1);
+      expect(r.byModel[0].model).toBe(CANONICAL);
+      expect(r.byModel[0].provider).toBe('DeepSeek');
+      expect(r.byModel[0].licenseClass).toBe('open_weights');
+    });
+
+    it('still resolves metadata by the canonical key when there is no alias', () => {
+      const r = aggregatePrOverview([row({ model: CANONICAL })], {
+        modelMeta: new Map([[CANONICAL, meta(CANONICAL, 'DeepSeek')]]),
+      });
+      expect(r.byModel[0]).toMatchObject({ model: CANONICAL, provider: 'DeepSeek' });
+    });
+
+    it('omits the metadata fields rather than guessing when nothing matches', () => {
+      const r = aggregatePrOverview([row({ model: 'mystery-model' })], { modelMeta: new Map() });
+      expect(r.byModel[0].model).toBe('mystery-model');
+      expect(r.byModel[0].provider).toBeUndefined();
+      expect(r.byModel[0].licenseClass).toBeUndefined();
+    });
   });
 });

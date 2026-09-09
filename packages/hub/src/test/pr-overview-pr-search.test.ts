@@ -62,6 +62,31 @@ describe('parsePrNumberFilter', () => {
     expect(parsePrNumberFilter(57)).toBe(57);
   });
 
+  it('rejects numbers that are not a PR number, on the numeric path too', () => {
+    // The string path has these cases covered; the numeric branch is a separate
+    // expression and was not. Without them, `&& value > 0` can loosen to `||`
+    // or `>= 0` and ?pr=0 becomes a search that matches nothing — the exact
+    // blank-page-not-no-filter failure the parser exists to avoid.
+    expect(parsePrNumberFilter(0)).toBeNull();
+    expect(parsePrNumberFilter(-57)).toBeNull();
+    expect(parsePrNumberFilter(1.5)).toBeNull();
+    expect(parsePrNumberFilter(NaN)).toBeNull();
+    expect(parsePrNumberFilter(Infinity)).toBeNull();
+    expect(parsePrNumberFilter(9007199254740993)).toBeNull();
+  });
+
+  it('returns null for a value that is neither string nor number, rather than throwing', () => {
+    // Express hands over whatever the query string held. Without the typeof
+    // guard the next line is value.trim() on an object — a TypeError, and a 500
+    // on an authenticated endpoint, from a hand-edited link.
+    expect(() => parsePrNumberFilter({})).not.toThrow();
+    expect(parsePrNumberFilter({})).toBeNull();
+    expect(parsePrNumberFilter(true)).toBeNull();
+    expect(parsePrNumberFilter([{}])).toBeNull();
+    expect(parsePrNumberFilter([])).toBeNull();
+    expect(parsePrNumberFilter(new Date())).toBeNull();
+  });
+
   it('returns null for absent, empty and non-numeric input (no filter, not zero rows)', () => {
     expect(parsePrNumberFilter(undefined)).toBeNull();
     expect(parsePrNumberFilter(null)).toBeNull();

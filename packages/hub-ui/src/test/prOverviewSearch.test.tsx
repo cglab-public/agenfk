@@ -414,3 +414,176 @@ describe('PR search result state', () => {
     expect(screen.getAllByRole('button', { name: /open list/i })).toHaveLength(2);
   });
 });
+
+// ── Mutation-sweep hardening (CGLAB-151) ────────────────────────────────────
+// The hub-ui sweep (stryker.cglab151.config.mjs) put 954 mutants on these four
+// files and 51 survivors landed on lines this story wrote. Each test below is
+// aimed at a named survivor. They are not extra coverage of the same behaviour:
+// the existing specs set `model=` / `users=` in the URL but never SELECT a facet,
+// so `devSel.set.size` was 0 in every render and any mutation of the
+// `!searchActive && devSel…` branch was invisible no matter how many assertions
+// sat on top of it. Selecting the facet is what makes that branch observable.
+
+describe('Superseded selections stay out of the badge and the summary', () => {
+  it('counts a selected developer and model while nothing supersedes them', async () => {
+    // Kills the ArithmeticOperator mutants on the badge total (`+` → `-`) and the
+    // ConditionalExpression mutants that force the dev/model terms always-on or
+    // always-off: with one of each selected the count must be exactly 2.
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'alice@acme.com' }));
+    // Each selection re-queries the overview, and the facets unmount while that
+    // is in flight — hence findByRole rather than getByRole between clicks.
+    fireEvent.click(await screen.findByRole('button', { name: 'glm-5.2' }));
+
+    await waitFor(() => expect(screen.getByText('2 active')).toBeInTheDocument());
+    // The summary chips render only while the bar is collapsed (`{!open && …}`),
+    // so collapse it to read what the badge is summarising. Singular copy here:
+    // with `size === 1` inverted this reads "1 developers".
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    expect(screen.getByText('1 developer')).toBeInTheDocument();
+    expect(screen.getByText('1 model')).toBeInTheDocument();
+  });
+
+  it('pluralises the summary for two selected models', async () => {
+    // The other direction of the same comparison — inverted, two models would
+    // read "2 model".
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'glm-5.2' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'claude-opus-4-8' }));
+    // One filter, two selections — the badge counts filters, not picks.
+    await waitFor(() => expect(screen.getByText('1 active')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    await waitFor(() => expect(screen.getByText('2 models')).toBeInTheDocument());
+  });
+
+  it('drops both from the badge and the summary the moment a search takes over', async () => {
+    // The contract the badge exists to keep: it describes what the numbers
+    // reflect. A search supersedes both facets, so a live selection in either
+    // must not be counted or listed. `!searchActive` → `searchActive`, or the
+    // ternary forced true, would leave the badge reading 3 while the request
+    // carries neither param — a badge that lies about an inert filter.
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'alice@acme.com' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'glm-5.2' }));
+    await waitFor(() => expect(screen.getByText('2 active')).toBeInTheDocument());
+
+    fireEvent.change(searchBox(), { target: { value: '57' } });
+
+    await waitFor(() => expect(screen.getByText('1 active')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    // The page title names the PR too, so this is a count rather than a
+    // single-element lookup.
+    expect(screen.getAllByText('PR #57').length).toBeGreaterThan(0);
+    expect(screen.queryByText('1 developer')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 model')).not.toBeInTheDocument();
+  });
+});
+
+describe('Licence-weight chips follow the same disable rule', () => {
+  /** The meta-filter only renders when there is more than one model to sort
+   *  through, so these need a multi-PR fixture, not a single-PR search hit. */
+  const twoModels = (prs: number) => ({
+    ...makeOverview(['claude-opus-4-8', 'glm-5.2']),
+    totals: { prs, sizePoints: prs * 4, developers: 1, medianBucket: 'xs' },
+  });
+
+  it('disables them while a search is active', async () => {
+    // `off = disabled || n === 0` — the provider buttons two tests up are a
+    // DIFFERENT control, so nothing covered this row. Dropping `disabled` here
+    // leaves a chip that looks clickable while its selection changes nothing.
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      const q = new URLSearchParams(url.split('?')[1] ?? '');
+      return { data: twoModels(q.get('pr') ? 2 : 2) };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=57']}>
+          <PrOverviewPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByRole('button', { name: /Open weights/ });
+    expect(screen.getByRole('button', { name: /Open weights/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Commercial \/ API only/ })).toBeDisabled();
+  });
+
+  it('leaves them live when nothing supersedes them', async () => {
+    // The `disabled` → `true` mutant: everything off, forever. The counts are
+    // non-zero in this fixture, so a live page must show clickable chips.
+    renderPage();
+    await screen.findByRole('button', { name: /Open weights/ });
+    expect(screen.getByRole('button', { name: /Open weights/ })).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: /Commercial \/ API only/ })).not.toBeDisabled();
+  });
+});
+
+describe('Search URL and axis stay honest', () => {
+  it('sends no empty `projects=` when the search runs with no project selected', async () => {
+    // The share-link builder writes `projects` only if a project is chosen.
+    // Forced on, it emits `projects=` — an empty value a stricter parser could
+    // later read as "filter to nothing", on a link the user pastes to a
+    // colleague.
+    renderPage('/prs?pr=57');
+    await waitFor(() => expect(searchQuery()).not.toBeNull());
+    expect(urlNow().has('projects')).toBe(false);
+    expect(qs(searchQuery()!).has('projects')).toBe(false);
+  });
+
+  it('orders the search axis by day even when the API returns the days shuffled', async () => {
+    // The search axis is the matched days, not a window (that is what stops a
+    // >366-day span silently dropping a PR). Removing the sort left the axis in
+    // response order — the chart would draw the right columns in the wrong
+    // sequence, and the heatmap header would disagree with its cells.
+    const shuffled = makeOverview(['glm-5.2', 'claude-opus-4-8']);
+    const two = {
+      ...shuffled,
+      totals: { prs: 2, sizePoints: 12, developers: 1, medianBucket: 'm' },
+      period: { from: '2026-08-11T10:00:00.000Z', to: '2025-02-10T09:00:00.000Z' },
+      byDay: [
+        { day: '2026-08-11', sizes: { xs: 0, s: 1, m: 0, l: 0, xl: 0 }, total: 1, devBySize: { xs: [], s: [{ user_key: 'alice@acme.com', count: 1 }], m: [], l: [], xl: [] } },
+        { day: '2025-02-10', sizes: { xs: 0, s: 0, m: 1, l: 0, xl: 0 }, total: 1, devBySize: { xs: [], s: [], m: [{ user_key: 'alice@acme.com', count: 1 }], l: [], xl: [] } },
+      ],
+      // ONE developer with cells on both days: the drill buttons then appear in
+      // axis order. With two developers the order is the developer list's, and
+      // the assertion would measure the wrong thing.
+      byDeveloper: [
+        { user_key: 'alice@acme.com', prs: 2, sizePoints: 12, sizes: { xs: 0, s: 1, m: 1, l: 0, xl: 0 }, daily: { '2026-08-11': 1, '2025-02-10': 1 } },
+      ],
+      prs: [
+        { repo: 'acme/api', prNumber: 57, url: 'https://github.com/acme/api/pull/57', user_key: 'alice@acme.com', model: 'glm-5.2', harness: null, openedAt: '2026-08-11T10:00:00.000Z', day: '2026-08-11', points: 4, bucket: 's' },
+        { repo: 'acme/web', prNumber: 57, url: 'https://github.com/acme/web/pull/57', user_key: 'alice@acme.com', model: 'claude-opus-4-8', harness: null, openedAt: '2025-02-10T09:00:00.000Z', day: '2025-02-10', points: 8, bucket: 'm' },
+      ],
+      previous: null,
+    };
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      return { data: two };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=57']}>
+          <PrOverviewPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('Weighted size');
+    const days = screen.getAllByRole('button', { name: /open list/i })
+      .map(c => (c.getAttribute('aria-label') ?? '').match(/on (\d{4}-\d{2}-\d{2})/)?.[1] ?? '');
+    expect(days).toHaveLength(2);
+    expect(days).toEqual([...days].sort());
+  });
+
+  it('shows the clear affordance only when there is something to clear', async () => {
+    // `{prQuery !== '' && <button …Clear PR search…>}` — forced false the box
+    // can never be cleared; forced true it shows a ✕ that does nothing.
+    renderPage();
+    await screen.findByRole('button', { name: '90d' });
+    expect(screen.queryByRole('button', { name: 'Clear PR search' })).not.toBeInTheDocument();
+
+    fireEvent.change(searchBox(), { target: { value: '57' } });
+    expect(screen.getByRole('button', { name: 'Clear PR search' })).toBeInTheDocument();
+  });
+});
