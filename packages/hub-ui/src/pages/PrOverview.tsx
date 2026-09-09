@@ -451,6 +451,30 @@ export function PrOverviewPage() {
     return d.prs.filter(p => p.user_key === drill.dev && p.day === drill.day);
   }, [drill, d?.prs]);
 
+  /**
+   * The filters that actually change the answer, as the labels that describe
+   * them. Both the badge count and the collapsed-bar summary read this one list,
+   * so they cannot drift apart — a facet counted but not listed (or listed but
+   * never counted) is exactly how a collapsed bar starts lying about what is
+   * live, and until now the two were separate literals that had to be kept in
+   * step by hand. Superseded facets are absent while a search is on: they hold a
+   * selection that changes nothing.
+   */
+  const activeFilters = useMemo(() => {
+    const out: string[] = [];
+    if (searchActive) out.push(`PR #${prNumber}`);
+    if (projectSel.set.size) {
+      out.push(`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`);
+    }
+    if (!searchActive && devSel.set.size) {
+      out.push(`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`);
+    }
+    if (!searchActive && modelSel.set.size) {
+      out.push(`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`);
+    }
+    return out;
+  }, [searchActive, prNumber, projectSel.set, devSel.set, modelSel.set]);
+
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header className="flex items-end justify-between gap-4 flex-wrap">
@@ -516,21 +540,8 @@ export function PrOverviewPage() {
       </header>
 
       <FilterAccordion
-        activeCount={
-          // Counts what the numbers on screen actually reflect, so a collapsed bar
-          // cannot hide a live filter. The superseded facets are deliberately NOT
-          // counted while a search is on — they hold a selection but change nothing.
-          (searchActive ? 1 : 0)
-          + (projectSel.set.size ? 1 : 0)
-          + (!searchActive && devSel.set.size ? 1 : 0)
-          + (!searchActive && modelSel.set.size ? 1 : 0)
-        }
-        activeSummary={[
-          ...(searchActive ? [`PR #${prNumber}`] : []),
-          ...(projectSel.set.size ? [`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(!searchActive && devSel.set.size ? [`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(!searchActive && modelSel.set.size ? [`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`] : []),
-        ]}
+        activeCount={activeFilters.length}
+        activeSummary={activeFilters}
         initialOpen={filtersOpen}
         onOpenChange={setFiltersOpen}
       >
