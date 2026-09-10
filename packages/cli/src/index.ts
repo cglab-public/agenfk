@@ -186,59 +186,92 @@ async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: 
  */
 const isHubRelease = (tag: string | null | undefined): boolean => !!tag && /^hub-v/i.test(tag);
 
+/** A release as either source describes it — REST says tag_name/published_at,
+ *  `gh` says tagName/createdAt. */
+interface ReleaseRef {
+  tag: string;
+  publishedAt: number;
+  prerelease: boolean;
+}
+
+/**
+ * The channel rule and the hub exclusion, in exactly one place.
+ *
+ * They were previously re-typed in four paths (REST beta, REST stable, gh beta,
+ * gh stable) — which is how a hub tag slipped through: one path guarded, the
+ * next one not. Normalising both field-naming schemes first means a future
+ * source cannot forget the guard by omission.
+ */
+function newestChannelRelease(refs: ReleaseRef[], beta: boolean): string | null {
+  const match = refs
+    .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta)
+    .sort((a, b) => b.publishedAt - a.publishedAt)[0];
+  return match?.tag ?? null;
+}
+
+/**
+ * Rows from either source → ReleaseRef[]. An undated release sorts last rather
+ * than being dropped: on the `gh` fallback, dropping rows would turn "no newer
+ * release" into a thrown error.
+ */
+function toReleaseRefs(rows: unknown, keys: { tag: string; date: string; pre: string }): ReleaseRef[] {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row: any) => ({
+      tag: typeof row?.[keys.tag] === 'string' ? (row[keys.tag] as string) : '',
+      publishedAt: row?.[keys.date] ? new Date(row[keys.date]).getTime() || 0 : 0,
+      prerelease: !!row?.[keys.pre],
+    }))
+    .filter((r) => r.tag !== '');
+}
+
+const REST_KEYS = { tag: 'tag_name', date: 'published_at', pre: 'prerelease' };
+const GH_KEYS = { tag: 'tagName', date: 'createdAt', pre: 'isPrerelease' };
+const GH_API_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' };
+
 export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
+  const listUrl = `https://api.github.com/repos/${repo}/releases?per_page=20`;
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
-      const resp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
-        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
-        timeout: 10000,
-      });
-      const releases: Array<{ tag_name: string; published_at: string; prerelease: boolean }> = resp.data ?? [];
-      const latest = releases
-        .filter((r) => r.tag_name && r.published_at && r.prerelease && !isHubRelease(r.tag_name))
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
-      const tag = latest?.tag_name;
+      const resp = await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 });
+      const tag = newestChannelRelease(toReleaseRefs(resp.data, REST_KEYS), true);
       if (tag) return tag;
     } else {
       const resp = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, {
-        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
+        headers: GH_API_HEADERS,
         timeout: 10000,
       });
       const tag = resp.data?.tag_name;
       if (tag && !isHubRelease(tag)) return tag;
-      // The single-object endpoint can't be trusted on its own: a hub release
+      // The single-object endpoint cannot be trusted on its own: a hub release
       // published without --prerelease IS "the latest stable" as far as it is
       // concerned (observed in production). Re-query the list and pick from it.
-      const listResp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
-        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
-        timeout: 10000,
-      });
-      const stable = ((listResp.data ?? []) as Array<{ tag_name: string; published_at: string; prerelease: boolean }>)
-        .filter((r) => r.tag_name && r.published_at && !r.prerelease && !isHubRelease(r.tag_name))
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
-      if (stable?.tag_name) return stable.tag_name;
+      const listResp = await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 });
+      const stable = newestChannelRelease(toReleaseRefs(listResp.data, REST_KEYS), false);
+      if (stable) return stable;
     }
   } catch {
     // Fall through to gh CLI
   }
   // Fallback: gh CLI (requires gh auth login)
-  if (beta) {
+  const ghReleases = (): ReleaseRef[] => {
     // Must mirror the REST path: only consider pre-releases, newest first.
-    // `gh release list` alone would return the most recent release of ANY
-    // kind, so a later stable (or an asset-less) release could be mis-resolved
-    // as the latest beta and 404 on download.
+    // `gh release list` alone returns the most recent release of ANY kind, so a
+    // later stable (or an asset-less) release could be mis-resolved as the
+    // latest beta and 404 on download.
     const out = execSync(
       `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
-    const list: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(out || '[]');
-    const latest = list
-      .filter((r) => r.tagName && r.isPrerelease && !isHubRelease(r.tagName))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-    if (latest?.tagName) return latest.tagName;
+    return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
+  };
+
+  if (beta) {
+    const tag = newestChannelRelease(ghReleases(), true);
+    if (tag) return tag;
     throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
   }
+
   const viewTag = execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -246,21 +279,14 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   if (viewTag && !isHubRelease(viewTag)) return viewTag;
   // Same recovery as the REST path — `gh release view` reports the newest
   // release, hub or not.
-  const listOut = execSync(
-    `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-  ).trim();
-  const stableList: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(listOut || '[]');
-  const stableTag = stableList
-    .filter((r) => r.tagName && !r.isPrerelease && !isHubRelease(r.tagName))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  const stable = newestChannelRelease(ghReleases(), false);
   // Deliberately NOT `return viewTag` as a last resort: handing back the hub tag
   // would reintroduce exactly the bug this function exists to prevent, and the
   // caller would try to install a Docker image as the framework.
-  if (!stableTag?.tagName) {
+  if (!stable) {
     throw new Error(`No framework release found for ${repo} (hub-only releases are ignored).`);
   }
-  return stableTag.tagName;
+  return stable;
 }
 
 function downloadReleaseAsset(repo: string, tag: string, pattern: string, outputPath: string): void {
