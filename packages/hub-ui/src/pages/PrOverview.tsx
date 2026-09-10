@@ -440,8 +440,6 @@ export function PrOverviewPage() {
     enabled: filtersActive || searchActive,
     placeholderData: prev => prev, // keep prior options during refetch — don't blank the facet
   });
-  // While the unfiltered options query is still loading, fall back to the main
-  // overview so the Developer/Model controls (and the selected chip) never vanish.
   /**
    * The option UNIVERSE behind the Developer/Model facets — never a search ANSWER.
    * A miss contains no developers and no models and a hit contains exactly one of
@@ -484,6 +482,13 @@ export function PrOverviewPage() {
   //    the volume chart and the heatmap — the KPI tile would count 2 PRs while
   //    the chart drew 1, and the dropped PR would have no cell to drill into.
   // An axis built from the data cannot truncate, because it is the data.
+  //
+  // It is also deliberately UNBOUNDED, which is a product decision rather than an
+  // oversight: the axis is as long as the matched PRs really span, so a PR open
+  // for three years renders ~1000 heatmap columns. The alternative — capping it —
+  // reintroduces exactly the failure this replaced, where the KPI tile counts a PR
+  // the chart cannot show and that PR has no cell to drill into. A long search is
+  // allowed to look long instead of being quietly wrong.
   const searchDays = useMemo(
     () => (searchActive && d ? [...new Set(d.byDay.map(x => x.day))].sort() : []),
     [searchActive, d],
