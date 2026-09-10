@@ -65,7 +65,18 @@ function makeSearchHit(prNumber: number) {
     ...one,
     period: { from: '2025-02-10T11:00:00.000Z', to: '2025-02-10T11:00:00.000Z' },
     totals: { prs: 1, sizePoints: 8, developers: 1, medianBucket: 'm' },
-    prs: one.prs.slice(0, 1).map(p => ({ ...p, prNumber, url: `https://github.com/acme/api/pull/${prNumber}` })),
+    // A search's axis is the days its rows actually appear on, so a hit with no
+    // byDay would render an empty heatmap for the wrong reason and mask the
+    // assertions below.
+    byDay: [{
+      day: '2025-02-10', total: 1,
+      sizes: { xs: 0, s: 0, m: 1, l: 0, xl: 0 },
+      devBySize: { xs: [], s: [], m: [{ user_key: 'alice@acme.com', count: 1 }], l: [], xl: [] },
+    }],
+    prs: one.prs.slice(0, 1).map(p => ({
+      ...p, prNumber, day: '2025-02-10',
+      url: `https://github.com/acme/api/pull/${prNumber}`,
+    })),
     previous: null,
   };
 }
@@ -75,13 +86,7 @@ function UrlProbe() {
   return <span data-testid="url-probe">{sp.toString()}</span>;
 }
 
-const renderPage = (entry = '/prs') => {
-  get.mockImplementation(async (url: string) => {
-    if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
-    const q = new URLSearchParams(url.split('?')[1] ?? '');
-    const pr = q.get('pr');
-    return { data: pr ? makeSearchHit(Number(pr)) : makeOverview(['claude-opus-4-8', 'glm-5.2']) };
-  });
+const mount = (entry: string) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -93,7 +98,46 @@ const renderPage = (entry = '/prs') => {
   );
 };
 
+const renderPage = (entry = '/prs') => {
+  get.mockImplementation(async (url: string) => {
+    if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+    const q = new URLSearchParams(url.split('?')[1] ?? '');
+    const pr = q.get('pr');
+    return { data: pr ? makeSearchHit(Number(pr)) : makeOverview(['claude-opus-4-8', 'glm-5.2']) };
+  });
+  return mount(entry);
+};
+
+/**
+ * Mount with the route table the test owns. The mock has to be installed BEFORE
+ * the first render — overriding after `renderPage` leaves the in-flight requests
+ * resolved by the default table, so the page renders data the test never chose.
+ * `"HOLD"` parks a request (to observe the window where the previous answer is
+ * still on screen); `settle()` releases it.
+ */
+function renderRouted(
+  entry: string,
+  routes: (q: URLSearchParams) => unknown | Promise<unknown> | 'HOLD',
+): { settle: () => void } {
+  const hold = deferred<{ data: unknown }>();
+  let held = 0;
+  get.mockImplementation(async (url: string) => {
+    if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+    const q = new URLSearchParams(url.split('?')[1] ?? '');
+    const r = routes(q);
+    if (r === 'HOLD') { held += 1; return hold.promise; }
+    return { data: r };
+  });
+  mount(entry);
+  return {
+    settle: () => { if (held > 0) hold.resolve({ data: makeOverview(['claude-opus-4-8', 'glm-5.2']) }); },
+  };
+}
+
 const urlNow = () => new URLSearchParams(screen.getByTestId('url-probe').textContent ?? '');
+/** The note under the search box. Read as text because its PR number sits in a
+ *  <b>, which splits it across elements for text matchers. */
+const noteText = () => document.getElementById('pr-search-note')?.textContent ?? '';
 const overviewUrls = () => get.mock.calls.map(c => String(c[0])).filter(u => u.startsWith('/v1/prs/overview'));
 const qs = (url: string) => new URLSearchParams(url.split('?')[1] ?? '');
 /** The most recent overview request that carries `pr` — the search's data query. */
@@ -618,6 +662,165 @@ describe('Typing does not machine-gun the API', () => {
     await waitFor(() => expect(searchQuery()).not.toBeNull());
     expect(overviewUrls().filter(u => qs(u).get('pr')).length).toBe(1);
     expect(qs(searchQuery()!).get('pr')).toBe('1234');
+  });
+});
+
+// ── Review round 2: the page must not describe rows it has not fetched ──────
+// `placeholderData: keepPreviousData` keeps the PREVIOUS answer on screen while
+// the next one loads. For an ordinary windowed query that gap is a blink; for a
+// PR search it is seconds, because the search deliberately has no time bound. The
+// reviewer's sequences below are all ways to make the copy, the axis or the facet
+// universe describe the request in flight instead of the data actually rendered.
+
+type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void };
+const deferred = <T,>(): Deferred<T> => {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>(r => { resolve = r; });
+  return { promise, resolve };
+};
+
+describe('Copy tracks the data, not the request', () => {
+  it('says "searching" while the search it advertises is still in flight', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: '90d' });
+
+    fireEvent.change(searchBox(), { target: { value: '57' } });
+
+    // The controls react to the keystroke at once — that part of the contract is
+    // about intent, and the user did just ask for a search.
+    expect(screen.getByRole('button', { name: '90d' })).toBeDisabled();
+    // The copy about the ROWS may not: what is below is still the window's answer.
+    expect(noteText()).toMatch(/Searching for PR #57/);
+    expect(noteText()).not.toMatch(/Showing PR #57 only/);
+
+    await waitFor(() => expect(noteText()).toMatch(/Showing PR #57 only/));
+    expect(noteText()).not.toMatch(/Searching for PR #57/);
+  });
+
+  it('does not report a PR as missing while it is still being looked for', async () => {
+    // A zero-row PREVIOUS answer would otherwise read "PR #58 does not exist"
+    // while #58 is still in flight.
+    const miss = { ...makeSearchHit(57), totals: { prs: 0, sizePoints: 0, developers: 0, medianBucket: 'xs' }, byDay: [], prs: [] };
+    renderRouted('/prs?pr=57', q => (q.get('pr') ? miss : makeOverview(['glm-5.2'])));
+    await screen.findByText(/No PR #57 found/);
+
+    fireEvent.change(searchBox(), { target: { value: '58' } });
+    expect(screen.queryByText(/No PR #58 found/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Searching for PR #58/)).toBeInTheDocument();
+  });
+
+  it('surfaces a failed request instead of leaving the stale answer looking final', async () => {
+    // Without this, keepPreviousData turns an error into a confident lie: the
+    // previous answer stays on screen indefinitely, under the NEW labels, and
+    // "Loading…" has gone.
+    renderRouted('/prs', q => {
+      if (q.get('pr')) throw new Error('scan timed out');
+      return makeOverview(['claude-opus-4-8', 'glm-5.2']);
+    });
+    await screen.findByText('Weighted size');
+
+    fireEvent.change(searchBox(), { target: { value: '57' } });
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 2500 });
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not load this overview/);
+    // …and the failed search does not leave the PREVIOUS answer sitting there
+    // looking like the answer to the new one. Verified, not assumed: v5 drops the
+    // placeholder across an error, so the stale KPI strip is gone.
+    expect(screen.queryByText('Weighted size')).not.toBeInTheDocument();
+  });
+});
+
+describe('A search answer is never treated as windowed data', () => {
+  it('does not let the answer\'s period size the windowed axis after clearing', async () => {
+    const page = renderRouted('/prs?pr=57', q => (q.get('pr') ? makeSearchHit(57) : 'HOLD'));
+    await screen.findByText('Weighted size');
+    expect(screen.getAllByTestId('heatmap-day').length).toBeGreaterThan(0); // the PR's own day
+
+    // Clear the search. The windowed response is held, so the answer stays on
+    // screen as the placeholder — that window is where the bug lived.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear PR search' }));
+    await waitFor(() => expect(overviewUrls().some(u => !qs(u).has('pr'))).toBe(true));
+
+    // makeSearchHit's period is Feb 2025 while the window starts in Aug 2026, so
+    // building the axis from it yields ZERO days: an empty heatmap and volume
+    // chart under a "Total PRs 1" tile. The axis has to come from the window.
+    expect(screen.getAllByTestId('heatmap-day').length).toBeGreaterThan(0);
+    page.settle();
+  });
+
+  it('never offers a search answer as the facet universe after clearing', async () => {
+    // The M3 bug in a new place. Clearing flips the Developer/Model facets back to
+    // LIVE immediately, while the rows on screen are still the answer — and a
+    // naive `?? overview.data` fallback then reads the ANSWER as the universe.
+    //
+    // The options request is held here on purpose. When its cache is warm the
+    // ordering hides the defect completely; this is the path where there is
+    // nothing else to fall back to. The answer contains bob, who need not exist in
+    // the selected window at all.
+    const hitWithBob = {
+      ...makeSearchHit(57),
+      byDeveloper: [{ ...makeSearchHit(57).byDeveloper[0], user_key: 'bob@acme.com' }],
+    };
+    const page = renderRouted('/prs?pr=57', q => (q.get('pr') ? hitWithBob : 'HOLD'));
+    await screen.findByText('Weighted size');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear PR search' }));
+    await waitFor(() => expect(overviewUrls().some(u => !qs(u).has('pr'))).toBe(true));
+
+    // No universe has arrived, so the facet has nothing to offer — and above all
+    // it must not offer the developer it can see in the rows on screen.
+    expect(screen.queryByRole('button', { name: 'bob@acme.com' })).not.toBeInTheDocument();
+
+    // …and it recovers once a real universe lands.
+    page.settle();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'alice@acme.com' })).toBeInTheDocument());
+  });
+
+  it('keeps the superseded facets populated the moment a search starts', async () => {
+    // The options request has not returned yet. If the facets depended on it they
+    // would blink out — the "not hidden" contract again, this time by way of a
+    // loading state. While nothing is filtered the windowed overview IS a valid
+    // universe, so there is nothing to guess.
+    let windowedLoads = 0;
+    const page = renderRouted('/prs', q => {
+      if (q.get('pr')) return makeSearchHit(57);
+      windowedLoads += 1;
+      return windowedLoads === 1 ? makeOverview(['claude-opus-4-8', 'glm-5.2']) : 'HOLD';
+    });
+    await screen.findByText('Weighted size');
+
+    fireEvent.change(searchBox(), { target: { value: '57' } });
+    expect(screen.getByRole('button', { name: 'alice@acme.com' })).toBeDisabled();
+    page.settle();
+  });
+});
+
+describe('URL and link sharing', () => {
+  it('keeps intermediate numbers out of the address bar', async () => {
+    // The URL is the shareable/reloadable form of the query. Writing every
+    // keystroke meant `?pr=5` was live while "57" was being typed — a copy or a
+    // reload mid-typing asked for PR #5.
+    renderPage();
+    await screen.findByRole('button', { name: '90d' });
+
+    const box = searchBox();
+    fireEvent.change(box, { target: { value: '5' } });
+    fireEvent.change(box, { target: { value: '57' } });
+
+    expect(searchBox().value).toBe('57');     // the box follows the keyboard…
+    expect(urlNow().get('pr')).not.toBe('5'); // …the committed URL does not
+
+    await waitFor(() => expect(urlNow().get('pr')).toBe('57'));
+  });
+
+  it('seeds the search from the first ?pr= that parses, like the server does', async () => {
+    // searchParams.get returns the FIRST entry whatever it holds. With `get`
+    // instead of "first valid", `?pr=&pr=57` opened the windowed overview and the
+    // URL effect then rewrote the bar without `pr` — deleting the link's own
+    // evidence that it asked for PR #57.
+    renderPage('/prs?pr=&pr=57');
+    await waitFor(() => expect(searchQuery()).not.toBeNull());
+    expect(qs(searchQuery()!).get('pr')).toBe('57');
+    expect(searchBox().value).toBe('57');
   });
 });
 

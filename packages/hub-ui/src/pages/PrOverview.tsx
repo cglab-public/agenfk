@@ -9,6 +9,7 @@ import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { parsePrQuery } from '../prSearch';
@@ -303,7 +304,15 @@ export function PrOverviewPage() {
   // the keystroke that produced them) and parsed on every render; only the
   // parsed number reaches the URL and the API, which is why a shared link says
   // ?pr=57 however the user spelled it in the box.
-  const [prQuery, setPrQuery] = useState<string>(searchParams.get('pr') ?? '');
+  //
+  // Repeated ?pr= params seed from the first entry that PARSES, mirroring the
+  // server's parsePrNumberFilter. searchParams.get returns the FIRST entry
+  // whatever it holds, so `?pr=&pr=57` would open the windowed overview and then
+  // the URL effect below would rewrite the address bar without `pr` at all —
+  // deleting the link's own evidence that it asked for PR #57.
+  const [prQuery, setPrQuery] = useState<string>(
+    () => [...searchParams.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '',
+  );
   const prNumber = parsePrQuery(prQuery);
   // A PR search supersedes the date window, the model filter and the developer
   // filter. Project (git remote) is the one filter it respects — a PR number is
@@ -332,11 +341,16 @@ export function PrOverviewPage() {
     if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
     // The parsed number, not the raw box text — links stay short and a pasted URL
     // does not end up in the address bar of everyone you share with.
-    if (prNumber !== null) p.set('pr', String(prNumber));
+    //
+    // `queryPrNumber`, i.e. the number the request will actually make. Writing the
+    // immediate value meant typing "57" put `?pr=5` in the address bar for a
+    // moment: anyone who copied the link, or reloaded, mid-typing got PR #5. The
+    // box still follows the keyboard; the committed query is what the URL holds.
+    if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, prQuery, prNumber, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -388,6 +402,26 @@ export function PrOverviewPage() {
     placeholderData: keepPreviousData,
   });
 
+  /**
+   * Which query the ROWS on screen were actually asked for. `dataQs` names the
+   * REQUEST; because of `keepPreviousData` the answer being rendered can still
+   * belong to the previous one, and for a PR search that gap is seconds rather
+   * than a blink (the scan is deliberately unbounded). So every claim about the
+   * data — "Showing PR #57 only", "No PR #57 found", and above all whether this
+   * data may be used as a facet universe — is pinned here rather than to the key
+   * currently in flight.
+   */
+  const settledQs = useSettledKey(dataQs, overview.isPlaceholderData);
+  const settledParams = useMemo(() => new URLSearchParams(settledQs), [settledQs]);
+  // What the rendered rows really are: a PR search's answer, or a window's.
+  const dataIsSearch = settledParams.has('pr');
+  const answeredPrNumber = Number(settledParams.get('pr') ?? '0');
+  // True only while the rows on screen are the rows the copy says they are:
+  // the box has settled (debounce elapsed) AND the answer for that key has
+  // arrived. Until then the page is showing the previous result.
+  const answerMatchesBox =
+    !overview.isPlaceholderData && settledQs === dataQs && queryPrNumber === prNumber;
+
   // Model + developer dropdown options come from the overview UNFILTERED by
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
@@ -408,16 +442,39 @@ export function PrOverviewPage() {
   });
   // While the unfiltered options query is still loading, fall back to the main
   // overview so the Developer/Model controls (and the selected chip) never vanish.
-  const optionsData = (filtersActive || searchActive ? optionsQuery.data : overview.data) ?? overview.data;
-  const modelOptions = optionsData?.byModel.map(m => m.model) ?? [];
-  const devOptions = optionsData?.byDeveloper.map(x => x.user_key) ?? [];
+  /**
+   * The option UNIVERSE behind the Developer/Model facets — never a search ANSWER.
+   * A miss contains no developers and no models and a hit contains exactly one of
+   * each, so sourcing the facets from an answer either hides the control (the bug
+   * this replaces) or offers a value the selected window does not contain, which
+   * the user can then pick to produce a zero-row overview.
+   *
+   * Two sources qualify. The unfiltered options query always does. The main
+   * overview does while it is neither a search answer nor narrowed by these same
+   * facets — and note that is a statement about the DATA, not about the box: the
+   * moment a search is typed its rows are still the window's and unfiltered, so
+   * the lists it carries are already the full ones. That is what keeps the facets
+   * populated and greyed through the search's own debounce and scan instead of
+   * blinking them out until the options request lands. `dataIsSearch` is the part
+   * that is easy to miss the other way: the instant the box is cleared
+   * `searchActive` is false while the rows on screen are STILL the search's answer.
+   */
+  const mainIsUniverse = !dataIsSearch && !filtersActive;
+  const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
+  const modelOptions = universe?.byModel.map(m => m.model) ?? [];
+  const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
   const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
 
   // Picking a preset clears any explicit date range so the two don't fight.
   const pickRange = (r: RangeKey) => { setRange(r); setCustomFrom(''); setCustomTo(''); };
 
   const d = overview.data;
-  const to = d?.period.to ?? (toParam || new Date().toISOString());
+  // The windowed end of the axis. A search answer's `period` is the span of the
+  // PRs it matched, NOT the selected window, so it must never size a windowed
+  // axis: after clearing a search the rows are still that answer, its `to` is the
+  // PR's own open date, and `buildDayAxis` returns [] whenever `from` lands after
+  // it — an empty heatmap and volume chart under a "Total PRs 1" tile.
+  const to = (!dataIsSearch ? d?.period.to : undefined) ?? (toParam || new Date().toISOString());
   // Under a PR search the day axis is the days the matched PRs actually appear
   // on, NOT a contiguous range. Two reasons, both load-bearing:
   //  - the selected range is superseded, so it may well exclude the PR entirely;
@@ -610,11 +667,23 @@ export function PrOverviewPage() {
         </div>
         <p id="pr-search-note" className="mt-1.5 text-[11px] text-ink-tertiary">
           {searchActive ? (
-            <>
-              Showing <b className="text-ink-secondary">PR #{prNumber}</b> only — the date, model and
-              developer filters do not apply to a PR search. Project (git remote) still does, because
-              a PR number is only unique within one repo.
-            </>
+            answerMatchesBox ? (
+              <>
+                Showing <b className="text-ink-secondary">PR #{prNumber}</b> only — the date, model and
+                developer filters do not apply to a PR search. Project (git remote) still does, because
+                a PR number is only unique within one repo.
+              </>
+            ) : (
+              /* The rows on screen belong to the previous request (the box has not
+                 settled, or the scan is still running — a PR search is deliberately
+                 unbounded, so this is seconds). "Showing PR #58 only" over PR #57's
+                 table is a wrong statement, not merely a slow one. */
+              <>
+                Searching for <b className="text-ink-secondary">PR #{prNumber}</b>… the date, model
+                and developer filters do not apply to a PR search; the results below are still the
+                previous request.
+              </>
+            )
           ) : (
             'Find one PR by number — accepts 57, #57 or a pasted PR URL. It overrides the date, model'
             + ' and developer filters; Project still applies.'
@@ -656,7 +725,7 @@ export function PrOverviewPage() {
       />
 
       <ModelMetaFilter
-        rows={optionsData?.byModel ?? []}
+        rows={universe?.byModel ?? []}
         selected={modelSel.set}
         onApply={modelSel.addMany}
         disabled={searchActive}
@@ -664,13 +733,34 @@ export function PrOverviewPage() {
       </FilterAccordion>
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
+      {/* keepPreviousData turned a failed request from a blank section into a
+          confident lie: the previous answer stays on screen indefinitely, under
+          the NEW labels, with no signal that anything went wrong. Say so. */}
+      {/* A failed request used to be silent: "Loading…" disappeared and the page
+          simply stopped rendering, which reads as "there is no data" rather than
+          "the query broke". keepPreviousData makes this worth saying out loud — a
+          PR search is the slowest, most breakable endpoint on the page. (Verified
+          behaviour: react-query v5 does NOT hold the placeholder across an error,
+          so the stale answer is already gone; the banner explains the gap rather
+          than dressing it up.) */}
+      {overview.isError && (
+        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-red-600 dark:text-red-400">
+          Could not load this overview.
+        </div>
+      )}
       {d && d.totals.prs === 0 && (
         <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
           {/* A search that misses must say which PR it missed, and whether a
               project filter narrowed it. "No PRs for this project and period"
-              would be actively wrong here — the period is not in play. */}
+              would be actively wrong here — the period is not in play.
+
+              And it may only make that claim about rows that were fetched for that
+              number: a zero-row PREVIOUS answer would otherwise read as "PR #58
+              does not exist" while #58 is still in flight. */}
           {searchActive
-            ? `No PR #${prNumber} found ${projectSel.set.size ? 'in the selected project' : 'in any project'} — it may belong to a different project, or was never reported through AgEnFK.`
+            ? answerMatchesBox
+              ? `No PR #${prNumber} found ${projectSel.set.size ? 'in the selected project' : 'in any project'} — it may belong to a different project, or was never reported through AgEnFK.`
+              : `Searching for PR #${prNumber}…`
             : 'No PRs registered for this project and period.'}
         </div>
       )}
@@ -877,6 +967,7 @@ export function PrOverviewPage() {
                   return (
                     <div
                       key={day}
+                      data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
                         ? 'bg-chip outline outline-1 outline-border-brand'
                         : h.isWeekend ? 'bg-chip' : ''}`}

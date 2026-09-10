@@ -86,6 +86,23 @@ describe('FacetMultiselect disabled', () => {
     expect(onClear).not.toHaveBeenCalled();
   });
 
+  it('counts what the popover actually holds, not just the option list', () => {
+    // The list this trigger opens is options ∪ selection. Quoting `options.length`
+    // advertised a smaller facet than the popover held — reachable on Org and
+    // UserDetail from a stale `?projects=` link, with no PR search involved.
+    render(
+      <FacetMultiselect
+        label="Project"
+        options={['git@github.com:acme/a.git', 'git@github.com:acme/b.git']}
+        selected={new Set(['git@github.com:acme/gone.git'])}
+        onToggle={onToggle}
+        onClear={onClear}
+        inlineThreshold={1}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /1 selected · 3 total/ })).toBeInTheDocument();
+  });
+
   it('still renders when the option universe is empty but a selection is live', () => {
     // The answer to a PR search that MISSES contains no models and no developers.
     // `if (options.length === 0) return null` therefore hid the whole facet, so a

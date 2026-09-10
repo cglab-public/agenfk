@@ -14,9 +14,16 @@
  *
  * The hub parses the same grammar server-side (`packages/hub/src/queries/
  * pr-overview-aggregate.ts` → `parsePrNumberFilter`) because a shared link can
- * carry any of these forms. The two are deliberately identical; the hub package
- * is a server the browser cannot import, so the rules are mirrored rather than
- * shared — change one, change both.
+ * carry any of these forms. The two REGEXES are kept byte-identical and the
+ * package boundary means they are mirrored rather than shared — change one,
+ * change both. The surrounding input handling differs on purpose: the server
+ * receives whatever Express put in the query slot (a number, or an array from a
+ * repeated `?pr=`) and takes the first entry that parses, while this box is
+ * always one string.
+ *
+ * Callers must mirror the "first entry that parses" rule too when reading a URL.
+ * PrOverview seeds the box from `getAll('pr')`, not `get('pr')`, so that
+ * `?pr=&pr=57` means the same thing in the browser and on the server.
  */
 
 /** `57` / `#57`, and the number inside a pasted GitHub PR, GitLab MR or

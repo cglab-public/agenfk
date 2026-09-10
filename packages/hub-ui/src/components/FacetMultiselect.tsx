@@ -146,7 +146,11 @@ export function FacetMultiselect({
         >
           {selected.size === 0
             ? `All ${options.length}`
-            : `${selected.size} selected · ${options.length} total`}
+            /* `visible`, not `options`: the list this trigger opens now contains
+               options ∪ selection, so quoting the option count here advertised a
+               smaller facet than the popover held — reachable on Org/UserDetail
+               with a stale `?projects=` link, no search involved. */
+            : `${selected.size} selected · ${visible.length} total`}
           <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
 
