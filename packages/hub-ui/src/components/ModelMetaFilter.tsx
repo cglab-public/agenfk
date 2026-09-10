@@ -48,6 +48,13 @@ interface Props {
   disabled?: boolean;
 }
 
+/** Why a still-selected control is dead. Named once because it has to be said in
+ *  three places, and because the WRONG reason is worse than none: "Add 0 more
+ *  Anthropic models" tells a reader who landed on a shared `?pr=57&model=` link
+ *  that the filter is exhausted, when it is actually switched off. */
+const SUPERSEDED_TITLE =
+  'A PR search supersedes the model filter — this selection is kept but does not apply until the search is cleared';
+
 export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: Props) {
   const providers = useMemo(() => providersFor(rows), [rows]);
   const classes = useMemo(() => licenseClassesFor(rows), [rows]);
@@ -95,9 +102,13 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 // hidden, so "all of Anthropic is already selected" is legible.
                 disabled={off}
                 onClick={() => applyProvider(p)}
-                title={p === UNCLASSIFIED
-                  ? 'Models the hub could not classify — configure them in Admin → Models'
-                  : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
+                // The tooltip has to name the REAL reason the button is dead —
+                // see SUPERSEDED_TITLE.
+                title={disabled
+                  ? SUPERSEDED_TITLE
+                  : p === UNCLASSIFIED
+                    ? 'Models the hub could not classify — configure them in Admin → Models'
+                    : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
@@ -122,9 +133,11 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 key={c}
                 disabled={off}
                 onClick={() => applyClass(c)}
-                title={c === 'open_weights'
-                  ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
-                  : 'No downloadable weights — hosted API only.'}
+                title={disabled
+                  ? SUPERSEDED_TITLE
+                  : c === 'open_weights'
+                    ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
+                    : 'No downloadable weights — hosted API only.'}
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
@@ -139,10 +152,14 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
       </div>
 
       {/* Show the licence of what is selected, so "Open weights" is verifiable
-          rather than a claim the reader has to trust. */}
+          rather than a claim the reader has to trust.
+
+          Under a PR search this disclosure describes a selection that does not
+          apply, so it is made inert too: the accordion says these filters "do not
+          apply", and a still-clickable control inside it contradicts that. */}
       {selected.size > 0 && (
-        <details className="text-[11px]">
-          <summary className="cursor-pointer text-ink-tertiary hover:text-ink-secondary">
+        <details className="text-[11px]" aria-disabled={disabled || undefined} title={disabled ? SUPERSEDED_TITLE : undefined}>
+          <summary className={`text-ink-tertiary ${disabled ? 'opacity-60 pointer-events-none' : 'cursor-pointer hover:text-ink-secondary'}`}>
             License of {selected.size} selected model{selected.size === 1 ? '' : 's'}
           </summary>
           <ul className="mt-1.5 space-y-0.5 max-h-32 overflow-y-auto">

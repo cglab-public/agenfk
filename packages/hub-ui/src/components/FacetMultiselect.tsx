@@ -65,16 +65,32 @@ export function FacetMultiselect({
     if (disabled) setOpen(false);
   }, [disabled]);
 
-  const filtered = useMemo(
-    () => filterFacetOptions(options, query, optionLabel),
-    [options, query, optionLabel],
+  /**
+   * What this control can show: the option universe PLUS whatever the user has
+   * selected. The second half is not a nicety. Under a PR search the option list
+   * can legitimately come back empty (a search that misses has no developers and
+   * no models in its answer) or narrower than the selection (a hit has exactly
+   * one of each) while the selection is still live in state and in the URL. Keying
+   * the control off `options` alone then either hides the facet outright or shows
+   * a header reading "Clear (1)" above chips that do not include the thing
+   * selected — a control misreporting its own state.
+   */
+  const visible = useMemo(
+    () => [...new Set([...options, ...selected])],
+    [options, selected],
   );
 
-  if (options.length === 0) return null;
+  const filtered = useMemo(
+    () => filterFacetOptions(visible, query, optionLabel),
+    [visible, query, optionLabel],
+  );
+
+  // Nothing to offer and nothing chosen: only then is there no control.
+  if (visible.length === 0) return null;
 
   // Below the threshold, fall back to the existing flat chip layout — keeps
   // the popover off small, fully-visible facets like EPIC/STORY/TASK/BUG.
-  if (options.length <= inlineThreshold) {
+  if (visible.length <= inlineThreshold) {
     return (
       <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -86,7 +102,7 @@ export function FacetMultiselect({
           )}
         </div>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {options.map((t) => {
+          {visible.map((t) => {
             const on = selected.has(t);
             return (
               <button
@@ -205,7 +221,7 @@ export function FacetMultiselect({
           {selected.size > 0 && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
               <span className="text-ink-tertiary">{selected.size} selected</span>
-              <button onClick={onClear} className="font-medium text-ink-tertiary hover:text-danger-muted">
+              <button onClick={onClear} disabled={disabled} className="font-medium text-ink-tertiary hover:text-danger-muted disabled:cursor-not-allowed disabled:opacity-50">
                 Clear all
               </button>
             </div>

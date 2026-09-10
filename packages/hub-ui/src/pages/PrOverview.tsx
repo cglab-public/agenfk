@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
@@ -8,6 +8,7 @@ import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion
 import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { parsePrQuery } from '../prSearch';
@@ -308,6 +309,13 @@ export function PrOverviewPage() {
   // filter. Project (git remote) is the one filter it respects — a PR number is
   // unique per repo, not per org.
   const searchActive = prNumber !== null;
+  // The request waits for a pause in typing; the box, the URL and the disabled
+  // controls do not. Without this, entering `1234` commits four query keys and
+  // fires four searches — and a PR search reads the org's whole PR event stream
+  // with no time bound (see routes/queries.ts), so four keystrokes is four full
+  // scans to answer one question. Cold load is unaffected: the hook starts
+  // settled, so a shared ?pr=57 link is not one tick slower.
+  const queryPrNumber = useDebouncedValue(prNumber, 350);
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -354,39 +362,53 @@ export function PrOverviewPage() {
     // server can never disagree with the user about what "PR #57" means — and a
     // stale ?model= left in the URL from before the search cannot quietly narrow
     // the answer to zero rows.
-    if (prNumber !== null) {
+    //
+    // `queryPrNumber`, not `prNumber`: this is the one consumer that should lag
+    // the keyboard (see useDebouncedValue).
+    if (queryPrNumber !== null) {
       const p = new URLSearchParams();
       if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
-      p.set('pr', String(prNumber));
+      p.set('pr', String(queryPrNumber));
       return p.toString();
     }
     const p = new URLSearchParams(baseQs);
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set, projectSel.set, prNumber]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, queryPrNumber]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
     queryFn: async () => (await api.get(`/v1/prs/overview?${dataQs}`)).data,
+    // Keep the previous answer on screen while the next one loads. Without it
+    // every committed key change makes `data` undefined, which unmounts the whole
+    // results tree (KPIs, charts, heatmap) behind "Loading…" — and closes any
+    // open drill-down, whose effect resets on `[d]`. A keystroke should not
+    // blank the page.
+    placeholderData: keepPreviousData,
   });
 
   // Model + developer dropdown options come from the overview UNFILTERED by
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
-  // once a model or developer is selected. Under a PR search those two facets are
-  // superseded and disabled, so there is nothing to populate them with — and a
-  // second, windowed request would be pure waste.
+  // once a model or developer is selected — or while a PR search is on.
+  //
+  // The search case is not waste and was a bug: under a search the main overview
+  // is the ANSWER, not the option universe. A miss returns empty lists and a hit
+  // returns one developer, so sourcing the facets from it makes the Developer and
+  // Model controls disappear — the opposite of the agreed "disabled and greyed,
+  // not hidden", and it leaves a live selection in the URL with nothing on screen
+  // to show or clear it. Keep feeding them the unfiltered lists.
   const filtersActive = !searchActive && (modelSel.set.size > 0 || devSel.set.size > 0);
   const optionsQuery = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
-    enabled: filtersActive,
+    enabled: filtersActive || searchActive,
     placeholderData: prev => prev, // keep prior options during refetch — don't blank the facet
   });
   // While the unfiltered options query is still loading, fall back to the main
   // overview so the Developer/Model controls (and the selected chip) never vanish.
-  const optionsData = (filtersActive ? optionsQuery.data : overview.data) ?? overview.data;
+  const optionsData = (filtersActive || searchActive ? optionsQuery.data : overview.data) ?? overview.data;
   const modelOptions = optionsData?.byModel.map(m => m.model) ?? [];
   const devOptions = optionsData?.byDeveloper.map(x => x.user_key) ?? [];
   const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
@@ -485,7 +507,15 @@ export function PrOverviewPage() {
           </h1>
           <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Hover explains the greyed presets on a shared link: the "do not
+            apply" note lives inside the accordion, so with `?filters=0` a
+            colleague landing on this page sees disabled controls and no reason. */}
+        <div
+          className="flex items-center gap-2"
+          title={searchActive
+            ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
+            : undefined}
+        >
           <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {RANGES.map(r => {
               const active = !customFrom && !customTo && range === r.key;
@@ -570,7 +600,6 @@ export function PrOverviewPage() {
           <input
             id="pr-number-search"
             type="text"
-            inputMode="numeric"
             autoComplete="off"
             value={prQuery}
             onChange={e => setPrQuery(e.target.value)}

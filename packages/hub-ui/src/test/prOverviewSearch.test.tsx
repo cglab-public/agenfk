@@ -243,9 +243,12 @@ describe('Superseded controls read as inactive', () => {
     expect(screen.getByRole('button', { name: 'glm-5.2' })).toBeDisabled();
     // …while the one filter the search respects stays clickable.
     expect(screen.getByRole('button', { name: 'acme/api' })).not.toBeDisabled();
-    // One PR has one model, so there is nothing to vendor-filter and the
-    // meta-filter is absent rather than an empty row of chips.
-    expect(screen.queryByRole('heading', { name: 'Provider' })).not.toBeInTheDocument();
+    // The vendor meta-filter stays PRESENT and DISABLED under a search, even
+    // though a single PR carries a single model. It used to disappear here, which
+    // read as "nothing to filter" but actually hid a live ?model= still sitting
+    // in the URL — the agreed contract is disabled and greyed, not hidden.
+    expect(screen.getByRole('heading', { name: 'Provider' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Z\.ai/ })).toBeDisabled();
   });
 
   it('disables the vendor meta-filter too when the number matches in two projects', async () => {
@@ -335,8 +338,11 @@ describe('Project stays live under the search', () => {
       expect(after.length).toBeGreaterThan(0);
       expect(after.at(-1)!.get('projects')).toBe(OTHER);
     });
-    // …and still no superseded filter rides along.
-    expect(qs(overviewUrls().at(-1)!).get('from')).toBeNull();
+    // …and still no superseded filter rides along. Checked on the request that
+    // carries `pr`: while a search is active a second, unfiltered options request
+    // runs alongside it (that one legitimately carries the window — it is what
+    // keeps the disabled facets populated), so "the last call" is ambiguous.
+    expect(qs(searchQuery()!).get('from')).toBeNull();
   });
 });
 
@@ -585,5 +591,95 @@ describe('Search URL and axis stay honest', () => {
 
     fireEvent.change(searchBox(), { target: { value: '57' } });
     expect(screen.getByRole('button', { name: 'Clear PR search' })).toBeInTheDocument();
+  });
+});
+
+// ── Adversarial-review fixes (CGLAB-151) ────────────────────────────────────
+// Two MAJOR findings from the review of the finished feature. Neither was a bug
+// in the parser or the SQL — they were what the page DOES around it.
+
+describe('Typing does not machine-gun the API', () => {
+  it('fires one search for a typed number, not one per keystroke', async () => {
+    // A PR search deliberately carries no time bound, so every committed query
+    // key is a scan of the org's whole PR event stream. Typing "1234" without a
+    // debounce is four of those to answer one question — plus four teardowns of
+    // the results tree while the user watches.
+    renderPage();
+    await screen.findByRole('button', { name: '90d' });
+
+    const box = searchBox();
+    for (const ch of '1234') fireEvent.change(box, { target: { value: box.value + ch } });
+
+    // The box keeps up with the keyboard…
+    expect(searchBox().value).toBe('1234');
+    // …the request waits for a pause instead.
+    expect(overviewUrls().filter(u => qs(u).get('pr')).length).toBe(0);
+
+    await waitFor(() => expect(searchQuery()).not.toBeNull());
+    expect(overviewUrls().filter(u => qs(u).get('pr')).length).toBe(1);
+    expect(qs(searchQuery()!).get('pr')).toBe('1234');
+  });
+});
+
+describe('Superseded facets stay on screen', () => {
+  it('keeps the facets and their selection visible when the search misses', async () => {
+    // The answer to a miss contains no models and no developers. Sourcing the
+    // facets from it therefore HIDES both controls — while ?model= and
+    // ?developers= are still in force and snap back the moment the search is
+    // cleared. A live filter with no control to see or clear it is the opposite
+    // of the agreed "disabled and greyed, not hidden".
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      const q = new URLSearchParams(url.split('?')[1] ?? '');
+      if (q.get('pr')) {
+        const none = makeOverview([]);
+        return {
+          data: {
+            ...none, period: { from: null, to: null }, prs: [],
+            byDeveloper: [], byModel: [], previous: null,
+          },
+        };
+      }
+      return { data: makeOverview(['claude-opus-4-8', 'glm-5.2']) };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=999&model=glm-5.2&developers=alice@acme.com']}>
+          <PrOverviewPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText(/No PR #999 found/);
+
+    expect(screen.getByRole('button', { name: 'glm-5.2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'alice@acme.com' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'acme/api' })).not.toBeDisabled();
+    expect(screen.queryByText(/do not apply/i)).toBeInTheDocument();
+  });
+
+  it('renders a selected value that is not in the option list', async () => {
+    // A hit has exactly one developer and one model, so a selection made before
+    // the search is not in `options` any more. The flat layout rendered `options`
+    // only, which left the header reading "Clear (1)" above chips that did not
+    // include the thing selected — a control misreporting its own state.
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      const q = new URLSearchParams(url.split('?')[1] ?? '');
+      if (q.get('pr')) return { data: makeSearchHit(57) };
+      return { data: makeOverview(['claude-opus-4-8', 'glm-5.2']) };
+    });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/prs?pr=57&developers=carol@acme.com']}>
+          <PrOverviewPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText('Weighted size');
+    // carol never appears in the answer (bob opened #57), yet her selection is
+    // still live — so she must be on screen.
+    expect(screen.getByRole('button', { name: 'carol@acme.com' })).toBeInTheDocument();
   });
 });

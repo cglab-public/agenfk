@@ -47,6 +47,14 @@ describe('parsePrQuery', () => {
     expect(parsePrQuery('https://bitbucket.org/acme/api/pull-requests/57')).toBe(57);
   });
 
+  it('parses a Bitbucket CLOUD URL too — no hyphen, and it is what people paste', () => {
+    // Cloud serves /pullrequests/, Server and Data Center serve /pull-requests/.
+    // The box advertises "paste the URL", so the shape users actually paste must
+    // not silently degrade to "no filter".
+    expect(parsePrQuery('https://bitbucket.org/acme/api/pullrequests/57/diff')).toBe(57);
+    expect(parsePrQuery('https://bitbucket.org/acme/api/pullrequests/57')).toBe(57);
+  });
+
   it('takes the number from the URL, not from a repo or org that also has digits', () => {
     expect(parsePrQuery('https://github.com/acme2/api2/pull/57')).toBe(57);
   });

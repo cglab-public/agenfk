@@ -107,6 +107,33 @@ describe('parsePrNumberFilter', () => {
     expect(() => parsePrNumberFilter(['57', '58'] as unknown as string)).not.toThrow();
     expect(parsePrNumberFilter(['57', '58'] as unknown as string)).toBe(57);
   });
+
+  it('takes the first ?pr= value that PARSES, not simply the first value', () => {
+    // `?pr=&pr=57` does carry a search. Reading only raw[0] would return null and
+    // run the windowed overview against a URL that visibly says PR #57 — the
+    // exact link-versus-page disagreement this feature exists to prevent.
+    expect(parsePrNumberFilter(['', '57'])).toBe(57);
+    expect(parsePrNumberFilter(['abc', '57'])).toBe(57);
+    expect(parsePrNumberFilter(['#57', '58'])).toBe(57);
+    // …and when nothing parses it is still "no filter", not a crash or zero rows.
+    expect(parsePrNumberFilter(['', ''])).toBeNull();
+    expect(parsePrNumberFilter(['abc', 1.5])).toBeNull();
+  });
+
+  it('accepts a Bitbucket Cloud URL (no hyphen) as well as Server / Data Center', () => {
+    // Cloud serves /pullrequests/, Server and DC serve /pull-requests/. A pasted
+    // Cloud link that falls through to "no filter" is the worst possible outcome:
+    // the page looks like it searched and found nothing interesting.
+    expect(parsePrNumberFilter('https://bitbucket.org/acme/api/pullrequests/57/diff')).toBe(57);
+    expect(parsePrNumberFilter('https://bitbucket.org/acme/api/pull-requests/57/diff')).toBe(57);
+  });
+
+  it('round-trips the largest safe PR number through the string form', () => {
+    // The client asserts MAX_SAFE_INTEGER parses; this is the server side of the
+    // same claim, through Number(m[1]) rather than a numeric query value.
+    expect(parsePrNumberFilter('9007199254740991')).toBe(9007199254740991);
+    expect(parsePrNumberFilter('0057')).toBe(57);
+  });
 });
 
 describe('aggregatePrOverview — PR number search', () => {

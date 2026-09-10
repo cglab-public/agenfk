@@ -63,4 +63,66 @@ describe('FacetMultiselect disabled', () => {
     rerender(tree(true));
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
   });
+
+  it('disables the flat-layout Clear button as well as the popover footer one', () => {
+    // The popover footer grew the `disabled` guard; the flat layout's Clear did
+    // not, so the same action was inert in one layout and live in the other.
+    // Reachable today: below the threshold the facet never opens a popover, so a
+    // disabled facet really does show this button.
+    render(
+      <FacetMultiselect
+        label="Type"
+        options={['EPIC', 'STORY', 'TASK', 'BUG']}
+        selected={new Set(['BUG'])}
+        onToggle={onToggle}
+        onClear={onClear}
+        inlineThreshold={6}
+        disabled
+      />,
+    );
+    const clear = screen.getByRole('button', { name: /Clear \(1\)/ });
+    expect(clear).toBeDisabled();
+    fireEvent.click(clear);
+    expect(onClear).not.toHaveBeenCalled();
+  });
+
+  it('still renders when the option universe is empty but a selection is live', () => {
+    // The answer to a PR search that MISSES contains no models and no developers.
+    // `if (options.length === 0) return null` therefore hid the whole facet, so a
+    // shared `?pr=999&model=…` link showed a filter in force with no control to
+    // see it or clear it. Only "nothing offered AND nothing chosen" means no
+    // control.
+    render(
+      <FacetMultiselect
+        label="Model"
+        options={[]}
+        selected={new Set(['glm-5.2'])}
+        onToggle={onToggle}
+        onClear={onClear}
+        inlineThreshold={6}
+        disabled
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'glm-5.2' })).toBeDisabled();
+  });
+
+  it('shows a selected value that the option list does not contain', () => {
+    // A search HIT has exactly one developer and one model, so a selection made
+    // before the search is no longer in `options`. Rendering `options` alone left
+    // the header reading "Clear (1)" above chips that did not include what was
+    // selected — a control misreporting its own state.
+    render(
+      <FacetMultiselect
+        label="Developer"
+        options={['bob@acme.com']}
+        selected={new Set(['carol@acme.com'])}
+        onToggle={onToggle}
+        onClear={onClear}
+        inlineThreshold={6}
+        disabled
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'carol@acme.com' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'bob@acme.com' })).toBeInTheDocument();
+  });
 });

@@ -80,8 +80,10 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
  * Accepts the three spellings a developer actually has to hand: the bare number
  * (`57`), the number with the `#` they copied out of GitHub (`#57`), and a
  * pasted PR URL (`https://github.com/acme/api/pull/57/files`). GitLab's
- * `merge_requests` and Bitbucket's `pull-requests` paths are accepted too — the
- * hub sizes PRs from any host, only the derived *link* is GitHub-specific.
+ * `merge_requests` and Bitbucket's `pull-requests` / `pullrequests` paths are
+ * accepted too — the hub sizes PRs from any host, only the derived *link* is
+ * GitHub-specific. Bitbucket needs both spellings: `pull-requests` is Server /
+ * Data Center, `pullrequests` (no hyphen) is what Cloud actually emits.
  *
  * Anything else returns null, meaning **no filter** rather than "match nothing".
  * That asymmetry is deliberate: a half-typed box (`12a`) or a hand-edited link
@@ -91,14 +93,26 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
  */
 export function parsePrNumberFilter(raw: unknown): number | null {
   if (raw == null) return null;
-  // Repeated ?pr= params arrive as an array from Express — take the first entry
-  // rather than throwing, the same defence parseList gives the other filters.
-  const value = Array.isArray(raw) ? raw[0] : raw;
+  // Repeated ?pr= params arrive as an array from Express. Take the first entry
+  // that PARSES, not simply the first entry: `?pr=&pr=57` does carry a search,
+  // and reading it as "no filter" would run the windowed overview against a URL
+  // that visibly says PR #57 — the exact disagreement between link and page this
+  // feature exists to prevent. Never throws, whatever the shapes are.
+  const candidates = Array.isArray(raw) ? raw : [raw];
+  for (const value of candidates) {
+    const n = parseOnePrNumber(value);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+/** One value, one attempt. See `parsePrNumberFilter` for the array handling. */
+function parseOnePrNumber(value: unknown): number | null {
   if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
   if (typeof value !== 'string') return null;
   const s = value.trim();
   if (!s) return null;
-  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull-requests|pull|merge_requests)\/(\d+)/.exec(s);
+  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull-?requests|pull|merge_requests)\/(\d+)/.exec(s);
   if (!m) return null;
   const n = Number(m[1]);
   // Past the safe-integer range the stored number and this one are no longer

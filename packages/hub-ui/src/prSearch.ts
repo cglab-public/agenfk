@@ -20,9 +20,11 @@
  */
 
 /** `57` / `#57`, and the number inside a pasted GitHub PR, GitLab MR or
- *  Bitbucket pull-request URL. */
+ *  Bitbucket pull-request URL. Bitbucket needs both spellings — `pull-requests`
+ *  is Server / Data Center, `pullrequests` (no hyphen) is what Cloud emits, and a
+ *  pasted Cloud link that silently means "no filter" is the worst outcome here. */
 const PR_NUMBER_RE = /^#?(\d+)$/;
-const PR_URL_RE = /\/(?:pull-requests|pull|merge_requests)\/(\d+)/;
+const PR_URL_RE = /\/(?:pull-?requests|pull|merge_requests)\/(\d+)/;
 
 export function parsePrQuery(raw: string): number | null {
   if (!raw) return null;
