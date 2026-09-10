@@ -2,6 +2,59 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.19-beta.1] — 2026-09-10
+
+Cut from `feat/CGLAB-151_pr-overview-pr-number-search` rather than `main`, so the
+PR-number search can be exercised before the branch merges. It carries CGLAB-151
+and nothing else that is sitting unmerged.
+
+### Hub-ui — find one PR by number on the Overview page (CGLAB-151)
+
+A PR number is the one identifier a developer actually has, and it was the one
+thing the Overview could not take. The number is unique per repo, so it is also
+the question the page was structurally unable to answer: the route pushes a time
+bound into SQL and applies the model/developer filters, so a PR opened outside
+the visible window simply was not there to find.
+
+- **The search box supersedes every filter except Project.** Date range (preset
+  or explicit), model and developer are dropped from the request — not sent
+  alongside the number — so a stale `?model=` left in a shared URL cannot quietly
+  narrow the answer to zero rows. Project stays live because a PR number is only
+  unique within one repo; the same number in two repos shows both, by design.
+- **It takes the forms people actually have.** `57`, `#57` copied out of the
+  GitHub header, or a pasted URL — GitHub, GitLab `merge_requests`, and both
+  Bitbucket spellings (`pull-requests` on Server/DC, `pullrequests` on Cloud).
+  Anything that is not a number means *no search*, so a half-typed box leaves the
+  normal window on screen instead of an empty page that reads as lost data.
+- **Superseded controls go grey, not missing**, and keep their selection, so
+  clearing the search restores it in front of the user. An open popover closes
+  when its facet is disabled — otherwise it is a keyboard trap over inert options.
+
+### Hub — `?pr=` on `/v1/prs/overview`
+
+When the param is present the route lifts the SQL upper bound (otherwise a re-size
+event after `to` is invisible and the PR reports a stale size), skips the model
+and developer filters, and skips the previous-period delta — a comparison window
+is meaningless for a single PR.
+
+### Decisions worth knowing about
+
+- **A search's day axis is the days its rows actually appear on**, not a derived
+  range. A contiguous axis over a span wider than 366 days hits `buildDayAxis`'s
+  cap and silently drops the overflow: the KPI tile counted 2 PRs while the chart
+  drew 1, and the dropped PR had no cell to drill into. An axis built from the
+  data cannot truncate, because it is the data — and it is deliberately
+  **unbounded**, so a PR open for three years renders ~1000 columns. Long is
+  allowed to look long; quietly wrong is not.
+- **Typing does not machine-gun the API.** A PR search has no time bound, so every
+  committed query is an org-wide scan; the request waits 350ms for a pause while
+  the box, the disabled controls and the results keep up.
+- **Copy describes the rows, not the request in flight.** With the previous answer
+  held on screen during a load, `data` and the live query key belong to different
+  requests — which is how "Showing PR #57 only" came to sit over the window's
+  table, and an empty heatmap came to sit under "Total PRs 1". `useSettledKey`
+  pins every claim about the data to the query that produced it.
+
 ## [1.1.18] — 2026-09-08
 
 Stable, cumulative over `1.1.18-beta.1`–`.4`. Everything here shipped to the
