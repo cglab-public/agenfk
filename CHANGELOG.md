@@ -2,6 +2,60 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.19-beta.2] — 2026-09-10
+
+Also cut from `feat/CGLAB-151_pr-overview-pr-number-search`, piling on
+`v1.1.19-beta.1`. Cumulative: it still carries the CGLAB-151 PR-number search
+plus everything below.
+
+### A failing verifyCommand now says what happened (BUG b233143b)
+
+The exit code was captured server-side, used to decide pass/fail, and thrown
+away. Three different failures read identically as `Validation Failed!`: a red
+test suite (1), a command killed by the runtime cap (124), and a command that
+could not be spawned at all (127). The only view of output was a head-1KB +
+tail-1KB slice of a raw byte stream, and the full log sat under the database
+directory — on a system install `~/.agenfk-system/.agenfk/logs`, pruned to three
+files and named only in a trailer.
+
+The failure message now leads with the outcome (exit code, the signal that killed
+it, or the runtime cap), repeats the **last** 25 lines rather than the first, and
+names the log path.
+
+**Validation logs moved.** They are written to
+`$TMPDIR/agenfk-verify-<uid>/<itemId>/<testId>.log`; the previous
+`<dbDir>/logs/` location is no longer used. The directory is `0700` and the file
+`0600` because the temp dir is world-writable and command output routinely echoes
+environment — tokens, connection strings. Fixed at the same time: the root is now
+checked with `lstat` (`stat` follows symlinks, so the ownership check was
+answering "is the thing at the other end mine?"), the file mode is real via an
+exclusive-create flag, the prune can no longer delete the log the same response
+just promised, and `DELETE /projects/:id` purges logs before hard-deleting the
+rows that made them unreachable.
+
+Implemented server-side, so `agenfk verify` and MCP `validate_progress` both get
+it. A command that reports progress with carriage returns no longer floods the
+response: the tail is split on `\r` as well as `\n` and capped in bytes.
+
+### The upgrade check can no longer resolve a hub release (BUG b233143b)
+
+Cutting `hub-v1.1.19-beta.1` — the hub-only Docker image line — created it
+without `--prerelease`, so GitHub counted a hub build as the latest **stable**
+release. Every CLI then reported `vhub-v1.1.19-beta.1 is available`, and
+`agenfk upgrade` would have tried to install a Docker image tag.
+
+That is worse than a wrong banner. `parseSemver` fails on a hub tag, the
+comparison falls back to a string compare that ranks letters above digits, so the
+tag read as a newer release — and the upgrade tier ships with it, where
+`mandatory` makes every CLI invocation exit 1.
+
+`isHubRelease` now lives in `@agenfk/core` beside the comparison it defeats;
+`isUpgrade` refuses an unparseable version; all three CLI sources (including the
+one-hour cache) reduce through one guarded function; and `GET /releases/latest`
+re-queries the release list rather than promoting a hub tag. `hub-image.yml` marks
+hub prereleases `--prerelease` and stable hub builds `--latest=false`, so the bad
+state cannot be created again. The CLI's gh calls moved off shell interpolation.
+
 ## [1.1.19-beta.1] — 2026-09-10
 
 Cut from `feat/CGLAB-151_pr-overview-pr-number-search` rather than `main`, so the
