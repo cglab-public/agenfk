@@ -15,6 +15,14 @@ interface Props {
    */
   inlineThreshold?: number;
   placeholder?: string;
+  /**
+   * Render the facet inert without hiding it. Used by the PR Overview's PR-number
+   * search, which supersedes this facet: a control that still looks clickable
+   * while its selection has no effect on the numbers is a lie, and removing it
+   * outright would make the filter look like it had been cleared. Selection is
+   * preserved — clearing the search brings the facet back exactly as it was.
+   */
+  disabled?: boolean;
 }
 
 export function FacetMultiselect({
@@ -26,6 +34,7 @@ export function FacetMultiselect({
   optionLabel,
   inlineThreshold = 0,
   placeholder = 'Search…',
+  disabled = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -51,35 +60,57 @@ export function FacetMultiselect({
     };
   }, [open]);
 
-  const filtered = useMemo(
-    () => filterFacetOptions(options, query, optionLabel),
-    [options, query, optionLabel],
+  // Superseding filters must not leave an open popover hanging over them.
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  /**
+   * What this control can show: the option universe PLUS whatever the user has
+   * selected. The second half is not a nicety. Under a PR search the option list
+   * can legitimately come back empty (a search that misses has no developers and
+   * no models in its answer) or narrower than the selection (a hit has exactly
+   * one of each) while the selection is still live in state and in the URL. Keying
+   * the control off `options` alone then either hides the facet outright or shows
+   * a header reading "Clear (1)" above chips that do not include the thing
+   * selected — a control misreporting its own state.
+   */
+  const visible = useMemo(
+    () => [...new Set([...options, ...selected])],
+    [options, selected],
   );
 
-  if (options.length === 0) return null;
+  const filtered = useMemo(
+    () => filterFacetOptions(visible, query, optionLabel),
+    [visible, query, optionLabel],
+  );
+
+  // Nothing to offer and nothing chosen: only then is there no control.
+  if (visible.length === 0) return null;
 
   // Below the threshold, fall back to the existing flat chip layout — keeps
   // the popover off small, fully-visible facets like EPIC/STORY/TASK/BUG.
-  if (options.length <= inlineThreshold) {
+  if (visible.length <= inlineThreshold) {
     return (
       <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
           {selected.size > 0 && (
-            <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted">
+            <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
               Clear ({selected.size})
             </button>
           )}
         </div>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {options.map((t) => {
+          {visible.map((t) => {
             const on = selected.has(t);
             return (
               <button
                 key={t}
                 onClick={() => onToggle(t)}
+                disabled={disabled}
                 title={t}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
+                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed ${on
                   ? 'text-accent-text border-border-brand bg-chip'
                   : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
               >
@@ -99,7 +130,7 @@ export function FacetMultiselect({
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
         {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted">
+          <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
             Clear ({selected.size})
           </button>
         )}
@@ -108,13 +139,18 @@ export function FacetMultiselect({
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-border-brand hover:text-accent-text transition-colors"
+          disabled={disabled}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-border-brand hover:text-accent-text transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
           aria-haspopup="listbox"
           aria-expanded={open}
         >
           {selected.size === 0
             ? `All ${options.length}`
-            : `${selected.size} selected · ${options.length} total`}
+            /* `visible`, not `options`: the list this trigger opens now contains
+               options ∪ selection, so quoting the option count here advertised a
+               smaller facet than the popover held — reachable on Org/UserDetail
+               with a stale `?projects=` link, no search involved. */
+            : `${selected.size} selected · ${visible.length} total`}
           <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
 
@@ -127,8 +163,9 @@ export function FacetMultiselect({
             <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
             <button
               onClick={() => onToggle(v)}
+              disabled={disabled}
               aria-label={`Remove ${v}`}
-              className="rounded-full hover:bg-brand/20 p-0.5 -mr-0.5"
+              className="rounded-full hover:bg-brand/20 p-0.5 -mr-0.5 disabled:cursor-not-allowed"
             >
               <X className="w-3 h-3" />
             </button>
@@ -167,7 +204,8 @@ export function FacetMultiselect({
                   <li key={v} role="option" aria-selected={on}>
                     <button
                       onClick={() => onToggle(v)}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors ${on
+                      disabled={disabled}
+                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors disabled:cursor-not-allowed ${on
                         ? 'bg-chip text-accent-text'
                         : 'text-ink hover:bg-chip/50'}`}
                       title={v}
@@ -187,7 +225,7 @@ export function FacetMultiselect({
           {selected.size > 0 && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
               <span className="text-ink-tertiary">{selected.size} selected</span>
-              <button onClick={onClear} className="font-medium text-ink-tertiary hover:text-danger-muted">
+              <button onClick={onClear} disabled={disabled} className="font-medium text-ink-tertiary hover:text-danger-muted disabled:cursor-not-allowed disabled:opacity-50">
                 Clear all
               </button>
             </div>
