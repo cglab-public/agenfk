@@ -339,9 +339,15 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
     // bounded nothing and the whole run went into the message — the field the
     // agent reads, and the one that is not byte-capped the way `output` is.
     const noisy = script('noisy-cr.js', `
-      for (let i = 0; i < 20000; i++) process.stdout.write('\\rframe ' + i);
-      console.log('\\nTHE_REAL_FAILURE');
-      process.exit(1);
+      let s = '';
+      for (let i = 0; i < 20000; i++) s += '\\rframe ' + i;
+      s += '\\nTHE_REAL_FAILURE\\n';
+      // The flush callback is load-bearing. Writes to a piped stdout are async,
+      // so calling process.exit() straight after them discards whatever is still
+      // queued: this fixture passed on a quiet laptop and lost its tail at frame
+      // 3180 on a loaded CI runner, failing an assertion about OUR code when the
+      // bug was in the fixture.
+      process.stdout.write(s, () => process.exit(1));
     `);
     const { item } = await setupItem('DiagCR');
 
@@ -351,6 +357,12 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
     expect(res.body.message).toContain('THE_REAL_FAILURE');
     expect(res.body.message).not.toContain('frame 17');
     expect(res.body.message.length).toBeLessThan(8000);
+    // The assertion that actually separates line-splitting from byte-capping.
+    // Split on \r and the last 25 lines are ~300 bytes, so nothing needs
+    // truncating. Do not split, and the whole run is ONE line, the byte cap
+    // fires, and the marker appears — without it this test passes with the CR
+    // handling deleted, which is how it first shipped.
+    expect(res.body.message).not.toContain('tail truncated');
   });
 
   it('settles a cap-kill when a surviving grandchild holds the stdout pipe open', async () => {
