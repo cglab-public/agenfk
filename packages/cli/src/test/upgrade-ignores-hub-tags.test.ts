@@ -34,18 +34,22 @@ vi.mock('@agenfk/telemetry', () => ({
 vi.mock('axios');
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  // The resolver shells out with execFileSync + an argv array now, so `repo`
+  // cannot smuggle a shell command. The mock has to expose that name or the
+  // fallback path would call undefined.
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
-  default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
+  default: { execSync: vi.fn(), execFileSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
 vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
 import axios from 'axios';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { fetchLatestReleaseTag } from '../index';
 
 const mockedAxios = vi.mocked(axios, true);
-const mockedExec = vi.mocked(execSync, true);
+const mockedExec = vi.mocked(execFileSync, true);
 
 describe('fetchLatestReleaseTag ignores the hub-only release line (BUG b233143b)', () => {
   // clearAllMocks() drops call history but KEEPS implementations, so a

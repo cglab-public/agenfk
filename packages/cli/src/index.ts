@@ -251,8 +251,13 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     // `gh release list` alone returns the most recent release of ANY kind, so a
     // later stable (or an asset-less) release could be mis-resolved as the
     // latest beta and 404 on download.
-    const out = execSync(
-      `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
+    //
+    // execFileSync with an argv array, not a shell string: `repo` reaches here
+    // from configuration, and interpolating it into a command line hands that
+    // config file a shell.
+    const out = execFileSync(
+      'gh',
+      ['release', 'list', '--repo', repo, '--limit', '30', '--json', 'tagName,isPrerelease,createdAt'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim();
     return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
@@ -264,10 +269,11 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
   }
 
-  const viewTag = execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
+  const viewTag = execFileSync(
+    'gh',
+    ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
   if (viewTag && !isHubRelease(viewTag)) return viewTag;
   // Same recovery as the REST path — `gh release view` reports the newest
   // release, hub or not.

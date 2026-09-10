@@ -257,10 +257,30 @@ const KILL_GRACE_MS = 5000;
  */
 const SAFE_ITEM_ID = /^[A-Za-z0-9._-]{1,128}$/;
 function assertSafeItemId(itemId: string): string {
-  if (!SAFE_ITEM_ID.test(itemId) || itemId === '.' || itemId === '..') {
+  // Returns the MATCH, not the argument. The value that reaches a path is then
+  // one the matcher produced rather than one that merely survived a test — the
+  // pattern admits no separator, no dot-dot and no absolute prefix, and it is
+  // worth being explicit about that because a recursive rmSync downstream is
+  // keyed off this value.
+  const matched = SAFE_ITEM_ID.exec(String(itemId ?? ''))?.[0];
+  if (!matched || matched === '.' || matched === '..') {
     throw new Error(`Refusing to use '${itemId}' as a log path segment: not a valid item id.`);
   }
-  return itemId;
+  return matched;
+}
+
+/**
+ * Test seam only — redirects the log root so a suite does not share the
+ * machine-global default with a live agenfk server running on the same box.
+ *
+ * Deliberately a function and not an environment variable: an env override puts
+ * an unvalidated, operator-supplied path into the source of every log write,
+ * which is a wider surface than the tests need. There is no supported way for a
+ * deployment to relocate these logs.
+ */
+let verifyLogRootOverride = '';
+export function setVerifyLogRootForTests(dir: string | null): void {
+  verifyLogRootOverride = dir ?? '';
 }
 
 /**
@@ -269,15 +289,12 @@ function assertSafeItemId(itemId: string): string {
  * occasional pasted credential. Exported so tests assert against the real path
  * instead of re-implementing the naming and drifting from it.
  *
- * AGENFK_VERIFY_LOG_DIR overrides it. That exists for tests, not users: the
- * default is a stable, predictable name shared by every agenfk server this uid
- * runs, so a test suite that cleans the root would delete the logs of a real
- * server running alongside it — which on a machine dogfooding agenfk is the
- * normal state, not an edge case.
+ * The default name is stable and predictable, shared by every agenfk server this
+ * uid runs; on a machine dogfooding agenfk a live server is writing here while
+ * tests run, so suites redirect via setVerifyLogRootForTests().
  */
 export function getVerifyLogRoot(): string {
-  const override = process.env.AGENFK_VERIFY_LOG_DIR;
-  if (override && override.trim()) return override;
+  if (verifyLogRootOverride) return verifyLogRootOverride;
   const uid = typeof process.getuid === 'function' ? `-${process.getuid()}` : '';
   return path.join(os.tmpdir(), `agenfk-verify${uid}`);
 }
@@ -2975,7 +2992,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   });
 
   const testId = uuidv4();
-  const logPath = writeValidationLog(itemId, testId, output);
+  // Key the log by the id AS STORED rather than the URL segment. The regex guard
+  // already makes traversal impossible; this removes the class instead of the
+  // instance, so the value reaching mkdir / write / unlink is one the server
+  // minted and an id that does not exist cannot create a directory at all.
+  const storedItem = await storage.getItem(itemId);
+  const logPath = storedItem ? writeValidationLog(storedItem.id, testId, output) : null;
   const preview = buildOutputPreview(output, logPath);
   const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';

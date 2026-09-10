@@ -51,10 +51,10 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // agenfk, a suite that cleaned the root would delete a LIVE server's verify
 // logs on every afterEach. The override keeps the tests off that path.
 const LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifytest-'));
-process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+setVerifyLogRootForTests(LOG_ROOT);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot } from '../server';
+import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests } from '../server';
 
 /** Item log dir for one item, under the temp root. */
 const itemLogDir = (itemId: string) => path.join(getVerifyLogRoot(), itemId);
@@ -95,12 +95,12 @@ afterAll(() => {
   rmrf(LOG_ROOT);
   // process.env is process-global and vitest reuses workers: leaving this set
   // would redirect a sibling test file that expects the default root.
-  delete process.env.AGENFK_VERIFY_LOG_DIR;
+  setVerifyLogRootForTests(null);
 });
 
 describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () => {
-  beforeEach(async () => { await initStorage(); process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT; clearLogRoot(); });
-  afterEach(() => { clearLogRoot(); rmrf(dbLogsDir()); process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT; });
+  beforeEach(async () => { await initStorage(); setVerifyLogRootForTests(LOG_ROOT); clearLogRoot(); });
+  afterEach(() => { clearLogRoot(); rmrf(dbLogsDir()); setVerifyLogRootForTests(LOG_ROOT); });
 
   it('states the exit code explicitly when the command fails', async () => {
     if (!VERIFY_TOKEN) return;
@@ -236,7 +236,7 @@ describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () =
     // fails, so there is no log to point at.
     const blocker = path.join(LOG_ROOT, 'occupied');
     fs.writeFileSync(blocker, 'not a directory');
-    process.env.AGENFK_VERIFY_LOG_DIR = blocker;
+    setVerifyLogRootForTests(blocker);
     try {
       const res = await request(app)
         .post(`/items/${item.id}/validate`)
@@ -252,7 +252,7 @@ describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () =
       // exists to fix, so the reason is part of the contract.
       expect(res.body.message).toMatch(/log root refused/i);
     } finally {
-      process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+      setVerifyLogRootForTests(LOG_ROOT);
       rmrf(blocker);
     }
   });
@@ -307,13 +307,13 @@ describe('POST /items/:id/validate — failure diagnostics (BUG b233143b)', () =
 describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
   beforeEach(async () => {
     await initStorage();
-    process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+    setVerifyLogRootForTests(LOG_ROOT);
     clearLogRoot();
   });
   afterEach(() => {
     clearLogRoot();
     delete process.env.AGENFK_VERIFY_MAX_MS;
-    process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+    setVerifyLogRootForTests(LOG_ROOT);
   });
 
   /**
@@ -415,7 +415,7 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-linktarget-'));
     const link = path.join(LOG_ROOT, 'planted');
     fs.symlinkSync(target, link);
-    process.env.AGENFK_VERIFY_LOG_DIR = link;
+    setVerifyLogRootForTests(link);
     try {
       const { item } = await setupItem('DiagSymlink');
       const res = await validate(item.id, failCmd);
@@ -426,7 +426,7 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
       // Nothing was written through the link into the target tree.
       expect(fs.readdirSync(target)).toHaveLength(0);
     } finally {
-      process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+      setVerifyLogRootForTests(LOG_ROOT);
       rmrf(target);
     }
   });
@@ -464,7 +464,7 @@ describe('POST /items/:id/validate — review findings (BUG b233143b)', () => {
 describe('DELETE /projects/:id — purges verify logs with the project (BUG b233143b)', () => {
   beforeEach(async () => {
     await initStorage();
-    process.env.AGENFK_VERIFY_LOG_DIR = LOG_ROOT;
+    setVerifyLogRootForTests(LOG_ROOT);
     clearLogRoot();
   });
   afterEach(() => { clearLogRoot(); });

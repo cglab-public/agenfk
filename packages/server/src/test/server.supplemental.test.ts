@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -40,7 +40,7 @@ vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 // override would silently redirect this file's expectations depending on which
 // file ran first. Pin it, and read it literally rather than via the getter.
 const VERIFY_LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifylog-supplemental-'));
-process.env.AGENFK_VERIFY_LOG_DIR = VERIFY_LOG_ROOT;
+setVerifyLogRootForTests(VERIFY_LOG_ROOT);
 
 // CRITICAL: install a no-op exec impl for POST /releases/update *before any
 // test runs*. Without this, the supplemental test below shells out for real
@@ -77,7 +77,7 @@ beforeAll(async () => {
 afterAll(() => {
   // Restore ambient state: process.env is process-global and vitest reuses
   // workers, so leaving the override set would redirect a sibling file.
-  delete process.env.AGENFK_VERIFY_LOG_DIR;
+  setVerifyLogRootForTests(null);
   if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true });
   // Restore the original jira token state (sandbox-scoped since item 9c297075)
   if (globalSavedToken) {

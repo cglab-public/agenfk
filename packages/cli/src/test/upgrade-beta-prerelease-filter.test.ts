@@ -26,9 +26,10 @@ vi.mock('@agenfk/telemetry', () => ({
 vi.mock('axios');
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
-  default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
+  default: { execSync: vi.fn(), execFileSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
 vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 
