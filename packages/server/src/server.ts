@@ -227,12 +227,19 @@ async function resolveProjectRepo(projectId: string): Promise<string | null> {
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
-// <dbDir>/logs/<itemId>/<testId>.log. The HTTP response, comment, and tests[]
-// record carry only a head+tail truncated preview plus the log file path, so
-// MCP payloads stay small while full logs remain available on disk.
+// <tmpdir>/agenfk-verify-<uid>/<itemId>/<testId>.log. The HTTP response,
+// comment, and tests[] record carry only a head+tail truncated preview plus the
+// log file path, so MCP payloads stay small while full logs remain available.
+//
+// The temp dir, not <dbDir>/logs: the old home was ~/.agenfk-system/.agenfk/logs
+// on a system install — buried, and named only in a trailer, which made a
+// failing verifyCommand harder to diagnose than the failure was (BUG b233143b).
 const MAX_LOGS_PER_ITEM = 3;
 const PREVIEW_HEAD_BYTES = 1024;
 const PREVIEW_TAIL_BYTES = 1024;
+// How much raw output a failure message repeats. A test suite prints its verdict
+// at the END, so this is a tail, not a head.
+const FAILURE_TAIL_LINES = 25;
 
 /**
  * Item ids are server-generated uuids. Anything else must never reach a path
@@ -247,25 +254,68 @@ function assertSafeItemId(itemId: string): string {
   return itemId;
 }
 
-const getItemLogDir = (itemId: string): string =>
-  path.join(path.dirname(dbPath), 'logs', assertSafeItemId(itemId));
+/**
+ * Root for validation logs. Per-uid because os.tmpdir() is world-writable and
+ * verify output routinely echoes environment — tokens, connection strings, the
+ * occasional pasted credential. Exported so tests assert against the real path
+ * instead of re-implementing the naming and drifting from it.
+ */
+export function getVerifyLogRoot(): string {
+  const uid = typeof process.getuid === 'function' ? `-${process.getuid()}` : '';
+  return path.join(os.tmpdir(), `agenfk-verify${uid}`);
+}
 
-const writeValidationLog = (itemId: string, testId: string, output: string): string => {
-  const dir = getItemLogDir(itemId);
-  fs.mkdirSync(dir, { recursive: true });
-  const logPath = path.join(dir, `${testId}.log`);
-  fs.writeFileSync(logPath, output);
-  // Prune to newest MAX_LOGS_PER_ITEM by mtime.
-  const entries = fs.readdirSync(dir)
-    .map(name => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
-  for (const old of entries.slice(MAX_LOGS_PER_ITEM)) {
-    try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+/**
+ * The temp root, created if needed — or null when it must not be used.
+ *
+ * `mkdirSync(recursive)` succeeds silently when the directory ALREADY exists,
+ * including one another user created and owns. On a shared machine that means
+ * our logs would land in someone else's directory, readable by them. So the
+ * ownership is checked rather than assumed; a mismatch degrades to "no log file"
+ * rather than writing somewhere unsafe. (Windows has no getuid; %TEMP% is already
+ * per-user there.)
+ */
+function ensureVerifyLogRoot(): string | null {
+  const root = getVerifyLogRoot();
+  try {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (typeof process.getuid === 'function' && fs.statSync(root).uid !== process.getuid()) {
+      return null;
+    }
+    return root;
+  } catch {
+    return null;
   }
-  return logPath;
+}
+
+const getItemLogDir = (itemId: string): string =>
+  path.join(getVerifyLogRoot(), assertSafeItemId(itemId));
+
+/** Returns the log path, or null when no log could be written safely. */
+const writeValidationLog = (itemId: string, testId: string, output: string): string | null => {
+  if (!ensureVerifyLogRoot()) return null;
+  const dir = getItemLogDir(itemId);
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const logPath = path.join(dir, `${testId}.log`);
+    // 0600: the file is created fresh (uuid name) and holds raw command output.
+    fs.writeFileSync(logPath, output, { mode: 0o600 });
+    // Prune to newest MAX_LOGS_PER_ITEM by mtime.
+    const entries = fs.readdirSync(dir)
+      .map(name => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const old of entries.slice(MAX_LOGS_PER_ITEM)) {
+      try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+    }
+    return logPath;
+  } catch {
+    return null;
+  }
 };
 
-const buildOutputPreview = (output: string, logPath: string): string => {
+const LOG_UNAVAILABLE = 'Full log: unavailable — the temp directory could not be written';
+
+const buildOutputPreview = (output: string, logPath: string | null): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
   let body: string;
   if (output.length <= headTailBudget) {
@@ -276,8 +326,31 @@ const buildOutputPreview = (output: string, logPath: string): string => {
     const omitted = output.length - headTailBudget;
     body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
   }
-  return `${body}\n[Full log: ${logPath}]`;
+  return `${body}\n[${logPath ? `Full log: ${logPath}` : LOG_UNAVAILABLE}]`;
 };
+
+/** Last N non-blank lines — what a failing verifier actually wanted to see. */
+const tailLines = (output: string, n: number): string => {
+  const lines = output.split(/\r?\n/).filter(l => l.trim() !== '');
+  return lines.slice(-n).join('\n');
+};
+
+/**
+ * What happened to the command, in one clause. Deliberately dumb: the exit code
+ * is reported as the number it returned, with no attempt to interpret the
+ * output. A guessed summary is worse than none — the full log path is always
+ * given alongside it.
+ */
+const describeExit = (code: number | null, timedOut: boolean | undefined, maxMs: number): string => {
+  if (timedOut) {
+    return `killed after the ${Math.round(maxMs / 60000)}min runtime cap (exit code 124)`;
+  }
+  return `exit code ${code}`;
+};
+
+/** Hard cap on a verifyCommand's runtime; see its use in the validate route. */
+const verifyMaxMs = (): number =>
+  Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
 
 const purgeItemLogs = (itemId: string): void => {
   const dir = getItemLogDir(itemId);
@@ -2717,6 +2790,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // `res2` — the real HTTP response on the sync path, or a recorder that
   // captures the outcome into a ValidateRun on the async path.
   const runCommandAndFinalize = async (res2: any, run?: ValidateRun) => {
+  // Read once, so the cap reported in the failure message is the cap that was
+  // actually enforced even if the environment moves underneath us.
+  const maxMs = verifyMaxMs();
   const { output, code, timedOut } = await new Promise<{ output: string; code: number | null; timedOut?: boolean }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
@@ -2724,7 +2800,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
     // 409 guard would lock the item's verify verb until a server restart.
-    const maxMs = Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
     const killer = setTimeout(() => {
       killed = true;
       out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
@@ -2832,7 +2907,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'FAILED', testId },
     });
-    return res2.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
+    return res2.status(422).json({
+      status: failureStatus,
+      // The outcome first, then the tail, then where the whole thing is. The
+      // exit code used to be computed and thrown away, so a red suite, a
+      // cap-kill and a command that never started were indistinguishable
+      // (BUG b233143b).
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit(code, timedOut, maxMs)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(output, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}` : LOG_UNAVAILABLE}`,
+      output: preview,
+    });
   }
   }; // end runCommandAndFinalize
 

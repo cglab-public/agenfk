@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, getVerifyLogRoot } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -2056,9 +2056,14 @@ describe('PUT /items/:id — comment with step field', () => {
 });
 
 // ── validate_progress: full-output log persistence + rolling window ──────────
+// Logs live under <tmpdir>/agenfk-verify-<uid>/<itemId>/ since BUG b233143b —
+// previously <dbDir>/logs, i.e. ~/.agenfk-system/.agenfk/logs on a system
+// install, which was buried and hard to find when a verifyCommand failed.
+// The diagnostics contract (exit code, tail, path) is in
+// verify-failure-diagnostics.test.ts; this block covers persistence + pruning.
 
 describe('POST /items/:id/validate — full-output log persistence', () => {
-  const LOGS_DIR = path.join(path.dirname(TEST_DB), 'logs');
+  const LOGS_DIR = getVerifyLogRoot();
   const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true }); };
 
   beforeEach(async () => { await initStorage(); rmLogs(); });
@@ -2076,7 +2081,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
   const longOutputCommand = (tag: string) =>
     `node -e "const head='HEAD_${tag}_START'+'A'.repeat(1500); const tail='Z'.repeat(900)+'TAIL_${tag}_END'; console.log(head); console.log(tail);"`;
 
-  it('writes the full command output to .agenfk/logs/<itemId>/<testId>.log', async () => {
+  it('writes the full command output to <tmpdir>/agenfk-verify-<uid>/<itemId>/<testId>.log', async () => {
     if (!VERIFY_TOKEN) return;
     const { item } = await setupItemInCoding('LogPersist1');
 
@@ -2124,7 +2129,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
     expect(preview).toMatch(/truncated/);
     // Log file path referenced so the agent can read full output
     expect(preview).toContain('Full log:');
-    expect(preview).toContain(path.join('logs', item.id));
+    expect(preview).toContain(path.join(getVerifyLogRoot(), item.id));
   });
 
   it('does not truncate when output is short (below threshold)', async () => {

@@ -173,6 +173,19 @@ async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: 
   return fetchLatestReleaseTag(repo, !!opts.beta);
 }
 
+/**
+ * Hub-only releases (`hub-v*`, CGLAB-8) ship a Docker image and a hub tarball —
+ * never the framework. They must never be resolved as a framework version.
+ *
+ * This guard exists because of a live incident: `hub-image.yml` created
+ * `hub-v1.1.19-beta.1` without `--prerelease`, so GitHub's `/releases/latest`
+ * (which only skips prereleases) handed the hub tag back as the latest STABLE,
+ * and every CLI invocation told users to upgrade to `vhub-v1.1.19-beta.1`.
+ * `release.yml` already excludes hub tags from version math for the same reason;
+ * the resolver is the other half of that defence.
+ */
+const isHubRelease = (tag: string | null | undefined): boolean => !!tag && /^hub-v/i.test(tag);
+
 export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
   // Try GitHub REST API first — no auth required for public repos
   try {
@@ -183,7 +196,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
       });
       const releases: Array<{ tag_name: string; published_at: string; prerelease: boolean }> = resp.data ?? [];
       const latest = releases
-        .filter((r) => r.tag_name && r.published_at && r.prerelease)
+        .filter((r) => r.tag_name && r.published_at && r.prerelease && !isHubRelease(r.tag_name))
         .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
       const tag = latest?.tag_name;
       if (tag) return tag;
@@ -193,7 +206,18 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
         timeout: 10000,
       });
       const tag = resp.data?.tag_name;
-      if (tag) return tag;
+      if (tag && !isHubRelease(tag)) return tag;
+      // The single-object endpoint can't be trusted on its own: a hub release
+      // published without --prerelease IS "the latest stable" as far as it is
+      // concerned (observed in production). Re-query the list and pick from it.
+      const listResp = await axios.get(`https://api.github.com/repos/${repo}/releases?per_page=20`, {
+        headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' },
+        timeout: 10000,
+      });
+      const stable = ((listResp.data ?? []) as Array<{ tag_name: string; published_at: string; prerelease: boolean }>)
+        .filter((r) => r.tag_name && r.published_at && !r.prerelease && !isHubRelease(r.tag_name))
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
+      if (stable?.tag_name) return stable.tag_name;
     }
   } catch {
     // Fall through to gh CLI
@@ -210,15 +234,33 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     ).trim();
     const list: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(out || '[]');
     const latest = list
-      .filter((r) => r.tagName && r.isPrerelease)
+      .filter((r) => r.tagName && r.isPrerelease && !isHubRelease(r.tagName))
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
     if (latest?.tagName) return latest.tagName;
     throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
   }
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
+  const viewTag = execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
+  if (viewTag && !isHubRelease(viewTag)) return viewTag;
+  // Same recovery as the REST path — `gh release view` reports the newest
+  // release, hub or not.
+  const listOut = execSync(
+    `gh release list --repo ${repo} --limit 30 --json tagName,isPrerelease,createdAt`,
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+  const stableList: Array<{ tagName: string; isPrerelease: boolean; createdAt: string }> = JSON.parse(listOut || '[]');
+  const stableTag = stableList
+    .filter((r) => r.tagName && !r.isPrerelease && !isHubRelease(r.tagName))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+  // Deliberately NOT `return viewTag` as a last resort: handing back the hub tag
+  // would reintroduce exactly the bug this function exists to prevent, and the
+  // caller would try to install a Docker image as the framework.
+  if (!stableTag?.tagName) {
+    throw new Error(`No framework release found for ${repo} (hub-only releases are ignored).`);
+  }
+  return stableTag.tagName;
 }
 
 function downloadReleaseAsset(repo: string, tag: string, pattern: string, outputPath: string): void {
