@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
+import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps, isHubRelease } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -240,6 +240,15 @@ const PREVIEW_TAIL_BYTES = 1024;
 // How much raw output a failure message repeats. A test suite prints its verdict
 // at the END, so this is a tail, not a head.
 const FAILURE_TAIL_LINES = 25;
+// …and the tail is capped in BYTES too. A command that reports progress with a
+// bare \r (curl, wget, pip, docker pull, gh's spinner, test runners under the
+// FORCE_COLOR=1 this spawn sets) produces output that a \n-only splitter sees as
+// ONE line, so a line count alone was no bound at all: 500 KB of download
+// progress went straight into the message, which is the field an agent reads and
+// the one that is not byte-capped the way `output` is.
+const FAILURE_TAIL_BYTES = 4096;
+// After a cap-kill, how long to wait for stdio to drain before answering anyway.
+const KILL_GRACE_MS = 5000;
 
 /**
  * Item ids are server-generated uuids. Anything else must never reach a path
@@ -259,32 +268,63 @@ function assertSafeItemId(itemId: string): string {
  * verify output routinely echoes environment — tokens, connection strings, the
  * occasional pasted credential. Exported so tests assert against the real path
  * instead of re-implementing the naming and drifting from it.
+ *
+ * AGENFK_VERIFY_LOG_DIR overrides it. That exists for tests, not users: the
+ * default is a stable, predictable name shared by every agenfk server this uid
+ * runs, so a test suite that cleans the root would delete the logs of a real
+ * server running alongside it — which on a machine dogfooding agenfk is the
+ * normal state, not an edge case.
  */
 export function getVerifyLogRoot(): string {
+  const override = process.env.AGENFK_VERIFY_LOG_DIR;
+  if (override && override.trim()) return override;
   const uid = typeof process.getuid === 'function' ? `-${process.getuid()}` : '';
   return path.join(os.tmpdir(), `agenfk-verify${uid}`);
+}
+
+/** Why the log root was refused, surfaced in the message and the server log. */
+let logRootRefusal = '';
+let logRootRefusalLogged = false;
+
+function refuseVerifyLogRoot(root: string, reason: string): null {
+  logRootRefusal = `${root} (${reason})`;
+  if (!logRootRefusalLogged) {
+    logRootRefusalLogged = true;
+    console.warn(`[verify] validation logs disabled — log root refused: ${logRootRefusal}`);
+  }
+  return null;
 }
 
 /**
  * The temp root, created if needed — or null when it must not be used.
  *
- * `mkdirSync(recursive)` succeeds silently when the directory ALREADY exists,
- * including one another user created and owns. On a shared machine that means
- * our logs would land in someone else's directory, readable by them. So the
- * ownership is checked rather than assumed; a mismatch degrades to "no log file"
- * rather than writing somewhere unsafe. (Windows has no getuid; %TEMP% is already
- * per-user there.)
+ * Three separate hazards, all because the path is predictable and the directory
+ * is world-writable:
+ *
+ * 1. `mkdirSync(recursive)` is a no-op when the path already exists — including
+ *    one another user created, which would put our logs in their directory.
+ * 2. Worse, it is also a no-op for a SYMLINK, and `statSync` follows symlinks: an
+ *    attacker who plants `agenfk-verify-<uid> -> /somewhere/they/chose` passes a
+ *    uid check that is answering "is the thing at the other end mine?" instead of
+ *    "is this a real directory I own?". So the ENTRY is checked with lstat.
+ * 3. A local user can pre-create the path as their own to switch logging off
+ *    permanently for this uid. That cannot be prevented on a shared /tmp without
+ *    an unpredictable name, so the refusal is at least made LOUD — a silent
+ *    "couldn't write a log" is the same class of failure this module exists to
+ *    fix. (Windows has no getuid; %TEMP% is already per-user there.)
  */
 function ensureVerifyLogRoot(): string | null {
   const root = getVerifyLogRoot();
   try {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-    if (typeof process.getuid === 'function' && fs.statSync(root).uid !== process.getuid()) {
-      return null;
+    const st = fs.lstatSync(root);
+    if (!st.isDirectory()) return refuseVerifyLogRoot(root, 'not a directory');
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+      return refuseVerifyLogRoot(root, `owned by uid ${st.uid}, not ${process.getuid()}`);
     }
     return root;
-  } catch {
-    return null;
+  } catch (err: any) {
+    return refuseVerifyLogRoot(root, err?.code || 'unusable');
   }
 }
 
@@ -293,27 +333,74 @@ const getItemLogDir = (itemId: string): string =>
 
 /** Returns the log path, or null when no log could be written safely. */
 const writeValidationLog = (itemId: string, testId: string, output: string): string | null => {
-  if (!ensureVerifyLogRoot()) return null;
-  const dir = getItemLogDir(itemId);
+  const root = ensureVerifyLogRoot();
+  if (!root) return null;
+  let logPath = '';
   try {
+    // Inside the try: assertSafeItemId throws for a malformed id (legacy
+    // migration ids are inserted verbatim from migration.json). Thrown out here
+    // it escapes into runCommandAndFinalize, where the async path records
+    // "Internal error during background validation" and marks a run whose
+    // command exited 0 as FAILED — a log-path complaint must never cost an item
+    // its transition.
+    const dir = path.join(root, assertSafeItemId(itemId));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const logPath = path.join(dir, `${testId}.log`);
-    // 0600: the file is created fresh (uuid name) and holds raw command output.
-    fs.writeFileSync(logPath, output, { mode: 0o600 });
-    // Prune to newest MAX_LOGS_PER_ITEM by mtime.
-    const entries = fs.readdirSync(dir)
-      .map(name => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    for (const old of entries.slice(MAX_LOGS_PER_ITEM)) {
-      try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
-    }
+    logPath = path.join(dir, `${testId}.log`);
+    // 'wx' makes the 0600 real. writeFileSync applies `mode` only when it CREATES
+    // the file and follows symlinks, so without the exclusive flag a pre-planted
+    // name would be overwritten with someone else's permissions. The uuid name is
+    // unpredictable today; this stops the safety of the mode depending on that.
+    fs.writeFileSync(logPath, output, { mode: 0o600, flag: 'wx' });
+    pruneItemLogDir(dir, path.basename(logPath));
     return logPath;
   } catch {
-    return null;
+    // A failed prune must not report a successful write as "no log".
+    return logPath && fs.existsSync(logPath) ? logPath : null;
   }
 };
 
-const LOG_UNAVAILABLE = 'Full log: unavailable — the temp directory could not be written';
+/**
+ * Post-write housekeeping, deliberately unable to invalidate the write it
+ * follows. Two hazards it avoids: the prune ranks by mtime and a coarse or
+ * backdated clock can tie — with readdir order being filesystem hash order, the
+ * file just written can land in the evicted slice, and the response then names a
+ * path the server deleted microseconds after promising it. And a concurrent
+ * DELETE (or an OS tmp-cleaner) can make statSync throw mid-prune, which used to
+ * abort the whole write path and report the log as unwritable.
+ */
+function pruneItemLogDir(dir: string, keep: string): void {
+  try {
+    const entries = fs.readdirSync(dir).flatMap((name) => {
+      try {
+        return [{ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }];
+      } catch {
+        return []; // vanished since readdir — skip it, do not abort
+      }
+    });
+    // MAX_LOGS_PER_ITEM counts files IN TOTAL, not 'old files besides the one
+    // just written' — so the budget for everything else is MAX - 1. Getting this
+    // wrong quietly grew the rolling window to 4 and a pre-existing test caught
+    // it: the promised file is protected, but the cap must still hold.
+    const evict = entries
+      .filter((e) => e.name !== keep)
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(Math.max(0, MAX_LOGS_PER_ITEM - 1));
+    for (const old of evict) {
+      try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+    }
+  } catch { /* pruning is advisory */ }
+}
+
+/**
+ * The message shown when there is no log to point at. Names the reason, because
+ * "we couldn't write a log" with no cause is indistinguishable from a bug in the
+ * logging code, and the operator has no way to learn that a foreign-owned
+ * directory is the actual answer.
+ */
+const logUnavailable = (): string =>
+  logRootRefusal
+    ? `Full log: unavailable — log root refused: ${logRootRefusal}`
+    : 'Full log: unavailable — the temp directory could not be written';
 
 const buildOutputPreview = (output: string, logPath: string | null): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
@@ -326,13 +413,26 @@ const buildOutputPreview = (output: string, logPath: string | null): string => {
     const omitted = output.length - headTailBudget;
     body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
   }
-  return `${body}\n[${logPath ? `Full log: ${logPath}` : LOG_UNAVAILABLE}]`;
+  return `${body}\n[${logPath ? `Full log: ${logPath}` : logUnavailable()}]`;
 };
 
-/** Last N non-blank lines — what a failing verifier actually wanted to see. */
+/** ANSI escape sequences, stripped so the repeated tail is readable text. */
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/**
+ * Last N non-blank lines — what a failing verifier actually wanted to see.
+ *
+ * Splits on bare \r as well as \n: progress-reporting tools rewrite one line
+ * with \r and never emit \n, and to a \n-only splitter the entire run is a
+ * single "line", so the line cap would hand back everything. Byte-capped after
+ * that, because a line count is not a size bound.
+ */
 const tailLines = (output: string, n: number): string => {
-  const lines = output.split(/\r?\n/).filter(l => l.trim() !== '');
-  return lines.slice(-n).join('\n');
+  const lines = output.split(/\r\n|\r|\n/).filter((l) => l.trim() !== '');
+  const tail = lines.slice(-n).join('\n').replace(ANSI_RE, '');
+  return tail.length > FAILURE_TAIL_BYTES
+    ? `… (tail truncated) …\n${tail.slice(-FAILURE_TAIL_BYTES)}`
+    : tail;
 };
 
 /**
@@ -341,11 +441,25 @@ const tailLines = (output: string, n: number): string => {
  * output. A guessed summary is worse than none — the full log path is always
  * given alongside it.
  */
-const describeExit = (code: number | null, timedOut: boolean | undefined, maxMs: number): string => {
-  if (timedOut) {
+const describeExit = (
+  r: { code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string },
+  maxMs: number,
+): string => {
+  if (r.timedOut) {
     return `killed after the ${Math.round(maxMs / 60000)}min runtime cap (exit code 124)`;
   }
-  return `exit code ${code}`;
+  if (r.spawnError) {
+    // Not "exit code 1": a command that never started is a different diagnosis
+    // from one that ran and failed.
+    return `could not be started: ${r.spawnError}`;
+  }
+  if (r.code === null) {
+    // An OOM-kill is common enough on constrained machines that reporting
+    // "exit code null" — which is what a signal death looks like — would be the
+    // single most confusing thing this message could say.
+    return r.signal ? `killed by signal ${r.signal}, no exit code` : 'terminated without an exit code';
+  }
+  return `exit code ${r.code}`;
 };
 
 /** Hard cap on a verifyCommand's runtime; see its use in the validate route. */
@@ -353,9 +467,15 @@ const verifyMaxMs = (): number =>
   Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
 
 const purgeItemLogs = (itemId: string): void => {
-  const dir = getItemLogDir(itemId);
-  if (fs.existsSync(dir)) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    const dir = getItemLogDir(itemId);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    // Advisory. Thrown, this ran after the parent was already marked TRASHED and
+    // before the children were walked — a malformed legacy id would answer
+    // DELETE /items/:id with a 500 and leave the tree half-trashed.
   }
 };
 
@@ -1117,6 +1237,18 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
 }));
 
 app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
+  // Purge verify logs BEFORE the rows go. They are keyed by item id, and
+  // deleteProject hard-deletes the items — so once the rows are gone nothing can
+  // ever name those directories again, and <tmpdir>/agenfk-verify-<uid>/<itemId>/
+  // would sit on disk indefinitely holding the full raw output of every command
+  // that project ever ran. That output routinely echoes environment: tokens,
+  // connection strings. The trash path already purges; this is the same promise.
+  try {
+    const items = await storage.listItems({ projectId: req.params.id, limit: 1_000_000 });
+    for (const item of items) purgeItemLogs(item.id);
+  } catch {
+    // Advisory — never fail a project delete over a log directory.
+  }
   await storage.deleteProject(req.params.id);
   io.emit('items_updated');
   res.status(204).send();
@@ -2793,10 +2925,22 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Read once, so the cap reported in the failure message is the cap that was
   // actually enforced even if the environment moves underneath us.
   const maxMs = verifyMaxMs();
-  const { output, code, timedOut } = await new Promise<{ output: string; code: number | null; timedOut?: boolean }>((resolve) => {
+  const { output, code, timedOut, signal, spawnError } = await new Promise<{
+    output: string; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
+  }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
     let killed = false;
+    let settled = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    // Exactly one resolution, whichever signal arrives first.
+    const finish = (c: number | null, sig?: NodeJS.Signals | null, spawnErr?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      if (grace) clearTimeout(grace);
+      resolve({ output: out, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
+    };
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
     // 409 guard would lock the item's verify verb until a server restart.
@@ -2804,6 +2948,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       killed = true;
       out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
+      // lifecycle scripts — survive it and hold the inherited stdio pipes open,
+      // and 'close' waits for those pipes. Resolving only on 'close' meant the
+      // cap did not bound the run at all: the promise settled whenever an
+      // orphan happened to exit, the run stayed 'running' and
+      // activeValidateRunByItem stayed held, so every later verify on the item
+      // got VALIDATE_RUN_ACTIVE — the exact lock this cap exists to prevent.
+      // Once 'exit' has fired the process is gone; give stdio a moment to drain,
+      // then answer.
+      grace = setTimeout(() => finish(124), KILL_GRACE_MS);
+      if (typeof grace.unref === 'function') grace.unref();
     }, maxMs);
     if (typeof killer.unref === 'function') killer.unref();
     // Live output for run followers, capped so a verbose command can't pin
@@ -2812,8 +2967,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const onData = (d: Buffer) => { out += d.toString(); if (run && out.length <= LIVE_CAP) run.output = out; };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('close', (c) => { clearTimeout(killer); resolve({ output: out, code: killed ? 124 : c, timedOut: killed }); });
-    child.on('error', (err) => { clearTimeout(killer); resolve({ output: err.message, code: 1 }); });
+    child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
+    child.on('close', (c, sig) => finish(c, sig));
+    // Keep whatever the command already printed — discarding it loses the only
+    // evidence of why the spawn failed.
+    child.on('error', (err) => finish(1, null, err.message));
   });
 
   const testId = uuidv4();
@@ -2913,7 +3071,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit(code, timedOut, maxMs)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(output, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}` : LOG_UNAVAILABLE}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(output, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}` : logUnavailable()}`,
       output: preview,
     });
   }
@@ -3991,7 +4149,40 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
 
   try {
     const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
-    const tagName: string = data.tag_name;
+    let tagName: string = data.tag_name;
+    let meta: any = data;
+
+    // A hub build (`hub-v*`, CGLAB-8) is not a framework release, and this
+    // endpoint is what feeds the CLI's upgrade nag AND its tier gate. GitHub's
+    // /releases/latest can hand one back: when hub-v1.1.19-beta.1 was created
+    // without --prerelease it became GitHub's "latest stable", and every CLI
+    // read version "hub-v1.1.19-beta.1" from here. Re-query the list and answer
+    // with the newest real framework release.
+    if (isHubRelease(tagName)) {
+      const { data: list } = await axios.get(
+        `https://api.github.com/repos/${repo}/releases?per_page=30`,
+        { headers },
+      );
+      meta = ((Array.isArray(list) ? list : []) as any[])
+        .filter((r) => typeof r?.tag_name === 'string' && r.tag_name && !isHubRelease(r.tag_name) && !r.prerelease)
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
+      tagName = meta?.tag_name ?? '';
+      if (!tagName) {
+        // Nothing to report. An empty version is what the CLI reads as "no
+        // upgrade available"; a hub tag must never reach it, and must never
+        // arrive with a tier attached — `mandatory` exits(1) every CLI call.
+        return res.json({
+          version: '',
+          tagName: null,
+          name: null,
+          body: '',
+          publishedAt: null,
+          url: null,
+          upgradeTier: 'optional',
+          currentVersion,
+        });
+      }
+    }
 
     // Fetch upgradeTier from the raw CLI package.json for this tag
     let upgradeTier: 'mandatory' | 'recommended' | 'optional' = 'optional';
@@ -4008,10 +4199,10 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
     const releaseData = {
       version: tagName.replace(/^v/, ''),
       tagName,
-      name: data.name,
-      body: data.body || '',
-      publishedAt: data.published_at,
-      url: data.html_url,
+      name: meta.name,
+      body: meta.body || '',
+      publishedAt: meta.published_at,
+      url: meta.html_url,
       upgradeTier,
     };
     releaseCache = { data: releaseData, fetchedAt: Date.now() };

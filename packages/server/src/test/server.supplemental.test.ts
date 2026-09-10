@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, getVerifyLogRoot } from '../server';
+import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -33,6 +33,14 @@ vi.mock('os', async (importOriginal) => {
 const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-supplemental-'));
 fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
 vi.mocked(os.homedir).mockReturnValue(sandboxHome);
+
+// Verify-log root pinned for THIS file. The production default is a stable,
+// machine-global name (shared with any live agenfk server), and process.env is
+// process-global while vitest reuses workers — a sibling file that sets the
+// override would silently redirect this file's expectations depending on which
+// file ran first. Pin it, and read it literally rather than via the getter.
+const VERIFY_LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifylog-supplemental-'));
+process.env.AGENFK_VERIFY_LOG_DIR = VERIFY_LOG_ROOT;
 
 // CRITICAL: install a no-op exec impl for POST /releases/update *before any
 // test runs*. Without this, the supplemental test below shells out for real
@@ -67,6 +75,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  // Restore ambient state: process.env is process-global and vitest reuses
+  // workers, so leaving the override set would redirect a sibling file.
+  delete process.env.AGENFK_VERIFY_LOG_DIR;
+  if (fs.existsSync(VERIFY_LOG_ROOT)) fs.rmSync(VERIFY_LOG_ROOT, { recursive: true, force: true });
   // Restore the original jira token state (sandbox-scoped since item 9c297075)
   if (globalSavedToken) {
     fs.writeFileSync(GLOBAL_TOKEN_PATH, globalSavedToken);
@@ -2063,7 +2075,7 @@ describe('PUT /items/:id — comment with step field', () => {
 // verify-failure-diagnostics.test.ts; this block covers persistence + pruning.
 
 describe('POST /items/:id/validate — full-output log persistence', () => {
-  const LOGS_DIR = getVerifyLogRoot();
+  const LOGS_DIR = VERIFY_LOG_ROOT;
   const rmLogs = () => { if (fs.existsSync(LOGS_DIR)) fs.rmSync(LOGS_DIR, { recursive: true, force: true }); };
 
   beforeEach(async () => { await initStorage(); rmLogs(); });
@@ -2129,7 +2141,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
     expect(preview).toMatch(/truncated/);
     // Log file path referenced so the agent can read full output
     expect(preview).toContain('Full log:');
-    expect(preview).toContain(path.join(getVerifyLogRoot(), item.id));
+    expect(preview).toContain(path.join(VERIFY_LOG_ROOT, item.id));
   });
 
   it('does not truncate when output is short (below threshold)', async () => {

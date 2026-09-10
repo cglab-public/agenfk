@@ -15,6 +15,26 @@ import * as path from 'path';
 const CLI_PATH = path.resolve(__dirname, '../../src/index.ts');
 const readCli = () => (fs.existsSync(CLI_PATH) ? fs.readFileSync(CLI_PATH, 'utf8') : '');
 
+/**
+ * The strings these tests assert on (`process.exit(1)`, `agenfk upgrade`, the
+ * recommended banner) live in `applyUpgradeTierAction`; `checkUpgradeTier` only
+ * calls it. Anchoring a fixed 3000-character window on the caller meant any edit
+ * that merely lengthened the caller — a doc comment on the function sitting
+ * between the two — slid the target out of the window and failed the test with
+ * no behaviour changed. Anchor on the function that actually holds the strings.
+ * This mirrors what the recommended-banner test below already does.
+ *
+ * Assertions are unchanged: remove `process.exit(1)` from that function and the
+ * test still fails.
+ */
+const readTierActionSection = (span = 3000): string => {
+  const cli = readCli();
+  const actionIdx = cli.search(/function applyUpgradeTierAction|const applyUpgradeTierAction/i);
+  if (actionIdx >= 0) return cli.slice(actionIdx, actionIdx + span);
+  const callerIdx = cli.search(/checkUpgradeTier|checkTierOnStartup|startupTierCheck/i);
+  return callerIdx >= 0 ? cli.slice(callerIdx, callerIdx + span) : '';
+};
+
 // ── Startup tier check function ───────────────────────────────────────────────
 
 describe('CLI startup — upgrade tier check function', () => {
@@ -64,9 +84,7 @@ describe('CLI startup — upgrade tier cache', () => {
 
 describe('CLI startup — mandatory tier blocks all commands', () => {
   it('should call process.exit(1) when the mandatory tier is detected', () => {
-    const cli = readCli();
-    const tierCheckStart = cli.search(/checkUpgradeTier|checkTierOnStartup|startupTierCheck/i);
-    const tierSection = cli.slice(tierCheckStart, tierCheckStart + 3000);
+    const tierSection = readTierActionSection();
     expect(tierSection).toMatch(/mandatory/i);
     expect(tierSection).toMatch(/process\.exit\(1\)/);
   });
@@ -80,9 +98,7 @@ describe('CLI startup — mandatory tier blocks all commands', () => {
   });
 
   it('should show the upgrade command to run in the mandatory error message', () => {
-    const cli = readCli();
-    const tierCheckStart = cli.search(/checkUpgradeTier|checkTierOnStartup|startupTierCheck/i);
-    const tierSection = cli.slice(tierCheckStart, tierCheckStart + 3000);
+    const tierSection = readTierActionSection();
     expect(tierSection).toMatch(/agenfk upgrade/i);
   });
 });
@@ -110,9 +126,7 @@ describe('CLI startup — recommended tier shows banner', () => {
   });
 
   it('should print a banner message suggesting the upgrade for recommended tier', () => {
-    const cli = readCli();
-    const tierCheckStart = cli.search(/checkUpgradeTier|checkTierOnStartup|startupTierCheck/i);
-    const tierSection = cli.slice(tierCheckStart, tierCheckStart + 3000);
+    const tierSection = readTierActionSection();
     expect(tierSection).toMatch(/recommended.*upgrade|upgrade.*recommended|new.*version.*available/i);
   });
 });

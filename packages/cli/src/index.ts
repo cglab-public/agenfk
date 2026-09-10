@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
+import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade } from '@agenfk/core';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -174,17 +174,9 @@ async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: 
 }
 
 /**
- * Hub-only releases (`hub-v*`, CGLAB-8) ship a Docker image and a hub tarball —
- * never the framework. They must never be resolved as a framework version.
- *
- * This guard exists because of a live incident: `hub-image.yml` created
- * `hub-v1.1.19-beta.1` without `--prerelease`, so GitHub's `/releases/latest`
- * (which only skips prereleases) handed the hub tag back as the latest STABLE,
- * and every CLI invocation told users to upgrade to `vhub-v1.1.19-beta.1`.
- * `release.yml` already excludes hub tags from version math for the same reason;
- * the resolver is the other half of that defence.
+ * Hub-only releases (`hub-v*`) are excluded from framework version resolution;
+ * `isHubRelease` comes from @agenfk/core, alongside the comparison it protects.
  */
-const isHubRelease = (tag: string | null | undefined): boolean => !!tag && /^hub-v/i.test(tag);
 
 /** A release as either source describes it — REST says tag_name/published_at,
  *  `gh` says tagName/createdAt. */
@@ -380,6 +372,31 @@ try {
 
 const UPGRADE_TIER_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
+/**
+ * Reduce a release payload to the (version, tier) the CLI may act on.
+ *
+ * Every source of "what is the latest release" — the local server's
+ * /releases/latest, GitHub's /releases/latest directly, and the one-hour cache
+ * file — goes through here, so the hub-v* rule has one home. It previously lived
+ * only in `fetchLatestReleaseTag`, which this path never calls: that is why the
+ * banner still printed `vhub-v1.1.19-beta.1` after the resolver was fixed.
+ *
+ * A hub tag means "no information": empty version disables the nag, `optional`
+ * disables enforcement. Enforcement is the part that matters — the tier arrives
+ * alongside the tag and a `mandatory` one calls process.exit(1) on every CLI
+ * invocation.
+ */
+export function frameworkUpgradeInfo(payload: any): { version: string; tier: 'mandatory' | 'recommended' | 'optional' } {
+  const tagName: string = payload?.tagName ?? payload?.tag_name ?? '';
+  const rawVersion: string = payload?.version ?? String(tagName || '').replace(/^v/, '');
+  const tier = payload?.upgradeTier === 'mandatory' || payload?.upgradeTier === 'recommended'
+    ? payload.upgradeTier
+    : 'optional';
+  // Cache entries carry a version and no tag name, so both fields are checked.
+  if (isHubRelease(tagName) || isHubRelease(rawVersion)) return { version: '', tier: 'optional' };
+  return { version: rawVersion, tier };
+}
+
 async function checkUpgradeTier(): Promise<void> {
   const cacheFile = path.join(os.homedir(), '.agenfk', 'upgrade-tier-cache.json');
 
@@ -388,7 +405,11 @@ async function checkUpgradeTier(): Promise<void> {
     if (fs.existsSync(cacheFile)) {
       const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
       if (cached.fetchedAt && (Date.now() - cached.fetchedAt) < UPGRADE_TIER_CACHE_TTL) {
-        applyUpgradeTierAction(cached.tier ?? 'optional', cached.version ?? '');
+        // Guarded like the live paths. A hub tag cached before this fix would
+        // otherwise keep nagging for the rest of the TTL — such caches are
+        // sitting on real machines right now.
+        const info = frameworkUpgradeInfo({ version: cached.version, upgradeTier: cached.tier });
+        applyUpgradeTierAction(info.tier, info.version);
         return;
       }
     }
@@ -402,8 +423,7 @@ async function checkUpgradeTier(): Promise<void> {
   try {
     // Try the local server first (it already caches the result)
     const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 3000 });
-    tier = resp.data?.upgradeTier ?? 'optional';
-    latestVersion = resp.data?.version ?? '';
+    ({ tier, version: latestVersion } = frameworkUpgradeInfo(resp.data));
   } catch {
     // Server unavailable — fall back to GitHub API directly
     try {
@@ -413,16 +433,17 @@ async function checkUpgradeTier(): Promise<void> {
         { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' }, timeout: 5000 },
       );
       const tagName: string = releaseResp.data?.tag_name ?? '';
-      latestVersion = tagName.replace(/^v/, '');
-      if (tagName) {
+      let rawTier: unknown;
+      // Don't even fetch package.json for a hub tag: it would resolve the CLI
+      // manifest at a Docker-image tag and honour whatever tier it declares.
+      if (tagName && !isHubRelease(tagName)) {
         const rawResp = await axios.get(
           `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`,
           { timeout: 5000 },
         );
-        if (rawResp.data?.agenfkUpgradeTier === 'mandatory' || rawResp.data?.agenfkUpgradeTier === 'recommended') {
-          tier = rawResp.data.agenfkUpgradeTier;
-        }
+        rawTier = rawResp.data?.agenfkUpgradeTier;
       }
+      ({ tier, version: latestVersion } = frameworkUpgradeInfo({ tag_name: tagName, upgradeTier: rawTier }));
     } catch {
       // Failed to reach GitHub — proceed silently, no tier enforcement
       return;

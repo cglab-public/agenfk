@@ -226,3 +226,104 @@ describe('buildUpgradeNotice — MCP upgrade notice content', () => {
     expect(buildUpgradeNotice({ tier: 'recommended', version: '1.0.0', currentVersion: '2.0.0' })).toBe('');
   });
 });
+
+// BUG b233143b — this endpoint forwarded GitHub's /releases/latest verbatim, and
+// that is exactly the endpoint that got poisoned: hub-v1.1.19-beta.1 was created
+// without --prerelease, so GitHub counted the HUB build as the latest STABLE.
+// Every CLI then read version "hub-v1.1.19-beta.1" from here — and because this
+// endpoint also decides the upgrade tier, a hub tag could drive `mandatory`,
+// which makes every agenfk invocation exit 1.
+describe('GET /releases/latest — hub-only releases are never the framework version', () => {
+  it('re-queries the release list when GitHub reports a hub tag as latest', async () => {
+    const axios = (await import('axios')).default as any;
+    axios.get
+      .mockResolvedValueOnce({
+        data: { tag_name: 'hub-v1.1.19-beta.1', name: 'hub', body: '', published_at: '2026-09-10T13:00:00Z', html_url: 'u', prerelease: false },
+      })
+      .mockResolvedValueOnce({
+        data: [
+          { tag_name: 'hub-v1.1.19-beta.1', prerelease: false, published_at: '2026-09-10T13:00:00Z' },
+          { tag_name: 'v1.1.18', name: 'Release 1.1.18', body: 'notes', prerelease: false, published_at: '2026-09-08T00:00:00Z', html_url: 'h' },
+          { tag_name: 'v1.1.17', name: 'Release 1.1.17', body: '', prerelease: false, published_at: '2026-09-01T00:00:00Z', html_url: 'h' },
+        ],
+      })
+      .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'optional' } });
+
+    const res = await request(app).get('/releases/latest');
+
+    expect(res.status).toBe(200);
+    expect(res.body.tagName).toBe('v1.1.18');
+    expect(res.body.version).toBe('1.1.18');
+  });
+
+  it('reports no release rather than a hub tag when the list has no framework release', async () => {
+    const axios = (await import('axios')).default as any;
+    axios.get
+      .mockResolvedValueOnce({ data: { tag_name: 'hub-v1.2.0', prerelease: false, published_at: '2026-09-10T13:00:00Z' } })
+      .mockResolvedValueOnce({ data: [{ tag_name: 'hub-v1.2.0', prerelease: false, published_at: '2026-09-10T13:00:00Z' }] });
+
+    const res = await request(app).get('/releases/latest');
+
+    // Empty version is what disables the client's nag: applyUpgradeTierAction
+    // returns early on a falsy latestVersion.
+    expect(res.body.tagName).toBeNull();
+    expect(res.body.version).toBe('');
+    expect(res.body.upgradeTier).toBe('optional');
+  });
+
+  it('never reads upgradeTier from a hub tag — a mandatory tier would exit(1) every CLI call', async () => {
+    const axios = (await import('axios')).default as any;
+    axios.get
+      .mockResolvedValueOnce({ data: { tag_name: 'hub-v1.2.0', prerelease: false, published_at: '2026-09-10T13:00:00Z' } })
+      .mockResolvedValueOnce({
+        data: [
+          { tag_name: 'hub-v1.2.0', prerelease: false, published_at: '2026-09-10T13:00:00Z' },
+          { tag_name: 'v1.2.0', prerelease: false, published_at: '2026-09-01T00:00:00Z', name: 'n', body: '', html_url: 'h' },
+        ],
+      })
+      .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'mandatory' } });
+
+    const res = await request(app).get('/releases/latest');
+
+    const urls = axios.get.mock.calls.map((c: any[]) => String(c[0]));
+    // The tier must be read from the tag we are actually reporting, not the hub tag.
+    expect(urls.some((u) => u.includes('raw.githubusercontent.com') && u.includes('hub-v'))).toBe(false);
+    expect(urls.some((u) => u.includes('raw.githubusercontent.com') && u.includes('v1.2.0'))).toBe(true);
+    expect(res.body.tagName).toBe('v1.2.0');
+  });
+
+  it('a repo whose latest is a normal framework release is unaffected', async () => {
+    const axios = (await import('axios')).default as any;
+    axios.get
+      .mockResolvedValueOnce({ data: { tag_name: 'v3.0.0', name: 'n', body: '', published_at: '2026-09-11T00:00:00Z', html_url: 'h', prerelease: false } })
+      .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'recommended' } });
+
+    const res = await request(app).get('/releases/latest');
+    expect(res.body.tagName).toBe('v3.0.0');
+    expect(res.body.upgradeTier).toBe('recommended');
+    // No second GitHub query for a healthy response.
+    expect(axios.get.mock.calls.filter((c: any[]) => String(c[0]).includes('api.github.com'))).toHaveLength(1);
+  });
+});
+
+describe('GET /releases/latest — hub recovery keeps the stable channel honest', () => {
+  it('never promotes a framework PRERELEASE to "latest stable" while recovering', async () => {
+    const axios = (await import('axios')).default as any;
+    axios.get
+      .mockResolvedValueOnce({ data: { tag_name: 'hub-v2.0.0', prerelease: false, published_at: '2026-09-12T00:00:00Z' } })
+      .mockResolvedValueOnce({
+        data: [
+          { tag_name: 'hub-v2.0.0', prerelease: false, published_at: '2026-09-12T00:00:00Z' },
+          // Newer than the stable below, and a framework tag — but a prerelease.
+          // The channel is "latest stable", so it must not be reported as one.
+          { tag_name: 'v2.0.0-beta.1', prerelease: true, published_at: '2026-09-11T00:00:00Z', name: 'n', body: '', html_url: 'h' },
+          { tag_name: 'v1.9.0', prerelease: false, published_at: '2026-09-01T00:00:00Z', name: 'n', body: '', html_url: 'h' },
+        ],
+      })
+      .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'optional' } });
+
+    const res = await request(app).get('/releases/latest');
+
+    expect(res.body.tagName).toBe('v1.9.0');
+  });
+});
