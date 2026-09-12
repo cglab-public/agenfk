@@ -300,6 +300,17 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <span>{item.externalId || 'JIRA'}</span>
               </a>
             )}
+            {/* Same as the board: a key stored without a browse URL (linked
+                while JIRA was disconnected) must still be visible. Plain text,
+                since there is nothing to open. */}
+            {!item.externalUrl && item.externalId && (
+              <span
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider"
+                title={`JIRA ${item.externalId} — no link stored (JIRA was not connected when this reference was set)`}
+              >
+                <span>{item.externalId}</span>
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             {!isNew && onUpdateItem && (

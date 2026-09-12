@@ -197,8 +197,8 @@ export interface BaseItem {
   previousStatus?: Status; // To restore status after unarchiving
   implementationPlan?: string; // Markdown implementation plan
   sortOrder?: number; // Position within column for prioritization
-  externalId?: string; // Reference to external systems (e.g. JIRA key)
-  externalUrl?: string; // Link to external system
+  externalId?: string | null; // Reference to external systems (e.g. JIRA key); null clears it
+  externalUrl?: string | null; // Link to external system; null clears it
   branchName?: string; // Git branch associated with this item
   prUrl?: string; // Pull request URL
   prNumber?: number; // Pull request number

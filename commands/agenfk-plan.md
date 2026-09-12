@@ -21,6 +21,7 @@ You are executing the `/agenfk-plan <id>` command as a **Planning Agent**. Follo
 
 **Step 3 — Propose**
 - Run `agenfk create <TYPE> "<title>" --project <id> --parent <parentId>` for each proposed sub-item, linking it to the provided parent `<id>`.
+- If the sub-item corresponds to a JIRA issue, add `--jira-item <KEY>` to the same command so the card carries the reference from the moment it exists, rather than needing a follow-up `agenfk update`.
 - Run `agenfk comment <id> "I have proposed the following decomposition: ..."` to log your reasoning on the parent item.
 
 **Step 4 — Finalize**
