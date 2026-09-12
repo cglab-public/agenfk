@@ -1497,12 +1497,57 @@ async function resolveItemProjectId(itemId: string): Promise<string | null> {
   }
 }
 
+/**
+ * Report what happened to a card's JIRA link after a create or update.
+ *
+ * The server may link WITHOUT having verified the key (JIRA unreachable). That
+ * is a fact the caller has to see: a silent unverified link is exactly the kind
+ * of best-effort that looks like success until someone clicks the badge.
+ */
+/** Name the tracker from the reference URL's host. */
+function trackerNameFor(externalUrl: unknown): string {
+  try {
+    const host = new URL(String(externalUrl)).hostname.toLowerCase();
+    return host === 'github.com' || host.endsWith('.github.com') ? 'GitHub' : 'JIRA';
+  } catch {
+    return 'JIRA';
+  }
+}
+
+function reportJiraLink(item: any, requested?: string): void {
+  if (!item) return;
+  if (item.jiraWarning) {
+    console.log(chalk.yellow(`  ! ${item.jiraWarning}`));
+  }
+  // Only report when this command actually touched the link (or the server had
+  // something to say about it). Reporting on every update meant a plain
+  // `--title` edit printed a tracker line it never asked about.
+  if (requested === undefined && !item.jiraWarning) return;
+
+  if (item.externalId) {
+    // Cards imported from GitHub carry externalId/externalUrl too, so the label
+    // is derived rather than assumed to be JIRA. Matched on the HOST, not on the
+    // whole URL: a JIRA link with 'github.com' in a query parameter would
+    // otherwise be labelled GitHub.
+    const tracker = trackerNameFor(item.externalUrl);
+    console.log(chalk.gray(`  ${tracker}: ${item.externalId}${item.externalUrl ? ` (${item.externalUrl})` : ''}`));
+    return;
+  }
+  // Unlink is the one operation with no positive confirmation otherwise: the
+  // generic "Updated item" line looks identical whether the flag took effect or
+  // was ignored, so say it explicitly.
+  if (requested !== undefined && requested.trim().toLowerCase() === 'none') {
+    console.log(chalk.gray('  JIRA: unlinked'));
+  }
+}
+
 program
   .command('create <type> [title]')
   .description('Create a new item (epic, story, task, bug)')
   .option('-d, --description <desc>', 'Description of the item', '')
   .option('-p, --parent <id>', 'Parent ID')
   .option('--project <id>', 'Project ID')
+  .option('--jira-item <key>', 'Link the new card to a JIRA item by key (e.g. CGLAB-163)')
   .action(async (type, title, options) => {
     try {
       const itemType = type.toUpperCase() as ItemType;
@@ -1514,7 +1559,7 @@ program
         process.exit(1);
       }
 
-      const payload = {
+      const payload: any = {
         type: itemType,
         title,
         description: options.description,
@@ -1522,8 +1567,13 @@ program
         projectId
       };
 
+      // Forwarded verbatim: the server owns key validation, because it is the
+      // only side that can check the key against a live JIRA.
+      if (options.jiraItem !== undefined) payload.jiraItem = options.jiraItem;
+
       const { data } = await axios.post(`${API_URL}/items`, payload);
       console.log(chalk.green(`Created ${type}: ${data.title} (ID: ${data.id})`));
+      reportJiraLink(data, options.jiraItem);
     } catch (error: any) {
       console.error(chalk.red('Error creating item:'), error.response?.data?.error || error.message);
     }
@@ -1580,6 +1630,7 @@ program
   .option('-d, --description <desc>', 'New description')
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
+  .option('--jira-item <key>', "Link this card to a JIRA item by key (e.g. CGLAB-163); pass 'none' to unlink")
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1636,8 +1687,13 @@ program
         }
       }
 
+      // Verbatim, like create: 'none' included, so the server owns both the
+      // key format and the unlink semantics.
+      if (options.jiraItem !== undefined) updates.jiraItem = options.jiraItem;
+
       const { data: updated } = await axios.put(`${API_URL}/items/${targetId}`, updates);
       console.log(chalk.green(`Updated item: ${updated.title} [${updated.type}] (${updated.status})`));
+      reportJiraLink(updated, options.jiraItem);
       if (options.parent !== undefined) {
         console.log(
           updated.parentId

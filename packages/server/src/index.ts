@@ -143,6 +143,9 @@ const CreateItemSchema = z.object({
   parentId: z.string().optional(),
   status: z.string().optional(),
   implementationPlan: z.string().optional(),
+  // Link the new card to a JIRA item by key (e.g. "CGLAB-163"). Validated
+  // server-side by the REST route this proxies to.
+  jiraItem: z.string().optional(),
 });
 
 const UpdateItemSchema = z.object({
@@ -155,6 +158,10 @@ const UpdateItemSchema = z.object({
   // match and cycles.
   parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
+  // JIRA issue key to link, or "none" to unlink. zod strips unknown keys, so
+  // without this the MCP surface silently could not link at all — and this repo
+  // documents the CLI and MCP surfaces as interchangeable.
+  jiraItem: z.string().optional(),
 });
 
 const ListItemsSchema = z.object({
@@ -265,6 +272,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             parentId: { type: "string" },
             status: { type: "string", description: "Step name from the project's active flow. Call get_flow(projectId) for valid step names." },
             implementationPlan: { type: "string" },
+            jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'. Reference only: the card keeps its own title and description. Validated against JIRA when connected, format-checked when not." },
           },
           required: ["projectId", "type", "title"],
         },
@@ -282,6 +290,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
+            jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'; pass 'none' to unlink. Reference only: the card keeps its own title and description. Omit to leave any existing link untouched." },
           },
           required: ["id"],
         },
