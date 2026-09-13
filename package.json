@@ -13,7 +13,8 @@
     "packages/flow-editor",
     "packages/create",
     "packages/hub",
-    "packages/hub-ui"
+    "packages/hub-ui",
+    "packages/desktop"
   ],
   "bin": {
     "agenfk": "bin/agenfk.js",

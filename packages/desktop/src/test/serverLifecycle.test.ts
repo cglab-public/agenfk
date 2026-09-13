@@ -43,6 +43,51 @@ describe('resolveServer — adopting an already-running server', () => {
     expect(result.adopted).toBe(true);
   });
 
+  it('adopts a server on the default port when the port file is missing', async () => {
+    // Observed for real on a dev machine: a server was listening on 3000 with
+    // no ~/.agenfk/server-port file (removed on a previous clean shutdown).
+    // Trusting the file alone would fork a SECOND server onto the same SQLite
+    // database — precisely the collision this whole function exists to avoid.
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => null,
+      fallbackPorts: [3000],
+      probe: probeFor(3000),
+      spawn,
+      waitMs: 0,
+    });
+
+    expect(result.adopted).toBe(true);
+    expect(result.port).toBe(3000);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('prefers the published port over the fallback when both answer', async () => {
+    const result = await resolveServer({
+      readPort: () => 3007,
+      fallbackPorts: [3000],
+      probe: probeFor(3000, 3007),
+      spawn: vi.fn(),
+      waitMs: 0,
+    });
+    expect(result.port).toBe(3007);
+  });
+
+  it('still spawns when neither the port file nor the fallback answers', async () => {
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => (started ? 3001 : null),
+      fallbackPorts: [3000],
+      probe: async (p: number) => started && p === 3001,
+      spawn,
+      waitMs: 0,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.port).toBe(3001);
+    expect(result.adopted).toBe(false);
+  });
+
   it('an adopted server is never stopped by us — we did not start it', async () => {
     const result = await resolveServer({
       readPort: () => 3000,

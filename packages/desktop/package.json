@@ -1,0 +1,20 @@
+{
+  "name": "@agenfk/desktop",
+  "version": "1.1.18",
+  "private": true,
+  "description": "AgEnFK Desktop — Electron shell that runs the AgEnFK server and UI as a native app",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "npm run build && electron dist/main/index.js",
+    "start": "electron dist/main/index.js"
+  },
+  "dependencies": {
+    "@agenfk/telemetry": "1.1.18"
+  },
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "typescript": "~5.9.3",
+    "@types/node": "^22.10.2"
+  }
+}

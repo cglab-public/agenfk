@@ -26,6 +26,16 @@ export class ServerUnavailableError extends Error {
 export interface ResolveServerOptions {
   /** Read the port the server published, or null when it has not yet. */
   readPort: () => number | null;
+  /**
+   * Ports to check for a running server when the port file says nothing.
+   *
+   * The file is not proof of absence: a server started by `agenfk up` can be
+   * listening on 3000 with no port file at all (observed on a dev machine —
+   * a clean shutdown removes the file, and a later start need not recreate it
+   * before we look). Without this, "no file" would be read as "no server" and
+   * we would fork a second one onto the same SQLite database.
+   */
+  fallbackPorts?: number[];
   /** True when a server answers on this port (a real health request). */
   probe: (port: number) => Promise<boolean>;
   /** Start our own server. Throwing here is surfaced, not swallowed. */
@@ -76,16 +86,22 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
     readPort,
     probe,
     spawn,
+    fallbackPorts = [],
     waitMs = DEFAULT_WAIT_MS,
     attempts = DEFAULT_ATTEMPTS,
     host = '127.0.0.1',
   } = opts;
 
-  // Is somebody already home? A published port with nothing answering is a
-  // leftover file from a crash, not a running server.
+  // Is somebody already home? The published port is checked first because it
+  // is the authoritative answer when present; the fallbacks catch a server
+  // that is running without having left a port file behind. A port with
+  // nothing answering is a leftover from a crash, not a running server.
   const published = readPort();
-  if (published !== null && await probe(published)) {
-    return resolved(published, host, true);
+  const candidates = [...new Set([published, ...fallbackPorts])]
+    .filter((p): p is number => p !== null && p !== undefined);
+
+  for (const port of candidates) {
+    if (await probe(port)) return resolved(port, host, true);
   }
 
   spawn();
