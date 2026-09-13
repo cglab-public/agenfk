@@ -10,19 +10,20 @@
  * filters and expansion state every time you glance at a session is worse than
  * no tabs at all.
  */
-import { render, screen, fireEvent, cleanup, act, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act, within, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '../components/AppShell';
 import { SocketProvider } from '../SocketContext';
 import { api } from '../api';
-import { ActiveProjectProvider } from '../ActiveProject';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { readPinned } from '../sidebarPrefs';
 
 vi.mock('../api', () => ({
   api: {
     listProjects: vi.fn(async () => []),
+    listActiveItems: vi.fn(async () => []),
     getVersion: vi.fn(async () => ({ version: '1.1.18' })),
     getReadme: vi.fn(async () => ({ content: '# Readme' })),
     getLatestRelease: vi.fn(async () => ({ version: '1.1.18', tagName: 'v1.1.18', name: '', body: '', publishedAt: '', url: '', currentVersion: '1.1.18' })),
@@ -66,6 +67,10 @@ const renderShell = () => {
   );
 };
 
+const renderedProjectNames = (): string[] =>
+  Array.from(document.querySelectorAll('[data-testid="project-name"]'))
+    .map(el => (el.textContent ?? '').trim());
+
 const PROJECTS = [
   { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
   { id: 'p2', name: 'horizon-lab', createdAt: new Date(), updatedAt: new Date() },
@@ -89,6 +94,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(api.getVersion).mockResolvedValue({ version: '1.1.18' });
   vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+  vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
   boardMounts = 0;
   for (const k of Object.keys(socketHandlers)) delete socketHandlers[k];
 });
@@ -167,7 +173,7 @@ describe('AppShell — chrome', () => {
   it('names the sessions area and says plainly that there are none yet', () => {
     renderShell();
     expect(screen.getByRole('heading', { name: /sessions/i })).toBeDefined();
-    expect(screen.getByText(/no active sessions/i)).toBeDefined();
+    expect(screen.getByText(/none running/i)).toBeDefined();
   });
 });
 
@@ -313,29 +319,234 @@ describe('AppShell — pinning, folders and overflow (CGLAB-172)', () => {
     expect((await screen.findByRole('button', { name: 'horizon-lab' })).getAttribute('aria-current')).toBe('true');
   });
 
-  it('scrolls instead of growing once the list passes five projects', async () => {
-    vi.mocked(api.listProjects).mockResolvedValue(manyProjects(9) as never);
+  it('keeps every project reachable rather than dropping any from the list', async () => {
+    // What the old test here asserted — that the list carries an
+    // `overflow-y-auto` class and that a Sessions heading exists — matched
+    // with zero projects as readily as with forty, and jsdom has no layout to
+    // say whether Sessions was pushed off screen. It could not fail for the
+    // reason it named. This asserts the thing that actually varies with input:
+    // a long list is scrolled, never truncated.
+    vi.mocked(api.listProjects).mockResolvedValue(manyProjects(40) as never);
     const { container } = renderShell();
     await screen.findByRole('button', { name: 'project-0' });
 
-    // A 12-project list must not push Sessions off the bottom of the window.
     const list = container.querySelector('[data-testid="project-list"]') as HTMLElement;
-    expect(list.className).toMatch(/overflow-y-auto/);
-    expect(list.className).toMatch(/max-h-/);
+    expect(list.querySelectorAll(':scope > li')).toHaveLength(40);
+    expect(screen.getByRole('button', { name: 'project-39' })).toBeDefined();
   });
 
-  it('does not cap the list while it still fits', async () => {
-    vi.mocked(api.listProjects).mockResolvedValue(manyProjects(3) as never);
+  it('tells assistive tech whether a folder is open, not just that it is a button', async () => {
+    // A disclosure without aria-expanded reads as a plain button: a screen
+    // reader user cannot tell an open folder from a closed one, and the
+    // aria-label flipping between "Expand"/"Collapse" is not a substitute —
+    // it names the ACTION, never the state.
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
+    ] as never);
+    renderShell();
+    const toggle = await screen.findByRole('button', { name: /expand horizon-lab/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    const controlled = toggle.getAttribute('aria-controls');
+    expect(controlled).toBeTruthy();
+
+    fireEvent.click(toggle);
+    const open = await screen.findByRole('button', { name: /collapse horizon-lab/i });
+    expect(open.getAttribute('aria-expanded')).toBe('true');
+    // And the id must actually point at the list it toggles.
+    expect(document.getElementById(controlled!)).not.toBeNull();
+  });
+
+  it('marks each project row with a folder icon', async () => {
     const { container } = renderShell();
-    await screen.findByRole('button', { name: 'project-0' });
-    const list = container.querySelector('[data-testid="project-list"]') as HTMLElement;
-    expect(list.className).not.toMatch(/max-h-/);
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    expect(row.querySelector('[data-folder-icon]')).not.toBeNull();
+  });
+
+  it('offers a + on a project row that creates a card in it', async () => {
+    const requests: string[] = [];
+    function Spy() {
+      const { newItemRequest } = useActiveProject();
+      React.useEffect(() => { if (newItemRequest) requests.push(newItemRequest); }, [newItemRequest]);
+      return null;
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ActiveProjectProvider>
+          <SocketProvider>
+            <Spy />
+            <AppShell><FakeBoard /></AppShell>
+          </SocketProvider>
+        </ActiveProjectProvider>
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: /new card in horizon-lab/i }));
+
+    expect(requests).toHaveLength(1);
+    // Which project the request NAMES is the whole point — a + that always
+    // drafted into the selected project would satisfy the count and the side
+    // effect below while being the wrong feature.
+    expect(requests[0]).toContain('p2');
+    expect(localStorage.getItem('agenfk_project_id')).toBe('p2');
   });
 
   it('offers a new-project control in the sidebar', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     expect(screen.getByRole('button', { name: /new project/i })).toBeDefined();
+  });
+});
+
+describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
+  const ACTIVE = [
+    { id: 'i1', projectId: 'p2', title: 'Fix the login redirect', status: 'IN_PROGRESS', type: 'TASK', updatedAt: new Date().toISOString() },
+    { id: 'i2', projectId: 'p2', title: 'Port the deploy workflow', status: 'REVIEW', type: 'STORY', updatedAt: new Date().toISOString() },
+    { id: 'i3', projectId: 'p1', title: 'Something in agenfk', status: 'IN_PROGRESS', type: 'TASK', updatedAt: new Date().toISOString() },
+  ];
+
+  it('shows how much is in flight without being expanded', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    expect(within(row).getByTestId('in-flight-count').textContent).toBe('2');
+  });
+
+  it('expands to show that project\'s work, and only that project\'s', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+
+    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
+
+    expect(await screen.findByText('Fix the login redirect')).toBeDefined();
+    expect(screen.getByText('Port the deploy workflow')).toBeDefined();
+    // agenfk's item belongs to a different folder and must stay hidden.
+    expect(screen.queryByText('Something in agenfk')).toBeNull();
+  });
+
+  it('remembers which folders were open, per project', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
+    await screen.findByText('Fix the login redirect');
+
+    cleanup();
+    renderShell();
+    expect(await screen.findByText('Fix the login redirect')).toBeDefined();
+  });
+
+  it('offers no expander for a project with nothing in flight', async () => {
+    // An empty folder is a row that costs space and answers nothing.
+    vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    expect(within(row).queryByRole('button', { name: /expand/i })).toBeNull();
+    expect(within(row).queryByTestId('in-flight-count')).toBeNull();
+  });
+
+  it('collapses again, hiding the work', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
+    await screen.findByText('Fix the login redirect');
+
+    fireEvent.click(within(row).getByRole('button', { name: /collapse horizon-lab/i }));
+    expect(screen.queryByText('Fix the login redirect')).toBeNull();
+  });
+
+  it('takes you to the work when a row is clicked', async () => {
+    // The gap this closes: the rows used to be plain divs. The sidebar showed
+    // what was in flight and gave you no way to reach any of it.
+    const focused: string[] = [];
+    function Spy() {
+      const { focusedItemId } = useActiveProject();
+      React.useEffect(() => { if (focusedItemId) focused.push(focusedItemId); }, [focusedItemId]);
+      return null;
+    }
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ActiveProjectProvider>
+          <SocketProvider>
+            <Spy />
+            <AppShell><FakeBoard /></AppShell>
+          </SocketProvider>
+        </ActiveProjectProvider>
+      </QueryClientProvider>,
+    );
+
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Fix the login redirect/i }));
+
+    expect(focused.at(-1)).toContain('i1');
+  });
+
+  it('shows each item\'s step, which is what says where it is stuck', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
+    await screen.findByText('Fix the login redirect');
+    expect(screen.getByText(/REVIEW/)).toBeDefined();
+  });
+});
+
+describe('AppShell — sort order (CGLAB-172)', () => {
+  it('offers a sort control in the Projects header', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    expect(screen.getByRole('button', { name: /sort projects/i })).toBeDefined();
+  });
+
+  it('opens a menu with both orders and marks the current one', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+
+    const lastUsed = screen.getByRole('menuitemradio', { name: /last used/i });
+    expect(screen.getByRole('menuitemradio', { name: /created/i })).toBeDefined();
+    expect(lastUsed.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('changes the order and remembers it', async () => {
+    // The preference alone proves nothing: with the fixtures all sharing one
+    // timestamp, this passed with `orderProjects` removed from the component
+    // entirely. Give the two projects orders that DISAGREE between the two
+    // sorts, then assert what is actually on screen.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-09-09T00:00:00.000Z' },
+      { id: 'p2', name: 'horizon-lab', createdAt: '2026-06-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    ] as never);
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+
+    // Default is last-used; neither has been opened here, so updatedAt decides
+    // and agenfk (Sept) leads.
+    expect(renderedProjectNames()).toEqual(['agenfk', 'horizon-lab']);
+
+    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /created/i }));
+
+    // By creation date horizon-lab (June) leads — the opposite order.
+    await waitFor(() => expect(renderedProjectNames()).toEqual(['horizon-lab', 'agenfk']));
+    expect(localStorage.getItem('agenfk_project_sort')).toContain('created');
+    // And the menu closes, rather than sitting over the list it just changed.
+    expect(screen.queryByRole('menuitemradio', { name: /created/i })).toBeNull();
+  });
+
+  it('closes on Escape without changing anything', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menuitemradio', { name: /created/i })).toBeNull();
+    expect(localStorage.getItem('agenfk_project_sort')).toBeNull();
   });
 });
 
@@ -468,5 +679,47 @@ describe('AppShell — tabs', () => {
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     const visible = panels.filter(p => !p.hasAttribute('hidden'));
     expect(visible).toHaveLength(1);
+  });
+});
+
+describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
+  // The board lives in a tabpanel with `hidden`, and the card-detail modal is
+  // rendered inside the board tree — so it is hidden too. Navigating from the
+  // sidebar while another tab is selected therefore opens a draft nobody can
+  // see, scrolls a board nobody is looking at, and burns the 3s highlight
+  // off-screen. From the user's side the sidebar is simply broken.
+
+  const onRunsTab = async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
+    expect(screen.getByRole('tab', { name: /runs/i }).getAttribute('aria-selected')).toBe('true');
+  };
+
+  const kanbanPanel = () => document.getElementById('panel-kanban')!;
+
+  it('comes back to the board when a card is clicked in the sidebar', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
+    ] as never);
+    await onRunsTab();
+    // Open the project's folder so its work is listed.
+    fireEvent.click(screen.getByRole('button', { name: 'Expand agenfk', hidden: true }));
+    fireEvent.click(await screen.findByTitle('Some work'));
+    await waitFor(() => expect(kanbanPanel().hasAttribute('hidden')).toBe(false));
+  });
+
+  it('comes back to the board when + creates a card from the sidebar', async () => {
+    await onRunsTab();
+    fireEvent.click(screen.getByRole('button', { name: /New card in agenfk/i }));
+    await waitFor(() => expect(kanbanPanel().hasAttribute('hidden')).toBe(false));
+  });
+
+  it('does not steal the tab on its own', async () => {
+    // The effect must react to a navigation, not to mounting — otherwise the
+    // Runs tab becomes unusable, snapping back on every render.
+    await onRunsTab();
+    await new Promise(r => setTimeout(r, 20));
+    expect(kanbanPanel().hasAttribute('hidden')).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
   name?: string;
-  steps: Array<{ name: string; order: number; isAnchor?: boolean; exitCriteria?: string }>;
+  steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; exitCriteria?: string }>;
 }
 
 export interface GatekeeperItem {
@@ -34,13 +34,32 @@ export const INACTIVE_STATUSES = new Set(['BLOCKED', 'PAUSED', 'TRASHED', 'ARCHI
  * flows (e.g. TDD flows where both 'create_unit_tests' and 'IN_PROGRESS' are
  * valid working steps).
  */
+/**
+ * A step that bounds the work rather than being work: an entry/exit anchor, or
+ * a terminal/holding step like DONE, BLOCKED or ARCHIVED.
+ *
+ * isSpecial has to count, not just isAnchor. `agenfk flow create` only ever
+ * asks "Is this a terminal/special step?" and emits isSpecial — it never sets
+ * isAnchor — so a CLI-authored flow has a DONE-equivalent step that an isAnchor
+ * filter cannot see. Worse, with no isAnchor step anywhere, an isAnchor-only
+ * filter yields an EMPTY set, because the ['TODO','DONE'] fallback applies only
+ * when there is no flow at all.
+ *
+ * Every question of the form "which steps are real work" goes through this, so
+ * the answers cannot drift apart: getActiveStepItems decides whether an item is
+ * in flight, resolveStepContract tells the agent which step to work, and a flow
+ * where those two disagree is incoherent.
+ */
+export const isBoundaryStep = (s: { isAnchor?: boolean; isSpecial?: boolean }): boolean =>
+  Boolean(s.isAnchor || s.isSpecial);
+
 export function getActiveStepItems(
   items: GatekeeperItem[],
   flow: GatekeeperFlow | null,
 ): GatekeeperItem[] {
   const anchorNames = new Set(
     flow
-      ? flow.steps.filter(s => s.isAnchor).map(s => s.name.toUpperCase())
+      ? flow.steps.filter(isBoundaryStep).map(s => s.name.toUpperCase())
       : ['TODO', 'DONE'],
   );
   return items.filter(i => {
@@ -142,11 +161,21 @@ export function resolveStepContract(
   }
 
   const activeFlow = { name: flow?.name, steps: sorted.map(s => s.name) };
-  const codingStep = sorted.find(s => !s.isAnchor)?.name;
-  const nonTerminal = sorted.filter(s => s.name.toUpperCase() !== 'DONE');
-  const finalStep = (nonTerminal.length ? nonTerminal : sorted)[
-    (nonTerminal.length ? nonTerminal : sorted).length - 1
-  ]?.name;
+  // Real working steps only. The previous version asked this twice with two
+  // different hand-rolled predicates: `!s.isAnchor` (blind to isSpecial) and a
+  // filter on the literal name 'DONE' (blind to any terminal step named
+  // anything else). On a CLI-authored flow that made the coding step the
+  // holding step and the final step the terminal one.
+  const realSteps = sorted.filter(s => !isBoundaryStep(s));
+  const codingStep = realSteps[0]?.name;
+  // A flow with no real steps at all is degenerate, and its finalStep has been
+  // "the last step that is not literally named DONE" for a long time. That
+  // quirk is pinned by a test and is not what this fix is about, so it is
+  // preserved verbatim: only flows that DO have working steps change.
+  const degenerate = sorted.filter(s => s.name.toUpperCase() !== 'DONE');
+  const finalStep = (
+    realSteps.length ? realSteps : degenerate.length ? degenerate : sorted
+  ).at(-1)?.name;
 
   const currentStep = sorted.find(s => s.name.toUpperCase() === status.toUpperCase());
   if (!currentStep) {

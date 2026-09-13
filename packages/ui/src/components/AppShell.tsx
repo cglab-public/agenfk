@@ -20,15 +20,19 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { useQuery } from '@tanstack/react-query';
-import { Book, PanelLeftClose, PanelLeftOpen, Pin, PinOff } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
-import { readPinned, togglePinned, sortProjectsByPin } from '../sidebarPrefs';
+import {
+  readPinned, togglePinned, sortProjectsByPin,
+  readExpanded, toggleExpanded,
+  readProjectSort, writeProjectSort, orderProjects, type ProjectSort,
+} from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import type { Project } from '../types';
+import type { AgEnFKItem, Project } from '../types';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
 
@@ -56,6 +60,7 @@ const CONNECTION_LABEL: Record<Connection, string> = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [active, setActive] = React.useState<TabId>('kanban');
+  const { focusedItemId, newItemRequest } = useActiveProject();
   const socket = useSocket();
   // Seeded from the socket rather than assumed: mounting onto an already-
   // connected socket would otherwise sit on "Connecting…" until a reconnect
@@ -76,6 +81,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isMac = info?.platform === 'darwin';
   const { data: versionData } = useQuery({ queryKey: ['version'], queryFn: api.getVersion });
   const version = versionData?.version;
+
+  // Navigating from the sidebar has to land somewhere the user can see. The
+  // board sits in a tabpanel with `hidden`, and the card-detail modal is
+  // rendered inside the board tree — so with another tab selected a sidebar
+  // click opens a draft nobody can see, scrolls a board nobody is looking at,
+  // and expires the highlight off-screen.
+  //
+  // Both values start null and are nonced, so this fires on a real navigation
+  // and never on mount: the Runs tab stays selected until the user actually
+  // asks for a card.
+  React.useEffect(() => {
+    if (!focusedItemId && !newItemRequest) return;
+    setActive('kanban');
+  }, [focusedItemId, newItemRequest]);
 
   const onTablistKeyDown = (event: React.KeyboardEvent): void => {
     const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
@@ -230,23 +249,51 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * How many projects fit before the list has to scroll instead of grow.
- * Past this, an unbounded list pushes Sessions off the bottom of the window.
- */
-const PROJECTS_BEFORE_SCROLL = 5;
-
 function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => void; isMac: boolean }) {
-  const { activeProjectId, setActiveProjectId } = useActiveProject();
+  const queryClient = useQueryClient();
+  const { activeProjectId, setActiveProjectId, focusItem, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
+  const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
+  const [sort, setSort] = React.useState<ProjectSort>(() => readProjectSort());
 
-  // Pinned first, in the order they were pinned; the rest keep server order.
+  // One request for every project's in-flight work. The server answers this
+  // per project against that project's own flow, so there is no second copy
+  // of "what counts as active" living in the UI.
+  const { data: activeItems = [] } = useQuery({
+    queryKey: ['active-items'],
+    queryFn: api.listActiveItems,
+  });
+  useSocketEvent('items_updated', () => queryClient.invalidateQueries({ queryKey: ['active-items'] }));
+  // Anything that changed while the socket was down produced no event, so the
+  // counts stay wrong until the next unrelated item change. The board already
+  // refetches its own queries on connect; this one is keyed differently and
+  // was not covered by that.
+  useSocketEvent('connect', () => queryClient.invalidateQueries({ queryKey: ['active-items'] }));
+
+  const inFlightByProject = React.useMemo(() => {
+    const byProject = new Map<string, AgEnFKItem[]>();
+    for (const item of activeItems as AgEnFKItem[]) {
+      const list = byProject.get(item.projectId) ?? [];
+      list.push(item);
+      byProject.set(item.projectId, list);
+    }
+    return byProject;
+  }, [activeItems]);
+
+  // Sort first, then lift the pinned ones: pinning is a stronger statement
+  // than any ordering, so it must be applied last.
+  // activeProjectId is a dependency even though orderProjects never receives
+  // it: opening a project is what writes the local last-used rank that
+  // orderProjects reads from storage. Without it the memo holds the old order
+  // until the projects query object identity happens to change — which,
+  // thanks to structural sharing, may not happen all session, so the list
+  // would reorder at some arbitrary later moment instead of on the click.
   const ordered = React.useMemo(
-    () => sortProjectsByPin(projects as Project[], pinned),
-    [projects, pinned],
+    () => sortProjectsByPin(orderProjects(projects as Project[], sort), pinned),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projects, pinned, sort, activeProjectId],
   );
-  const overflowing = ordered.length > PROJECTS_BEFORE_SCROLL;
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it
   // hides is a one-way door, and the control stays where the eye last saw it.
@@ -279,6 +326,7 @@ function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => voi
         {open && <SidebarLabel>Projects</SidebarLabel>}
         {open && (
           <div className="ml-auto flex items-center">
+            <SortMenu value={sort} onChange={next => setSort(writeProjectSort(next))} />
             <NewProjectButton onCreated={id => setActiveProjectId(id)} />
           </div>
         )}
@@ -293,23 +341,38 @@ function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => voi
       </div>
 
       {!open ? null : (
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim px-2 pb-2">
+      <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
+      <div data-testid="projects-section" className="flex min-h-0 flex-1 flex-col">
       <ul
         data-testid="project-list"
-        className={clsx(
-          'flex flex-col',
-          // Cap and scroll only once it would otherwise crowd out Sessions —
-          // a short list should sit at its natural height, not inside a box.
-          // Sized to the threshold: five rows at ~30px. Anything taller would
-          // mean the cap engages without the list ever scrolling.
-          overflowing && 'max-h-[150px] overflow-y-auto scrollbar-slim',
-        )}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim"
       >
         {ordered.map((project: Project) => {
           const isActive = project.id === activeProjectId;
           const isPinned = pinned.includes(project.id);
+          const work = inFlightByProject.get(project.id) ?? [];
+          const isOpen = expanded.includes(project.id);
           return (
-            <li key={project.id} className="group relative flex items-center">
+            <li key={project.id}>
+              <div className="group relative flex items-center">
+              {work.length > 0 ? (
+                <button
+                  onClick={() => setExpanded(toggleExpanded(project.id))}
+                  aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${project.name}`}
+                  // The label names the ACTION; these name the STATE and the
+                  // thing acted on. Without them a screen reader announces a
+                  // plain button and an open folder is indistinguishable from
+                  // a closed one.
+                  aria-expanded={isOpen}
+                  aria-controls={`work-${project.id}`}
+                  className="shrink-0 rounded p-0.5 text-ink-tertiary transition-colors hover:text-ink"
+                >
+                  {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </button>
+              ) : (
+                // A spacer, so rows with and without work still line up.
+                <span className="w-[17px] shrink-0" aria-hidden="true" />
+              )}
               <button
                 onClick={() => setActiveProjectId(project.id)}
                 aria-current={isActive ? 'true' : undefined}
@@ -324,10 +387,38 @@ function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => voi
                     : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                 )}
               >
+                {/* Decorative: the row already has an accessible name, and a
+                    second label here would make screen readers say it twice. */}
+                <span data-folder-icon aria-hidden="true" className="shrink-0 text-ink-tertiary">
+                  {isOpen && work.length > 0
+                    ? <FolderOpen size={13} />
+                    : <Folder size={13} className={work.length === 0 ? 'opacity-50' : undefined} />}
+                </span>
                 <span data-testid="project-name" className="truncate">{project.name}</span>
+                {work.length > 0 && (
+                  // Visible without expanding: the whole point of a folder is
+                  // to say how much is inside before you open it.
+                  <span
+                    data-testid="in-flight-count"
+                    title={`${work.length} in flight`}
+                    className="shrink-0 rounded-full bg-canvas px-1.5 font-mono text-[9px] text-ink-tertiary"
+                  >
+                    {work.length}
+                  </span>
+                )}
                 <span className="shrink-0 font-mono text-[10px] text-ink-tertiary group-hover:invisible">
                   {relativeAge(project.updatedAt)}
                 </span>
+              </button>
+              <button
+                onClick={() => requestNewItem(project.id)}
+                aria-label={`New card in ${project.name}`}
+                title="New card here"
+                // Sits beside the pin, on hover, because it is an action on
+                // this project rather than part of reading the list.
+                className="absolute right-6 rounded p-1 text-ink-tertiary opacity-0 transition-colors hover:text-ink focus:opacity-100 group-hover:opacity-100"
+              >
+                <Plus size={11} />
               </button>
               <button
                 onClick={() => setPinned(togglePinned(project.id))}
@@ -343,16 +434,47 @@ function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => voi
               >
                 {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
               </button>
+              </div>
+
+              {work.length > 0 && isOpen && (
+                <ul id={`work-${project.id}`} className="mb-1 ml-2 border-l border-border-soft pl-2">
+                  {work.map(item => (
+                    <li key={item.id}>
+                      {/* Clicking goes to the work: the board drills in,
+                          highlights and scrolls to it. Without this the
+                          sidebar shows you what is in flight and gives you no
+                          way to reach it. */}
+                      <button
+                        onClick={() => focusItem(item.id, item.projectId)}
+                        title={item.title}
+                        className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
+                      >
+                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+                        <span className="truncate text-ink-secondary">{item.title}</span>
+                        {/* The step is the thing that says where it is stuck. */}
+                        <span className="ml-auto shrink-0 font-mono text-[9px] uppercase tracking-wide">
+                          {item.status}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           );
         })}
       </ul>
 
-      <SidebarLabel>Sessions</SidebarLabel>
-      <p className="px-2 pb-2 text-[11px] leading-relaxed text-ink-tertiary">
-        No active sessions. Starting an agent on a card will run it in its own
-        git worktree and show it here.
-      </p>
+      </div>
+
+      {/* A footer, not a peer. Projects is what you scan all day; this holds
+          one line until CGLAB-170 gives it real sessions. */}
+      <div data-testid="sessions-section" className="shrink-0 border-t border-border-soft pt-1">
+        <SidebarLabel>Sessions</SidebarLabel>
+        <p className="px-2 pb-1 text-[11px] leading-snug text-ink-tertiary">
+          None running. Starting an agent on a card shows it here.
+        </p>
+      </div>
       </div>
       )}
     </aside>
@@ -374,6 +496,71 @@ function relativeAge(when: string | Date | undefined): string {
   if (hours < 1) return 'now';
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+const SORT_LABELS: Array<{ value: ProjectSort; label: string }> = [
+  { value: 'created', label: 'Created at' },
+  { value: 'last-used', label: 'Last used' },
+];
+
+function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: ProjectSort) => void }) {
+  const [open, setOpen] = React.useState(false);
+
+  // Escape closes it, and so does clicking anywhere else — a menu that can
+  // only be dismissed by choosing something forces a choice you may not want.
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') setOpen(false); };
+    const onDown = (): void => setOpen(false);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" onMouseDown={e => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-label="Sort projects"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Sort projects"
+        className="flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary"
+      >
+        <ListFilter size={13} />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="Sort projects"
+          className="absolute right-0 top-full z-20 mt-1 w-36 rounded-md border border-border-soft bg-surface py-1 shadow-lg"
+        >
+          <p className="px-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+            Sort by
+          </p>
+          {SORT_LABELS.map(option => (
+            <button
+              key={option.value}
+              role="menuitemradio"
+              aria-checked={value === option.value}
+              onClick={() => { onChange(option.value); setOpen(false); }}
+              className={clsx(
+                'flex w-full items-center justify-between px-2.5 py-1 text-left text-xs transition-colors',
+                value === option.value ? 'text-ink' : 'text-ink-secondary hover:text-ink',
+              )}
+            >
+              {option.label}
+              {value === option.value && <Check size={12} className="text-brand" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SidebarLabel({ children }: { children: React.ReactNode }) {

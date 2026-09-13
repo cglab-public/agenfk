@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getActiveStepItems,
+  resolveStepContract,
   decideGatekeeperAuthorization,
   findItemAcrossProjects,
   detectCrossProjectItem,
@@ -40,9 +41,93 @@ describe('getActiveStepItems (moved to core)', () => {
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('treats a terminal step marked only isSpecial as finished, not as active', () => {
+    // `agenfk flow create` never asks about isAnchor — it only ever asks "Is
+    // this a terminal/special step?" and emits isSpecial. So a flow authored
+    // through the CLI has a DONE-equivalent step that no isAnchor filter can
+    // see, and with no isAnchor step anywhere the anchor set is EMPTY (the
+    // ['TODO','DONE'] fallback applies only when flow is null). Everything
+    // terminal then counts as in flight.
+    //
+    // Every other place that asks "which steps are real work" already filters
+    // !isSpecial — server.ts:456, :508, :849, :2148, :2269. This was the one
+    // that did not.
+    const cliAuthoredFlow = {
+      name: 'CLI Flow',
+      steps: [
+        { name: 'BACKLOG', order: 0, isSpecial: true },
+        { name: 'BUILDING', order: 1 },
+        { name: 'SHIPPED', order: 2, isSpecial: true },
+      ],
+    };
+    const items = [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'SHIPPED')];
+    expect(getActiveStepItems(items, cliAuthoredFlow).map(i => i.id)).toEqual(['b']);
+  });
+
+  it('still counts a step that is neither anchor nor special', () => {
+    // Guards the fix from overshooting into "exclude anything with a flag".
+    const flow = {
+      name: 'Plain',
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'DOING', order: 1 },
+        { name: 'DONE', order: 2, isAnchor: true },
+      ],
+    };
+    expect(getActiveStepItems([item('x', 'DOING')], flow).map(i => i.id)).toEqual(['x']);
+  });
+
   it('excludes anchors and inactive statuses', () => {
     const items = [item('1', 'TODO'), item('2', 'BLOCKED'), item('3', 'IN_PROGRESS'), item('4', 'DONE')];
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['3']);
+  });
+});
+
+describe('resolveStepContract on a CLI-authored flow', () => {
+  // The contract the gatekeeper prints IS the agent's working instructions:
+  // "Coding step: X" and "Final step (omit the command on this one): Y". On a
+  // flow authored through `agenfk flow create` — which only ever asks "Is this
+  // a terminal/special step?" and emits isSpecial, never isAnchor — both were
+  // computed with predicates that cannot see isSpecial, so the gatekeeper
+  // steered agents at the holding step and told them to land on the terminal
+  // step without running the verify command.
+  const cliFlow = {
+    name: 'CLI Flow',
+    steps: [
+      { name: 'BACKLOG', order: 0, isSpecial: true },
+      { name: 'BUILDING', order: 1 },
+      { name: 'CHECKING', order: 2 },
+      { name: 'SHIPPED', order: 3, isSpecial: true },
+    ],
+  };
+
+  it('names a real working step as the coding step, not the holding step', () => {
+    expect(resolveStepContract(cliFlow, 'BUILDING').codingStep).toBe('BUILDING');
+  });
+
+  it('names the last real step as the final step, not the terminal one', () => {
+    // The old filter dropped only the literal name 'DONE', so any flow whose
+    // terminal step is called something else kept it as the final step.
+    expect(resolveStepContract(cliFlow, 'BUILDING').finalStep).toBe('CHECKING');
+  });
+
+  it('still agrees with getActiveStepItems about what counts as real work', () => {
+    // The two must never disagree: one decides whether an item is in flight,
+    // the other tells the agent which step to work. A flow where the contract
+    // names a step that getActiveStepItems calls finished is incoherent.
+    const contract = resolveStepContract(cliFlow, 'BUILDING');
+    const active = getActiveStepItems(
+      [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'CHECKING'), item('d', 'SHIPPED')],
+      cliFlow,
+    ).map(i => i.status);
+    expect(active).toContain(contract.codingStep);
+    expect(active).toContain(contract.finalStep);
+  });
+
+  it('leaves an isAnchor flow exactly as it was', () => {
+    const contract = resolveStepContract(tddFlow, 'IN_PROGRESS');
+    expect(contract.codingStep).toBe('DISCOVERY');
+    expect(contract.finalStep).toBe('REVIEW');
   });
 });
 

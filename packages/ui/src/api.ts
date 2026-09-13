@@ -32,6 +32,22 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Every item in a working step, across all projects, in ONE request.
+   *
+   * The server decides what "active" means, per project, against that
+   * project's own flow — the same definition the gatekeeper uses. Filtering
+   * client-side instead would mean a second copy of that rule, free to drift.
+   */
+  listActiveItems: async () => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items`, { params: { active: 'true' } });
+      return data;
+    } catch (e) {
+      console.error("API Error listing active items:", e);
+      throw e;
+    }
+  },
   createProject: async (project: { name: string; description?: string }) => {
     try {
       const { data } = await axios.post(`${API_URL}/projects`, project);

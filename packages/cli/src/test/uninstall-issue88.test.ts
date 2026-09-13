@@ -12,8 +12,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import {
   HOOK_VARIANTS,
@@ -32,26 +33,50 @@ const UNINSTALL = path.join(ROOT, 'scripts', 'uninstall.mjs');
 // Part A — pure helpers
 // ---------------------------------------------------------------------------
 describe('issue #88 — uninstall-helpers', () => {
-  it('tracks all three hook variants, not just the gatekeeper (Bug 2)', () => {
+  it('tracks every hook variant, not just the gatekeeper (Bug 2)', () => {
+    // agenfk-run-hook joined the set in CGLAB-177. It matters here for the
+    // reason this test exists: a hook the uninstaller does not know about is
+    // left armed on disk, firing into a framework that is no longer there.
     expect(HOOK_VARIANTS).toEqual(
-      expect.arrayContaining(['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'])
+      expect.arrayContaining([
+        'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
+      ])
     );
-    expect(HOOK_VARIANTS).toHaveLength(3);
+    expect(HOOK_VARIANTS).toHaveLength(4);
   });
 
-  it('hookBinFilenames includes the CLI symlink + all 3 hooks, with .cmd on win32', () => {
+  it('hookBinFilenames includes the CLI symlink + every hook, with .cmd on win32', () => {
     expect(hookBinFilenames('linux')).toEqual([
-      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook',
+      'agenfk', 'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
     ]);
     expect(hookBinFilenames('win32')).toEqual([
-      'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd', 'agenfk-pr-hook.cmd',
+      'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd',
+      'agenfk-pr-hook.cmd', 'agenfk-run-hook.cmd',
     ]);
   });
 
-  it('opencodePluginFilenames are the three .mjs plugins (Bug 3)', () => {
-    expect(opencodePluginFilenames()).toEqual([
-      'agenfk-gatekeeper.mjs', 'agenfk-mcp-enforcer.mjs', 'agenfk-pr-hook.mjs',
-    ]);
+  it('opencodePluginFilenames covers exactly the plugins that exist on disk (Bug 3)', () => {
+    // Asserting a hardcoded list here is what let the previous version claim a
+    // plugin the installer never writes. The installer copies
+    // `bin/<name>-opencode.mjs` and nothing else, so that directory is the
+    // authority — read it. Adding a plugin without listing it (or listing one
+    // that does not exist) fails here instead of leaking a file on uninstall.
+    const binDir = path.resolve(fileURLToPath(import.meta.url), '../../../../../bin');
+    const onDisk = readdirSync(binDir)
+      .filter(f => f.endsWith('-opencode.mjs'))
+      .map(f => f.replace('-opencode.mjs', '.mjs'))
+      .sort();
+    expect(opencodePluginFilenames().slice().sort()).toEqual(onDisk);
+  });
+
+  it('removes every bin the installer writes, so none is left armed', () => {
+    // The real invariant, and the reason HOOK_VARIANTS gained a fourth entry:
+    // a hook binary the uninstaller does not know about stays on disk and keeps
+    // firing into a framework that is gone. Opencode plugins are deliberately
+    // NOT tied to this count — not every hook has one.
+    expect(hookBinFilenames('linux')).toEqual(['agenfk', ...HOOK_VARIANTS]);
+    expect(hookBinFilenames('win32')).toEqual(['agenfk', ...HOOK_VARIANTS].map(n => `${n}.cmd`));
+    expect(HOOK_VARIANTS).toContain('agenfk-run-hook');
   });
 
   it('isAgenfkHookEntry recognizes every variant and ignores unrelated entries', () => {

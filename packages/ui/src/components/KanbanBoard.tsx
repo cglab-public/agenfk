@@ -444,6 +444,19 @@ const stripDeepLinkParams = () => {
   window.history.replaceState(null, '', window.location.pathname + window.location.hash);
 };
 
+/**
+ * The blank card every "add an item" entry point opens.
+ *
+ * There are five of them — the header button, three per-column placeholders and
+ * the sidebar's per-project + — and they were five copies of the same object
+ * literal, each with its own cast. Drift between them means the modal opens
+ * differently depending on where you clicked. The cast lives here and nowhere
+ * else: a draft genuinely has no id or timestamps until it is saved, so it is
+ * not an AgEnFKItem yet and no honest type says otherwise.
+ */
+const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
+  ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
@@ -453,7 +466,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -562,7 +575,7 @@ export const KanbanBoard: React.FC = () => {
     }
   }, [projects, isLoadingProjects, selectedProjectId]);
 
-  const { data: items, isLoading } = useQuery({
+  const { data: items, isLoading, isFetching: isFetchingItems } = useQuery({
     queryKey: ['items', selectedProjectId],
     queryFn: () => api.listItems({ includeArchived: true, projectId: selectedProjectId || undefined }),
     enabled: !!selectedProjectId
@@ -1242,6 +1255,45 @@ export const KanbanBoard: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, isLoadingFlow, activeFlow]);
 
+  // Navigating to a card from outside the board — today the desktop sidebar.
+  // Reuses the deep-link path rather than a second implementation: the search
+  // already drills into the right parent, highlights and scrolls, and that
+  // behaviour is what "take me to this work" means.
+  const appliedFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    // `items` being defined is not the same as `items` being current.
+    // TanStack hands back a CACHED array synchronously while it refetches, and
+    // invalidateQueries leaves INACTIVE queries stale without refetching them —
+    // so a project the user left minutes ago still has its old list, missing
+    // everything an agent has created since. Searching that array finds
+    // nothing, flashes NOT FOUND, and burns the one-shot below, so the real
+    // data arriving afterwards is refused. Wait for settled data instead.
+    if (!focusedItemId || !items || isFetchingItems) return;
+    if (isLoadingFlow && !activeFlow) return;
+    // One-shot per request, exactly like deepLinkAppliedRef above. `items` has
+    // to stay in the deps so a click that lands before the list arrives still
+    // works, but focusedItemId is never cleared — so without this guard every
+    // subsequent items change re-applies a navigation the user has long since
+    // moved on from: it overwrites what they have since typed and scrolls the
+    // board back. Keying on the whole nonced string, not the bare id, is what
+    // keeps clicking the same sidebar row twice working.
+    if (appliedFocusRef.current === focusedItemId) return;
+    appliedFocusRef.current = focusedItemId;
+    const itemId = focusedItemId.slice(0, focusedItemId.lastIndexOf('#'));
+    setSearchTerm(itemId);
+    runSearch(itemId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
+
+  // A new card asked for from outside the board — the sidebar's per-project +.
+  // Opens the very same blank draft the header's New Item button does, so
+  // there is one create flow rather than two that can drift apart.
+  useEffect(() => {
+    if (!newItemRequest) return;
+    const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
+    setSelectedItem(blankDraft(projectId, Status.TODO));
+  }, [newItemRequest]);
+
   const handleSearchNav = (direction: 'prev' | 'next') => {
     if (searchMatches.length === 0) return;
     const newIndex = direction === 'next'
@@ -1442,14 +1494,16 @@ export const KanbanBoard: React.FC = () => {
     )}>
       <header className="bg-nav-surface backdrop-blur border-b border-border-brand px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 shrink-0">
-            {/* In the desktop app the title bar already carries the logo, the
-                app name, the version and the README — repeating them here just
-                spends a row of screen. The project line below is content, not
-                chrome, so it stays in both. (CGLAB-168) */}
-            {!isDesktop() && <Logo size={32} />}
+          {/* In the desktop app the sidebar already carries the logo, the app
+              name, the version, the README and the active project — repeating
+              them here spends a row of screen to say what is already visible.
+              The whole block goes, not just its contents: an empty flex child
+              still draws the row's `gap-4`, which would leave the search
+              indented from an edge with nothing on it. (CGLAB-168/172) */}
+          {!isDesktop() && <div className="flex items-center gap-3 shrink-0">
+            <Logo size={32} />
             <div>
-              {!isDesktop() && <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgEnFK Dashboard</h1>
                 <button
                   onClick={() => setIsWhatsNewOpen(true)}
@@ -1471,7 +1525,11 @@ export const KanbanBoard: React.FC = () => {
                     README
                   </span>
                 </button>
-              </div>}
+              </div>
+              {/* The desktop sidebar owns project switching now, and shows the
+                  active one highlighted — repeating it here costs a header row
+                  to say what is already on screen. The pin lives with it
+                  because it is a property of the project, not of the board. */}
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
                   Project: <span className="text-accent-text">{activeProject?.name || 'Loading...'}</span>
@@ -1501,9 +1559,19 @@ export const KanbanBoard: React.FC = () => {
                 )}
               </div>
             </div>
-          </div>
+          </div>}
 
-          <form onSubmit={handleSearch} className="relative flex-1 max-w-md hidden lg:flex items-center gap-1.5">
+          <form
+            onSubmit={handleSearch}
+            className={clsx(
+              'relative max-w-md hidden lg:flex items-center gap-1.5',
+              // In the desktop app the logo, app name and project line are all
+              // gone from the left of this row, so growing to fill leaves the
+              // search adrift in the middle of an empty header. Sit at the
+              // left edge and push the buttons right instead.
+              isDesktop() ? 'flex-1 mr-auto' : 'flex-1',
+            )}
+          >
             <div className="relative flex-1">
               <input
                 type="text"
@@ -1532,6 +1600,31 @@ export const KanbanBoard: React.FC = () => {
           </form>
 
           <div className="flex items-center gap-3">
+            {/* The auto-switch pin survives the desktop header cleanup, because
+                it is the ONLY thing that stops a `project_switched` event from
+                yanking the board to whatever project an agent just touched.
+                It is not the sidebar's pin: that one writes
+                agenfk_pinned_projects and merely reorders the list, while this
+                writes agenfk_project_pinned and changes behaviour. It sits
+                here rather than back on the left so the search keeps the edge,
+                and it belongs with the other board toggles anyway. */}
+            {isDesktop() && selectedProjectId && (
+              <button
+                onClick={togglePin}
+                title={isPinned ? 'Unpin project (allow auto-switching)' : 'Pin project (prevent auto-switching)'}
+                aria-label={isPinned ? 'Unpin project' : 'Pin project'}
+                aria-pressed={isPinned}
+                data-testid="pin-project-btn"
+                className={clsx(
+                  'p-1.5 rounded-lg transition-colors',
+                  isPinned
+                    ? 'text-accent-text bg-chip hover:opacity-80'
+                    : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 dark:hover:text-slate-300',
+                )}
+              >
+                {isPinned ? <Pin size={14} /> : <PinOff size={14} />}
+              </button>
+            )}
             <div className="flex items-center gap-1.5 bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-xl border border-slate-200/50 dark:border-slate-700/50">
               <JiraConnectionButton />
 
@@ -1613,7 +1706,7 @@ export const KanbanBoard: React.FC = () => {
             </div>
 
             <button 
-              onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: selectedProjectId! } as any)}
+              onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.TODO))}
               className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
             >
               <Plus size={18} />
@@ -1738,7 +1831,7 @@ export const KanbanBoard: React.FC = () => {
                         ))}
                       </AnimatePresence>
                     {/* v8 ignore start */}
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.IDEAS, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
+                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.IDEAS))} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add idea
                     </button>
                     {/* v8 ignore stop */}
@@ -1810,7 +1903,7 @@ export const KanbanBoard: React.FC = () => {
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
-                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
+                <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, status as Status))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
                   <Plus size={16} /> Add {columnLabel.toLowerCase()}
                 </button>
               </div>
@@ -1902,7 +1995,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
+                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.BLOCKED))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
                       <Plus size={16} /> Add blocked
                     </button>
                   </div>

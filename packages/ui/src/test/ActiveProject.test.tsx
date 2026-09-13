@@ -13,13 +13,22 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
+import { readLastUsed } from '../sidebarPrefs';
 
 function Probe() {
-  const { activeProjectId, setActiveProjectId } = useActiveProject();
+  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem } = useActiveProject();
   return (
     <div>
       <span data-testid="active">{activeProjectId ?? 'none'}</span>
+      <span data-testid="focused">{focusedItemId ?? 'none'}</span>
       <button onClick={() => setActiveProjectId('p2')}>pick p2</button>
+      <button onClick={() => setActiveProjectId(null)}>clear project</button>
+      <button onClick={() => setActiveProjectId('p3')}>pick p3</button>
+      <button onClick={() => focusItem('i9', 'p2')}>focus i9 in p2</button>
+      <button onClick={() => focusItem('i9', 'p2')}>focus i9 again</button>
+      <span data-testid="new-item">{newItemRequest ?? 'none'}</span>
+      <button onClick={() => requestNewItem('p2')}>new in p2</button>
+      <button onClick={() => requestNewItem('p2')}>new in p2 again</button>
     </div>
   );
 }
@@ -88,5 +97,140 @@ describe('ActiveProjectProvider', () => {
     } finally {
       console.error = quiet;
     }
+  });
+});
+
+
+describe('focusing a card', () => {
+  it('starts with nothing focused', () => {
+    renderProbe();
+    expect(screen.getByTestId('focused').textContent).toBe('none');
+  });
+
+  it('records which card to go to', () => {
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('focus i9 in p2')); });
+    expect(screen.getByTestId('focused').textContent).toContain('i9');
+  });
+
+  it('switches project when the card lives in another one', () => {
+    // Focusing a card from the sidebar has to bring its board with it, or the
+    // board searches for an id it does not have.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('focus i9 in p2')); });
+    expect(screen.getByTestId('active').textContent).toBe('p2');
+  });
+
+  it('re-focusing the same card is not a no-op', () => {
+    // Clicking the same sidebar row twice must scroll back to it. A plain id
+    // would compare equal and the board would never react the second time.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('focus i9 in p2')); });
+    const first = screen.getByTestId('focused').textContent;
+    act(() => { fireEvent.click(screen.getByText('focus i9 again')); });
+    expect(screen.getByTestId('focused').textContent).not.toBe(first);
+  });
+
+  it('does not persist the focus — it is a navigation, not a preference', () => {
+    // Asserting that one invented key is null proved nothing: no code writes
+    // or reads 'agenfk_focused_item', so the assertion held with the provider
+    // deleted. Compare the whole of storage instead, and allow exactly the one
+    // key focusItem is supposed to touch (it switches project as a side
+    // effect). Anything else the provider starts persisting fails this.
+    renderProbe();
+    const before = { ...localStorage };
+    act(() => { fireEvent.click(screen.getByText('focus i9 in p2')); });
+    const after = { ...localStorage };
+    delete (before as Record<string, unknown>)['agenfk_project_id'];
+    delete (after as Record<string, unknown>)['agenfk_project_id'];
+    delete (after as Record<string, unknown>)['agenfk_project_last_used'];
+    expect(after).toEqual(before);
+  });
+});
+
+
+describe('creating a card from the sidebar', () => {
+  it('starts with nothing requested', () => {
+    renderProbe();
+    expect(screen.getByTestId('new-item').textContent).toBe('none');
+  });
+
+  it('switches to the project the card belongs in', () => {
+    // Creating from a project row must open the draft in THAT project, not in
+    // whichever one happened to be selected.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    expect(screen.getByTestId('active').textContent).toBe('p2');
+  });
+
+  it('asking twice fires twice', () => {
+    // Dismiss the draft, click + again: a plain flag would compare equal and
+    // the second click would do nothing.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    const first = screen.getByTestId('new-item').textContent;
+    act(() => { fireEvent.click(screen.getByText('new in p2 again')); });
+    expect(screen.getByTestId('new-item').textContent).not.toBe(first);
+  });
+
+  it('does not persist the request', () => {
+    // Same correction as above: 'agenfk_new_item' is a key nobody uses, so the
+    // old assertion was vacuous. Snapshot everything.
+    renderProbe();
+    const before = { ...localStorage };
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    const after = { ...localStorage };
+    delete (before as Record<string, unknown>)['agenfk_project_id'];
+    delete (after as Record<string, unknown>)['agenfk_project_id'];
+    delete (after as Record<string, unknown>)['agenfk_project_last_used'];
+    expect(after).toEqual(before);
+  });
+});
+
+describe('opening a project records that it was used', () => {
+  it('stamps the project so the sidebar can order by last used', () => {
+    // Nothing else in the app records project SELECTION — the server's
+    // updatedAt only moves when a project is renamed or reconfigured. If this
+    // stamp is not written here, the sidebar's default sort silently degrades
+    // into "Created at".
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('pick p2')); });
+    expect(readLastUsed()['p2']).toBeDefined();
+  });
+
+  it('ranks a newly opened project above the one before it', () => {
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('pick p2')); });
+    const p2Rank = readLastUsed()['p2'];
+    act(() => { fireEvent.click(screen.getByText('pick p3')); });
+    expect(readLastUsed()['p3']).toBeGreaterThan(p2Rank);
+  });
+
+  it('does not re-stamp the project that is already open', () => {
+    // `project_switched` fires on every agent write and calls
+    // setActiveProjectId unconditionally, usually with the project already
+    // open. Stamping on those would let an AGENT reorder the user's sidebar —
+    // the opposite of "last used by you" — and rewrite up to 50 storage
+    // entries per event. Writing this assertion is what caught that: the
+    // earlier version used toBeGreaterThanOrEqual and passed either way.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('pick p2')); });
+    const before = readLastUsed()['p2'];
+    act(() => { fireEvent.click(screen.getByText('pick p2')); });
+    expect(readLastUsed()['p2']).toBe(before);
+  });
+
+  it('stamps the project restored from last launch, without a click', () => {
+    // Otherwise the project you are actually looking at on startup has no rank
+    // and the default sort falls back to the server's updatedAt for it.
+    localStorage.setItem('agenfk_project_id', 'p-remembered');
+    renderProbe();
+    expect(readLastUsed()['p-remembered']).toBeDefined();
+  });
+
+  it('does not stamp anything when the project is cleared', () => {
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('clear project')); });
+    expect(Object.keys(readLastUsed())).toHaveLength(0);
   });
 });

@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -904,7 +904,14 @@ function sortedFlowSteps(flow: { steps: FlowStepInfo[] }): FlowStepInfo[] {
  * In the default flow this is IN_PROGRESS. Custom flows may use any name.
  */
 function getCodingStep(sorted: FlowStepInfo[]): FlowStepInfo | undefined {
-  return sorted.find(s => !s.isAnchor);
+  // isBoundaryStep, not !isAnchor. A flow authored through `agenfk flow create`
+  // marks its boundary steps with isSpecial and never sets isAnchor, so the
+  // narrower test picked the HOLDING step as the place to send a failed verify
+  // back to. The item then sat on a step getActiveStepItems counts as finished,
+  // the gatekeeper reported "no active task", and the PreToolUse hook blocked
+  // every edit — the agent was sent back to fix a failure and simultaneously
+  // forbidden from touching the code.
+  return sorted.find(s => !isBoundaryStep(s));
 }
 
 /**
@@ -2791,9 +2798,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? `\n\n🚀 **Push your branch**: The server has auto-committed the changes. Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
     : '';
 
-  // A command is only required for the final step (→ DONE). For intermediate
-  // steps the command is optional — omitting it advances without running anything.
-  const isFinalStep = nextStatus === Status.DONE;
+  // A command is only required for the final step. For intermediate steps it is
+  // optional — omitting it advances without running anything.
+  //
+  // "Final" cannot be the literal name DONE. resolveStepContract tells the agent
+  // "Final step (omit the command on this one): X", and on a flow whose exit
+  // step is named anything else — which is every flow `agenfk flow create`
+  // produces — X is the last REAL step while this test said DONE. The agent
+  // dutifully omitted the command, this took the intermediate path, and the
+  // item advanced into the terminal step having run no verification at all.
+  // The two must agree, or the gate silently does not exist.
+  const isFinalStep = nextStatus === Status.DONE || !nextStep || isBoundaryStep(nextStep);
   const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
