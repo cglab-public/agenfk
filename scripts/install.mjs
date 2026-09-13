@@ -523,6 +523,12 @@ async function run() {
     const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
     const prHookDestBase = path.join(localBinDir, 'agenfk-pr-hook');
     const prHookDest = os.platform() === 'win32' ? `${prHookDestBase}.cmd` : prHookDestBase;
+    // CGLAB-177: records Claude Code's tool calls as agent runs, so the Runs
+    // panel has content for the harness the team actually uses. The pi worker
+    // writes a transcript the server tails; Claude Code writes none, so its
+    // runs are pushed in by this hook instead.
+    const runHookDestBase = path.join(localBinDir, 'agenfk-run-hook');
+    const runHookDest = os.platform() === 'win32' ? `${runHookDestBase}.cmd` : runHookDestBase;
 
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
@@ -1340,6 +1346,20 @@ process.exit(0);
             }
         }
         console.log(`  Installed: ${prHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+
+        // 12e. Install agenfk-run-hook (CGLAB-177).
+        const runHookSource = path.join(rootDir, 'bin', 'agenfk-run-hook.mjs');
+        if (os.platform() === 'win32') {
+            await fs.writeFile(`${runHookDestBase}.cmd`, `@echo off\nnode "${runHookSource}" %*`, 'utf8');
+            if (isMinGW) {
+                await fs.writeFile(runHookDestBase, `#!/bin/sh\nnode "${runHookSource}" "$@"`, 'utf8');
+                chmodSync(runHookDestBase, 0o755);
+            }
+        } else if (existsSync(runHookSource)) {
+            await fs.copyFile(runHookSource, runHookDestBase);
+            chmodSync(runHookDestBase, 0o755);
+        }
+        console.log(`  Installed: ${runHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
     }
 
     // 12c. Install Opencode MCP enforcer plugin
@@ -1586,11 +1606,19 @@ process.exit(0);
         // `gh pr create` and `git push`).
         if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
         settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(entry =>
-            !JSON.stringify(entry).includes('agenfk-pr-hook')
+            !JSON.stringify(entry).includes('agenfk-pr-hook') &&
+            !JSON.stringify(entry).includes('agenfk-run-hook')
         );
         settings.hooks.PostToolUse.push({
             matcher: 'Bash',
             hooks: [{ type: 'command', command: `${prHookDest} --client claude-code` }]
+        });
+        // Records tool calls as agent-run events (CGLAB-177). Matches the tools
+        // worth a transcript line; the hook itself filters further and never
+        // blocks, so a slow or absent server costs nothing.
+        settings.hooks.PostToolUse.push({
+            matcher: 'Bash|Edit|Write|NotebookEdit|Task|WebFetch',
+            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
         });
 
         // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)

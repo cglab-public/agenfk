@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
+import { writeActiveWork } from './activeWork.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -3208,6 +3209,15 @@ program
         intent: options.intent,
         role: options.role,
       });
+
+      // Record which card this session is working on (CGLAB-177). This is the
+      // one place the workflow resolves that unambiguously — the run recorder
+      // reads it instead of guessing, because `?active=true` can return dozens
+      // of items across projects and attributing work to the wrong card is
+      // worse than recording none.
+      if (decision.authorized && decision.task?.id) {
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+      }
 
       if (options.json) {
         console.log(JSON.stringify({
