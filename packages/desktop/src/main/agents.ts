@@ -87,7 +87,16 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
       '--dangerously-bypass-hook-trust',
     ],
   },
-  { id: 'opencode', label: 'Opencode', command: { file: 'opencode', args: [] } },
+  // pi.dev. One of the DEEPEST integrations AgEnFK has: scripts/install.mjs
+  // ships bin/agenfk-pi-extension.ts into ~/.pi/agent/extensions/, giving pi
+  // NATIVE enforcement — pre-edit gatekeeper, mcp-enforcer and PR-sizing — not
+  // the instructional kind. The server also parses its session transcripts
+  // (agent-runs/pi-parser.ts).
+  //
+  // It is absent from the CLI's INTEGRATION_LABELS, which is a gap in that
+  // list rather than a statement about pi. Trusting that list as the source of
+  // truth is what left pi out of the first cut of this file.
+  { id: 'pi', label: 'Pi', command: { file: 'pi', args: [] } },
   { id: 'gemini', label: 'Gemini CLI', command: { file: 'gemini', args: [] } },
   { id: 'shell', label: 'Shell', command: { file: process.platform === 'win32' ? 'powershell.exe' : 'bash', args: ['-l'] } },
 ];

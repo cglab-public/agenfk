@@ -33,7 +33,7 @@ import {
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
-import { TerminalTab } from './TerminalTab';
+import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import { listAgentsFromBridge } from './agentBridge';
 import { EmptyState } from './EmptyState';
@@ -72,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { focusedItemId, newItemRequest, setActiveProjectId } = useActiveProject();
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
-    { itemId: string; title: string; agentId?: string } | null
+    { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
   >(null);
   /**
    * The card a terminal is currently open ON, with the choices made for it.
@@ -80,16 +80,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * Separate from `pending` on purpose: the agent and the auto-approve flag are
    * decided once, at open time, and must not change under a running session.
    */
-  const [session, setSession] = React.useState<
-    { itemId: string; agentId: string; autoApprove: boolean } | null
-  >(null);
+  // A LIST, not one. Holding a single session meant opening a terminal on a
+  // second card replaced the first — which unmounted its pane, killed its agent
+  // mid-run and destroyed its scrollback, in two clicks through the supported
+  // path. That is the same catastrophe the panel-level `hidden` exists to
+  // prevent one level up.
+  const [sessions, setSessions] = React.useState<TerminalSession[]>([]);
+  const [activeSession, setActiveSession] = React.useState<string | null>(null);
+  const sessionSeq = React.useRef(0);
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
     setActiveProjectId(item.projectId);
+    // Already open? Go to it. Opening a second terminal on the same card is
+    // possible (the + in the tab bar), but it is not what clicking the card
+    // means — that is "take me to my work", and spawning a duplicate agent in
+    // the same worktree would be the opposite of helpful.
+    const existing = sessions.find(s => s.itemId === item.id);
+    if (existing) {
+      setActiveSession(existing.id);
+      setTerminalOpened(true);
+      setActive('terminal');
+      return;
+    }
     // agentId comes off the ITEM, which is where it lives — the server keeps it
     // in the item's own record, so it follows the card rather than the machine.
-    setPending({ itemId: item.id, title: item.title, agentId: item.agentId });
-  }, [setActiveProjectId]);
+    setPending({
+      itemId: item.id,
+      title: item.title,
+      agentId: item.agentId,
+      branchName: (item as { branchName?: string | null }).branchName ?? null,
+    });
+  }, [setActiveProjectId, sessions]);
+
+  const closeSession = React.useCallback((id: string): void => {
+    setSessions(prev => {
+      const next = prev.filter(s => s.id !== id);
+      // Move to a neighbour rather than leaving the panel blank with tabs
+      // still showing.
+      setActiveSession(cur => (cur === id ? (next.at(-1)?.id ?? null) : cur));
+      return next;
+    });
+  }, []);
   const socket = useSocket();
   // Seeded from the socket rather than assumed: mounting onto an already-
   // connected socket would otherwise sit on "Connecting…" until a reconnect
@@ -244,7 +275,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
           >
-            {terminalOpened && <TerminalTab session={session} />}
+            {terminalOpened && (
+              <TerminalTab
+                sessions={sessions}
+                activeId={activeSession}
+                onSelect={setActiveSession}
+                onClose={closeSession}
+                onNew={() => {
+                  const current = sessions.find(s => s.id === activeSession);
+                  if (current) {
+                    setPending({
+                      itemId: current.itemId,
+                      title: current.title,
+                      agentId: current.agentId,
+                      branchName: current.branchName,
+                    });
+                  }
+                }}
+              />
+            )}
           </div>
 
           <div
@@ -309,7 +358,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // letting it fail — or even throw synchronously, as it did when the
             // api mock lacked the method — must never stop the terminal from
             // opening. Ordering is the guarantee here, not the try/catch.
-            setSession({ itemId: pending.itemId, agentId, autoApprove });
+            sessionSeq.current += 1;
+            const id = `${pending.itemId}#${sessionSeq.current}`;
+            setSessions(prev => [...prev, {
+              id,
+              itemId: pending.itemId,
+              title: pending.title,
+              agentId,
+              autoApprove,
+              branchName: pending.branchName,
+            }]);
+            setActiveSession(id);
             setTerminalOpened(true);
             setActive('terminal');
             setPending(null);

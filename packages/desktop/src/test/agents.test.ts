@@ -23,21 +23,45 @@ import { AGENT_IDS, resolveAgentCommand, listAgents } from '../main/agents';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
-describe('the agent list tracks what AgEnFK supports', () => {
-  it('offers only agents AgEnFK integrates with', () => {
-    // The CLI's INTEGRATION_LABELS is the source of truth — it is what
-    // `agenfk integration list` prints. Importing it here would drag the whole
-    // CLI into the desktop main process, and the desktop set is a subset
-    // anyway, so the relationship is asserted rather than expressed in code.
-    // Adding an integration without considering it here fails this test.
-    const cliSource = fs.readFileSync(path.join(repoRoot, 'packages/cli/src/index.ts'), 'utf8');
-    const block = cliSource.split('const INTEGRATION_LABELS')[1].split('};')[0];
-    const supported = [...block.matchAll(/^\s*'?([a-z-]+)'?:/gm)].map(m => m[1]);
+describe('what belongs in the agent list', () => {
+  // The criterion is what AgEnFK INTEGRATES WITH — never what happens to be
+  // installed on the machine running the tests.
+  //
+  // The first cut got this wrong by treating the CLI's INTEGRATION_LABELS as
+  // the source of truth. That map omits pi, so pi was excluded; and it lists
+  // opencode, so opencode was included. Both were wrong. What the project
+  // actually ships is the answer: rule bundles (clauderules, codexrules,
+  // cursorrules, geminirules) and, for pi, a native extension installed by
+  // scripts/install.mjs into ~/.pi/agent/extensions/.
 
-    expect(supported.length).toBeGreaterThan(0);
+  it('includes pi, which AgEnFK gives a native enforcement extension', () => {
+    // scripts/install.mjs copies bin/agenfk-pi-extension.ts into
+    // ~/.pi/agent/extensions/ — pre-edit gatekeeper, mcp-enforcer and
+    // PR-sizing, enforced natively rather than instructionally. That is a
+    // deeper integration than most entries in INTEGRATION_LABELS, which does
+    // not mention pi at all.
+    expect(AGENT_IDS).toContain('pi');
+  });
+
+  it('ships a rules bundle or an extension for every agent offered', () => {
+    // The real rule, derived instead of restated: an agent belongs here only
+    // if this repo integrates with it. Reads the tree, so adding an agent
+    // without shipping anything for it fails.
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
     for (const id of AGENT_IDS) {
       if (id === 'shell') continue;
-      expect(supported, `"${id}" is offered as an agent but AgEnFK does not integrate with it`).toContain(id);
+      const hasRules = fs.existsSync(path.join(repoRoot, `${id}rules`));
+      const hasExtension = fs.existsSync(path.join(repoRoot, 'bin', `agenfk-${id}-extension.ts`));
+      expect(
+        hasRules || hasExtension,
+        `"${id}" is offered but this repo ships neither ${id}rules/ nor bin/agenfk-${id}-extension.ts`,
+      ).toBe(true);
+    }
+  });
+
+  it('offers the agents AgEnFK ships an integration for', () => {
+    for (const id of ['claude', 'codex', 'gemini', 'pi']) {
+      expect(AGENT_IDS).toContain(id);
     }
   });
 
@@ -48,11 +72,23 @@ describe('the agent list tracks what AgEnFK supports', () => {
     expect(AGENT_IDS).not.toContain('cursor');
   });
 
-  it('does not offer pi, which is a run-log format and not an installable integration', () => {
-    // packages/server/src/agent-runs/pi-parser.ts exists, which makes "pi" look
-    // available. It is the READ side of run ingestion; there is no integration
-    // to install and nothing to spawn.
-    expect(AGENT_IDS).not.toContain('pi');
+  it('leaves opencode out', () => {
+    // A product decision, and consistent with the tree: there is no
+    // opencoderules/ bundle and no pi-style extension for it — only three
+    // hook plugins. Whether the binary happens to exist on any given machine
+    // is not the question this list answers.
+    expect(AGENT_IDS).not.toContain('opencode');
+  });
+
+  it('every entry names a bare executable, never a path', () => {
+    // The property that actually matters for the list as a whole: an entry
+    // carrying a path would defeat the closed-set indirection this file exists
+    // for, by writing the path down on OUR side instead of theirs.
+    for (const id of AGENT_IDS) {
+      const { file } = resolveAgentCommand(id);
+      expect(file, `"${id}" resolves to a path rather than a bare name`).not.toMatch(/[/\\]/);
+      expect(file.length).toBeGreaterThan(0);
+    }
   });
 
   it('defaults to Claude Code', () => {

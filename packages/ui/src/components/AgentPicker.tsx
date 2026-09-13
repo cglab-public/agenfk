@@ -14,6 +14,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { Check, ChevronDown, Search } from 'lucide-react';
+import { AgentIcon } from './AgentIcon';
 
 export interface AgentInfo {
   readonly id: string;
@@ -38,9 +39,9 @@ export interface AgentPickerProps {
 
 /** How to get each agent. Shown on the rows the user cannot pick. */
 const INSTALL_HINT: Record<string, string> = {
+  pi: 'Install from pi.dev',
   claude: 'Install with: npm i -g @anthropic-ai/claude-code',
   codex: 'Install with: npm i -g @openai/codex',
-  opencode: 'Install from opencode.ai',
   gemini: 'Install with: npm i -g @google/gemini-cli',
 };
 
@@ -56,8 +57,8 @@ const INSTALL_HINT: Record<string, string> = {
 const FALLBACK_LABELS: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  opencode: 'Opencode',
   gemini: 'Gemini CLI',
+  pi: 'Pi',
   shell: 'Shell',
 };
 
@@ -147,6 +148,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           : 'cursor-default text-ink-tertiary',
       )}
     >
+      <AgentIcon agentId={agent.id} size={13} />
       <span className="flex-1 truncate">{agent.label}</span>
       {!agent.installed && (
         <span className="shrink-0 text-[10px] text-ink-tertiary">
@@ -166,6 +168,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
         aria-expanded={open}
         className="flex items-center gap-1.5 rounded-lg border border-border-soft px-2 py-1 text-xs text-ink hover:bg-canvas"
       >
+        <AgentIcon agentId={value} size={13} />
         <span>{current?.label ?? FALLBACK_LABELS[value] ?? value}</span>
         <ChevronDown size={12} className="text-ink-tertiary" />
       </button>

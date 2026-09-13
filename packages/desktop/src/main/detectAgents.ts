@@ -22,6 +22,16 @@ export interface DetectedAgent {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /**
+   * Whether this agent has a flag to skip its own permission prompts.
+   *
+   * Carried across the IPC border, not recomputed on the other side. Leaving it
+   * off here made the picker's toggle permanently dead AND made the dialog
+   * state, falsely, that Claude Code cannot skip permissions. The unit tests
+   * missed it because they hand-wrote the field into their fixtures — they
+   * validated a shape the real producer never emitted.
+   */
+  readonly supportsAutoApprove: boolean;
 }
 
 export interface DetectDeps {
@@ -111,10 +121,13 @@ export async function detectAgents(deps: DetectDeps = { which: whichOnPath, logi
     }
   }
 
-  const labels = new Map(listAgents().map(a => [a.id, a.label]));
+  // The whole entry, not just the label: picking fields off one by one is how
+  // supportsAutoApprove went missing in the first place.
+  const meta = new Map(listAgents().map(a => [a.id, a]));
   const result = ids.map(id => ({
     id,
-    label: labels.get(id) ?? id,
+    label: meta.get(id)?.label ?? id,
+    supportsAutoApprove: meta.get(id)?.supportsAutoApprove === true,
     installed: Boolean(found.get(id)),
   }));
 

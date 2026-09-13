@@ -123,10 +123,14 @@ describe('merging a login shell PATH', () => {
 });
 
 describe('capturing that PATH without recursing', () => {
-  it('carries a guard variable the capture can recognise', () => {
-    // A user whose shell rc launches or talks to this app would otherwise have
-    // the capture spawn a login shell that spawns the capture again.
-    expect(LOGIN_CAPTURE_GUARD).toBeTruthy();
+  // The guard's real behaviour is asserted in detectAgents.test.ts, where the
+  // capture can be driven. What lived here was `expect(LOGIN_CAPTURE_GUARD)
+  // .toBeTruthy()` — which passed while the guard was never read at all, and
+  // so certified a safeguard that did not exist.
+  it('is stripped from the captured result, being our own marker', () => {
+    const parsed = parseEnvDump(`${LOGIN_CAPTURE_GUARD}=1\nPATH=/usr/bin\n`);
+    expect(parsed[LOGIN_CAPTURE_GUARD]).toBeUndefined();
+    expect(parsed.PATH).toBe('/usr/bin');
   });
 
   it('reads an env dump into a map', () => {

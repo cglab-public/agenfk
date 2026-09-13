@@ -18,11 +18,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
 import { AgentPicker } from '../components/AgentPicker';
 
+// Both groups populated, because the grouping is what this file is about.
 const AGENTS = [
   { id: 'claude', label: 'Claude Code', installed: true },
   { id: 'codex', label: 'Codex', installed: false },
-  { id: 'opencode', label: 'Opencode', installed: true },
-  { id: 'gemini', label: 'Gemini CLI', installed: false },
+  { id: 'gemini', label: 'Gemini CLI', installed: true },
+  { id: 'pi', label: 'Pi', installed: false },
   { id: 'shell', label: 'Shell', installed: true },
 ];
 
@@ -61,9 +62,9 @@ describe('grouping', () => {
     const missing = groups.find(g => /not installed/i.test(g.getAttribute('aria-label') ?? ''))!;
 
     expect(within(installed).getByText('Claude Code')).toBeDefined();
-    expect(within(installed).getByText('Opencode')).toBeDefined();
+    expect(within(installed).getByText('Gemini CLI')).toBeDefined();
     expect(within(missing).getByText('Codex')).toBeDefined();
-    expect(within(missing).getByText('Gemini CLI')).toBeDefined();
+    expect(within(missing).getByText('Pi')).toBeDefined();
   });
 
   it('says how to get an agent that is missing, not merely that it is', async () => {
@@ -88,8 +89,8 @@ describe('choosing', () => {
     const onChange = vi.fn();
     renderPicker({ onChange });
     const menu = await openMenu();
-    fireEvent.click(within(menu).getByRole('option', { name: /opencode/i }));
-    expect(onChange).toHaveBeenCalledWith('opencode');
+    fireEvent.click(within(menu).getByRole('option', { name: /gemini/i }));
+    expect(onChange).toHaveBeenCalledWith('gemini');
   });
 
   it('refuses to select an agent that is not installed', async () => {
@@ -106,13 +107,13 @@ describe('choosing', () => {
     renderPicker();
     const menu = await openMenu();
     expect(within(menu).getByRole('option', { name: /claude code/i }).getAttribute('aria-selected')).toBe('true');
-    expect(within(menu).getByRole('option', { name: /opencode/i }).getAttribute('aria-selected')).toBe('false');
+    expect(within(menu).getByRole('option', { name: /gemini/i }).getAttribute('aria-selected')).toBe('false');
   });
 
   it('closes after a choice instead of sitting over the thing it changed', async () => {
     renderPicker();
     const menu = await openMenu();
-    fireEvent.click(within(menu).getByRole('option', { name: /opencode/i }));
+    fireEvent.click(within(menu).getByRole('option', { name: /gemini/i }));
     await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
   });
 });
@@ -121,16 +122,20 @@ describe('search', () => {
   it('filters within both groups', async () => {
     renderPicker();
     const menu = await openMenu();
+    // 'co' matches "Claude Code" (installed) and "Codex" (not installed), so
+    // the filter has to reach inside both sections rather than one.
     fireEvent.change(within(menu).getByPlaceholderText(/search agents/i), { target: { value: 'co' } });
+    expect(within(menu).getByRole('option', { name: /claude code/i })).toBeDefined();
     expect(within(menu).getByRole('option', { name: /codex/i })).toBeDefined();
-    expect(within(menu).getByRole('option', { name: /opencode/i })).toBeDefined();
-    expect(within(menu).queryByRole('option', { name: /gemini/i })).toBeNull();
+    expect(within(menu).queryByRole('option', { name: /shell/i })).toBeNull();
   });
 
   it('drops a group heading when the filter empties it', async () => {
     renderPicker();
     const menu = await openMenu();
-    fireEvent.change(within(menu).getByPlaceholderText(/search agents/i), { target: { value: 'gemini' } });
+    // Only a not-installed agent matches, so the Installed heading must go
+    // rather than sit over an empty section.
+    fireEvent.change(within(menu).getByPlaceholderText(/search agents/i), { target: { value: 'pi' } });
     expect(within(menu).queryByText(/^installed$/i)).toBeNull();
     expect(within(menu).getByText(/^not installed$/i)).toBeDefined();
   });
@@ -155,13 +160,13 @@ describe('keyboard', () => {
     fireEvent.keyDown(menu, { key: 'ArrowDown' });
     expect(document.activeElement?.textContent).toMatch(/claude code/i);
     fireEvent.keyDown(menu, { key: 'ArrowDown' });
-    expect(document.activeElement?.textContent).toMatch(/opencode/i);
+    expect(document.activeElement?.textContent).toMatch(/gemini/i);
   });
 
   it('skips over agents that cannot be chosen', async () => {
     // Landing focus on a disabled row is a dead end a keyboard user has to
-    // arrow back out of. Installed here is Claude / Opencode / Shell, so three
-    // presses reach Shell — Codex and Gemini are never focused despite sitting
+    // arrow back out of. Installed here is Claude / Gemini / Shell, so three
+    // presses reach Shell — Codex and Pi are never focused despite sitting
     // between them in the rendered order.
     renderPicker();
     const menu = await openMenu();
@@ -171,7 +176,7 @@ describe('keyboard', () => {
       visited.push(document.activeElement?.textContent ?? '');
     }
     expect(visited[2]).toMatch(/shell/i);
-    expect(visited.join(' ')).not.toMatch(/codex|gemini/i);
+    expect(visited.join(' '), 'focus landed on a row that cannot be chosen').not.toMatch(/codex|\bPi\b/);
   });
 
   it('wraps around rather than dead-ending at the last option', async () => {
@@ -188,7 +193,7 @@ describe('keyboard', () => {
     fireEvent.keyDown(menu, { key: 'ArrowDown' });
     fireEvent.keyDown(menu, { key: 'ArrowDown' });
     fireEvent.keyDown(menu, { key: 'Enter' });
-    expect(onChange).toHaveBeenCalledWith('opencode');
+    expect(onChange).toHaveBeenCalledWith('gemini');
   });
 
   it('closes on Escape without changing anything', async () => {
@@ -213,7 +218,7 @@ describe('while detection is still running', () => {
     expect(await screen.findByText(/looking for installed agents/i)).toBeDefined();
 
     release(AGENTS);
-    await waitFor(() => expect(screen.getByRole('option', { name: /opencode/i })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('option', { name: /gemini/i })).toBeDefined());
   });
 
   it('shows the trouble when detection fails, and still offers the shell', async () => {

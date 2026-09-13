@@ -153,3 +153,58 @@ describe('caching', () => {
     expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
   });
 });
+
+describe('the shape that actually crosses the IPC border', () => {
+  // The gap that let a whole feature ship dead. The unit tests above, and the
+  // picker's tests on the renderer side, both hand-wrote their fixtures — so
+  // both validated a shape the real producer never emitted. detectAgents
+  // omitted supportsAutoApprove entirely, which made the toggle permanently
+  // disabled AND made the dialog state, falsely, that Claude Code cannot skip
+  // permissions.
+  //
+  // Two fixtures agreeing with each other prove nothing. This asserts the
+  // producer against the contract the consumer is typed to.
+
+  it('emits every field the preload declares', async () => {
+    const agents = await detectAgents({ which: whichFinding('claude'), loginPath: async () => null });
+    for (const agent of agents) {
+      expect(Object.keys(agent).sort(), `agent "${agent.id}" is missing a field the renderer is typed to receive`)
+        .toEqual(['id', 'installed', 'label', 'supportsAutoApprove']);
+    }
+  });
+
+  it('reports auto-approve support truthfully, not as a constant', async () => {
+    // Both branches, so a hardcoded `false` — which would also make every key
+    // present — cannot pass.
+    const agents = await detectAgents({ which: whichFinding('claude'), loginPath: async () => null });
+    const byId = new Map(agents.map(a => [a.id, a]));
+    expect(byId.get('claude')?.supportsAutoApprove).toBe(true);
+    expect(byId.get('shell')?.supportsAutoApprove).toBe(false);
+  });
+
+  it('types every field, so nothing arrives as undefined', async () => {
+    const agents = await detectAgents({ which: whichFinding(), loginPath: async () => null });
+    for (const agent of agents) {
+      expect(typeof agent.id).toBe('string');
+      expect(typeof agent.label).toBe('string');
+      expect(typeof agent.installed).toBe('boolean');
+      expect(typeof agent.supportsAutoApprove).toBe('boolean');
+    }
+  });
+});
+
+describe('the guard against recursive capture', () => {
+  it('refuses to spawn a login shell when it is already inside one', async () => {
+    // Previously the guard was SET into the child and STRIPPED from the result
+    // but never read, so the comment described a safeguard that did not exist —
+    // and its only test asserted the constant was non-empty, which passed with
+    // the mechanism entirely absent.
+    const { captureLoginPath, LOGIN_CAPTURE_GUARD } = await import('../main/ptyEnv');
+    process.env[LOGIN_CAPTURE_GUARD] = '1';
+    try {
+      expect(await captureLoginPath()).toBeNull();
+    } finally {
+      delete process.env[LOGIN_CAPTURE_GUARD];
+    }
+  });
+});

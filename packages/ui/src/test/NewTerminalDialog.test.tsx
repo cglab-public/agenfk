@@ -22,7 +22,7 @@ import { NewTerminalDialog } from '../components/NewTerminalDialog';
 const AGENTS = [
   { id: 'claude', label: 'Claude Code', installed: true, supportsAutoApprove: true },
   { id: 'codex', label: 'Codex', installed: false, supportsAutoApprove: true },
-  { id: 'opencode', label: 'Opencode', installed: true, supportsAutoApprove: false },
+  { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
   { id: 'shell', label: 'Shell', installed: true, supportsAutoApprove: false },
 ];
 
@@ -45,7 +45,7 @@ const createButton = () => screen.getByRole('button', { name: /^create$/i });
 
 beforeEach(() => {
   // The dialog remembers the chosen agent. Without clearing it, a test that
-  // picks Opencode leaves the NEXT test's picker showing Opencode, and every
+  // picks Gemini CLI leaves the NEXT test's picker showing Gemini CLI, and every
   // lookup for "Claude Code" fails for a reason that has nothing to do with
   // what is being tested.
   localStorage.clear();
@@ -155,7 +155,7 @@ describe('the auto-approve toggle', () => {
     // it: the user believes the agent is running unattended when it is not.
     renderDialog();
     fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /opencode/i }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
     await waitFor(() =>
       expect(screen.getByRole('switch', { name: /skip permissions/i }).getAttribute('aria-disabled')).toBe('true'));
   });
@@ -163,7 +163,7 @@ describe('the auto-approve toggle', () => {
   it('says why it is unavailable', async () => {
     renderDialog();
     fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /opencode/i }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
     expect(await screen.findByText(/does not support/i)).toBeDefined();
   });
 
@@ -173,9 +173,9 @@ describe('the auto-approve toggle', () => {
     const { onCreate } = renderDialog();
     fireEvent.click(await screen.findByRole('switch', { name: /skip permissions/i }));
     fireEvent.click(screen.getByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /opencode/i }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'opencode', autoApprove: false }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'gemini', autoApprove: false }));
   });
 });
 

@@ -762,3 +762,75 @@ describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe('several terminals at once (CGLAB-169)', () => {
+  const TWO = [
+    { id: 'i1', projectId: 'p1', type: 'TASK', title: 'First card', status: 'IN_PROGRESS', branchName: 'feat/first' },
+    { id: 'i2', projectId: 'p1', type: 'TASK', title: 'Second card', status: 'IN_PROGRESS', branchName: 'feat/second' },
+  ];
+
+  /** The sidebar row, not the terminal tab — both carry the card's title. */
+  const sidebarCard = async (title: string) => {
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    return within(list).findByTitle(title);
+  };
+
+  const openTerminalOn = async (title: string) => {
+    fireEvent.click(await sidebarCard(title));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  };
+
+  it('keeps the first card’s terminal alive when a second is opened', async () => {
+    // The catastrophe this replaced: one session slot meant opening a terminal
+    // on card B unmounted card A's pane, which killed its agent mid-run and
+    // destroyed the scrollback — two clicks through the supported path.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+
+    await openTerminalOn('First card');
+    await openTerminalOn('Second card');
+
+    const tabs = screen.getAllByRole('tab', { name: /card/i });
+    expect(tabs.map(t => t.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('First card'), expect.stringContaining('Second card')]),
+    );
+  });
+
+  it('goes to the existing terminal instead of opening another on the same card', async () => {
+    // Clicking a card means "take me to my work". Spawning a duplicate agent in
+    // the same worktree would be the opposite of helpful.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+
+    await openTerminalOn('First card');
+    fireEvent.click(await sidebarCard('First card'));
+
+    // No dialog: it was a selection, not a spawn.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getAllByRole('tab', { name: /First card/i })).toHaveLength(1);
+  });
+
+  it('shows which branch the visible terminal is typing into', async () => {
+    // With several open, this is the only thing distinguishing them, and a
+    // command sent to the wrong branch is expensive.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
+    expect((await screen.findByTestId('session-branch')).textContent).toContain('feat/first');
+  });
+
+  it('keeps every pane mounted, so switching tabs does not kill a session', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
+    await openTerminalOn('Second card');
+
+    // Two hosts in the DOM, one of them hidden — not one host being reused.
+    expect(screen.getAllByTestId('terminal-host')).toHaveLength(2);
+  });
+});
