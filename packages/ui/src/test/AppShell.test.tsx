@@ -27,6 +27,11 @@ vi.mock('../api', () => ({
     getVersion: vi.fn(async () => ({ version: '1.1.18' })),
     getReadme: vi.fn(async () => ({ content: '# Readme' })),
     getLatestRelease: vi.fn(async () => ({ version: '1.1.18', tagName: 'v1.1.18', name: '', body: '', publishedAt: '', url: '', currentVersion: '1.1.18' })),
+    // Was missing. Its absence made `api.updateItem(...)` throw a TypeError on
+    // every terminal-opening test, swallowed by a catch that existed only to
+    // tolerate this fixture — so nothing verified that the chosen agent is
+    // written back to the card, in either direction.
+    updateItem: vi.fn(async () => ({})),
   },
 }));
 
@@ -81,15 +86,45 @@ const manyProjects = (n: number) =>
     id: `m${i}`, name: `project-${i}`, createdAt: new Date(), updatedAt: new Date(),
   }));
 
-/** The preload bridge, which is what tells the UI it is in the desktop app. */
+/** Sessions the fake bridge has been asked to open, and which were killed. */
+const ptyCalls: { spawned: string[]; killed: string[] } = { spawned: [], killed: [] };
+
+/**
+ * The preload bridge, which is what tells the UI it is in the desktop app.
+ *
+ * It carries a `terminal` surface. Without one, TerminalPane's own
+ * defaultBridge() returns null and EVERY pane short-circuits to "Terminals are
+ * only available in the desktop app" — so spawn and kill are never called and a
+ * test claiming a session stayed alive is really only reading tab labels.
+ */
 const setBridge = (platform: string) => {
+  let seq = 0;
   Object.defineProperty(window, 'agenfkDesktop', {
-    value: { isDesktop: true, platform, versions: { electron: '40.10.6', chrome: '130', node: '24' } },
+    value: {
+      isDesktop: true,
+      platform,
+      versions: { electron: '40.10.6', chrome: '130', node: '24' },
+      terminal: {
+        spawn: async () => { seq += 1; const id = `sess-${seq}`; ptyCalls.spawned.push(id); return id; },
+        write: async () => true,
+        resize: async () => true,
+        kill: async (id: string) => { ptyCalls.killed.push(id); return true; },
+        onData: () => () => {},
+        onExit: () => () => {},
+        listAgents: async () => [
+          { id: 'claude', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+          { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
+        ],
+        refreshAgents: async () => [],
+      },
+    },
     configurable: true, writable: true,
   });
 };
 
 beforeEach(() => {
+  ptyCalls.spawned = [];
+  ptyCalls.killed = [];
   setBridge('darwin');
   localStorage.clear();
   vi.mocked(api.getVersion).mockResolvedValue({ version: '1.1.18' });
@@ -785,17 +820,91 @@ describe('several terminals at once (CGLAB-169)', () => {
     // The catastrophe this replaced: one session slot meant opening a terminal
     // on card B unmounted card A's pane, which killed its agent mid-run and
     // destroyed the scrollback — two clicks through the supported path.
+    //
+    // The earlier version of this test read tab LABELS, which would have been
+    // identical if the first pane had been torn down and rebuilt. The session
+    // that must survive is a process, so the assertion is about kill.
     vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
 
     await openTerminalOn('First card');
+    await waitFor(() => expect(ptyCalls.spawned).toHaveLength(1));
+    const first = ptyCalls.spawned[0];
+
+    await openTerminalOn('Second card');
+    await waitFor(() => expect(ptyCalls.spawned).toHaveLength(2));
+
+    expect(ptyCalls.killed, 'the first card’s agent was killed by opening a second').not.toContain(first);
+  });
+
+  it('kills only the session whose tab was closed', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
+    await openTerminalOn('Second card');
+    await waitFor(() => expect(ptyCalls.spawned).toHaveLength(2));
+    const [first, second] = ptyCalls.spawned;
+
+    fireEvent.click(screen.getByRole('button', { name: /close terminal on second card/i }));
+
+    await waitFor(() => expect(ptyCalls.killed).toContain(second));
+    expect(ptyCalls.killed, 'closing one tab killed another card’s agent').not.toContain(first);
+  });
+
+  it('selects another tab when the active one is closed', async () => {
+    // Otherwise the tab bar still shows terminals while the panel below is
+    // blank, which reads as a crash.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
     await openTerminalOn('Second card');
 
-    const tabs = screen.getAllByRole('tab', { name: /card/i });
-    expect(tabs.map(t => t.textContent)).toEqual(
-      expect.arrayContaining([expect.stringContaining('First card'), expect.stringContaining('Second card')]),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /close terminal on second card/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /First card/i }).getAttribute('aria-selected')).toBe('true'));
+  });
+
+  it('goes back to the empty state when the last tab is closed', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
+
+    fireEvent.click(screen.getByRole('button', { name: /close terminal on first card/i }));
+
+    expect(await screen.findByText(/no terminal open/i)).toBeDefined();
+    expect(screen.queryAllByTestId('terminal-host')).toHaveLength(0);
+  });
+
+  it('remembers the chosen agent on the card itself', async () => {
+    // The seam the api mock was hiding: without updateItem in the fixture this
+    // threw on every run and a catch ate it, so nothing verified the write.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await sidebarCard('First card'));
+
+    fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
+    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith('i1', { agentId: 'gemini' }));
+  });
+
+  it('opens the dialog on the agent the card was last worked with', async () => {
+    // The read side of the same seam.
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { ...TWO[0], agentId: 'gemini' },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await sidebarCard('First card'));
+
+    expect(await screen.findByRole('button', { name: /gemini/i })).toBeDefined();
   });
 
   it('goes to the existing terminal instead of opening another on the same card', async () => {

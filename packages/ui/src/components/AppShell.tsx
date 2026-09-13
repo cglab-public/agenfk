@@ -401,7 +401,7 @@ interface SidebarProps {
 
 function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
   const queryClient = useQueryClient();
-  const { activeProjectId, setActiveProjectId, focusItem, requestNewItem } = useActiveProject();
+  const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());

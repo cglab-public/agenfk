@@ -244,10 +244,12 @@ describe('agent marks', () => {
     }
   });
 
-  it('draws the vendors’ own marks for the ones with an official path', async () => {
-    // Claude and Gemini come from simple-icons. Codex and Pi cannot — there is
-    // no OpenAI icon in that set and none for pi.dev — so they are deliberate
-    // geometric marks rather than approximations of a logo people recognise.
+  it('draws the vendors’ own marks, not placeholder geometry', async () => {
+    // All four carry real brand path data now, inlined from @lobehub/icons.
+    // An earlier version of this comment said Claude and Gemini came from
+    // simple-icons and the other two were geometric stand-ins — that package
+    // is no longer a dependency at all, and codex carries a full-fidelity
+    // OpenAI path.
     renderPicker();
     const menu = await openMenu();
     const claude = within(menu).getByRole('option', { name: /claude code/i })
