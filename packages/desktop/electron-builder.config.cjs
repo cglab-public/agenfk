@@ -66,6 +66,22 @@ module.exports = {
     '!**/*.test.*',
   ],
 
+  // node-pty ships TWO binaries per platform: pty.node and spawn-helper.
+  // spawn-helper is a separate executable node-pty runs on Unix, and a file
+  // inside an asar archive is not executable — it is not even a real file on
+  // disk. Archived, the app launches, the terminal opens, and spawning dies
+  // with an ENOENT or permission error that names nothing useful. Nothing in
+  // `npm run dev` reproduces it, because there is no asar there.
+  //
+  // The whole prebuilds directory, not just **/*.node: unpacking the .node
+  // alone is the near-miss that makes the module load and leaves spawn-helper
+  // archived, moving the failure from "cannot load" to "loads, then cannot
+  // spawn" — harder to diagnose, not easier. src/test/buildConfig.test.ts
+  // asserts both halves.
+  asarUnpack: [
+    '**/node_modules/@lydell/node-pty*/**',
+  ],
+
   extraResources: [
     ...serverResources,
     // The UI is served by the forked server, so only the build output ships.

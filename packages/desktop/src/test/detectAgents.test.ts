@@ -1,0 +1,138 @@
+/**
+ * @vitest-environment node
+ *
+ * CGLAB-169: which agent CLIs are actually on this machine.
+ *
+ * Two traps here, and both have bitten this repo before.
+ *
+ * The first is PATH. A macOS app launched from Finder — which is how a packaged
+ * app is normally launched — inherits a minimal PATH from launchd, NOT the one
+ * a terminal gets. It does not contain `~/.local/bin`, Homebrew, nvm, asdf, or
+ * anything a developer installed. So probing with the inherited PATH reports
+ * "not installed" for CLIs the user demonstrably has, on their own machine,
+ * while a terminal two inches away finds them. CGLAB-177 already hit this exact
+ * shape when the run hook did not load as installed.
+ *
+ * The second is the closed set. Detection takes a name and asks the OS about
+ * it. If that name could come from the renderer, detection becomes a probe
+ * primitive — and then an execution one. Only ids already in agents.ts are ever
+ * looked up.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { detectAgents, __resetAgentDetectionCache } from '../main/detectAgents';
+import { AGENT_IDS } from '../main/agents';
+
+/** A `which`-alike: resolves to a path for names the test says exist. */
+const whichFinding = (...found: string[]) =>
+  vi.fn(async (file: string) => (found.includes(file) ? `/usr/local/bin/${file}` : null));
+
+beforeEach(() => __resetAgentDetectionCache());
+
+describe('detecting installed agents', () => {
+  it('marks an agent found on PATH as installed', async () => {
+    const which = whichFinding('claude');
+    const agents = await detectAgents({ which, loginPath: async () => null });
+    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+  });
+
+  it('marks an agent that is not there as not installed', async () => {
+    const which = whichFinding('claude');
+    const agents = await detectAgents({ which, loginPath: async () => null });
+    expect(agents.find(a => a.id === 'codex')?.installed).toBe(false);
+  });
+
+  it('reports every agent, installed or not', async () => {
+    // The picker groups them; it cannot group what it was not told about. A
+    // detector that returned only the installed ones would make "Not installed"
+    // permanently empty and the user would never learn the others exist.
+    const agents = await detectAgents({ which: whichFinding(), loginPath: async () => null });
+    expect(agents.map(a => a.id)).toEqual([...AGENT_IDS]);
+  });
+
+  it('always counts the plain shell as available', async () => {
+    // It is the fallback. Reporting it as missing would leave a user with no
+    // CLI installed staring at an empty picker.
+    const agents = await detectAgents({ which: whichFinding(), loginPath: async () => null });
+    expect(agents.find(a => a.id === 'shell')?.installed).toBe(true);
+  });
+
+  it('only ever probes ids from the closed set', async () => {
+    // Detection asks the OS about a name. If that name could come from the
+    // renderer it is a probe primitive first and an execution one soon after.
+    const which = whichFinding();
+    await detectAgents({ which, loginPath: async () => null });
+    const probed = which.mock.calls.map(c => c[0]);
+    for (const name of probed) {
+      expect(AGENT_IDS, `probed "${name}", which is not an agent id`).toContain(name);
+    }
+  });
+});
+
+describe('the Finder PATH problem', () => {
+  it('falls back to a login shell PATH when the inherited one finds nothing', async () => {
+    // The whole reason this is not a one-line `which`. An app opened from
+    // Finder inherits launchd's PATH, which has none of ~/.local/bin, Homebrew,
+    // nvm or asdf in it — so everything reports missing on a machine that
+    // plainly has them.
+    const which = vi.fn(async (file: string, pathOverride?: string) =>
+      pathOverride?.includes('/Users/me/.local/bin') && file === 'claude'
+        ? '/Users/me/.local/bin/claude'
+        : null);
+    const loginPath = vi.fn(async () => '/usr/bin:/Users/me/.local/bin');
+
+    const agents = await detectAgents({ which, loginPath });
+    expect(loginPath).toHaveBeenCalled();
+    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+  });
+
+  it('does not pay for the login shell when the inherited PATH already works', async () => {
+    // Spawning a login shell is slow and runs the user's rc files. Not worth
+    // it when the answer is already in hand.
+    const which = whichFinding(...AGENT_IDS);
+    const loginPath = vi.fn(async () => '/usr/bin');
+    await detectAgents({ which, loginPath });
+    expect(loginPath).not.toHaveBeenCalled();
+  });
+
+  it('survives a login shell that fails or hangs', async () => {
+    // A broken .zshrc must degrade detection, never wedge the picker.
+    const agents = await detectAgents({
+      which: whichFinding(),
+      loginPath: async () => { throw new Error('rc file exploded'); },
+    });
+    expect(agents.length).toBe(AGENT_IDS.length);
+    expect(agents.find(a => a.id === 'claude')?.installed).toBe(false);
+  });
+});
+
+describe('caching', () => {
+  it('does not re-probe on every picker open', async () => {
+    const which = whichFinding('claude');
+    await detectAgents({ which, loginPath: async () => null });
+    const first = which.mock.calls.length;
+    await detectAgents({ which, loginPath: async () => null });
+    expect(which.mock.calls.length).toBe(first);
+  });
+
+  it('can be invalidated, so installing a CLI does not need an app restart', async () => {
+    const before = whichFinding();
+    await detectAgents({ which: before, loginPath: async () => null });
+
+    __resetAgentDetectionCache();
+
+    const after = whichFinding('codex');
+    const agents = await detectAgents({ which: after, loginPath: async () => null });
+    expect(agents.find(a => a.id === 'codex')?.installed).toBe(true);
+  });
+
+  it('does not cache a failed detection as a negative result forever', async () => {
+    // If the first probe blew up, caching "nothing installed" would leave the
+    // picker permanently wrong for the whole session.
+    const exploding = vi.fn(async () => { throw new Error('spawn failed'); });
+    await detectAgents({ which: exploding as never, loginPath: async () => null });
+
+    const working = whichFinding('claude');
+    const agents = await detectAgents({ which: working, loginPath: async () => null });
+    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+  });
+});

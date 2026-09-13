@@ -141,3 +141,52 @@ describe('electron version', () => {
     expect(Number(String(pkg.devDependencies.electron).split('.')[0])).toBeGreaterThanOrEqual(33);
   });
 });
+
+describe('native module packaging (CGLAB-169)', () => {
+  it('unpacks the node-pty prebuilds from the asar archive', () => {
+    // The bug this exists to stop is invisible everywhere except an installed
+    // .app. @lydell/node-pty ships TWO binaries per platform: pty.node and
+    // spawn-helper. spawn-helper is a separate executable node-pty runs on
+    // Unix, and a file inside an asar archive is not executable — it is not
+    // even a real file on disk. The app then launches, the terminal opens, and
+    // spawning dies with a permission or ENOENT error that names nothing
+    // useful.
+    //
+    // Nothing in `npm run dev` reproduces it, because there is no asar there.
+    const unpack: string[] = [config.asarUnpack ?? []].flat();
+    expect(unpack.length, 'no asarUnpack — the node-pty prebuilds would be archived').toBeGreaterThan(0);
+    expect(
+      unpack.some(p => p.includes('node-pty')),
+      `asarUnpack does not mention node-pty: ${JSON.stringify(unpack)}`,
+    ).toBe(true);
+  });
+
+  it('unpacks the whole prebuilds directory, not just the .node file', () => {
+    // Unpacking pty.node alone is the near-miss: it is the file people think
+    // of, it makes the module load, and spawn-helper is still archived — so
+    // the failure moves from "cannot load" to "loads, then cannot spawn",
+    // which is harder to diagnose, not easier.
+    const unpack: string[] = [config.asarUnpack ?? []].flat();
+    const nodePtyRules = unpack.filter(p => p.includes('node-pty'));
+    expect(
+      nodePtyRules.some(p => !p.endsWith('.node')),
+      `every node-pty rule targets a .node file, so spawn-helper stays archived: ${JSON.stringify(nodePtyRules)}`,
+    ).toBe(true);
+  });
+
+  it('keeps node-pty a real dependency, not a devDependency', () => {
+    // devDependencies are pruned out of the packaged app. A terminal that only
+    // works in development is the exact failure this file exists to catch.
+    const pkg = require('../../package.json');
+    expect(pkg.dependencies?.['@lydell/node-pty']).toBeTruthy();
+    expect(pkg.devDependencies?.['@lydell/node-pty']).toBeUndefined();
+  });
+
+  it('pins node-pty exactly — it is a beta', () => {
+    // Same reasoning as the electron pin above, with an extra edge: a caret on
+    // a 1.2.0-beta.x range will happily take beta.16, and pre-1.0 betas make
+    // no compatibility promise between builds.
+    const pkg = require('../../package.json');
+    expect(pkg.dependencies['@lydell/node-pty']).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/);
+  });
+});

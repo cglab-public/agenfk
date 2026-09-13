@@ -14,9 +14,18 @@ import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { resolveDbPath } from './serverEnv.js';
-import { isAgenfkServer, servesUiBundle } from './probes.js';
+import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { PtyRegistry } from './ptyRegistry.js';
+import { registerPtyIpc } from './ptyIpc.js';
+import { resolveWorktree } from './worktree.js';
+import { httpPost } from './httpPost.js';
 
 let mainWindow: BrowserWindow | null = null;
+/**
+ * Terminals. Created once the server port is known, because a session's
+ * directory is resolved by asking the server which worktree a card owns.
+ */
+let ptyRegistry: PtyRegistry | null = null;
 let serverChild: UtilityProcess | null = null;
 let server: ResolvedServer | null = null;
 // Two distinct facts, deliberately not one flag. `tearingDown` means we are
@@ -112,7 +121,13 @@ function createWindow(url: string): BrowserWindow {
 
   // Paint only once there is something to show, instead of a white flash.
   win.once('ready-to-show', () => win.show());
-  win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+  // Before 'closed': webContents.id is still readable here, and a shell left
+  // attached to a worktree with no window in front of it is a process the user
+  // cannot find or stop.
+  win.on('close', () => ptyRegistry?.killAllForWindow(win.webContents.id));
 
   const appOrigin = new URL(url).origin;
 
@@ -190,6 +205,29 @@ async function boot(): Promise<void> {
       return;
     }
 
+    // Terminals need the resolved port: a card's directory comes from the
+    // server, never from a guess. node-pty is required lazily so a failure to
+    // load the native module degrades to "no terminals" rather than "the app
+    // does not start".
+    try {
+      const { spawn: spawnPty } = await import('@lydell/node-pty');
+      const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
+      ptyRegistry = new PtyRegistry({
+        spawn: spawnPty as never,
+        resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+        emit: (windowId, channel, payload) => {
+          // To that window only. Broadcasting would put one card's shell
+          // output into every open window.
+          BrowserWindow.getAllWindows()
+            .find(w => w.webContents.id === windowId)
+            ?.webContents.send(channel, payload);
+        },
+      });
+      registerPtyIpc(ptyRegistry);
+    } catch (e) {
+      console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
+    }
+
     mainWindow = createWindow(server.url);
   } catch (e) {
     fail('AgEnFK Desktop could not start', (e as Error).message);
@@ -231,6 +269,10 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', event => {
     // Only ever stop a server we started; an adopted one belongs to the
     // terminal session that launched it and must outlive this window.
+    // Unconditional, and before the early return: an adopted server outlives
+    // this app, but the shells THIS app spawned never should.
+    ptyRegistry?.killAll();
+
     if (quitHandled || !serverChild || !weSpawnedTheServer) return;
 
     // Hold the quit open until the child is gone. Its SIGTERM handler is async

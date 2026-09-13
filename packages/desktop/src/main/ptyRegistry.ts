@@ -1,0 +1,157 @@
+/**
+ * The live PTY sessions (CGLAB-169).
+ *
+ * A session is a real child process holding a real shell in a real worktree,
+ * so two properties matter more than the happy path:
+ *
+ *  1. **Sessions are owned.** A session id is just a string once it reaches the
+ *     renderer. Without an ownership check any window could write into any
+ *     other window's shell, which is keystroke injection into a process running
+ *     with the user's credentials in their repository.
+ *  2. **Sessions are reaped.** A PTY outlives the window that opened it unless
+ *     something kills it, and a shell attached to a worktree with no window in
+ *     front of it is a process the user cannot find or stop.
+ *
+ * The spawner and the cwd resolver are injected, so neither the ownership rules
+ * nor the reaping need real processes to test.
+ */
+import { randomUUID } from 'crypto';
+import { resolveAgentCommand } from './agents.js';
+
+/** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
+export interface PtyLike {
+  readonly pid: number;
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (e: { exitCode: number }) => void): void;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+}
+
+export type PtySpawner = (
+  file: string,
+  args: readonly string[],
+  opts: { cwd: string; cols: number; rows: number; env: NodeJS.ProcessEnv },
+) => PtyLike;
+
+export interface PtyRegistryDeps {
+  readonly spawn: PtySpawner;
+  /** Resolves the worktree for a card. Throws rather than falling back. */
+  readonly resolveCwd: (itemId: string) => Promise<{ cwd: string; branchName: string | null }>;
+  /** Sends a message to one window only. */
+  readonly emit: (windowId: number, channel: string, payload: unknown) => void;
+}
+
+export interface SpawnRequest {
+  readonly itemId: string;
+  readonly agentId: string;
+  readonly windowId: number;
+  readonly cols: number;
+  readonly rows: number;
+}
+
+interface Session {
+  readonly pty: PtyLike;
+  readonly windowId: number;
+}
+
+/**
+ * One message for "you do not own this" and for "this does not exist".
+ *
+ * Distinguishing them would let a renderer enumerate other windows' sessions by
+ * comparing errors, which is the whole thing ownership is here to prevent.
+ */
+const UNKNOWN_SESSION = 'Unknown session.';
+
+export class PtyRegistry {
+  private readonly sessions = new Map<string, Session>();
+
+  constructor(private readonly deps: PtyRegistryDeps) {}
+
+  /**
+   * Open a terminal for a card.
+   *
+   * The renderer supplies only an item id and an agent id. The command comes
+   * from the closed set in agents.ts and the directory from the resolver — so
+   * an XSS in the renderer bundle cannot choose what runs or where.
+   */
+  async spawn(req: SpawnRequest): Promise<string> {
+    const command = resolveAgentCommand(req.agentId);
+    // Resolve BEFORE spawning: a failure here must leave no half-registered
+    // session behind, or later write/kill calls report an ownership problem
+    // when the real problem was that the worktree could not be made.
+    const { cwd } = await this.deps.resolveCwd(req.itemId);
+
+    const pty = this.deps.spawn(command.file, command.args, {
+      cwd,
+      cols: req.cols,
+      rows: req.rows,
+      env: process.env,
+    });
+
+    // Opaque and unguessable, and deliberately not derived from the item id:
+    // a session id travels to the renderer, and one built from a card id would
+    // let a window address a session it never opened just by knowing the card.
+    const sessionId = randomUUID();
+    this.sessions.set(sessionId, { pty, windowId: req.windowId });
+
+    pty.onData(data => {
+      // Only to the owner. Broadcasting would put one card's shell output —
+      // including whatever the agent prints — into every open window.
+      this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+    });
+
+    pty.onExit(({ exitCode }) => {
+      // The user typed `exit`, or the agent died. Drop the entry first so a
+      // later write cannot reach a dead pty, then tell the window, or the tab
+      // simply stops responding and looks hung.
+      this.sessions.delete(sessionId);
+      this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
+    });
+
+    return sessionId;
+  }
+
+  private own(sessionId: string, windowId: number): Session {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.windowId !== windowId) throw new Error(UNKNOWN_SESSION);
+    return session;
+  }
+
+  write(sessionId: string, windowId: number, data: string): void {
+    this.own(sessionId, windowId).pty.write(data);
+  }
+
+  resize(sessionId: string, windowId: number, cols: number, rows: number): void {
+    this.own(sessionId, windowId).pty.resize(cols, rows);
+  }
+
+  kill(sessionId: string, windowId: number): void {
+    const session = this.own(sessionId, windowId);
+    session.pty.kill();
+    this.sessions.delete(sessionId);
+  }
+
+  /** A window closed. Its shells must not outlive it. */
+  killAllForWindow(windowId: number): void {
+    for (const [id, session] of [...this.sessions]) {
+      if (session.windowId !== windowId) continue;
+      session.pty.kill();
+      this.sessions.delete(id);
+    }
+  }
+
+  /** The app is quitting. */
+  killAll(): void {
+    for (const [id, session] of [...this.sessions]) {
+      session.pty.kill();
+      this.sessions.delete(id);
+    }
+  }
+
+  countForWindow(windowId: number): number {
+    let n = 0;
+    for (const session of this.sessions.values()) if (session.windowId === windowId) n += 1;
+    return n;
+  }
+}
