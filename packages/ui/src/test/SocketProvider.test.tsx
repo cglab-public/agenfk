@@ -13,16 +13,20 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, act, cleanup } from '@testing-library/react';
-import React from 'react';
+import React, { StrictMode } from 'react';
 import { io } from 'socket.io-client';
 import { SocketProvider, useSocketEvent } from '../SocketContext';
 
 /** A fake socket that records handlers so tests can fire events at them. */
+const built: ReturnType<typeof makeFakeSocket>[] = [];
+
 function makeFakeSocket() {
   const handlers = new Map<string, Set<(...a: unknown[]) => void>>();
   return {
     handlers,
     disconnectCalls: 0,
+    connected: false,
+    connect() { this.connected = true; return this; },
     on(event: string, fn: (...a: unknown[]) => void) {
       if (!handlers.has(event)) handlers.set(event, new Set());
       handlers.get(event)!.add(fn);
@@ -30,7 +34,7 @@ function makeFakeSocket() {
     off(event: string, fn: (...a: unknown[]) => void) {
       handlers.get(event)?.delete(fn);
     },
-    disconnect() { this.disconnectCalls += 1; },
+    disconnect() { this.disconnectCalls += 1; this.connected = false; return this; },
     emitToClient(event: string, payload?: unknown) {
       for (const fn of [...(handlers.get(event) ?? [])]) fn(payload);
     },
@@ -43,9 +47,22 @@ let fake: ReturnType<typeof makeFakeSocket>;
 vi.mock('socket.io-client', () => ({ io: vi.fn() }));
 
 beforeEach(() => {
+  built.length = 0;
   fake = makeFakeSocket();
+  built.push(fake);
   vi.mocked(io).mockReset();
-  vi.mocked(io).mockReturnValue(fake as never);
+  // A fresh instance per CALL, like the real io(). The first call hands back
+  // `fake` so the other tests can drive it; every later call gets its own
+  // object and is recorded. A single shared stub would make the
+  // orphaned-connection test below unable to fail.
+  let calls = 0;
+  vi.mocked(io).mockImplementation(((..._args: unknown[]) => {
+    calls += 1;
+    if (calls === 1) return fake as never;
+    const extra = makeFakeSocket();
+    built.push(extra);
+    return extra as never;
+  }) as never);
 });
 
 afterEach(() => cleanup());
@@ -169,6 +186,43 @@ describe('SocketProvider', () => {
     rerender(<SocketProvider><Counter tick={2} /></SocketProvider>);
     act(() => fake.emitToClient('items_updated'));
     expect(seen).toEqual([2]);
+  });
+
+  it('survives StrictMode: one LIVE socket, and the one in context is it', () => {
+    // React 19 StrictMode double-invokes render and runs mount/unmount/mount.
+    // A socket created during render is therefore created twice, and the
+    // effect cleanup fires on the one React kept — disconnecting the very
+    // socket components subscribe through. socket.io then sets skipReconnect
+    // and never comes back, so every dev session runs with a dead socket and
+    // a leaked live one.
+    const received: unknown[] = [];
+    render(
+      <StrictMode>
+        <SocketProvider>
+          <Listener event="items_updated" onEvent={p => received.push(p)} />
+        </SocketProvider>
+      </StrictMode>,
+    );
+
+    expect(fake.connected, 'the shared socket must be connected after mount').toBe(true);
+    act(() => fake.emitToClient('items_updated', { ok: true }));
+    expect(received).toEqual([{ ok: true }]);
+  });
+
+  it('does not leave an orphaned connection behind on mount', () => {
+    render(
+      <StrictMode>
+        <SocketProvider>
+          <Listener event="items_updated" onEvent={() => {}} />
+        </SocketProvider>
+      </StrictMode>,
+    );
+    // StrictMode really does call io() twice — asserted, so this test fails if
+    // the stub ever stops modelling that. Of the sockets actually built, only
+    // one may be connected; the other must be inert and unreferenced.
+    expect(vi.mocked(io).mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(built.length).toBe(vi.mocked(io).mock.calls.length);
+    expect(built.filter(s => s.connected)).toHaveLength(1);
   });
 
   it('no-ops outside a provider instead of crashing the component', () => {

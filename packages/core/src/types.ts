@@ -174,6 +174,8 @@ export interface Project {
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
   flowId?: string;        // ID of the active Flow for this project (falls back to DEFAULT_FLOW)
   projectRoot?: string;   // Absolute path to the project's root directory (set automatically by MCP on validate)
+  /** Give each item its own git worktree when it enters a working step (CGLAB-166). */
+  autoWorktree?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -200,6 +202,12 @@ export interface BaseItem {
   externalId?: string; // Reference to external systems (e.g. JIRA key)
   externalUrl?: string; // Link to external system
   branchName?: string; // Git branch associated with this item
+  /**
+   * Directory of this item's git worktree (CGLAB-166), when it has one.
+   * Recorded rather than derived so a caller can tell "never created" from
+   * "created, then deleted by hand".
+   */
+  worktreePath?: string;
   prUrl?: string; // Pull request URL
   prNumber?: number; // Pull request number
   prStatus?: 'open' | 'merged' | 'closed' | 'draft'; // Pull request status

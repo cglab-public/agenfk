@@ -3382,6 +3382,64 @@ branchCmd
     }
   });
 
+const worktreeCmd = program
+  .command('worktree')
+  .description('Manage per-item git worktrees, so several agents can work at once');
+
+worktreeCmd
+  .command('create <itemId>')
+  .description("Create (or adopt) the item's git worktree and link it to the item")
+  .option('--root <path>', 'Directory that holds all worktrees (default: ~/.agenfk/worktrees)')
+  .action(async (itemId, options) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${itemId}/worktree`, {
+        root: options.root,
+      });
+      const verb = data.created ? 'Created' : 'Reusing';
+      console.log(chalk.green(`✅ ${verb} worktree for [${itemId.substring(0, 8)}]`));
+      console.log(`   ${chalk.cyan(data.path)}  ${chalk.dim(`(${data.branchName})`)}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('status <itemId>')
+  .description("Show the item's worktree and whether its directory is still there")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/worktree`);
+      if (!data.path) {
+        console.log(chalk.yellow(`No worktree for [${itemId.substring(0, 8)}].`));
+        return;
+      }
+      console.log(`Worktree: ${chalk.cyan(data.path)}`);
+      console.log(`Branch:   ${chalk.cyan(data.branchName ?? '(none)')}`);
+      // "recorded but missing" is a real state — someone deleted the directory
+      // by hand — and it needs recreating, not a plain cd.
+      console.log(`On disk:  ${data.exists ? chalk.green('yes') : chalk.yellow('no — run `agenfk worktree create` to recreate')}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('remove <itemId>')
+  .description("Remove the item's worktree directory (the branch and its commits are kept)")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.delete(`${API_URL}/items/${itemId}/worktree`);
+      console.log(data.removed
+        ? chalk.green(`✅ Worktree removed for [${itemId.substring(0, 8)}]. The branch and its commits are untouched.`)
+        : chalk.yellow(`No worktree to remove for [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
 branchCmd
   .command('push <itemId>')
   .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')

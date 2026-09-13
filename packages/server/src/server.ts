@@ -2,13 +2,14 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
+import { createWorktree, removeWorktree } from "./worktrees.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
@@ -1022,11 +1023,16 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // by validate_progress), projectRoot (its cwd) and flowId — mass assignment
   // → RCE. verifyCommand has its own internal-only endpoint below; flowId has
   // POST /projects/:id/flow. (Security: bug e60e20aa.)
-  const updates: Partial<{ name: string; description: string }> = {};
+  // autoWorktree joins the allowlist because it is a boolean preference with
+  // no execution semantics: the worst a caller can do is turn worktree
+  // creation on or off. projectRoot and verifyCommand stay out — those are a
+  // cwd and a shell string.
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
+  if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);
@@ -1509,6 +1515,92 @@ app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
 app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {
   const runs = await storage.listAgentRuns({ itemId: req.params.id });
   res.json(runs);
+}));
+
+// ── Worktrees (CGLAB-166) ────────────────────────────────────────────────────
+// One git worktree per item, so several agents can work at once without
+// fighting over a single working tree.
+
+/** Where worktrees live unless a caller names somewhere else. */
+const defaultWorktreeRoot = (): string =>
+  path.join(os.homedir(), '.agenfk', 'worktrees');
+
+/**
+ * Resolve the repository an item's worktree is cut from.
+ *
+ * Requires an explicit projectRoot. Falling back to process.cwd() would run
+ * git wherever the server happens to have been started — for the desktop app
+ * that is not even a repository, and "somewhere plausible" is a worse answer
+ * than a clear error.
+ */
+async function repoRootForItem(item: any): Promise<string> {
+  const project: any = await storage.getProject(item.projectId);
+  const repoRoot = project?.projectRoot;
+  if (!repoRoot) {
+    throw Object.assign(
+      new Error(`Project has no projectRoot. Set it before creating a worktree.`),
+      { statusCode: 400 },
+    );
+  }
+  return repoRoot;
+}
+
+app.post("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  let repoRoot: string;
+  try {
+    repoRoot = await repoRootForItem(item);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const branchName = item.branchName || buildBranchName(item.type, item.title);
+  const root = req.body?.root || defaultWorktreeRoot();
+
+  let result;
+  try {
+    result = createWorktree({ repoRoot, root, branchName });
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  io.emit('items_updated');
+  res.status(result.created ? 201 : 200).json(result);
+}));
+
+app.get("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  const worktreePath = item.worktreePath ?? null;
+  // `exists` is how a caller tells "never made" from "made, then deleted by
+  // hand" — the second needs recreating, not a plain cd.
+  res.json({
+    path: worktreePath,
+    branchName: item.branchName ?? null,
+    exists: worktreePath ? fs.existsSync(worktreePath) : false,
+  });
+}));
+
+app.delete("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath) return res.json({ removed: false });
+
+  try {
+    const repoRoot = await repoRootForItem(item);
+    // Removal takes the checkout, never the branch: committed work always
+    // survives, which is what makes this safe to run automatically.
+    removeWorktree(repoRoot, item.worktreePath);
+  } catch (e: any) {
+    console.warn('[WORKTREE] remove failed, clearing the record anyway:', e.message);
+  }
+
+  await storage.updateItem(item.id, { worktreePath: undefined } as any);
+  io.emit('items_updated');
+  res.json({ removed: true });
 }));
 
 app.get("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
@@ -2648,7 +2740,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
-    await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    // Entering the first working step is where a worktree earns its keep.
+    await ensureWorktreeForItem(movedToCoding);
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
@@ -2721,6 +2815,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
     const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), comment] });
+    await ensureWorktreeForItem(updated);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
@@ -2901,6 +2996,32 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
   if (!run) return res.status(404).json({ error: 'RUN_NOT_FOUND', message: 'Unknown or expired validation run. If the server restarted, check the item\'s comments — the outcome is persisted there.' });
   return res.json(run);
 }));
+
+/**
+ * Give an item its own worktree as it enters a working step (CGLAB-166).
+ *
+ * Opt-in per project: creating directories on someone's disk because they
+ * advanced a card is not a reasonable default. Never throws — the transition
+ * is the user's intent and the worktree is a convenience on top of it, so a
+ * broken git setup must not block the workflow.
+ */
+async function ensureWorktreeForItem(item: any): Promise<void> {
+  try {
+    if (!item?.projectId || item.worktreePath) return;
+    const project: any = await storage.getProject(item.projectId);
+    if (!project?.autoWorktree || !project.projectRoot) return;
+
+    const branchName = item.branchName || buildBranchName(item.type, item.title);
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName,
+    });
+    await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  } catch (e: any) {
+    console.warn(`[WORKTREE] auto-create skipped for ${item?.id}:`, e?.message);
+  }
+}
 
 app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {

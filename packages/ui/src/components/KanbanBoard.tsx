@@ -13,7 +13,8 @@ import {
   ChevronUp, ChevronDown, X, FolderInput, GitBranch
 } from 'lucide-react';
 import { useSocketEvent } from '../SocketContext';
-import { API_URL } from '../apiUrl';
+import { isDesktop } from '../desktop';
+import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
@@ -449,12 +450,10 @@ export const KanbanBoard: React.FC = () => {
   const easterEggsEnabled = useEasterEggs();
   
   // Project State
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
-    // `agenfk ui --open <id>&project=<pid>` deep-link: an explicit project in
-    // the URL wins over the last-used project in localStorage.
-    const fromUrl = getUrlParam('project');
-    return fromUrl || localStorage.getItem('agenfk_project_id');
-  });
+  // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
+  // ?project= deep link beats the remembered choice — they just live in
+  // ActiveProject now so the sidebar and the board cannot disagree.
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -552,9 +551,9 @@ export const KanbanBoard: React.FC = () => {
         setSelectedProjectId(fallback);
       }
       if (fallback) {
-        localStorage.setItem('agenfk_project_id', fallback);
+
       } else {
-        localStorage.removeItem('agenfk_project_id');
+
       }
       // The ?item deep-link was aimed at a project that doesn't exist — don't
       // let it fire later against whatever project the user picks instead.
@@ -612,6 +611,27 @@ export const KanbanBoard: React.FC = () => {
   }, [selectedItem?.id]);
 
   const [navPath, setNavPath] = useState<NavItem[]>([]);
+
+  // Changing project must also leave whatever we had drilled into.
+  //
+  // Only the id is shared with the desktop sidebar, so a switch from outside
+  // the board used to keep navPath pointing at the previous project's epic —
+  // every column then filtered the new project's items by a parent id they can
+  // never match, leaving an empty board under a breadcrumb still naming the
+  // old epic, with nothing on screen to explain it. Keyed on the id rather
+  // than living in one click handler so it holds for every route in, present
+  // and future.
+  const previousProjectRef = useRef<string | null>(selectedProjectId);
+  useEffect(() => {
+    if (previousProjectRef.current === selectedProjectId) return;
+    const previous = previousProjectRef.current;
+    previousProjectRef.current = selectedProjectId;
+    setNavPath([]);
+    // Only a real switch is telemetry. Landing on null (the open project was
+    // deleted) or being repointed by the stale-project fallback is the app
+    // correcting itself, and counting those as user intent inflates the metric.
+    if (selectedProjectId && previous) capture('project_switched');
+  }, [selectedProjectId]);
 
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -701,14 +721,14 @@ export const KanbanBoard: React.FC = () => {
       console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
       return;
     }
-    setSelectedProjectId(prev => {
-      if (prev !== projectId) {
-        console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
-        setNavPath([]); // Only reset if project actually changed
-        localStorage.setItem('agenfk_project_id', projectId);
-      }
-      return projectId;
-    });
+    // useSocketEvent always invokes the latest closure, so selectedProjectId
+    // here is current — no functional updater needed, and persistence is the
+    // context's job now.
+    if (selectedProjectId !== projectId) {
+      console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
+    }
+    // navPath and persistence follow from the id change — see the effect above.
+    setSelectedProjectId(projectId);
   });
   /* v8 ignore stop */
 
@@ -787,13 +807,13 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const handleSelectProject = (id: string) => {
+    // navPath reset, persistence and the analytics event are handled by the
+    // effect above and by ActiveProject — every switch gets them, not just
+    // the ones that come through this handler.
     setSelectedProjectId(id);
-    localStorage.setItem('agenfk_project_id', id);
-    setNavPath([]);
     setIsPickerOpen(false);
     setIsCreatingProject(false);
     setHighlightedProjectIndex(-1);
-    capture('project_switched');
   };
 
   const closePicker = () => {
@@ -1413,13 +1433,23 @@ export const KanbanBoard: React.FC = () => {
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
   return (
-    <div className="h-full min-h-screen bg-canvas flex flex-col font-sans text-ink transition-colors duration-300">
+    <div className={clsx(
+      'h-full bg-canvas flex flex-col font-sans text-ink transition-colors duration-300',
+      // In the desktop shell the board lives inside a tab panel that is already
+      // viewport-height minus the title bar, tabs and footer. Demanding 100vh
+      // there buys ~100px of scrollbar on an empty board.
+      !isDesktop() && 'min-h-screen',
+    )}>
       <header className="bg-nav-surface backdrop-blur border-b border-border-brand px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 shrink-0">
-            <Logo size={32} />
+            {/* In the desktop app the title bar already carries the logo, the
+                app name, the version and the README — repeating them here just
+                spends a row of screen. The project line below is content, not
+                chrome, so it stays in both. (CGLAB-168) */}
+            {!isDesktop() && <Logo size={32} />}
             <div>
-              <div className="flex items-center gap-2">
+              {!isDesktop() && <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight transition-colors leading-none">AgEnFK Dashboard</h1>
                 <button
                   onClick={() => setIsWhatsNewOpen(true)}
@@ -1441,7 +1471,7 @@ export const KanbanBoard: React.FC = () => {
                     README
                   </span>
                 </button>
-              </div>
+              </div>}
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
                   Project: <span className="text-accent-text">{activeProject?.name || 'Loading...'}</span>

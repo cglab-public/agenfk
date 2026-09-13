@@ -44,6 +44,7 @@ vi.mock('../api', () => ({
 const socketHandlers: Record<string, (...args: any[]) => void> = {};
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: (ev: string, cb: (...args: any[]) => void) => { socketHandlers[ev] = cb; },
     off: vi.fn(),
     emit: vi.fn(),

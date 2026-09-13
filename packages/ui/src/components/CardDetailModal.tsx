@@ -13,7 +13,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
-import { API_URL } from '../apiUrl';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 
 interface CardDetailModalProps {

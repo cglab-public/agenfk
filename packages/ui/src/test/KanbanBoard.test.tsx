@@ -5,6 +5,7 @@ import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-li
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
@@ -13,6 +14,7 @@ import { io } from 'socket.io-client';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -89,9 +91,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 
@@ -105,6 +109,91 @@ describe('KanbanBoard', () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  describe('switching project from outside the board (CGLAB-168)', () => {
+    it('clears the drill-down so the new project is not filtered by the old one\'s epic', async () => {
+      // The sidebar sets the shared project id directly. If navPath survives
+      // that, every column filters project B's items by project A's epic id:
+      // an empty board under a breadcrumb still naming A's epic, with nothing
+      // on screen to explain it.
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const epic = { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic One', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+      const child = { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      const other = { id: 'o1', projectId: 'p2', type: ItemType.TASK, title: 'Other Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [other] : [epic, child]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      function Harness() {
+        const { setActiveProjectId } = useActiveProject();
+        return (
+          <>
+            <button onClick={() => setActiveProjectId('p2')}>switch outside</button>
+            <KanbanBoard />
+          </>
+        );
+      }
+      render(<Harness />, { wrapper });
+
+      // Drill into the epic via its child-count button.
+      fireEvent.click(await screen.findByRole('button', { name: /Show 1 child items/i }));
+      await screen.findByText('Child Task');
+
+      fireEvent.click(screen.getByText('switch outside'));
+
+      // The new project's item must be visible, not filtered away.
+      expect(await screen.findByText('Other Task')).toBeDefined();
+      expect(screen.queryByText('Child Task')).toBeNull();
+    });
+  });
+
+  describe('desktop shell — no duplicated identity (CGLAB-168)', () => {
+    const asDesktop = (on: boolean) => {
+      if (on) {
+        Object.defineProperty(window, 'agenfkDesktop', {
+          value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+          configurable: true, writable: true,
+        });
+      } else {
+        delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+      }
+    };
+    afterEach(() => asDesktop(false));
+
+    const withProject = async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+      vi.mocked(api.listItems).mockResolvedValue([] as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<KanbanBoard />, { wrapper });
+      await screen.findByText(/PROJECT:/i);
+    };
+
+    it('drops the app name and version chip in the desktop app, where the title bar carries them', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByText('AgEnFK Dashboard')).toBeNull();
+      expect(screen.queryByRole('button', { name: /README/i })).toBeNull();
+    });
+
+    it('still shows which project is open — that is content, not chrome', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.getByText(/PROJECT:/i)).toBeDefined();
+    });
+
+    it('leaves the browser header exactly as it was', async () => {
+      asDesktop(false);
+      await withProject();
+      expect(screen.getByText('AgEnFK Dashboard')).toBeDefined();
+      expect(screen.getByRole('button', { name: /README/i })).toBeDefined();
+    });
   });
 
   it('should show project selector when no project is selected', async () => {

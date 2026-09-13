@@ -4,7 +4,6 @@ import { useSocketEvent } from '../SocketContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { API_URL } from '../apiUrl';
 import { stripAnsi } from '../utils';
 
 export interface AgentRun {
