@@ -34,6 +34,8 @@ import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab } from './TerminalTab';
+import { NewTerminalDialog } from './NewTerminalDialog';
+import { listAgentsFromBridge } from './agentBridge';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
@@ -63,7 +65,31 @@ const CONNECTION_LABEL: Record<Connection, string> = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [active, setActive] = React.useState<TabId>('kanban');
-  const { focusedItemId, newItemRequest } = useActiveProject();
+  // A latch, not a mirror of `active`. Opening a terminal launches an agent
+  // CLI, so it must not happen before the user asks — but once it has, the
+  // session outlives every tab switch.
+  const [terminalOpened, setTerminalOpened] = React.useState(false);
+  const { focusedItemId, newItemRequest, setActiveProjectId } = useActiveProject();
+  /** The card a terminal is being opened FOR, while the dialog is up. */
+  const [pending, setPending] = React.useState<
+    { itemId: string; title: string; agentId?: string } | null
+  >(null);
+  /**
+   * The card a terminal is currently open ON, with the choices made for it.
+   *
+   * Separate from `pending` on purpose: the agent and the auto-approve flag are
+   * decided once, at open time, and must not change under a running session.
+   */
+  const [session, setSession] = React.useState<
+    { itemId: string; agentId: string; autoApprove: boolean } | null
+  >(null);
+
+  const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
+    setActiveProjectId(item.projectId);
+    // agentId comes off the ITEM, which is where it lives — the server keeps it
+    // in the item's own record, so it follows the card rather than the machine.
+    setPending({ itemId: item.id, title: item.title, agentId: item.agentId });
+  }, [setActiveProjectId]);
   const socket = useSocket();
   // Seeded from the socket rather than assumed: mounting onto an already-
   // connected socket would otherwise sit on "Connecting…" until a reconnect
@@ -98,6 +124,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!focusedItemId && !newItemRequest) return;
     setActive('kanban');
   }, [focusedItemId, newItemRequest]);
+
+  // One place, so the latch cannot be missed by a new route into the tab —
+  // there are already two (click and arrow keys).
+  React.useEffect(() => {
+    if (active === 'terminal') setTerminalOpened(true);
+  }, [active]);
 
   const onTablistKeyDown = (event: React.KeyboardEvent): void => {
     const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
@@ -139,7 +171,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           the traffic-light strip, so the window reads as two columns rather
           than a banner stacked on a split — and the board gets that row back. */}
       <div className="flex min-h-0 flex-1">
-        <Sidebar open={sidebarOpen} onToggle={toggleSidebar} isMac={isMac} />
+        <Sidebar open={sidebarOpen} onToggle={toggleSidebar} isMac={isMac} requestTerminal={requestTerminal} />
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div
@@ -198,9 +230,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </div>
 
-          {/* Mounted only while selected, unlike the board. A terminal is a live
-              child process: keeping it rendered behind a `hidden` panel would
-              hold a shell open for a card the user has moved on from. */}
+          {/* Rendered, not conditionally mounted — and more load-bearing here
+              than for the board. Unmounting tears the session down, so
+              switching to Kanban to look something up would kill the agent
+              mid-run and take the whole scrollback with it. Holding a shell
+              open for a card the user stepped away from is by far the cheaper
+              mistake. */}
           <div
             role="tabpanel"
             id="panel-terminal"
@@ -209,7 +244,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
           >
-            {active === 'terminal' && <TerminalTab itemId={focusedItemId ? focusedItemId.slice(0, focusedItemId.lastIndexOf('#')) : null} />}
+            {terminalOpened && <TerminalTab session={session} />}
           </div>
 
           <div
@@ -260,13 +295,52 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {info && <span className="ml-auto font-mono">Electron {info.versions.electron}</span>}
       </footer>
 
+      {pending && (
+        <NewTerminalDialog
+          cardTitle={pending.title}
+          defaultAgentId={pending.agentId}
+          listAgents={listAgentsFromBridge}
+          onClose={() => setPending(null)}
+          onCreate={async ({ agentId, autoApprove }) => {
+            // Latch and switch BEFORE clearing `pending`, so the panel exists
+            // by the time the dialog goes away — otherwise the user watches an
+            // empty tab for a frame while the pane mounts.
+            // Open FIRST. Recording which agent a card uses is a nicety;
+            // letting it fail — or even throw synchronously, as it did when the
+            // api mock lacked the method — must never stop the terminal from
+            // opening. Ordering is the guarantee here, not the try/catch.
+            setSession({ itemId: pending.itemId, agentId, autoApprove });
+            setTerminalOpened(true);
+            setActive('terminal');
+            setPending(null);
+
+            // Remember the choice ON THE CARD, where it belongs: the server
+            // keeps it in the item's own record, so it follows the card across
+            // machines and clients instead of living in one browser's storage.
+            if (agentId !== pending.agentId) {
+              try {
+                void api.updateItem(pending.itemId, { agentId } as never)?.catch?.(() => {});
+              } catch { /* a lost preference is not worth a failed launch */ }
+            }
+          }}
+        />
+      )}
+
       <ReadmeModal isOpen={readmeOpen} onClose={() => setReadmeOpen(false)} />
       <WhatsNewModal isOpen={whatsNewOpen} onClose={() => setWhatsNewOpen(false)} />
     </div>
   );
 }
 
-function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => void; isMac: boolean }) {
+interface SidebarProps {
+  open: boolean;
+  onToggle: () => void;
+  isMac: boolean;
+  /** Clicking a card asks the shell to open a terminal on it. */
+  requestTerminal: (item: AgEnFKItem) => void;
+}
+
+function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, focusItem, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -457,12 +531,13 @@ function Sidebar({ open, onToggle, isMac }: { open: boolean; onToggle: () => voi
                 <ul id={`work-${project.id}`} className="mb-1 ml-2 border-l border-border-soft pl-2">
                   {work.map(item => (
                     <li key={item.id}>
-                      {/* Clicking goes to the work: the board drills in,
-                          highlights and scrolls to it. Without this the
-                          sidebar shows you what is in flight and gives you no
-                          way to reach it. */}
+                      {/* Clicking opens a terminal on the card, in that card's
+                          own worktree — the sidebar lists work in flight, and
+                          the thing you want from work in flight is a shell in
+                          it. The board is still reachable from its own tab;
+                          this row is the shortcut to the actual work. */}
                       <button
-                        onClick={() => focusItem(item.id, item.projectId)}
+                        onClick={() => requestTerminal(item)}
                         title={item.title}
                         className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
                       >

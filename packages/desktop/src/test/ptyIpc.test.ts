@@ -90,6 +90,23 @@ describe('arguments are validated before anything is done with them', () => {
     await expect(spawn({ itemId: 'i1', cols: 80, rows: 24 })).rejects.toThrow(/agentId/);
   });
 
+  it('treats auto-approve as strictly boolean true', async () => {
+    // It disables the agent's own safety prompts. A stray truthy value from a
+    // renderer bug — a string, a 1, an object — must not be enough to turn the
+    // rails off.
+    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: 'yes' });
+    expect(spawnCalls[0].autoApprove).toBe(false);
+    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: 1 });
+    expect(spawnCalls[1].autoApprove).toBe(false);
+    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: true });
+    expect(spawnCalls[2].autoApprove).toBe(true);
+  });
+
+  it('defaults auto-approve to off when it is not mentioned', async () => {
+    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24 });
+    expect(spawnCalls[0].autoApprove).toBe(false);
+  });
+
   it('rejects sizes that are not sane terminal dimensions', async () => {
     // These reach ioctl. Negative, zero, fractional and absurd values are at
     // best a broken terminal.

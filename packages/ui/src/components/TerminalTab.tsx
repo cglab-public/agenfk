@@ -1,75 +1,68 @@
 /**
- * The Terminal tab: a shell for the card you are looking at (CGLAB-169).
+ * The Terminal tab: a shell for the card the user opened one on (CGLAB-169).
  *
- * Ties the three pieces together — which card, which agent, and the pane
- * itself. Deliberately thin: the picker owns detection, the pane owns the
- * session lifecycle, and this only decides what to show when there is no card.
+ * Deliberately thin. The dialog decides which card and which agent; the pane
+ * owns the session lifecycle. This only renders one or the other.
  *
- * Keyed on the item id so switching cards tears the old session down and opens
- * a new one, rather than silently leaving you typing into the previous card's
- * worktree. That is the failure this component exists to prevent, and a key is
- * how React expresses it.
+ * The session is handed in whole rather than assembled here, and that is the
+ * point: the agent and the auto-approve flag are decided once, at open time,
+ * and must not change under a running process. A component that read them from
+ * ambient state could swap the agent out from under a live shell.
  */
 import React from 'react';
-import { AgentPicker, type AgentInfo } from './AgentPicker';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
 
-const AGENT_KEY = 'agenfk_terminal_agent';
-
-interface DesktopTerminalApi {
-  listAgents(): Promise<AgentInfo[]>;
+export interface TerminalSession {
+  readonly itemId: string;
+  readonly agentId: string;
+  readonly autoApprove: boolean;
 }
 
 export interface TerminalTabProps {
-  /** The card whose worktree the terminal opens in. */
-  readonly itemId: string | null;
-  /** Injected in tests; in the app it comes from the preload bridge. */
-  readonly listAgents?: () => Promise<AgentInfo[]>;
+  readonly session: TerminalSession | null;
 }
 
-const bridgeListAgents = (): Promise<AgentInfo[]> => {
-  const api = (window as unknown as { agenfkDesktop?: { terminal?: DesktopTerminalApi } })
-    .agenfkDesktop?.terminal;
-  return api ? api.listAgents() : Promise.resolve([]);
-};
-
-export function TerminalTab({ itemId, listAgents }: TerminalTabProps): React.ReactElement {
-  const [agentId, setAgentId] = React.useState<string>(() => {
-    // Remembered, because picking the same agent on every card is the common
-    // case and re-choosing it each time is friction.
-    try { return localStorage.getItem(AGENT_KEY) || 'claude'; } catch { return 'claude'; }
-  });
-
-  const chooseAgent = (next: string): void => {
-    setAgentId(next);
-    try { localStorage.setItem(AGENT_KEY, next); } catch { /* private mode */ }
-  };
+export function TerminalTab({ session }: TerminalTabProps): React.ReactElement {
+  if (!session) {
+    return (
+      <div className="p-6">
+        <EmptyState
+          title="No terminal open"
+          body="Click a card in the sidebar to open a terminal on it. It runs in that card's own worktree, so the agent works on its branch and nothing else."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5">
-        <span className="text-[11px] font-bold uppercase tracking-wider text-ink-tertiary">Agent</span>
-        <AgentPicker value={agentId} onChange={chooseAgent} listAgents={listAgents ?? bridgeListAgents} />
-        {itemId && (
-          <span className="ml-auto truncate font-mono text-[10px] text-ink-tertiary" title={itemId}>
-            {itemId.slice(0, 8)}
+        <span className="text-[11px] font-bold uppercase tracking-wider text-ink-tertiary">
+          {session.agentId}
+        </span>
+        {session.autoApprove && (
+          // Said out loud, permanently. A session running without the agent's
+          // own permission prompts should never be indistinguishable from one
+          // that has them.
+          <span className="rounded-full bg-red-950/40 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+            permissions skipped
           </span>
         )}
+        <span className="ml-auto truncate font-mono text-[10px] text-ink-tertiary" title={session.itemId}>
+          {session.itemId.slice(0, 8)}
+        </span>
       </div>
 
-      {itemId ? (
-        // Keyed on both: changing either has to be a new session, not a reused
-        // one pointed somewhere else.
-        <TerminalPane key={`${itemId}:${agentId}`} itemId={itemId} agentId={agentId} />
-      ) : (
-        <div className="p-6">
-          <EmptyState
-            title="No card selected"
-            body="Pick a card in the sidebar or on the board. Its terminal opens in that card's own worktree."
-          />
-        </div>
-      )}
+      {/* Keyed on the whole session: opening a terminal on a different card, or
+          with a different agent, has to be a NEW process rather than a reused
+          one pointed somewhere else. */}
+      <TerminalPane
+        key={`${session.itemId}:${session.agentId}:${session.autoApprove}`}
+        itemId={session.itemId}
+        agentId={session.agentId}
+        autoApprove={session.autoApprove}
+      />
     </div>
   );
 }

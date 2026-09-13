@@ -19,6 +19,15 @@ export interface AgentInfo {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /**
+   * Whether this agent has a flag to skip its own permission prompts.
+   *
+   * Reported by the main process rather than assumed, so the UI can disable the
+   * toggle with a reason instead of offering a control that quietly does
+   * nothing — which would tell the user the safety rails are off when they are
+   * not.
+   */
+  readonly supportsAutoApprove?: boolean;
 }
 
 export interface AgentPickerProps {

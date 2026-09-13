@@ -17,6 +17,7 @@
  */
 import { randomUUID } from 'crypto';
 import { resolveAgentCommand } from './agents.js';
+import { buildPtyEnv } from './ptyEnv.js';
 
 /** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
 export interface PtyLike {
@@ -40,6 +41,14 @@ export interface PtyRegistryDeps {
   readonly resolveCwd: (itemId: string) => Promise<{ cwd: string; branchName: string | null }>;
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
+  /**
+   * The PATH recovered from a login shell, if one was obtained at boot.
+   *
+   * This is the same PATH agent detection probes with, and handing it to the
+   * spawn is the point: detecting against one PATH and launching against
+   * another is how a picker that says "Installed" produces ENOENT.
+   */
+  readonly loginPath?: () => string | null;
 }
 
 export interface SpawnRequest {
@@ -48,6 +57,8 @@ export interface SpawnRequest {
   readonly windowId: number;
   readonly cols: number;
   readonly rows: number;
+  /** Run the agent with its own permission prompts disabled. Off by default. */
+  readonly autoApprove?: boolean;
 }
 
 interface Session {
@@ -76,7 +87,7 @@ export class PtyRegistry {
    * an XSS in the renderer bundle cannot choose what runs or where.
    */
   async spawn(req: SpawnRequest): Promise<string> {
-    const command = resolveAgentCommand(req.agentId);
+    const command = resolveAgentCommand(req.agentId, { autoApprove: req.autoApprove === true });
     // Resolve BEFORE spawning: a failure here must leave no half-registered
     // session behind, or later write/kill calls report an ownership problem
     // when the real problem was that the worktree could not be made.
@@ -86,7 +97,9 @@ export class PtyRegistry {
       cwd,
       cols: req.cols,
       rows: req.rows,
-      env: process.env,
+      // Never process.env directly. It carries launchd's minimal PATH, no TERM
+      // at all, and every variable describing how Electron was launched.
+      env: buildPtyEnv(process.env, this.deps.loginPath?.()),
     });
 
     // Opaque and unguessable, and deliberately not derived from the item id:

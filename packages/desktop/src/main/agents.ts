@@ -30,15 +30,63 @@ export interface AgentCommand {
 export interface AgentChoice {
   readonly id: string;
   readonly label: string;
+  /**
+   * Whether this agent has a flag to skip its own permission prompts.
+   *
+   * Reported so the UI can disable the toggle with a reason, rather than
+   * offering a control that quietly does nothing.
+   */
+  readonly supportsAutoApprove: boolean;
+}
+
+export interface SpawnOptions {
+  /**
+   * Run the agent with its own safety prompts disabled.
+   *
+   * Off unless explicitly requested. An agent in this mode edits, deletes and
+   * pushes without asking, so it must never be something a caller gets by
+   * forgetting a parameter.
+   */
+  readonly autoApprove?: boolean;
 }
 
 /**
  * Menu order, default first. `shell` is not an agent — it is what a user wants
  * when nothing is installed, or when they just want to run git in the worktree.
  */
-const AGENTS: ReadonlyArray<AgentChoice & { command: AgentCommand }> = [
-  { id: 'claude', label: 'Claude Code', command: { file: 'claude', args: [] } },
-  { id: 'codex', label: 'Codex', command: { file: 'codex', args: [] } },
+interface AgentEntry {
+  readonly id: string;
+  readonly label: string;
+  readonly command: AgentCommand;
+  /**
+   * Argv to append when auto-approve is asked for. Separate entries, never one
+   * string: a multi-token flag delivered as a single argv element reaches the
+   * CLI as one nonsense option instead of the settings intended.
+   *
+   * Absent where the agent has no such flag. Inventing one would be worse than
+   * ignoring the request — a wrong flag either fails the launch or means
+   * something else entirely.
+   */
+  readonly autoApproveArgs?: readonly string[];
+}
+
+const AGENTS: ReadonlyArray<AgentEntry> = [
+  {
+    id: 'claude',
+    label: 'Claude Code',
+    command: { file: 'claude', args: [] },
+    autoApproveArgs: ['--dangerously-skip-permissions'],
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    command: { file: 'codex', args: [] },
+    autoApproveArgs: [
+      '-c', 'approval_policy=never',
+      '-c', 'sandbox_mode=danger-full-access',
+      '--dangerously-bypass-hook-trust',
+    ],
+  },
   { id: 'opencode', label: 'Opencode', command: { file: 'opencode', args: [] } },
   { id: 'gemini', label: 'Gemini CLI', command: { file: 'gemini', args: [] } },
   { id: 'shell', label: 'Shell', command: { file: process.platform === 'win32' ? 'powershell.exe' : 'bash', args: ['-l'] } },
@@ -48,7 +96,11 @@ export const AGENT_IDS: readonly string[] = AGENTS.map(a => a.id);
 
 /** The picker's contents. Labels are for people; ids are the wire format. */
 export function listAgents(): AgentChoice[] {
-  return AGENTS.map(({ id, label }) => ({ id, label }));
+  return AGENTS.map(({ id, label, autoApproveArgs }) => ({
+    id,
+    label,
+    supportsAutoApprove: Boolean(autoApproveArgs?.length),
+  }));
 }
 
 /**
@@ -59,10 +111,11 @@ export function listAgents(): AgentChoice[] {
  * absolute paths, traversal, shell metacharacters and empty values without
  * needing a rule for each.
  */
-export function resolveAgentCommand(agentId: string): AgentCommand {
+export function resolveAgentCommand(agentId: string, opts: SpawnOptions = {}): AgentCommand {
   const found = AGENTS.find(a => a.id === agentId);
   if (!found) {
     throw new Error(`Unknown agent "${String(agentId)}". Expected one of: ${AGENT_IDS.join(', ')}`);
   }
-  return found.command;
+  if (!opts.autoApprove || !found.autoApproveArgs?.length) return found.command;
+  return { file: found.command.file, args: [...found.command.args, ...found.autoApproveArgs] };
 }

@@ -63,6 +63,9 @@ export function registerPtyIpc(registry: PtyRegistry, ipc: IpcLike = ipcMain): v
       windowId: senderWindowId(event),
       cols: asSize(req.cols, 'cols'),
       rows: asSize(req.rows, 'rows'),
+      // Strict === true, not truthiness. This disables the agent's own safety
+      // prompts, so a stray string, a 1, or an object must not be enough.
+      autoApprove: req.autoApprove === true,
     });
   });
 

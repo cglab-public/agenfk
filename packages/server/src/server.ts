@@ -2548,6 +2548,18 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
   if (reviews !== undefined) updates.reviews = reviews;
   if (tests !== undefined) updates.tests = tests;
+  // Which agent works this card. It belongs on the ITEM, not in a browser's
+  // localStorage: it is the same fact the hub already records as `--model` /
+  // `--harness` when a PR opens, it has to survive a machine change, and a
+  // per-machine key made opening card B inherit card A's agent.
+  //
+  // Stored as an opaque string on purpose — the server has no agent registry
+  // and should not grow one. A hostile value is inert: the desktop main process
+  // resolves it by exact match against a closed set at spawn time, so anything
+  // unknown is refused there rather than executed.
+  if (typeof req.body?.agentId === 'string' && req.body.agentId.length <= 64) {
+    updates.agentId = req.body.agentId;
+  }
   if (comments !== undefined) updates.comments = comments;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (branchName !== undefined) updates.branchName = branchName;

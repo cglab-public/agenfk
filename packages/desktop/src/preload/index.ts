@@ -16,6 +16,8 @@ export interface AgentInfo {
   readonly id: string;
   readonly label: string;
   readonly installed: boolean;
+  /** Whether this agent has a flag to skip its own permission prompts. */
+  readonly supportsAutoApprove: boolean;
 }
 
 /**
@@ -31,7 +33,7 @@ export interface AgentInfo {
  * worktree a card owns and the second from a closed list.
  */
 export interface AgenfkTerminalApi {
-  spawn(req: { itemId: string; agentId: string; cols: number; rows: number }): Promise<string>;
+  spawn(req: { itemId: string; agentId: string; cols: number; rows: number; autoApprove?: boolean }): Promise<string>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;

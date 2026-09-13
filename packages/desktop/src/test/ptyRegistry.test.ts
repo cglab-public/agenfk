@@ -111,6 +111,44 @@ describe('opening a session', () => {
   });
 });
 
+describe('the environment the shell is born into', () => {
+  it('does not hand the child our raw process env', async () => {
+    // The defect this replaced: `env: process.env` gave every agent launchd's
+    // minimal PATH and no TERM at all, so node-pty fell back to plain `xterm`.
+    await open(registry, 1);
+    const opts = spawner.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(opts.env).not.toBe(process.env);
+    expect(opts.env.TERM).toBe('xterm-256color');
+    expect(opts.env.COLORTERM).toBe('truecolor');
+  });
+
+  it('spawns with the same PATH detection probed with', async () => {
+    // Detecting an agent against a recovered login PATH and then launching it
+    // against the inherited one is exactly how "Installed" becomes ENOENT.
+    const withLogin = new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
+      emit: () => {},
+      loginPath: () => '/opt/homebrew/bin:/usr/bin',
+    });
+    await open(withLogin, 1);
+    const opts = spawner.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(opts.env.PATH).toContain('/opt/homebrew/bin');
+  });
+
+  it('does not leak ELECTRON_RUN_AS_NODE into the agent', async () => {
+    // An agent that shells out to node would re-enter our own binary.
+    process.env.ELECTRON_RUN_AS_NODE = '1';
+    try {
+      await open(registry, 1);
+      const opts = spawner.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+      expect(opts.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    } finally {
+      delete process.env.ELECTRON_RUN_AS_NODE;
+    }
+  });
+});
+
 describe('ownership — a window may only touch its own sessions', () => {
   it('refuses a write from another window', async () => {
     const id = await open(registry, 1);

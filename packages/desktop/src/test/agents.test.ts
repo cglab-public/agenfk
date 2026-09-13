@@ -126,3 +126,42 @@ describe('listing agents for the picker', () => {
     expect(listAgents().map(a => a.id)).toEqual([...AGENT_IDS]);
   });
 });
+
+describe('auto-approve, the flag that turns off the agent\'s own safety rails', () => {
+  it('is off unless explicitly asked for', async () => {
+    // The default has to be the safe one. An agent running with permissions
+    // skipped can edit, delete and push without asking, so this must never be
+    // something a caller gets by forgetting a parameter.
+    expect(resolveAgentCommand('claude').args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('adds the real flag for an agent that has one', () => {
+    const args = resolveAgentCommand('claude', { autoApprove: true }).args;
+    expect(args).toContain('--dangerously-skip-permissions');
+  });
+
+  it('keeps multi-token flags as separate argv entries', () => {
+    // codex needs several arguments. Passing them as one string would have the
+    // whole thing delivered as a single argv element, which the CLI reads as
+    // one nonsense option rather than as the settings intended.
+    const args = resolveAgentCommand('codex', { autoApprove: true }).args;
+    expect(args.some(a => a.includes(' ')), `an argv entry contains a space: ${JSON.stringify(args)}`).toBe(false);
+    expect(args.length).toBeGreaterThan(1);
+  });
+
+  it('silently does nothing for an agent with no such flag', () => {
+    // Inventing one would be worse than ignoring the request: a wrong flag
+    // either fails the launch or, worse, means something else entirely.
+    expect(resolveAgentCommand('gemini', { autoApprove: true }).args)
+      .toEqual(resolveAgentCommand('gemini').args);
+  });
+
+  it('reports which agents can actually honour it', () => {
+    // So the UI can disable the toggle with a reason instead of offering a
+    // control that quietly does nothing.
+    const byId = new Map(listAgents().map(a => [a.id, a]));
+    expect(byId.get('claude')?.supportsAutoApprove).toBe(true);
+    expect(byId.get('gemini')?.supportsAutoApprove).toBe(false);
+    expect(byId.get('shell')?.supportsAutoApprove).toBe(false);
+  });
+});

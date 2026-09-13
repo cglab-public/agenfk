@@ -21,7 +21,7 @@ import '@xterm/xterm/css/xterm.css';
 
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
-  spawn(req: { itemId: string; agentId: string; cols: number; rows: number }): Promise<string>;
+  spawn(req: { itemId: string; agentId: string; cols: number; rows: number; autoApprove?: boolean }): Promise<string>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
@@ -36,6 +36,8 @@ interface FitLike extends ITerminalAddon {
 export interface TerminalPaneProps {
   readonly itemId: string;
   readonly agentId: string;
+  /** Run the agent with its own permission prompts disabled. */
+  readonly autoApprove?: boolean;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -47,6 +49,7 @@ const defaultBridge = (): TerminalBridge | null =>
 export function TerminalPane({
   itemId,
   agentId,
+  autoApprove,
   createTerminal,
   createFitAddon,
   bridge,
@@ -107,17 +110,48 @@ export function TerminalPane({
     });
     cleanups.push(() => input.dispose());
 
-    const onResize = (): void => {
+    const applyResize = (): void => {
       try { fit.fit(); } catch { /* no layout under jsdom */ }
       const session = sessionRef.current;
       if (session) void api.resize(session, term.cols, term.rows);
     };
-    window.addEventListener('resize', onResize);
-    cleanups.push(() => window.removeEventListener('resize', onResize));
+
+    // Leading edge fires at once; the trailing one catches the end of a drag.
+    // Trailing-only would leave the child drawing against stale dimensions for
+    // the whole drag, and that overlapping output is baked permanently into the
+    // scrollback — a later correct resize cannot repair it.
+    let trailing: ReturnType<typeof setTimeout> | null = null;
+    let lastRun = 0;
+    const DEBOUNCE_MS = 60;
+    const onGeometryChange = (): void => {
+      const now = Date.now();
+      if (now - lastRun >= DEBOUNCE_MS) {
+        lastRun = now;
+        applyResize();
+      }
+      if (trailing) clearTimeout(trailing);
+      trailing = setTimeout(() => {
+        trailing = null;
+        lastRun = Date.now();
+        applyResize();
+      }, DEBOUNCE_MS);
+    };
+
+    // The PANE, not the window. Dragging a split or collapsing the sidebar
+    // changes this element without changing the window, so a window listener
+    // sees nothing. It also fires when the element becomes visible again after
+    // the tab was hidden — where `fit()` is a no-op, because a display:none
+    // ancestor gives it a computed width of `auto`, hence NaN, hence a bail.
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onGeometryChange) : null;
+    observer?.observe(host);
+    cleanups.push(() => {
+      if (trailing) clearTimeout(trailing);
+      observer?.disconnect();
+    });
 
     // The renderer sends an item and an agent, never a path and never a
     // command. Keep it that way.
-    api.spawn({ itemId, agentId, cols: term.cols || 80, rows: term.rows || 24 })
+    api.spawn({ itemId, agentId, autoApprove: autoApprove === true, cols: term.cols || 80, rows: term.rows || 24 })
       .then(sessionId => {
         if (cancelled) {
           // The effect was torn down while the spawn was in flight. The main
@@ -145,7 +179,7 @@ export function TerminalPane({
       term.dispose();
       termRef.current = null;
     };
-  }, [itemId, agentId, bridge, createTerminal, createFitAddon]);
+  }, [itemId, agentId, autoApprove, bridge, createTerminal, createFitAddon]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#14181b]">

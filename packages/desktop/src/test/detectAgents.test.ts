@@ -105,6 +105,23 @@ describe('the Finder PATH problem', () => {
   });
 });
 
+describe('how a binary is actually located', () => {
+  it('does not try to execFile a shell builtin', async () => {
+    // `command -v` is the idiomatic POSIX probe — inside a shell. `command` is
+    // a builtin, not a file, so execFile('command', …) fails with ENOENT every
+    // single time. An earlier version tried it first and fell through to
+    // `which`, paying a failed spawn per probe for an answer it never gave.
+    const { whichOnPath } = await import('../main/detectAgents');
+    const found = await whichOnPath('sh');
+    expect(found, 'could not locate `sh`, which exists on every POSIX machine').toBeTruthy();
+  });
+
+  it('reports nothing for a binary that does not exist', async () => {
+    const { whichOnPath } = await import('../main/detectAgents');
+    expect(await whichOnPath('definitely-not-a-real-binary-xyz')).toBeNull();
+  });
+});
+
 describe('caching', () => {
   it('does not re-probe on every picker open', async () => {
     const which = whichFinding('claude');

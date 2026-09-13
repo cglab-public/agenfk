@@ -458,33 +458,28 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     expect(screen.queryByText('Fix the login redirect')).toBeNull();
   });
 
-  it('takes you to the work when a row is clicked', async () => {
-    // The gap this closes: the rows used to be plain divs. The sidebar showed
-    // what was in flight and gave you no way to reach any of it.
-    const focused: string[] = [];
-    function Spy() {
-      const { focusedItemId } = useActiveProject();
-      React.useEffect(() => { if (focusedItemId) focused.push(focusedItemId); }, [focusedItemId]);
-      return null;
-    }
+  it('opens a terminal on the card when its row is clicked', async () => {
+    // Changed deliberately (CGLAB-169). The sidebar lists work in FLIGHT, and
+    // what you want from work in flight is a shell in its worktree — not a
+    // scroll to a card you already know about. The board is still one tab away.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ActiveProjectProvider>
-          <SocketProvider>
-            <Spy />
-            <AppShell><FakeBoard /></AppShell>
-          </SocketProvider>
-        </ActiveProjectProvider>
-      </QueryClientProvider>,
-    );
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Something in agenfk'));
 
-    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
-    fireEvent.click(within(row).getByRole('button', { name: /expand horizon-lab/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /Fix the login redirect/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.getAttribute('aria-label')).toMatch(/something in agenfk/i);
+  });
 
-    expect(focused.at(-1)).toContain('i1');
+  it('switches to the project the card belongs to before opening it', async () => {
+    // The terminal resolves the worktree from the item, but everything else on
+    // screen — the board behind, the counts — must not still be showing another
+    // project.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Something in agenfk'));
+    await waitFor(() => expect(localStorage.getItem('agenfk_project_id')).toBe('p1'));
   });
 
   it('shows each item\'s step, which is what says where it is stuck', async () => {
@@ -704,15 +699,18 @@ describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
 
   const kanbanPanel = () => document.getElementById('panel-kanban')!;
 
-  it('comes back to the board when a card is clicked in the sidebar', async () => {
+  it('goes to the Terminal tab when a card is opened from the sidebar', async () => {
     vi.mocked(api.listActiveItems).mockResolvedValue([
       { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
     ] as never);
     await onRunsTab();
-    // Open the project's folder so its work is listed.
     fireEvent.click(screen.getByRole('button', { name: 'Expand agenfk', hidden: true }));
     fireEvent.click(await screen.findByTitle('Some work'));
-    await waitFor(() => expect(kanbanPanel().hasAttribute('hidden')).toBe(false));
+
+    // Create in the dialog, then the Terminal panel is the visible one.
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() =>
+      expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
   });
 
   it('comes back to the board when + creates a card from the sidebar', async () => {
@@ -727,5 +725,40 @@ describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
     await onRunsTab();
     await new Promise(r => setTimeout(r, 20));
     expect(kanbanPanel().hasAttribute('hidden')).toBe(true);
+  });
+});
+
+describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
+  // The first cut of this mounted the terminal only while its tab was
+  // selected, reasoning that a live child process should not be held open for
+  // a card the user has moved on from. That trades a small resource concern
+  // for a catastrophic one: switching to Kanban to look something up kills the
+  // agent mid-run and loses the whole scrollback. Holding a shell open is the
+  // cheaper mistake by a wide margin.
+  it('does not start a shell before the user ever opens the tab', async () => {
+    // The other half of the trade. Keeping the panel mounted must not mean
+    // launching an agent CLI the moment a card is focused in the sidebar —
+    // that is a heavyweight process the user did not ask for, started
+    // invisibly.
+    renderShell();
+    await screen.findByText('agenfk');
+    expect(document.getElementById('panel-terminal')!.childElementCount).toBe(0);
+  });
+
+  it('keeps the terminal panel mounted when another tab is selected', async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+
+    fireEvent.click(screen.getByRole('tab', { name: /terminal/i }));
+    const panel = document.getElementById('panel-terminal')!;
+    expect(panel.hasAttribute('hidden')).toBe(false);
+    expect(panel.childElementCount, 'terminal panel rendered nothing').toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('tab', { name: /kanban/i }));
+    expect(panel.hasAttribute('hidden')).toBe(true);
+    expect(
+      panel.childElementCount,
+      'the terminal was unmounted on tab switch — the session dies and the scrollback goes with it',
+    ).toBeGreaterThan(0);
   });
 });

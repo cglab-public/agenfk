@@ -16,6 +16,7 @@
  */
 import { execFile } from 'child_process';
 import { AGENT_IDS, listAgents } from './agents.js';
+import { captureLoginPath } from './ptyEnv.js';
 
 export interface DetectedAgent {
   readonly id: string;
@@ -49,18 +50,25 @@ const run = (file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<str
     });
   });
 
-export const whichOnPath = (file: string, pathOverride?: string): Promise<string | null> =>
-  process.platform === 'win32'
-    ? run('where', [file], pathOverride ? { ...process.env, PATH: pathOverride } : undefined)
-    : run('command', ['-v', file], pathOverride ? { ...process.env, PATH: pathOverride } : undefined)
-      .then(found => found ?? run('which', [file], pathOverride ? { ...process.env, PATH: pathOverride } : undefined));
-
-/** The PATH an interactive login shell would have. Unix only; null elsewhere. */
-export const loginShellPath = async (): Promise<string | null> => {
-  if (process.platform === 'win32') return null;
-  const shell = process.env.SHELL || '/bin/bash';
-  return run(shell, ['-lic', 'printf %s "$PATH"']);
+export const whichOnPath = (file: string, pathOverride?: string): Promise<string | null> => {
+  const env = pathOverride ? { ...process.env, PATH: pathOverride } : undefined;
+  // `which`, not `command -v`. `command` is a SHELL BUILTIN, not a binary, so
+  // execFile'ing it fails with ENOENT every time — an earlier version tried it
+  // first and silently fell through, paying a failed spawn on every probe for
+  // an answer it could never give.
+  return process.platform === 'win32'
+    ? run('where', [file], env)
+    : run('which', [file], env);
 };
+
+/**
+ * The PATH an interactive login shell would have.
+ *
+ * Delegates to the shared capture in ptyEnv so detection and spawning agree on
+ * one answer. Two separate implementations is exactly how they came to
+ * disagree: the picker said "Installed" and the spawn failed with ENOENT.
+ */
+export const loginShellPath = (): Promise<string | null> => captureLoginPath();
 
 /**
  * Detect every agent in the closed set, installed or not.

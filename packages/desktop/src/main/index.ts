@@ -19,6 +19,7 @@ import { PtyRegistry } from './ptyRegistry.js';
 import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { httpPost } from './httpPost.js';
+import { captureLoginPath } from './ptyEnv.js';
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -26,6 +27,16 @@ let mainWindow: BrowserWindow | null = null;
  * directory is resolved by asking the server which worktree a card owns.
  */
 let ptyRegistry: PtyRegistry | null = null;
+/**
+ * The PATH an interactive login shell would have.
+ *
+ * Captured ONCE at boot and shared by agent detection and every spawn. Probing
+ * with one PATH and launching with another is how a picker that says
+ * "Installed" produces ENOENT — which is CGLAB-177's bug one layer down. Null
+ * until the capture returns, or if it failed; every consumer treats that as
+ * "use the inherited PATH".
+ */
+let loginPath: string | null = null;
 let serverChild: UtilityProcess | null = null;
 let server: ResolvedServer | null = null;
 // Two distinct facts, deliberately not one flag. `tearingDown` means we are
@@ -210,11 +221,17 @@ async function boot(): Promise<void> {
     // load the native module degrades to "no terminals" rather than "the app
     // does not start".
     try {
+      // Started before the window so the first terminal does not wait on it,
+      // and awaited here because the registry is built with it. A broken rc
+      // file resolves to null rather than blocking the app.
+      loginPath = await captureLoginPath();
+
       const { spawn: spawnPty } = await import('@lydell/node-pty');
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+        loginPath: () => loginPath,
         emit: (windowId, channel, payload) => {
           // To that window only. Broadcasting would put one card's shell
           // output into every open window.

@@ -47,6 +47,12 @@ let bridge: {
 let dataSubscribers: Array<(e: { sessionId: string; data: string }) => void>;
 let exitSubscribers: Array<(e: { sessionId: string; exitCode: number }) => void>;
 let unsubscribes: number;
+let observedTargets: Element[];
+let disconnects: number;
+let roCallbacks: Array<() => void>;
+
+/** Drive every live ResizeObserver as though the pane had changed size. */
+const fireResize = (): void => { roCallbacks.forEach(cb => cb()); };
 
 const makeTerm = (): FakeTerm => {
   let inputCb: (d: string) => void = () => {};
@@ -70,6 +76,17 @@ const deps = () => ({
 });
 
 beforeEach(() => {
+  observedTargets = [];
+  disconnects = 0;
+  roCallbacks = [];
+  // jsdom has no ResizeObserver at all, so without this the component cannot
+  // even mount — which is itself worth knowing.
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+    constructor(private readonly cb: () => void) { roCallbacks.push(() => this.cb()); }
+    observe(el: Element) { observedTargets.push(el); }
+    unobserve() {}
+    disconnect() { disconnects += 1; }
+  };
   terms = [];
   fitCalls = 0;
   dataSubscribers = [];
@@ -110,7 +127,7 @@ describe('opening a terminal for a card', () => {
     renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     const req = bridge.spawn.mock.calls[0][0];
-    expect(Object.keys(req).sort()).toEqual(['agentId', 'cols', 'itemId', 'rows']);
+    expect(Object.keys(req).sort()).toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'rows']);
   });
 
   it('leaves exactly one live shell under StrictMode double-mount', async () => {
@@ -201,20 +218,52 @@ describe('closing a tab leaves nothing behind', () => {
 });
 
 describe('resizing', () => {
+  it('watches the PANE, not the window', async () => {
+    // The window is the wrong thing to observe. Dragging a split or collapsing
+    // the sidebar changes the pane without changing the window, so no resize
+    // event fires and the program inside keeps drawing against stale
+    // dimensions. Worse, while the tab is hidden `fit()` is a no-op — it reads
+    // a computed width of `auto`, gets NaN and bails — and nothing re-fits on
+    // return, so the terminal stays wrong-sized until the user happens to
+    // resize the window with it visible.
+    renderPane();
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    expect(observedTargets.length, 'nothing is observing the pane element').toBeGreaterThan(0);
+    expect(observedTargets[0].getAttribute('data-testid')).toBe('terminal-host');
+  });
+
   it('tells the PTY the new size, or the program draws over itself', async () => {
     renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
-    act(() => { window.dispatchEvent(new Event('resize')); });
+    act(() => { fireResize(); });
     await waitFor(() => expect(bridge.resize).toHaveBeenCalled());
     expect(bridge.resize.mock.calls.at(-1)?.[0]).toBe('sess-1');
   });
 
-  it('stops resizing after unmount', async () => {
+  it('resizes immediately on the first event of a drag, not only at the end', async () => {
+    // A trailing-only debounce leaves the child drawing against stale
+    // dimensions for the whole drag, and that overlapping output is baked
+    // permanently into the scrollback — it cannot be repaired by a later
+    // correct resize.
+    renderPane();
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    bridge.resize.mockClear();
+    act(() => { fireResize(); });
+    expect(bridge.resize).toHaveBeenCalled();
+  });
+
+  it('does not fire once per pixel during a drag', async () => {
+    renderPane();
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    bridge.resize.mockClear();
+    act(() => { for (let i = 0; i < 20; i += 1) fireResize(); });
+    expect(bridge.resize.mock.calls.length).toBeLessThan(5);
+  });
+
+  it('stops observing after unmount', async () => {
     const view = renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     view.unmount();
-    bridge.resize.mockClear();
-    act(() => { window.dispatchEvent(new Event('resize')); });
-    expect(bridge.resize).not.toHaveBeenCalled();
+    expect(disconnects).toBeGreaterThan(0);
   });
 });
