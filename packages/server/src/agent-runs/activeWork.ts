@@ -37,12 +37,32 @@ export interface FileReader {
   read(): string;
 }
 
-export const activeWorkPath = (): string =>
-  path.join(os.homedir(), '.agenfk', 'active-work.json');
-
-const realReader: FileReader = {
-  read: () => fs.readFileSync(activeWorkPath(), 'utf8'),
+/**
+ * Where the note lives.
+ *
+ * Keyed by session when one is known, because a single shared file collides
+ * across concurrent sessions: this repo explicitly supports parallel agents on
+ * different cards, and an unkeyed note lets session A's first tool call open a
+ * run against session B's card. The unkeyed path remains as a fallback for a
+ * writer that has no session id — the gatekeeper CLI, which cannot see one.
+ */
+export const activeWorkPath = (sessionId?: string): string => {
+  const dir = path.join(os.homedir(), '.agenfk');
+  return sessionId
+    ? path.join(dir, 'active-work', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
+    : path.join(dir, 'active-work.json');
 };
+
+const readerFor = (sessionId?: string): FileReader => ({
+  read: () => {
+    // A session-specific note always wins; the shared one is the fallback for
+    // a gatekeeper run that had no session to key on.
+    if (sessionId) {
+      try { return fs.readFileSync(activeWorkPath(sessionId), 'utf8'); } catch { /* fall through */ }
+    }
+    return fs.readFileSync(activeWorkPath(), 'utf8');
+  },
+});
 
 /** Serialize a note, stamped so its age can be judged later. */
 export function serializeActiveWork(work: ActiveWork): string {
@@ -54,7 +74,7 @@ export function serializeActiveWork(work: ActiveWork): string {
  * one. Null is the safe answer everywhere: missing note, corrupt note, no
  * timestamp, or a timestamp old enough to be about a different sitting.
  */
-export function readActiveWork(reader: FileReader = realReader): ActiveWork | null {
+export function readActiveWork(reader: FileReader = readerFor()): ActiveWork | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(reader.read());
@@ -82,10 +102,15 @@ export function readActiveWork(reader: FileReader = realReader): ActiveWork | nu
   };
 }
 
+/** Read the note for a specific session, falling back to the shared one. */
+export function readActiveWorkForSession(sessionId?: string): ActiveWork | null {
+  return readActiveWork(readerFor(sessionId));
+}
+
 /** Record the item the gatekeeper just authorized. Never throws. */
-export function writeActiveWork(work: ActiveWork): void {
+export function writeActiveWork(work: ActiveWork, sessionId?: string): void {
   try {
-    const target = activeWorkPath();
+    const target = activeWorkPath(sessionId);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, serializeActiveWork(work), 'utf8');
   } catch {

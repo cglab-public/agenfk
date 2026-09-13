@@ -115,3 +115,79 @@ describe('toRunEvent — lane', () => {
     expect(event!.text).toContain('Review the diff');
   });
 });
+
+describe('toRunEvent — secrets in shell commands', () => {
+  /** Every one of these is a credential a developer types into a shell. */
+  const leaky: Array<[string, string, string]> = [
+    ['inline env assignment', 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG aws s3 ls', 'wJalrXUtnFEMI'],
+    ['bearer header', 'curl -H "Authorization: Bearer sk-live-abc123def456" https://api.example.com', 'sk-live-abc123def456'],
+    ['github token', 'gh auth login --with-token <<< ghp_16CharsAndMoreHere0000', 'ghp_16CharsAndMoreHere0000'],
+    ['openai key', 'export OPENAI_API_KEY=sk-proj-ZZZsecretZZZ && node run.js', 'sk-proj-ZZZsecretZZZ'],
+    ['slack token', 'curl -d token=xoxb-111-222-abcdefSECRET https://slack.com/api/x', 'xoxb-111-222-abcdefSECRET'],
+    ['url credentials', 'psql postgresql://admin:hunter2@db.internal/app', 'hunter2'],
+    ['heredoc writing a dotenv', "cat > .env <<'EOF'\nAPI_KEY=sk-live-INSIDE-HEREDOC\nEOF", 'sk-live-INSIDE-HEREDOC'],
+  ];
+
+  for (const [name, command, secret] of leaky) {
+    it(`redacts a ${name}`, () => {
+      const event = toRunEvent({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command } });
+      expect(JSON.stringify(event), `${name} leaked into the run transcript`).not.toContain(secret);
+    });
+  }
+
+  it('still says enough to recognise the command', () => {
+    // Redaction that leaves nothing readable makes the transcript useless.
+    const event = toRunEvent({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'AWS_SECRET_ACCESS_KEY=shhh aws s3 cp build/ s3://bucket/' },
+    });
+    expect(event!.text).toContain('aws s3 cp');
+  });
+
+  it('leaves an innocuous command untouched', () => {
+    const event = toRunEvent({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'npx vitest run packages/server' },
+    });
+    expect(event!.text).toBe('npx vitest run packages/server');
+  });
+});
+
+describe('toRunEvent — other leak paths', () => {
+  it('drops the query string from a fetched URL', () => {
+    // Presigned URLs ARE the credential: the signature is in the query.
+    const event = toRunEvent({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'WebFetch',
+      tool_input: { url: 'https://s3.amazonaws.com/bucket/key?X-Amz-Signature=DEADBEEFSIG&x=1' },
+    });
+    expect(event!.text).toContain('s3.amazonaws.com/bucket/key');
+    expect(JSON.stringify(event)).not.toContain('DEADBEEFSIG');
+  });
+
+  it('keeps a plain URL readable', () => {
+    const event = toRunEvent({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'WebFetch',
+      tool_input: { url: 'https://example.com/docs/page' },
+    });
+    expect(event!.text).toBe('https://example.com/docs/page');
+  });
+
+  it('survives a malformed URL rather than throwing', () => {
+    expect(() => toRunEvent({ hook_event_name: 'PostToolUse', tool_name: 'WebFetch', tool_input: { url: 'not a url' } })).not.toThrow();
+  });
+
+  it('names a notebook by its real field', () => {
+    // Claude Code sends notebook_path, not file_path — reading the wrong one
+    // made every notebook edit record the literal string "file".
+    const event = toRunEvent({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'NotebookEdit',
+      tool_input: { notebook_path: '/repo/analysis.ipynb', new_source: 'print(1)' },
+    });
+    expect(event!.text).toContain('/repo/analysis.ipynb');
+  });
+});

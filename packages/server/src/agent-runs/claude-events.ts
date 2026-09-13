@@ -44,6 +44,55 @@ const RECORDED = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit', 'Task', 'WebF
 /** Longest text we store per event. Enough to recognise, short enough to read. */
 const TEXT_LIMIT = 400;
 
+/**
+ * Patterns that mark a credential inside a shell command.
+ *
+ * A first draft of this module stored `command` verbatim and claimed in its
+ * header that secrets were never recorded. That claim was false, and shell
+ * commands are the *primary* place a developer types a credential:
+ * `AWS_SECRET_ACCESS_KEY=… aws …`, `curl -H "Authorization: Bearer …"`,
+ * a `psql postgres://user:pass@…`, or a heredoc writing a .env. These land in
+ * run_events.text, persist in the SQLite file, get copied by `agenfk backup`,
+ * and render verbatim in the Runs panel.
+ *
+ * Redaction is deliberately conservative — it keeps the verb and the operands
+ * so a transcript still reads, and throws away the values.
+ */
+const REDACTIONS: Array<[RegExp, string]> = [
+  // Everything after a heredoc marker: that body is file content, not a command.
+  [/<<-?\s*['"]?(\w+)['"]?[\s\S]*/g, '<<$1 «redacted»'],
+  [/<<<\s*\S+/g, '<<< «redacted»'],
+  // Credentials embedded in a URL's authority.
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/gi, '$1$2:«redacted»@'],
+  // Well-known token shapes, wherever they appear.
+  [/\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{12,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/g, '«redacted»'],
+  // Authorization headers and bare bearer tokens.
+  [/\b([Bb]earer|[Bb]asic)\s+\S+/g, '$1 «redacted»'],
+  // NAME=value where the name looks secret-ish — leading assignments included.
+  [/\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH)[A-Za-z0-9_]*)=(\S+)/gi, '$1=«redacted»'],
+  // Common flag forms.
+  [/(--?(?:password|token|secret|api[-_]?key|auth)[=\s])(\S+)/gi, '$1«redacted»'],
+  [/\b(token|password|secret|api_key|apikey)=([^&\s]+)/gi, '$1=«redacted»'],
+];
+
+/** Strip credential-shaped substrings from a shell command. */
+export function redactCommand(command: string): string {
+  return REDACTIONS.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), command);
+}
+
+/**
+ * A URL worth recording is one you can recognise. The query string is not
+ * that — for a presigned S3 or GCS link the signature IS the credential.
+ */
+function safeUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return raw;
+  }
+}
+
 const clip = (value: string): string =>
   value.length <= TEXT_LIMIT ? value : `${value.slice(0, TEXT_LIMIT)}…`;
 
@@ -65,15 +114,17 @@ const str = (value: unknown): string => (typeof value === 'string' ? value : '')
 function describe(toolName: string, input: Record<string, unknown>): string {
   switch (toolName) {
     case 'Bash':
-      return clip(str(input.command) || str(input.description) || 'shell command');
+      return clip(redactCommand(str(input.command)) || str(input.description) || 'shell command');
     case 'Edit':
     case 'Write':
-    case 'NotebookEdit':
       return clip(str(input.file_path) || 'file');
+    case 'NotebookEdit':
+      // Claude Code sends notebook_path here, not file_path.
+      return clip(str(input.notebook_path) || str(input.file_path) || 'notebook');
     case 'Task':
       return clip(str(input.description) || str(input.subagent_type) || 'sub-agent');
     case 'WebFetch':
-      return clip(str(input.url) || 'fetch');
+      return clip(safeUrl(str(input.url)) || 'fetch');
     default:
       return toolName;
   }

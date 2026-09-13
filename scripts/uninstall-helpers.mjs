@@ -9,7 +9,7 @@
 
 // Every hook variant the installer writes. Used both for bin removal and for
 // filtering hook entries out of every client's settings/hooks file.
-export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'];
+export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
 // plus all three hook variants. On Windows each is a `.cmd` shim.

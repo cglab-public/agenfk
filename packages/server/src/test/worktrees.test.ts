@@ -179,3 +179,53 @@ describe('removeWorktree', () => {
     expect(git(repo, 'branch', '--list', 'feature/alpha').trim()).toContain('feature/alpha');
   });
 });
+
+describe('collision safety (CGLAB-166 review)', () => {
+  it('never hands two different branches the same directory', () => {
+    // Two items titled the same produce the same branch slug. Matching an
+    // existing worktree on PATH alone would adopt it for a branch that is not
+    // the one checked out there — two agents, one directory, one branch:
+    // exactly the collision this feature exists to prevent.
+    const a = createWorktree({ repoRoot: repo, root, branchName: 'feature/same-title' });
+    // Ask for a DIFFERENT branch that hashes to the same intended path by
+    // reusing the first worktree's directory.
+    const listed = listWorktrees(repo).find(w => path.resolve(w.path) === path.resolve(a.path));
+    expect(listed?.branchName).toBe('feature/same-title');
+
+    const b = createWorktree({ repoRoot: repo, root, branchName: 'feature/other-title' });
+    expect(path.resolve(b.path)).not.toBe(path.resolve(a.path));
+    expect(git(b.path, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feature/other-title');
+  });
+
+  it('refuses to adopt a directory whose checked-out branch is not the one asked for', () => {
+    const a = createWorktree({ repoRoot: repo, root, branchName: 'feature/alpha' });
+    // Force the mismatch the path-only check could not see.
+    git(a.path, 'checkout', '-q', '-b', 'feature/hijacked');
+    expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feature/alpha' }))
+      .toThrow(/branch/i);
+  });
+});
+
+describe('removeWorktree — bounded destruction', () => {
+  it('refuses to delete a path outside the worktree root', () => {
+    // The fs.rmSync fallback fires whenever `git worktree remove` fails for any
+    // reason, including "belongs to another repository". Unbounded, that is a
+    // recursive delete of a caller-supplied path.
+    const outsider = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-outsider-'));
+    fs.writeFileSync(path.join(outsider, 'precious.txt'), 'do not delete me');
+    try {
+      removeWorktree(repo, outsider);
+      expect(fs.existsSync(path.join(outsider, 'precious.txt'))).toBe(true);
+    } finally {
+      fs.rmSync(outsider, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to delete a directory that is not a worktree', () => {
+    const notAWorktree = path.join(root, 'looks-right', 'but-is-not');
+    fs.mkdirSync(notAWorktree, { recursive: true });
+    fs.writeFileSync(path.join(notAWorktree, 'keep.txt'), 'keep');
+    removeWorktree(repo, notAWorktree);
+    expect(fs.existsSync(path.join(notAWorktree, 'keep.txt'))).toBe(true);
+  });
+});

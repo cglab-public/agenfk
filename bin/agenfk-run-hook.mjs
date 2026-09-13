@@ -21,7 +21,7 @@
  *
  * Usage in client config: `agenfk-run-hook --client claude-code`
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -88,7 +88,12 @@ function rememberRun(sessionId, runId) {
     // Keep it small: this file is a cache, not a record. Without a cap it
     // grows by one entry per session forever.
     const entries = Object.entries(map).slice(-50);
-    writeFileSync(RUN_MAP, JSON.stringify(Object.fromEntries(entries)), 'utf8');
+    // Write-then-rename: writeFileSync is not atomic and PostToolUse fires
+    // concurrently, so a reader can otherwise catch a half-written file, parse
+    // it as {}, and open a fresh run for every single tool call.
+    const tmp = `${RUN_MAP}.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(entries)), 'utf8');
+    renameSync(tmp, RUN_MAP);
   } catch { /* a lost cache costs a duplicate run, not a broken session */ }
 }
 
@@ -101,19 +106,24 @@ function rememberRun(sessionId, runId) {
  * on POST /agent-runs. Attributing an agent's work to the wrong card is worse
  * than recording none, so no note means no run.
  */
-async function activeItem(readActiveWork) {
-  const work = readActiveWork();
+async function activeItem(readActiveWork, sessionId) {
+  const work = readActiveWork(sessionId);
   if (!work?.itemId) return null;
-  const item = await api(`/items/${work.itemId}`);
+  const item = await api(`/items/${encodeURIComponent(work.itemId)}`);
   return item?.id ? item : null;
 }
 
 async function ensureRun(sessionId, readActiveWork) {
-  const map = readRunMap();
-  if (sessionId && map[sessionId]) return map[sessionId];
-
-  const item = await activeItem(readActiveWork);
+  // The note is consulted FIRST, every time. Keying the cache on the session
+  // alone let it short-circuit ahead of the note, so switching cards mid
+  // session kept posting to the first card's run — the wrong-card failure this
+  // whole design exists to prevent. The key is session + item.
+  const item = await activeItem(readActiveWork, sessionId);
   if (!item) return null;
+
+  const cacheKey = `${sessionId || 'nosession'}::${item.id}`;
+  const map = readRunMap();
+  if (map[cacheKey]) return map[cacheKey];
 
   const run = await api('/agent-runs', {
     method: 'POST',
@@ -128,12 +138,15 @@ async function ensureRun(sessionId, readActiveWork) {
     }),
   });
   if (!run?.id) return null;
-  if (sessionId) rememberRun(sessionId, run.id);
+  rememberRun(cacheKey, run.id);
   return run.id;
 }
 
 async function main() {
   const raw = await readStdin();
+  // A Write payload carries the whole file, which the mapper then throws away.
+  // Parsing 30MB per tool call to learn a path is not worth the allocation.
+  if (raw.length > 1_000_000) return;
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -150,7 +163,7 @@ async function main() {
     .find(dir => existsSync(join(dir, 'claude-events.js')));
   if (!distDir) return;
 
-  const [{ toRunEvent }, { readActiveWork }] = await Promise.all([
+  const [{ toRunEvent }, { readActiveWorkForSession: readActiveWork }] = await Promise.all([
     import(pathToFileURL(join(distDir, 'claude-events.js')).href),
     import(pathToFileURL(join(distDir, 'activeWork.js')).href),
   ]).catch(() => [{}, {}]);
@@ -168,5 +181,8 @@ async function main() {
   });
 }
 
-// Nothing this hook does is worth failing a tool call over.
+// Nothing this hook does is worth failing a tool call over — including taking
+// too long. Without this watchdog a stdin that never reaches EOF would leave
+// main() pending and stall the session until the client's own hook timeout.
+setTimeout(() => process.exit(0), 3000).unref();
 main().catch(() => {}).finally(() => process.exit(0));

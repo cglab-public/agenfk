@@ -543,10 +543,15 @@ const syncParentStatus = async (parentId: string) => {
   }
 };
 
-const findProjectRoot = (startDir: string): string => {
+export const findProjectRoot = (startDir: string): string => {
+  const home = os.homedir();
   let currentDir = startDir;
   while (currentDir !== path.parse(currentDir).root) {
-    if (fs.existsSync(path.join(currentDir, ".agenfk"))) {
+    // $HOME always contains ~/.agenfk, so without this guard any walk that
+    // reaches it "finds" a project there. The consequence is not cosmetic:
+    // projectRoot becomes the home directory, and `git add -A && git commit`
+    // then runs over the user's dotfiles, ~/.ssh and ~/.aws included.
+    if (currentDir !== home && fs.existsSync(path.join(currentDir, ".agenfk"))) {
       return currentDir;
     }
     currentDir = path.dirname(currentDir);
@@ -1521,9 +1526,17 @@ app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {
 // One git worktree per item, so several agents can work at once without
 // fighting over a single working tree.
 
-/** Where worktrees live unless a caller names somewhere else. */
-const defaultWorktreeRoot = (): string =>
-  path.join(os.homedir(), '.agenfk', 'worktrees');
+/**
+ * Where worktrees live unless a caller names somewhere else.
+ *
+ * Deliberately NOT under ~/.agenfk. findProjectRoot walks up looking for a
+ * `.agenfk` directory, so a worktree nested inside one resolves to $HOME —
+ * and `agenfk verify` run from that worktree would then persist projectRoot
+ * as the home directory, pointing the verifyCommand and `git add -A && git
+ * commit` at the user's private files.
+ */
+export const defaultWorktreeRoot = (): string =>
+  path.join(os.homedir(), '.agenfk-worktrees');
 
 /**
  * Resolve the repository an item's worktree is cut from.
@@ -1557,7 +1570,17 @@ app.post("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
   }
 
   const branchName = item.branchName || buildBranchName(item.type, item.title);
-  const root = req.body?.root || defaultWorktreeRoot();
+
+  // `root` is caller-supplied on an endpoint any local process can reach, and
+  // createWorktree will mkdir -p it and check out a whole repo there. Confine
+  // it to the worktree area so this cannot become arbitrary directory
+  // creation. (The CLI only ever forwards --root, which stays inside it.)
+  const requested = typeof req.body?.root === 'string' && req.body.root ? req.body.root : undefined;
+  const base = defaultWorktreeRoot();
+  const root = requested ?? base;
+  if (requested && !path.resolve(requested).startsWith(path.resolve(base) + path.sep)) {
+    return res.status(400).json({ error: `root must be inside ${base}` });
+  }
 
   let result;
   try {
@@ -1585,6 +1608,12 @@ app.get("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.delete("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+  // Gated like every other destructive endpoint here: removal is --force, so
+  // it discards uncommitted work. Any local process could otherwise walk the
+  // item ids and wipe every running agent's in-flight changes.
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: "Forbidden: removing a worktree requires the internal token." });
+  }
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (!item.worktreePath) return res.json({ removed: false });

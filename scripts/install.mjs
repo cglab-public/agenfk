@@ -1356,7 +1356,12 @@ process.exit(0);
                 chmodSync(runHookDestBase, 0o755);
             }
         } else if (existsSync(runHookSource)) {
-            await fs.copyFile(runHookSource, runHookDestBase);
+            // A SHIM, not a copy. This hook imports the event mapper from
+            // packages/server/dist, resolved relative to its own file — and a
+            // copy in ~/.local/bin has no packages/ sibling, so the import
+            // silently fails and the hook becomes a permanent no-op. The other
+            // hooks are copied safely because they import node builtins only.
+            await fs.writeFile(runHookDestBase, `#!/bin/sh\nexec node "${runHookSource}" "$@"\n`, 'utf8');
             chmodSync(runHookDestBase, 0o755);
         }
         console.log(`  Installed: ${runHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);

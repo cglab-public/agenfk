@@ -37,6 +37,21 @@ export interface CreatedWorktree extends WorktreeInfo {
   created: boolean;
 }
 
+/**
+ * Is this directory safe to delete as a worktree?
+ *
+ * A linked worktree has a `.git` FILE (a gitdir pointer), not a directory —
+ * that is the cheapest reliable proof we are not about to recursively delete
+ * someone's source tree or an unrelated folder.
+ */
+function isRemovableWorktree(target: string): boolean {
+  try {
+    return fs.statSync(path.join(target, '.git')).isFile();
+  } catch {
+    return false;
+  }
+}
+
 const git = (cwd: string, args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -139,6 +154,17 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
 
   const existing = listWorktrees(repoRoot).find(w => canonical(w.path) === target);
   if (existing && fs.existsSync(target)) {
+    // Adopting on path alone is not safe. Two items titled the same produce
+    // the same branch slug and therefore the same directory, and a plain path
+    // match would hand the second item a worktree checked out on a different
+    // branch — two agents, one directory, which is the collision this whole
+    // module exists to prevent.
+    if (existing.branchName && existing.branchName !== branchName) {
+      throw new Error(
+        `Worktree at ${target} is on branch '${existing.branchName}', not '${branchName}'. ` +
+        `Two items are competing for the same directory — give one of them a distinct branch name.`,
+      );
+    }
     return { path: target, branchName, created: false };
   }
   if (existing) {
@@ -179,9 +205,17 @@ export function removeWorktree(repoRoot: string, worktreePath: string): void {
   try {
     git(repoRoot, ['worktree', 'remove', '--force', target]);
   } catch {
-    // Already gone, never registered, or removed by hand — converge on the
-    // desired end state instead of failing a cleanup path.
-    if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+    // Converge on the desired end state rather than failing a cleanup path —
+    // but only ever delete something that is demonstrably a worktree.
+    //
+    // This fallback fires whenever `git worktree remove` fails for ANY reason,
+    // including "that path belongs to a different repository". Unbounded, it
+    // is a recursive delete of a caller-supplied path: two repos sharing a
+    // directory basename can end up with one item's recorded path pointing at
+    // the other repo's live worktree.
+    if (fs.existsSync(target) && isRemovableWorktree(target)) {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
     try {
       git(repoRoot, ['worktree', 'prune']);
     } catch {

@@ -12,7 +12,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot } from '../server';
 
 const TEST_DB = path.resolve('./worktree-api-test-db.sqlite');
 
@@ -31,12 +31,23 @@ beforeAll(async () => {
 
 afterAll(() => {
   if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+  // Sweep the roots this file created inside the real worktree base.
+  try {
+    for (const entry of fs.readdirSync(defaultWorktreeRoot())) {
+      if (entry.startsWith('test-')) {
+        fs.rmSync(path.join(defaultWorktreeRoot(), entry), { recursive: true, force: true });
+      }
+    }
+  } catch { /* nothing to sweep */ }
 });
 
 beforeEach(async () => {
   await initStorage();
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wtapi-repo-'));
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wtapi-root-'));
+  // Inside the allowed base: the endpoint confines `root` on purpose, and a
+  // test that needed an exception would be testing a weaker rule than ships.
+  fs.mkdirSync(defaultWorktreeRoot(), { recursive: true });
+  root = fs.mkdtempSync(path.join(defaultWorktreeRoot(), 'test-'));
   git(repo, 'init', '-b', 'main');
   git(repo, 'config', 'user.email', 'test@example.com');
   git(repo, 'config', 'user.name', 'Test');
@@ -99,6 +110,24 @@ describe('POST /items/:id/worktree', () => {
     expect(res.status).toBe(404);
   });
 
+  it('refuses a root outside the worktree area', async () => {
+    // Without this the endpoint is arbitrary directory creation plus a full
+    // repo checkout anywhere the server user can write — on a route any local
+    // process can reach.
+    const item = await makeItem();
+    const res = await request(app).post(`/items/${item.id}/worktree`)
+      .send({ root: path.join(os.tmpdir(), 'somewhere-else') });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/must be inside/i);
+  });
+
+  it('refuses a root that escapes the base with ..', async () => {
+    const item = await makeItem();
+    const res = await request(app).post(`/items/${item.id}/worktree`)
+      .send({ root: path.join(defaultWorktreeRoot(), '..', '..', 'escaped') });
+    expect(res.status).toBe(400);
+  });
+
   it('refuses when the project has no projectRoot, instead of guessing one', async () => {
     // Guessing would run git somewhere the user never pointed us at.
     const bare = await request(app).post('/projects').send({ name: `bare-${Date.now()}` });
@@ -157,7 +186,7 @@ describe('DELETE /items/:id/worktree', () => {
     const item = await makeItem();
     const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
 
-    const res = await request(app).delete(`/items/${item.id}/worktree`);
+    const res = await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
     expect(res.status).toBe(200);
     expect(fs.existsSync(created.body.path)).toBe(false);
     expect((await request(app).get(`/items/${item.id}`)).body.worktreePath).toBeFalsy();
@@ -173,13 +202,19 @@ describe('DELETE /items/:id/worktree', () => {
     git(created.body.path, 'commit', '-m', 'agent work');
     const sha = git(created.body.path, 'rev-parse', 'HEAD').trim();
 
-    await request(app).delete(`/items/${item.id}/worktree`);
+    await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
 
-    const branch = (await request(app).get(`/items/${item.id}`)).body.branchName
-      ?? git(repo, 'branch', '--list').trim();
-    expect(git(repo, 'branch', '--list').trim()).toBeTruthy();
-    expect(git(repo, 'rev-parse', sha).trim()).toBe(sha); // the commit is still reachable
+    const branch = (await request(app).get(`/items/${item.id}`)).body.branchName;
     expect(branch).toBeTruthy();
+
+    // `git rev-parse <sha>` echoes ANY 40-hex string back without consulting
+    // the object database — an earlier version of this test used it and proved
+    // nothing. `cat-file -e` is the real existence check.
+    expect(() => git(repo, 'cat-file', '-e', sha)).not.toThrow();
+    // And the branch must still point at that commit, with its message intact.
+    expect(git(repo, 'log', '-1', '--format=%s', branch).trim()).toBe('agent work');
+    // The checkout, by contrast, is gone.
+    expect(fs.existsSync(created.body.path)).toBe(false);
   });
 
   it('removes a worktree with uncommitted changes rather than refusing forever', async () => {
@@ -187,20 +222,20 @@ describe('DELETE /items/:id/worktree', () => {
     const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
     fs.writeFileSync(path.join(created.body.path, 'dirty.txt'), 'uncommitted');
 
-    expect((await request(app).delete(`/items/${item.id}/worktree`)).status).toBe(200);
+    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
     expect(fs.existsSync(created.body.path)).toBe(false);
   });
 
   it('is idempotent — deleting twice is not an error', async () => {
     const item = await makeItem();
     await request(app).post(`/items/${item.id}/worktree`).send({ root });
-    await request(app).delete(`/items/${item.id}/worktree`);
-    expect((await request(app).delete(`/items/${item.id}/worktree`)).status).toBe(200);
+    await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
   });
 
   it('is a no-op for an item that never had one', async () => {
     const item = await makeItem();
-    expect((await request(app).delete(`/items/${item.id}/worktree`)).status).toBe(200);
+    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
   });
 });
 
@@ -257,5 +292,37 @@ describe('auto-worktree on entering a working step', () => {
 
     expect(res.status).toBe(200);
     expect((await request(app).get(`/items/${item.id}`)).body.status).not.toBe('TODO');
+  });
+});
+
+describe('project root must never become the home directory (CGLAB-166 review)', () => {
+  it('does not place worktrees under ~/.agenfk', () => {
+    // findProjectRoot walks UP looking for a `.agenfk` directory. Put the
+    // worktrees under ~/.agenfk and the walk from inside one lands on $HOME —
+    // and then autoGitCommit runs `git add -A && git commit` in the user's
+    // home directory, staging ~/.ssh and ~/.aws for anyone with dotfiles in
+    // git. The location itself is the fix.
+    const root = defaultWorktreeRoot();
+    // Separator included on purpose: without it ".agenfk-worktrees" reads as
+    // being inside ".agenfk".
+    expect(root.startsWith(path.join(os.homedir(), '.agenfk') + path.sep)).toBe(false);
+    expect(root.startsWith(os.homedir())).toBe(true);
+  });
+
+  it('never resolves a worktree path to the home directory', () => {
+    // The dangerous case, stated directly: walking up from a worktree must not
+    // land on $HOME just because ~/.agenfk exists there. If it does,
+    // `agenfk verify` from that worktree persists projectRoot as $HOME and
+    // autoGitCommit then runs `git add -A && git commit` over the user's
+    // dotfiles.
+    const insideAgenfkHome = path.join(os.homedir(), '.agenfk', 'worktrees', 'repo', 'leaf');
+    expect(findProjectRoot(insideAgenfkHome)).not.toBe(os.homedir());
+
+    const atNewRoot = path.join(defaultWorktreeRoot(), 'repo', 'leaf');
+    expect(findProjectRoot(atNewRoot)).not.toBe(os.homedir());
+  });
+
+  it('still resolves a real project root normally', () => {
+    expect(findProjectRoot(repo)).toBe(repo);
   });
 });
