@@ -68,6 +68,17 @@ const REQUESTED_PORT = Number.parseInt(
   10,
 );
 
+// Directory of the built UI bundle this server is also serving, or null when
+// the UI is somebody else's job (the `agenfk up` flow, where `vite preview`
+// owns port 5173). Set by mountStaticUI() at the bottom of the route table.
+let servedUiDir: string | null = null;
+
+// Does this caller want a page or data? A browser navigating to a URL asks for
+// html; the CLI, `agenfk health` and curl land on json. Both the "/" banner and
+// the SPA fallback branch on this, so they must agree on the answer.
+const wantsHtml = (req: express.Request): boolean =>
+  req.accepts(["json", "html"]) === "html";
+
 app.use(cors({
   origin: corsOriginFn,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -902,13 +913,17 @@ function findCurrentFlowStep(sorted: FlowStepInfo[], status: string): { step: Fl
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.get("/", (req, res) => {
+app.get("/", (req, res, next) => {
+  // When we are also serving the UI bundle, a browser asking for "/" wants the
+  // app, not the API banner. Everything else — the CLI, `agenfk health`, curl —
+  // negotiates to JSON and keeps reading `.message` as it always has.
+  if (servedUiDir && wantsHtml(req)) return next();
   res.json({
     message: "AgEnFK Framework API is running",
     endpoints: {
       projects: "/projects",
       items: "/items",
-      ui: `http://localhost:${process.env.VITE_PORT || 5173}`
+      ui: servedUiDir ? "/" : `http://localhost:${process.env.VITE_PORT || 5173}`
     }
   });
 });
@@ -3355,7 +3370,10 @@ app.get("/jira/oauth/authorize", (req: any, res: any) => {
 
 app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
   const { code, state, error } = req.query;
-  const uiBase = process.env.JIRA_UI_URL || 'http://localhost:5173';
+  // When we serve the UI ourselves there is nothing on 5173, so redirecting
+  // there would dump the user on a connection-refused page *after* the token
+  // exchange already succeeded. Same origin means a relative redirect works.
+  const uiBase = process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
 
   if (error) {
     return res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(String(error))}`);
@@ -3938,6 +3956,135 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
     res.status(502).json({ error: 'Failed to fetch release info', currentVersion });
   }
 }));
+
+// ── Static UI bundle (desktop mode) ──────────────────────────────────────────
+// The `agenfk up` flow runs `vite preview` on its own port and this server
+// stays a pure JSON/WS API. The Electron shell has no use for a second process,
+// so it points AGENFK_SERVE_UI at packages/ui/dist and gets one origin for
+// assets, REST and Socket.io — which also means the loopback CORS allowlist
+// above never has to learn about app:// or file://.
+
+/**
+ * Does this directory look like a *built* bundle rather than a source tree?
+ *
+ * An index.html alone is not enough evidence, and the gap is dangerous:
+ * packages/ui/index.html is Vite's entry template, so the one-token typo
+ * `AGENFK_SERVE_UI=packages/ui` (for `packages/ui/dist`) would otherwise pass
+ * and hand out src/, package.json and the whole node_modules tree over an
+ * unauthenticated loopback port that trusts every localhost origin. A build
+ * output never contains node_modules or src, so their presence is a reliable
+ * "you pointed me at a source root" signal.
+ */
+const looksLikeUiBundle = (dir: string): boolean => {
+  try {
+    if (!fs.existsSync(path.join(dir, 'index.html'))) return false;
+    return !['node_modules', 'src'].some(d => fs.existsSync(path.join(dir, d)));
+  } catch {
+    // Unreadable candidate (permissions, broken symlink) — treat as absent.
+    return false;
+  }
+};
+
+/** AGENFK_SERVE_UI values meaning "find the bundle yourself" rather than a path. */
+const PROBE_SENTINELS = new Set(['1', 'true', 'auto', 'yes']);
+
+/**
+ * Locate a built UI bundle, or null when there isn't one — a bad path degrades
+ * to "API only" rather than booting a server that 404s every asset.
+ *
+ * An `explicit` path is honoured or rejected, never quietly swapped for
+ * another bundle: an operator who mistypes AGENFK_SERVE_UI must not end up
+ * silently served a different (possibly stale) build than the one they named.
+ * Probing the shipped layout happens only when no path is given, or when the
+ * value is a sentinel like "1" — which is what someone who read the variable
+ * as a boolean flag will actually set.
+ */
+export function resolveUiDir(explicit?: string | null): string | null {
+  if (explicit && !PROBE_SENTINELS.has(explicit.trim().toLowerCase())) {
+    return looksLikeUiBundle(explicit) ? explicit : null;
+  }
+  // One candidate, not two: in both real layouts — a source checkout and the
+  // extracted dist tarball — __dirname is <root>/packages/server/dist, so
+  // '../../ui/dist' and '../../../packages/ui/dist' name the same directory.
+  const shipped = path.resolve(__dirname, '../../ui/dist');
+  return looksLikeUiBundle(shipped) ? shipped : null;
+}
+
+/**
+ * Paths that belong to the API, never to the SPA. Mirrors the proxy list in
+ * packages/ui/vite.config.ts — keep the two in step when adding a namespace.
+ * This is the belt; the Accept check below is the braces, so a drifted entry
+ * costs a browser a JSON 404 rendered as the app shell, not a broken API.
+ *
+ * Exported so a test can assert it still covers every registered route.
+ */
+export const API_PATH_PREFIXES = [
+  '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
+  '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
+  '/releases', '/agent-runs', '/socket.io',
+];
+
+/**
+ * Serve `uiDir` as a static bundle with an SPA fallback. Must be called after
+ * every API route is registered: unmatched paths are what reach the fallback,
+ * so a route that already answered (including with its own 404) is never
+ * shadowed by index.html.
+ */
+export function mountStaticUI(targetApp: express.Express, uiDir: string): void {
+  // Read the shell once. Serving it from memory avoids res.sendFile()'s
+  // "Not Found" 500s if the directory is swapped underneath a running server.
+  // Done BEFORE anything is mounted: without a shell there is no SPA to serve,
+  // and claiming otherwise would leave GET / with the banner suppressed and no
+  // page to replace it — a permanent 404 on the app's front door.
+  let indexHtml = '';
+  try {
+    indexHtml = fs.readFileSync(path.join(uiDir, 'index.html'), 'utf8');
+  } catch (e) {
+    console.warn(`[UI] Failed to read index.html in ${uiDir} — serving API only:`, (e as Error).message);
+    return;
+  }
+
+  servedUiDir = uiDir;
+
+  targetApp.use(express.static(uiDir, {
+    // The shell is served from the snapshot below, on every path including "/".
+    // Letting express.static answer "/" off disk too would mean one bundle
+    // swap leaves "/" new and every other route old, pointing at deleted
+    // hashed assets.
+    index: false,
+    dotfiles: 'deny',
+    setHeaders: (res, filePath) => {
+      // Vite content-hashes everything under assets/, so those are safe to
+      // pin. Anything else (public/ favicons, manifests) may change in place.
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+
+  targetApp.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next();
+    // HEAD too: express.static answers HEAD for real files, so rejecting it
+    // here would make HEAD and GET disagree on every SPA path.
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (API_PATH_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
+    // Only a client that actually wants a page gets one. An API client on an
+    // unknown path still gets its 404 instead of a confusing blob of HTML.
+    if (!wantsHtml(req)) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(indexHtml);
+  });
+
+  console.log(`[UI] Serving UI bundle from ${uiDir}`);
+}
+
+/* v8 ignore start */
+if (process.env.AGENFK_SERVE_UI) {
+  const dir = resolveUiDir(process.env.AGENFK_SERVE_UI);
+  if (dir) mountStaticUI(app, dir);
+  else console.warn(`[UI] AGENFK_SERVE_UI is set but no index.html was found — serving API only.`);
+}
+/* v8 ignore stop */
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 /* v8 ignore start */

@@ -24,6 +24,63 @@ export function buildBranchName(type: ItemType, title: string): string {
 }
 
 /**
+ * Reduce an arbitrary string to one safe filesystem path segment: no
+ * separators, no leading/trailing dots, and therefore no way to express ".."
+ * or an absolute path. Returns '' when nothing survives — callers decide what
+ * to do with an empty segment.
+ */
+function toPathSegment(raw: string): string {
+  return raw
+    .replace(/[^A-Za-z0-9._-]+/g, '-')  // separators, spaces, everything exotic
+    .replace(/\.{2,}/g, '.')            // ".." can never survive
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');     // no dotfiles, no trailing punctuation
+}
+
+/**
+ * FNV-1a (32-bit). Deterministic, dependency-free and stable across processes —
+ * deliberately not node:crypto, so core stays a pure library that a browser
+ * bundle could import. Used only to disambiguate directory names, never for
+ * anything security-bearing.
+ */
+function fnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/** Longest readable prefix kept in a worktree directory name. */
+const WORKTREE_SLUG_MAX = 60;
+
+/**
+ * Build the directory for an item's git worktree: `<root>/<repo>/<slug>-<digest>`.
+ *
+ * The slug keeps the directory recognisable; the digest of the *full* branch
+ * name is what guarantees uniqueness, because slugifying is lossy in two ways
+ * that matter. "feature/a-b" and "feature/a/b" flatten to the same slug, and
+ * two long branches sharing a 60-character prefix truncate to the same slug —
+ * in both cases a slug-only scheme would hand two agents the same directory
+ * and let them overwrite each other's work.
+ *
+ * Every component is reduced to a single path segment, so a branch or repo
+ * named "../../etc" lands inside the root like any other name rather than
+ * escaping it.
+ *
+ * Segments are joined with "/" rather than node:path so this stays usable
+ * without a Node runtime; Node and git both accept forward slashes on Windows.
+ */
+export function buildWorktreePath(root: string, repoName: string, branchName: string): string {
+  const base = root.replace(/[/\\]+$/, '');
+  const repoSegment = toPathSegment(repoName) || 'repo';
+  const slug = toPathSegment(branchName).substring(0, WORKTREE_SLUG_MAX).replace(/[-.]+$/, '');
+  const digest = fnv1a32(branchName);
+  return `${base}/${repoSegment}/${slug ? `${slug}-${digest}` : digest}`;
+}
+
+/**
  * Token-Oriented Object Notation (TOON) serializer.
  * Optimized for LLM token usage and structural accuracy.
  * Handles arrays of uniform objects (tabular) and single objects (indented).

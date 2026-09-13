@@ -78,6 +78,8 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **Storage**: SQLite-only via `better-sqlite3` (`packages/storage-sqlite`). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
 
+**Serving the UI**: by default the API server is JSON/WS only and `agenfk up` runs `vite preview` on 5173 beside it. Set `AGENFK_SERVE_UI=<path to packages/ui/dist>` (or `1`/`auto` to probe the shipped layout) and the server also serves the bundle, so REST, Socket.io and assets share one origin — which is what the Electron desktop shell loads. The path must be a *build output*: a directory containing `node_modules/` or `src/` is rejected, because `packages/ui/index.html` exists and the near-miss typo would otherwise expose the source tree. With the variable unset, behaviour is unchanged.
+
 **Workflow engine** (`packages/core` + enforced by `packages/server`):
 - Items have type (EPIC / STORY / TASK / BUG) and move through a configurable **Flow** of `FlowStep`s (default: TODO → IN_PROGRESS → REVIEW → TEST → DONE; per-project flows override this).
 - Forward transitions are gated by `validate_progress(itemId, evidence, command?)`. The final step's `command` defaults to `project.verifyCommand`.
