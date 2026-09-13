@@ -10,7 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
 import { API_URL } from '../apiUrl';
@@ -47,16 +47,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   // list when the server pushes run events — the tab then appears without a
   // manual dashboard refresh. (RunsPanel does its own streaming once mounted;
   // this only needs to flip the tab into existence.)
-  React.useEffect(() => {
-    if (!item.id) return;
-    const socket = io(API_URL || undefined);
-    const refresh = (b: { itemId: string }) => {
-      if (b?.itemId === item.id) queryClient.invalidateQueries({ queryKey: ['agent-runs', item.id] });
-    };
-    socket.on('run:event', refresh);
-    socket.on('run:updated', refresh);
-    return () => { socket.disconnect(); };
-  }, [item.id, queryClient]);
+  // Shared connection (CGLAB-168): this modal opens and closes constantly, and
+  // it must not take the window's socket down with it on every close.
+  const refreshRuns = (b: { itemId: string }) => {
+    if (b?.itemId === item.id) queryClient.invalidateQueries({ queryKey: ['agent-runs', item.id] });
+  };
+  useSocketEvent('run:event', refreshRuns);
+  useSocketEvent('run:updated', refreshRuns);
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);

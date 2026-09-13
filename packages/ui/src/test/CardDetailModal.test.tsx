@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
+import { SocketProvider } from '../SocketContext';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -56,11 +57,17 @@ const queryClient = new QueryClient({
   },
 });
 
+// SocketProvider owns the connection now (CGLAB-168), so the component only
+// subscribes — it needs the provider above it to receive anything. The io()
+// mock above still captures the handlers, so socketHandlers drives events
+// exactly as before.
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
-    <ThemeProvider>
-      {children}
-    </ThemeProvider>
+    <SocketProvider>
+      <ThemeProvider>
+        {children}
+      </ThemeProvider>
+    </SocketProvider>
   </QueryClientProvider>
 );
 

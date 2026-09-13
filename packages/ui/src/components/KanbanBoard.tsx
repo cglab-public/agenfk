@@ -12,7 +12,7 @@ import {
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
   ChevronUp, ChevronDown, X, FolderInput, GitBranch
 } from 'lucide-react';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '../SocketContext';
 import { API_URL } from '../apiUrl';
 import { CardDetailModal } from './CardDetailModal';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
@@ -667,55 +667,49 @@ export const KanbanBoard: React.FC = () => {
   const isPinnedRef = React.useRef(isPinned);
   useEffect(() => { isPinnedRef.current = isPinned; }, [isPinned]);
 
-  // WebSocket setup
+  // Live updates. One shared connection for the whole window (CGLAB-168);
+  // each subscription is removed when this component unmounts, and the
+  // connection outlives it for whatever else is on screen.
   /* v8 ignore start */
-  useEffect(() => {
-    const socket = io(API_URL || undefined);
+  useSocketEvent('connect', () => {
+    console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #04cc98; font-weight: bold', 'color: inherit');
+  });
 
-    socket.on('connect', () => {
-      console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #04cc98; font-weight: bold', 'color: inherit');
-    });
+  useSocketEvent('items_updated', () => {
+    console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
+    queryClient.invalidateQueries({ queryKey: ['items'] });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+  });
 
-    socket.on('items_updated', () => {
-      console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
-      queryClient.invalidateQueries({ queryKey: ['items'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-    });
+  useSocketEvent('flow:updated', ({ projectId }: { projectId?: string }) => {
+    console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #04cc98; font-weight: bold', 'color: inherit');
+    if (projectId) {
+      queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
+    } else {
+      // Flow created/updated without projectId — invalidate all flow queries
+      queryClient.invalidateQueries({ queryKey: ['flow'] });
+    }
+  });
 
-    socket.on('flow:updated', ({ projectId }: { projectId?: string }) => {
-      console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #04cc98; font-weight: bold', 'color: inherit');
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
-      } else {
-        // Flow created/updated without projectId — invalidate all flow queries
-        queryClient.invalidateQueries({ queryKey: ['flow'] });
+  useSocketEvent('server_restarting', () => {
+    console.log('%c[WS_RESTART] %cServer restarting after update — reloading in 4s...', 'color: #10b981; font-weight: bold', 'color: inherit');
+    setTimeout(() => window.location.reload(), 4000);
+  });
+
+  useSocketEvent('project_switched', ({ projectId }: { projectId: string }) => {
+    if (isPinnedRef.current) {
+      console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
+      return;
+    }
+    setSelectedProjectId(prev => {
+      if (prev !== projectId) {
+        console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
+        setNavPath([]); // Only reset if project actually changed
+        localStorage.setItem('agenfk_project_id', projectId);
       }
+      return projectId;
     });
-
-    socket.on('server_restarting', () => {
-      console.log('%c[WS_RESTART] %cServer restarting after update — reloading in 4s...', 'color: #10b981; font-weight: bold', 'color: inherit');
-      setTimeout(() => window.location.reload(), 4000);
-    });
-
-    socket.on('project_switched', ({ projectId }: { projectId: string }) => {
-      if (isPinnedRef.current) {
-        console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
-        return;
-      }
-      setSelectedProjectId(prev => {
-        if (prev !== projectId) {
-          console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
-          setNavPath([]); // Only reset if project actually changed
-          localStorage.setItem('agenfk_project_id', projectId);
-        }
-        return projectId;
-      });
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [queryClient]);
+  });
   /* v8 ignore stop */
 
   const bulkUpdateMutation = useMutation({
