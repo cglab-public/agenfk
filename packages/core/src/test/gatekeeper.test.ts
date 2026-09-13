@@ -49,9 +49,11 @@ describe('getActiveStepItems (moved to core)', () => {
     // ['TODO','DONE'] fallback applies only when flow is null). Everything
     // terminal then counts as in flight.
     //
-    // Every other place that asks "which steps are real work" already filters
-    // !isSpecial — server.ts:456, :508, :849, :2148, :2269. This was the one
-    // that did not.
+    // server.ts asks a related question in several places with a DIFFERENT
+    // predicate (!isSpecial && !PLATFORM_STATUSES) — deliberately, because
+    // those need to KEEP anchor steps. Line numbers are not cited here: the
+    // two I first wrote down had already moved by the next commit, which is
+    // what line references in comments always do.
     const cliAuthoredFlow = {
       name: 'CLI Flow',
       steps: [

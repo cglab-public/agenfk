@@ -2787,7 +2787,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   const nextStep = sorted[currentFlowStep.index + 1];
   const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
-  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+  // Falling straight to the literal IN_PROGRESS puts the item on a status the
+  // flow may not contain, and that is a one-way door: findCurrentFlowStep then
+  // returns undefined so every later verify 400s, and buildAllowedTransitions
+  // takes its currentIdx === -1 recovery branch, which on a flow with no real
+  // steps offers nothing to come back to. Prefer the flow's own first step —
+  // staying inside the flow always leaves a route out.
+  const failureStatus = (codingStep?.name ?? sorted[0]?.name ?? Status.IN_PROGRESS) as Status;
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)

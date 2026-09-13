@@ -15,13 +15,14 @@
     "bundle:server": "node scripts/bundle-server.mjs"
   },
   "dependencies": {
-    "@agenfk/telemetry": "1.1.18"
+    "@agenfk/telemetry": "1.1.18",
+    "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
-    "electron": "40.10.6",
-    "typescript": "~5.9.3",
     "@types/node": "^22.10.2",
-    "electron-builder": "^26.0.12"
+    "electron": "40.10.6",
+    "electron-builder": "^26.0.12",
+    "typescript": "~5.9.3"
   },
   "author": "CG/lab"
 }

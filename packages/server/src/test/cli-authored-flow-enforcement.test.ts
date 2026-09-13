@@ -58,7 +58,7 @@ async function projectOnCliFlow(name: string, verifyCommand?: string): Promise<s
   return projectId;
 }
 
-describe('a CLI-authored flow gets the same enforcement as the default one', () => {
+describe('a CLI-authored flow gets the same COMMAND GATE as the default one', () => {
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
@@ -106,6 +106,36 @@ describe('a CLI-authored flow gets the same enforcement as the default one', () 
     expect(res.status).toBe(422);
     const after = await request(app).get(`/items/${item.body.id}`);
     expect(after.body.status).not.toBe('SHIPPED');
+  });
+
+  it('never strands an item outside its own flow, even on a degenerate one', async () => {
+    // If EVERY step is marked terminal — which `agenfk flow create` permits,
+    // it just asks yes/no per step — there is no coding step to roll back to.
+    // Falling back to the literal IN_PROGRESS puts the item on a status the
+    // flow does not contain, and that is a one-way door: findCurrentFlowStep
+    // returns undefined so every later verify 400s, and buildAllowedTransitions
+    // takes its currentIdx === -1 recovery branch whose real-step filter is
+    // also empty here, so it offers no route back in. The item is stuck with
+    // no supported command that can move it.
+    const p = await request(app).post('/projects').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name: 'degenerate' });
+    const projectId = p.body.id;
+    const f = await request(app).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN!).send({
+      name: 'all-terminal',
+      steps: [
+        { name: 'ONE', label: 'One', order: 0, isSpecial: true },
+        { name: 'TWO', label: 'Two', order: 1, isSpecial: true },
+      ],
+    });
+    await request(app).post(`/projects/${projectId}/flow`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ flowId: f.body.id });
+    await request(app).put(`/projects/${projectId}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand: 'exit 1' });
+
+    const item = await request(app).post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
+    await request(app).put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'ONE' });
+
+    await request(app).post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
+
+    const after = await request(app).get(`/items/${item.body.id}`);
+    expect(['ONE', 'TWO']).toContain(after.body.status);
   });
 
   it('sends a failed verify back to a step the agent is still allowed to work in', async () => {
