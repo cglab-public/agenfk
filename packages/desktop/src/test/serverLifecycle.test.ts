@@ -88,6 +88,54 @@ describe('resolveServer — adopting an already-running server', () => {
     expect(result.adopted).toBe(false);
   });
 
+  it('retries before concluding nobody is home', async () => {
+    // A live server that is briefly slow (periodic backup, loaded machine)
+    // times out one probe. Treating a single 1.5s timeout as "no server" and
+    // spawning is how you end up with two servers on one SQLite file — the
+    // exact thing this module exists to prevent.
+    let calls = 0;
+    const spawn = vi.fn();
+    const result = await resolveServer({
+      readPort: () => 3000,
+      probe: async () => { calls += 1; return calls >= 2; },
+      spawn,
+      waitMs: 0,
+      adoptAttempts: 3,
+    });
+
+    expect(result.adopted).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('still spawns once the retries are genuinely exhausted', async () => {
+    let started = false;
+    const spawn = vi.fn(() => { started = true; });
+    const result = await resolveServer({
+      readPort: () => (started ? 3000 : 3000),
+      probe: async () => started,
+      spawn,
+      waitMs: 0,
+      adoptAttempts: 2,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.adopted).toBe(false);
+  });
+
+  it('probes a port once per round even when the fallback repeats it', async () => {
+    const probe = vi.fn(async () => false);
+    await expect(resolveServer({
+      readPort: () => 3000,
+      fallbackPorts: [3000],
+      probe,
+      spawn: vi.fn(),
+      waitMs: 0,
+      adoptAttempts: 1,
+      attempts: 1,
+    })).rejects.toBeInstanceOf(ServerUnavailableError);
+    // One adoption round + one post-spawn poll — not four calls.
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it('an adopted server is never stopped by us — we did not start it', async () => {
     const result = await resolveServer({
       readPort: () => 3000,

@@ -36,6 +36,16 @@ export interface ResolveServerOptions {
    * we would fork a second one onto the same SQLite database.
    */
   fallbackPorts?: number[];
+  /**
+   * How many rounds to look for an existing server before starting our own.
+   *
+   * More than one, because a probe is a network call with a timeout and a
+   * single transient failure has an expensive consequence: a live-but-briefly-
+   * slow server (mid-backup, loaded machine) gets read as absent, and we fork
+   * a second server onto its database. Being slow to start beats corrupting
+   * state.
+   */
+  adoptAttempts?: number;
   /** True when a server answers on this port (a real health request). */
   probe: (port: number) => Promise<boolean>;
   /** Start our own server. Throwing here is surfaced, not swallowed. */
@@ -58,6 +68,7 @@ export interface ResolvedServer {
 
 const DEFAULT_ATTEMPTS = 60;
 const DEFAULT_WAIT_MS = 250;
+const DEFAULT_ADOPT_ATTEMPTS = 3;
 
 const sleep = (ms: number): Promise<void> =>
   ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
@@ -89,6 +100,7 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
     fallbackPorts = [],
     waitMs = DEFAULT_WAIT_MS,
     attempts = DEFAULT_ATTEMPTS,
+    adoptAttempts = DEFAULT_ADOPT_ATTEMPTS,
     host = '127.0.0.1',
   } = opts;
 
@@ -96,12 +108,15 @@ export async function resolveServer(opts: ResolveServerOptions): Promise<Resolve
   // is the authoritative answer when present; the fallbacks catch a server
   // that is running without having left a port file behind. A port with
   // nothing answering is a leftover from a crash, not a running server.
-  const published = readPort();
-  const candidates = [...new Set([published, ...fallbackPorts])]
-    .filter((p): p is number => p !== null && p !== undefined);
+  for (let round = 0; round < adoptAttempts; round++) {
+    const published = readPort();
+    const candidates = [...new Set([published, ...fallbackPorts])]
+      .filter((p): p is number => p !== null && p !== undefined);
 
-  for (const port of candidates) {
-    if (await probe(port)) return resolved(port, host, true);
+    for (const port of candidates) {
+      if (await probe(port)) return resolved(port, host, true);
+    }
+    if (round < adoptAttempts - 1) await sleep(waitMs);
   }
 
   spawn();

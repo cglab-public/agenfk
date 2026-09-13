@@ -9,44 +9,32 @@
  * has to change to support the desktop one.
  */
 import { app, BrowserWindow, dialog, shell, utilityProcess, type UtilityProcess } from 'electron';
-import * as http from 'http';
 import * as path from 'path';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
+import { resolveDbPath } from './serverEnv.js';
+import { isAgenfkServer, servesUiBundle } from './probes.js';
 
 let mainWindow: BrowserWindow | null = null;
 let serverChild: UtilityProcess | null = null;
 let server: ResolvedServer | null = null;
+let quitting = false;
 
-function request(
-  port: number,
-  reqPath: string,
-  headers: Record<string, string> = {},
-): Promise<{ status: number; contentType: string } | null> {
-  return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: reqPath, headers, timeout: 1500 }, res => {
-      res.resume();
-      resolve({ status: res.statusCode ?? 0, contentType: String(res.headers['content-type'] ?? '') });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-  });
-}
-
-/** A real health request — "is the port open" is not the same as "can it serve". */
-async function probe(port: number): Promise<boolean> {
-  return (await request(port, '/version'))?.status === 200;
-}
+/** How long to let the server finish its async shutdown before forcing quit. */
+const SHUTDOWN_GRACE_MS = 5000;
 
 /**
- * Does this server also serve the UI bundle? An adopted server started by
- * `agenfk up` does not (it leaves that to `vite preview`), and a window
- * pointed at it would render the API's JSON banner instead of the board.
+ * Ports to check for an already-running server when no port file names one.
+ * The server probes upward from 3000 for a free port, so a small range — not a
+ * single port — is what "is AgEnFK already running?" actually means.
  */
-async function servesUi(port: number): Promise<boolean> {
-  const res = await request(port, '/', { Accept: 'text/html' });
-  return !!res && res.status === 200 && res.contentType.includes('text/html');
+const ADOPT_PORT_RANGE = Array.from({ length: 6 }, (_, i) => DEFAULT_API_PORT + i);
+
+/** Show a real dialog: a GUI app's console output goes nowhere the user looks. */
+function fail(title: string, detail: string): void {
+  console.error(`[DESKTOP] ${detail}`);
+  dialog.showErrorBox(title, detail);
 }
 
 function startServer(): void {
@@ -55,25 +43,36 @@ function startServer(): void {
     resourcesPath: process.resourcesPath,
     packaged: app.isPackaged,
   });
+  const dbPath = resolveDbPath();
 
   serverChild = utilityProcess.fork(serverEntry, [], {
+    // cwd is explicit because the server's own fallback derives the database
+    // from it. Launched from Finder that would be "/" — see serverEnv.ts.
+    cwd: path.dirname(serverEntry),
     env: {
       ...process.env,
       // One origin for everything (CGLAB-165).
       AGENFK_SERVE_UI: uiDir,
-      // We are the window; the server must not also open a browser tab.
-      AGENFK_NO_OPEN_BROWSER: '1',
+      // Never let the database location depend on how the app was launched.
+      AGENFK_DB_PATH: dbPath,
     },
     stdio: 'inherit',
   });
+  console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
 
   serverChild.on('exit', code => {
     serverChild = null;
-    // A server that dies while the window is open leaves a shell talking to
-    // nothing, which looks like a frozen app. Surface it instead.
-    if (code !== 0 && mainWindow) {
-      console.error(`[DESKTOP] AgEnFK server exited unexpectedly with code ${code}`);
-    }
+    if (quitting) return;
+    // A server that dies under a live window leaves a shell talking to nothing
+    // and looks like a frozen app. `agenfk up` in a terminal does exactly this
+    // — it kills anything matching packages/server/dist/server.js, ours
+    // included — so this is a road the user will actually walk down.
+    fail(
+      'The AgEnFK server stopped',
+      `The server this app started exited (code ${code}).\n\n` +
+      `If you just ran \`agenfk up\` in a terminal, it stopped this app's server. ` +
+      `Quit and reopen AgEnFK Desktop.`,
+    );
   });
 }
 
@@ -99,49 +98,86 @@ function createWindow(url: string): BrowserWindow {
 
   // Paint only once there is something to show, instead of a white flash.
   win.once('ready-to-show', () => win.show());
+  win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
+
+  const appOrigin = new URL(url).origin;
 
   // External links belong in the user's browser, not in a chrome-less window
-  // they cannot navigate back out of.
+  // they cannot navigate back out of. Only ever hand the OS an http(s) URL:
+  // openExternal launches whatever handler the scheme is registered to, so a
+  // file:// or custom-protocol link would start an application.
   win.webContents.setWindowOpenHandler(({ url: target }) => {
-    shell.openExternal(target);
+    openExternally(target);
     return { action: 'deny' };
+  });
+
+  // Keep the window on our own origin. Item descriptions and comments render
+  // markdown, so a link in agent-authored content is a top-level navigation
+  // waiting to happen — and this window has no address bar or back button to
+  // escape with, while the preload would be injected into whatever loaded.
+  win.webContents.on('will-navigate', (event, target) => {
+    if (safeOrigin(target) !== appOrigin) {
+      event.preventDefault();
+      openExternally(target);
+    }
   });
 
   void win.loadURL(url);
   return win;
 }
 
+function safeOrigin(raw: string): string | null {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
+function openExternally(raw: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    console.warn(`[DESKTOP] Refused to open non-web URL: ${parsed.protocol}`);
+    return;
+  }
+  void shell.openExternal(raw);
+}
+
 async function boot(): Promise<void> {
   try {
     server = await resolveServer({
       readPort: readServerPort,
-      fallbackPorts: [DEFAULT_API_PORT],
-      probe,
+      fallbackPorts: ADOPT_PORT_RANGE,
+      // Identity, not just liveness: anything could be listening on 3000, and
+      // adopting it would open a window on somebody else's application.
+      probe: isAgenfkServer,
       spawn: startServer,
     });
     console.log(
       `[DESKTOP] ${server.adopted ? 'Adopted running' : 'Started'} AgEnFK server at ${server.url}`,
     );
 
-    if (!await servesUi(server.port)) {
+    if (!await servesUiBundle(server.port)) {
       // Adopting was still the right call — forking a second server onto the
       // same database would be worse than this message. Say exactly what is
       // wrong and exactly how to fix it.
-      const detail = server.adopted
+      fail('AgEnFK Desktop cannot show the board', server.adopted
         ? `An AgEnFK server is already running at ${server.url}, but it is not serving the app ` +
           `(it was started for the browser flow, which serves the UI separately).\n\n` +
           `Stop it with \`agenfk down\` and reopen AgEnFK Desktop, which will run its own server.`
-        : `The server started but is not serving the UI bundle. Run \`npm run build\` at the repo root.`;
-      dialog.showErrorBox('AgEnFK Desktop cannot show the board', detail);
-      console.error(`[DESKTOP] ${detail}`);
+        : `The server started but is not serving the UI bundle. Run \`npm run build\` at the repo root.`);
       app.quit();
       return;
     }
 
     mainWindow = createWindow(server.url);
-    mainWindow.on('closed', () => { mainWindow = null; });
   } catch (e) {
-    console.error('[DESKTOP] Could not start AgEnFK:', (e as Error).message);
+    fail('AgEnFK Desktop could not start', (e as Error).message);
     app.quit();
   }
 }
@@ -152,9 +188,13 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    } else if (server) {
+      // All windows closed but the app is still alive (macOS). Relaunching
+      // from Finder must show something rather than appear to do nothing.
+      mainWindow = createWindow(server.url);
     }
   });
 
@@ -170,9 +210,24 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  app.on('before-quit', () => {
+  app.on('before-quit', event => {
     // Only ever stop a server we started; an adopted one belongs to the
     // terminal session that launched it and must outlive this window.
-    server?.stop(() => serverChild?.kill());
+    if (quitting || !serverChild || server?.adopted !== false) return;
+
+    // Hold the quit open until the child is gone. Its SIGTERM handler is async
+    // — it drains the hub outbox and writes a shutdown backup — and tearing
+    // the main process down first would skip all of it and strand the port
+    // file, which the next launch would then read as a live server.
+    event.preventDefault();
+    quitting = true;
+    const child = serverChild;
+    const done = (): void => app.quit();
+    const timer = setTimeout(() => {
+      console.warn('[DESKTOP] Server did not exit in time; quitting anyway.');
+      done();
+    }, SHUTDOWN_GRACE_MS);
+    child.once('exit', () => { clearTimeout(timer); done(); });
+    server?.stop(() => child.kill());
   });
 }
