@@ -11,14 +11,25 @@
 import { describe, it, expect } from 'vitest';
 import { isAgenfkServer, servesUiBundle, type HttpResponse } from '../main/probes.js';
 
+/** Answers every path with the same response. Used by servesUiBundle tests. */
 const respond = (r: HttpResponse | null) => async () => r;
+
+/**
+ * isAgenfkServer asks twice — /version for shape, then / for our banner — so
+ * its stubs must answer both. A stub that satisfied only the first would let
+ * these tests pass for the wrong reason.
+ */
+const BANNER = '{"message":"AgEnFK Framework API is running"}';
+const agenfkAnswering = (versionResponse: HttpResponse | null) =>
+  async (_port: number, path: string): Promise<HttpResponse | null> =>
+    path === '/' ? json(BANNER) : versionResponse;
 
 const json = (body: string): HttpResponse =>
   ({ status: 200, contentType: 'application/json; charset=utf-8', body });
 
 describe('isAgenfkServer', () => {
   it('accepts a real AgEnFK /version response', async () => {
-    expect(await isAgenfkServer(3000, respond(json('{"version":"1.1.18"}')))).toBe(true);
+    expect(await isAgenfkServer(3000, agenfkAnswering(json('{"version":"1.1.18"}')))).toBe(true);
   });
 
   it('rejects an SPA catch-all that answers 200 text/html for /version', async () => {
@@ -28,41 +39,44 @@ describe('isAgenfkServer', () => {
       contentType: 'text/html; charset=utf-8',
       body: '<!doctype html><div id="root"></div>',
     };
-    expect(await isAgenfkServer(3000, respond(spa))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(spa))).toBe(false);
   });
 
   it('rejects JSON from some other service that has no version field', async () => {
-    expect(await isAgenfkServer(3000, respond(json('{"status":"ok","service":"grafana"}')))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(json('{"status":"ok","service":"grafana"}')))).toBe(false);
   });
 
   it('rejects a JSON body that is not an object', async () => {
-    expect(await isAgenfkServer(3000, respond(json('"1.1.18"')))).toBe(false);
-    expect(await isAgenfkServer(3000, respond(json('[1,2,3]')))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(json('"1.1.18"')))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(json('[1,2,3]')))).toBe(false);
   });
 
   it('rejects a malformed body instead of throwing', async () => {
-    await expect(isAgenfkServer(3000, respond(json('{not json')))).resolves.toBe(false);
+    await expect(isAgenfkServer(3000, agenfkAnswering(json('{not json')))).resolves.toBe(false);
   });
 
   it('rejects a non-200 status', async () => {
-    expect(await isAgenfkServer(3000, respond({ ...json('{"version":"1"}'), status: 404 }))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering({ ...json('{"version":"1"}'), status: 404 }))).toBe(false);
   });
 
   it('rejects when nothing answered at all', async () => {
-    expect(await isAgenfkServer(3000, respond(null))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(null))).toBe(false);
   });
 
   it('rejects a version that is not a string', async () => {
-    expect(await isAgenfkServer(3000, respond(json('{"version":{"major":1}}')))).toBe(false);
+    expect(await isAgenfkServer(3000, agenfkAnswering(json('{"version":{"major":1}}')))).toBe(false);
   });
 
-  it('asks the right port and path', async () => {
-    let seen: { port: number; path: string } | null = null;
+  it('asks the right port, checking /version first and then the banner', async () => {
+    const calls: { port: number; path: string }[] = [];
     await isAgenfkServer(3007, async (port, reqPath) => {
-      seen = { port, path: reqPath };
-      return json('{"version":"1"}');
+      calls.push({ port, path: reqPath });
+      return reqPath === '/' ? json(BANNER) : json('{"version":"1"}');
     });
-    expect(seen).toEqual({ port: 3007, path: '/version' });
+    expect(calls).toEqual([
+      { port: 3007, path: '/version' },
+      { port: 3007, path: '/' },
+    ]);
   });
 });
 
@@ -92,5 +106,33 @@ describe('servesUiBundle', () => {
 
   it('is false when nothing answered', async () => {
     expect(await servesUiBundle(3000, respond(null))).toBe(false);
+  });
+});
+
+describe('isAgenfkServer — the banner check', () => {
+  it('rejects a service that returns a plausible /version but is not AgEnFK', async () => {
+    // `res.json({version: pkg.version})` is Express boilerplate, so /version
+    // alone cannot identify us. GET / carrying our banner can.
+    const impostor = async (_port: number, path: string): Promise<HttpResponse> =>
+      path === '/version'
+        ? { status: 200, contentType: 'application/json', body: '{"version":"2.4.0"}' }
+        : { status: 200, contentType: 'application/json', body: '{"service":"someone-else"}' };
+    expect(await isAgenfkServer(3000, impostor)).toBe(false);
+  });
+
+  it('accepts when both the version shape and the banner are ours', async () => {
+    const ours = async (_port: number, path: string): Promise<HttpResponse> =>
+      path === '/version'
+        ? { status: 200, contentType: 'application/json', body: '{"version":"1.1.18"}' }
+        : { status: 200, contentType: 'application/json', body: '{"message":"AgEnFK Framework API is running"}' };
+    expect(await isAgenfkServer(3000, ours)).toBe(true);
+  });
+
+  it('rejects when GET / does not answer at all', async () => {
+    const halfDead = async (_port: number, path: string): Promise<HttpResponse | null> =>
+      path === '/version'
+        ? { status: 200, contentType: 'application/json', body: '{"version":"1.1.18"}' }
+        : null;
+    expect(await isAgenfkServer(3000, halfDead)).toBe(false);
   });
 });

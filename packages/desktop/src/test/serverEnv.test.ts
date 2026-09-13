@@ -40,6 +40,15 @@ describe('resolveDbPath', () => {
     expect(chosen).toBe('/home/dev/.agenfk-system/.agenfk/db.sqlite');
   });
 
+  it('defaults to the install location the CLI writes into, not just "somewhere under HOME"', () => {
+    // start-services.mjs resolves <agenfk-system-root>/.agenfk/db.sqlite. If
+    // this default drifts from that, the app and `agenfk list` quietly show
+    // two different boards — and an assertion of "starts with HOME" would not
+    // notice.
+    expect(resolveDbPath({ env: {}, homedir: HOME, fs: files({}) }))
+      .toBe(path.join(HOME, '.agenfk-system', '.agenfk', 'db.sqlite'));
+  });
+
   it('never returns a path under the filesystem root when there is no config', () => {
     // The exact failure: cwd "/" would make the server choose /.agenfk/db.sqlite.
     const chosen = resolveDbPath({ env: {}, homedir: HOME, fs: files({}) });

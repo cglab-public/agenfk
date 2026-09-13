@@ -27,50 +27,90 @@ export type HttpGet = (
 
 const BODY_LIMIT = 64 * 1024;
 
-/** Real implementation: loopback GET with a hard timeout and a body cap. */
+/**
+ * Total time a probe may take, end to end.
+ *
+ * Node's `timeout` option is an INACTIVITY timer, not a wall clock: a server
+ * that dribbles a byte every so often resets it forever, so a promise that
+ * settles only on 'end' never settles. Since resolveServer awaits this, the
+ * app would then never spawn, never throw, and never open a window — a dock
+ * icon and nothing else, indefinitely. This deadline is what makes the
+ * "gives up with a clear error" promise actually true.
+ */
+const REQUEST_DEADLINE_MS = 2000;
+
+/** Real implementation: loopback GET, bounded in both time and bytes. */
 export const httpGet: HttpGet = (port, reqPath, headers = {}) =>
   new Promise(resolve => {
-    const req = http.get(
-      { host: '127.0.0.1', port, path: reqPath, headers, timeout: 1500 },
+    let settled = false;
+    let request: http.ClientRequest | null = null;
+
+    const finish = (value: HttpResponse | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      request?.destroy();
+      resolve(value);
+    };
+
+    const deadline = setTimeout(() => finish(null), REQUEST_DEADLINE_MS);
+
+    request = http.get(
+      { host: '127.0.0.1', port, path: reqPath, headers, timeout: REQUEST_DEADLINE_MS },
       res => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', chunk => {
-          // Cap it: we only ever inspect a short banner, and an adopted server
-          // we do not control could stream forever.
-          if (body.length < BODY_LIMIT) body += chunk;
-        });
-        res.on('end', () => resolve({
+        const snapshot = (body: string): HttpResponse => ({
           status: res.statusCode ?? 0,
           contentType: String(res.headers['content-type'] ?? ''),
           body,
-        }));
-        res.on('error', () => resolve(null));
+        });
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          body += chunk;
+          // We only ever inspect a short banner. Once we have more than enough,
+          // answer and hang up rather than stay open for a server we do not
+          // control — which may never send an end.
+          if (body.length >= BODY_LIMIT) finish(snapshot(body.slice(0, BODY_LIMIT)));
+        });
+        res.on('end', () => finish(snapshot(body)));
+        res.on('error', () => finish(null));
       },
     );
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
+    request.on('error', () => finish(null));
+    request.on('timeout', () => finish(null));
   });
 
+/** The banner GET / returns to an API client. Our actual signature. */
+const API_BANNER = 'AgEnFK Framework API is running';
+
 /**
- * Is an AgEnFK API server listening here? Checks that /version returns JSON
- * with a string `version` — the shape only our server produces. An SPA
- * catch-all returns HTML and is rejected; another JSON service without that
- * field is rejected too.
+ * Is an AgEnFK API server listening here?
+ *
+ * `/version` returning JSON with a string `version` is necessary but nowhere
+ * near sufficient — `res.json({version: pkg.version})` is Express boilerplate,
+ * and 3000 is the most contested port on a developer machine. So we also read
+ * the banner from `GET /`, which is ours specifically. Getting this wrong
+ * means adopting a stranger's server and showing it in a chrome-less window.
  */
 export async function isAgenfkServer(port: number, get: HttpGet = httpGet): Promise<boolean> {
-  const res = await get(port, '/version');
-  if (!res || res.status !== 200) return false;
-  if (!res.contentType.includes('json')) return false;
+  const version = await get(port, '/version');
+  if (!version || version.status !== 200) return false;
+  if (!version.contentType.includes('json')) return false;
   try {
-    const parsed = JSON.parse(res.body);
-    return !!parsed
+    const parsed = JSON.parse(version.body);
+    const looksRight = !!parsed
       && typeof parsed === 'object'
       && !Array.isArray(parsed)
       && typeof parsed.version === 'string';
+    if (!looksRight) return false;
   } catch {
     return false;
   }
+
+  // Second, specific signal. Sent without an Accept preference so the server
+  // negotiates to JSON even when it is also serving the UI bundle.
+  const root = await get(port, '/');
+  return !!root && root.status === 200 && root.body.includes(API_BANNER);
 }
 
 /**

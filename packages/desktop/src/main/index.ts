@@ -19,17 +19,30 @@ import { isAgenfkServer, servesUiBundle } from './probes.js';
 let mainWindow: BrowserWindow | null = null;
 let serverChild: UtilityProcess | null = null;
 let server: ResolvedServer | null = null;
-let quitting = false;
+// Two distinct facts, deliberately not one flag. `tearingDown` means we are
+// shutting down on purpose, so a dying child is expected rather than alarming.
+// `quitHandled` means before-quit already ran its graceful stop and must not
+// re-enter. Conflating them made the error paths skip the graceful stop.
+let tearingDown = false;
+let quitHandled = false;
+// Tracked separately from `server`, which is only assigned once resolveServer
+// RESOLVES. When it throws we have already forked a child, and keying shutdown
+// off `server` would skip the graceful stop on exactly the path that needs it.
+let weSpawnedTheServer = false;
 
 /** How long to let the server finish its async shutdown before forcing quit. */
 const SHUTDOWN_GRACE_MS = 5000;
 
 /**
  * Ports to check for an already-running server when no port file names one.
- * The server probes upward from 3000 for a free port, so a small range — not a
- * single port — is what "is AgEnFK already running?" actually means.
+ *
+ * The server probes upward from 3000 for a free port and will try up to
+ * MAX_PORT_PROBE_ATTEMPTS of them, so "is AgEnFK already running?" is a range
+ * question, not a single-port one. We scan the low end where it realistically
+ * lands: far enough to cover a few stale listeners, short enough that the scan
+ * does not visibly delay startup.
  */
-const ADOPT_PORT_RANGE = Array.from({ length: 6 }, (_, i) => DEFAULT_API_PORT + i);
+const ADOPT_PORT_RANGE = Array.from({ length: 16 }, (_, i) => DEFAULT_API_PORT + i);
 
 /** Show a real dialog: a GUI app's console output goes nowhere the user looks. */
 function fail(title: string, detail: string): void {
@@ -44,6 +57,7 @@ function startServer(): void {
     packaged: app.isPackaged,
   });
   const dbPath = resolveDbPath();
+  weSpawnedTheServer = true;
 
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
@@ -62,7 +76,7 @@ function startServer(): void {
 
   serverChild.on('exit', code => {
     serverChild = null;
-    if (quitting) return;
+    if (tearingDown) return;
     // A server that dies under a live window leaves a shell talking to nothing
     // and looks like a frozen app. `agenfk up` in a terminal does exactly this
     // — it kills anything matching packages/server/dist/server.js, ours
@@ -145,7 +159,7 @@ function openExternally(raw: string): void {
     console.warn(`[DESKTOP] Refused to open non-web URL: ${parsed.protocol}`);
     return;
   }
-  void shell.openExternal(raw);
+  void shell.openExternal(parsed.href);
 }
 
 async function boot(): Promise<void> {
@@ -171,6 +185,7 @@ async function boot(): Promise<void> {
           `(it was started for the browser flow, which serves the UI separately).\n\n` +
           `Stop it with \`agenfk down\` and reopen AgEnFK Desktop, which will run its own server.`
         : `The server started but is not serving the UI bundle. Run \`npm run build\` at the repo root.`);
+      tearingDown = true;
       app.quit();
       return;
     }
@@ -178,6 +193,9 @@ async function boot(): Promise<void> {
     mainWindow = createWindow(server.url);
   } catch (e) {
     fail('AgEnFK Desktop could not start', (e as Error).message);
+    // Before quit(): otherwise the child's own exit fires a second, confusing
+    // dialog on top of this one while we are already tearing down.
+    tearingDown = true;
     app.quit();
   }
 }
@@ -213,14 +231,15 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', event => {
     // Only ever stop a server we started; an adopted one belongs to the
     // terminal session that launched it and must outlive this window.
-    if (quitting || !serverChild || server?.adopted !== false) return;
+    if (quitHandled || !serverChild || !weSpawnedTheServer) return;
 
     // Hold the quit open until the child is gone. Its SIGTERM handler is async
     // — it drains the hub outbox and writes a shutdown backup — and tearing
     // the main process down first would skip all of it and strand the port
     // file, which the next launch would then read as a live server.
     event.preventDefault();
-    quitting = true;
+    quitHandled = true;
+    tearingDown = true;
     const child = serverChild;
     const done = (): void => app.quit();
     const timer = setTimeout(() => {
@@ -228,6 +247,6 @@ if (!app.requestSingleInstanceLock()) {
       done();
     }, SHUTDOWN_GRACE_MS);
     child.once('exit', () => { clearTimeout(timer); done(); });
-    server?.stop(() => child.kill());
+    child.kill();
   });
 }
