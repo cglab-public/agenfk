@@ -228,3 +228,32 @@ describe('while detection is still running', () => {
     expect(await screen.findByRole('option', { name: /shell/i })).toBeDefined();
   });
 });
+
+describe('agent marks', () => {
+  it('gives every offered agent a distinguishable mark', async () => {
+    // Not the fallback dot: an agent added without one still lines up, which
+    // means the omission is invisible unless something asserts it.
+    renderPicker();
+    const menu = await openMenu();
+    for (const agent of AGENTS) {
+      const row = within(menu).getByRole('option', { name: new RegExp(agent.label, 'i') });
+      const mark = row.querySelector('[data-agent-mark]');
+      expect(mark, `"${agent.id}" has no mark`).not.toBeNull();
+      expect(mark!.getAttribute('data-agent-mark'), `"${agent.id}" fell back to the generic dot`)
+        .toBe(agent.id);
+    }
+  });
+
+  it('draws the vendors’ own marks for the ones with an official path', async () => {
+    // Claude and Gemini come from simple-icons. Codex and Pi cannot — there is
+    // no OpenAI icon in that set and none for pi.dev — so they are deliberate
+    // geometric marks rather than approximations of a logo people recognise.
+    renderPicker();
+    const menu = await openMenu();
+    const claude = within(menu).getByRole('option', { name: /claude code/i })
+      .querySelector('[data-agent-mark="claude"]')!;
+    // A filled brand path, not stroked geometry.
+    expect(claude.getAttribute('fill')).toMatch(/^#/);
+    expect(claude.querySelector('path')?.getAttribute('d')?.length ?? 0).toBeGreaterThan(200);
+  });
+});

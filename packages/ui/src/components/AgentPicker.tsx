@@ -142,20 +142,20 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
       tabIndex={agent.installed ? -1 : undefined}
       onClick={() => choose(agent)}
       className={clsx(
-        'flex items-center gap-2 rounded px-2 py-1.5 text-xs outline-none',
+        'flex items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-sm outline-none',
         agent.installed
           ? 'cursor-pointer text-ink hover:bg-canvas focus:bg-canvas'
           : 'cursor-default text-ink-tertiary',
       )}
     >
-      <AgentIcon agentId={agent.id} size={13} />
+      <AgentIcon agentId={agent.id} size={18} />
       <span className="flex-1 truncate">{agent.label}</span>
       {!agent.installed && (
-        <span className="shrink-0 text-[10px] text-ink-tertiary">
+        <span className="shrink-0 text-[11px] text-ink-tertiary">
           {INSTALL_HINT[agent.id] ?? 'Not installed'}
         </span>
       )}
-      {agent.id === value && agent.installed && <Check size={12} className="shrink-0 text-brand" />}
+      {agent.id === value && agent.installed && <Check size={15} className="shrink-0 text-brand" />}
     </div>
   );
 
@@ -166,11 +166,11 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
         onClick={() => setOpen(o => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-1.5 rounded-lg border border-border-soft px-2 py-1 text-xs text-ink hover:bg-canvas"
+        className="flex w-full items-center gap-2.5 rounded-xl border border-border-soft bg-canvas px-3 py-2.5 text-sm text-ink transition-colors hover:border-border-brand"
       >
-        <AgentIcon agentId={value} size={13} />
-        <span>{current?.label ?? FALLBACK_LABELS[value] ?? value}</span>
-        <ChevronDown size={12} className="text-ink-tertiary" />
+        <AgentIcon agentId={value} size={18} />
+        <span className="flex-1 text-left">{current?.label ?? FALLBACK_LABELS[value] ?? value}</span>
+        <ChevronDown size={16} className="shrink-0 text-ink-tertiary" />
       </button>
 
       {open && (
@@ -178,27 +178,27 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           ref={menuRef}
           role="listbox"
           onKeyDown={onMenuKeyDown}
-          className="absolute z-20 mt-1 w-72 rounded-xl border border-border-soft bg-nav-surface p-1.5 shadow-lg"
+          className="absolute z-20 mt-1.5 max-h-[22rem] w-full overflow-y-auto rounded-xl border border-border-soft bg-nav-surface p-2 shadow-2xl scrollbar-slim"
         >
-          <div className="relative mb-1">
-            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-tertiary" />
+          <div className="relative mb-2">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary" />
             <input
               autoFocus
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search agents..."
-              className="w-full rounded-lg bg-canvas py-1 pl-7 pr-2 text-xs text-ink outline-none"
+              className="w-full rounded-lg border border-border-soft bg-canvas py-2 pl-8 pr-3 text-sm text-ink outline-none focus:border-border-brand"
             />
           </div>
 
           {loading && !agents && (
-            <div className="px-2 py-2 text-xs text-ink-tertiary">Looking for installed agents…</div>
+            <div className="px-2.5 py-3 text-sm text-ink-tertiary">Looking for installed agents…</div>
           )}
 
           {/* Headings only where there is something under them. */}
           {installed.length > 0 && (
             <div role="group" aria-label="Installed">
-              <div className="px-2 pb-0.5 pt-1 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+              <div className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-ink-tertiary">
                 Installed
               </div>
               {installed.map(a => <Row key={a.id} agent={a} />)}
@@ -207,7 +207,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
 
           {missing.length > 0 && (
             <div role="group" aria-label="Not installed">
-              <div className="px-2 pb-0.5 pt-1 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+              <div className="px-2.5 pb-1 pt-2.5 text-xs font-medium text-ink-tertiary">
                 Not installed
               </div>
               {missing.map(a => <Row key={a.id} agent={a} />)}
@@ -215,7 +215,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           )}
 
           {agents && installed.length === 0 && missing.length === 0 && (
-            <div className="px-2 py-2 text-xs text-ink-tertiary">No agents match “{query}”.</div>
+            <div className="px-2.5 py-3 text-sm text-ink-tertiary">No agents match “{query}”.</div>
           )}
         </div>
       )}
