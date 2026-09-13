@@ -252,8 +252,10 @@ describe('agent marks', () => {
     const menu = await openMenu();
     const claude = within(menu).getByRole('option', { name: /claude code/i })
       .querySelector('[data-agent-mark="claude"]')!;
-    // A filled brand path, not stroked geometry.
-    expect(claude.getAttribute('fill')).toMatch(/^#/);
+    // A filled brand path, not stroked geometry. `currentColor` counts: the
+    // OpenAI mark is monochrome by design and inherits the text colour, so
+    // requiring a hex here would force a wrong answer in light mode.
+    expect(claude.getAttribute('fill')).toMatch(/^(#|currentColor)/);
     expect(claude.querySelector('path')?.getAttribute('d')?.length ?? 0).toBeGreaterThan(200);
   });
 });
