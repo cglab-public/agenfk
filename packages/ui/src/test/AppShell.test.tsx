@@ -636,8 +636,14 @@ describe('AppShell — tabs', () => {
     const first = screen.getByRole('tab', { name: /kanban/i });
     first.focus();
 
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: /runs/i }).getAttribute('aria-selected')).toBe('true');
+    // Written against the tab LIST rather than named tabs, so adding one does
+    // not silently turn "wraps at the end" into "moves to the second tab" —
+    // which is what happened when the Terminal tab landed (CGLAB-169).
+    const tabs = screen.getAllByRole('tab');
+    for (let i = 1; i < tabs.length; i += 1) {
+      fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
+      expect(screen.getAllByRole('tab')[i].getAttribute('aria-selected')).toBe('true');
+    }
 
     // Wraps rather than dead-ending at the last tab.
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });

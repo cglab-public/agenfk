@@ -6,14 +6,18 @@
  * may grow the ability to say *what* runs — that is the border the preload
  * surface draws, and it only holds while this side stays incurious.
  *
- * xterm and the fit addon are injected rather than imported directly so the
- * lifecycle can be tested. They do not run meaningfully under jsdom, and the
- * defects worth catching are not "does xterm draw" but the reaping: a closed
- * tab that leaves a shell attached to a worktree, or a listener still writing
- * into a component that no longer exists.
+ * xterm and the fit addon can be INJECTED, and the tests do inject them: they
+ * do not run meaningfully under jsdom, and the defects worth catching are not
+ * "does xterm draw" but the reaping — a closed tab that leaves a shell attached
+ * to a worktree, or a listener still writing into a component that no longer
+ * exists. The real ones are imported statically; an earlier version claimed to
+ * load them lazily to keep a browser build lean, which was not true and could
+ * not be, since `require` does not exist in that bundle.
  */
 import React from 'react';
-import type { ITerminalAddon, Terminal } from '@xterm/xterm';
+import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
@@ -71,18 +75,11 @@ export function TerminalPane({
     let cancelled = false;
     const cleanups: Array<() => void> = [];
 
-    const term = (createTerminal ?? (() => {
-      // Imported lazily: xterm touches the DOM at module scope and there is no
-      // reason for a browser-only build to carry it.
-      const { Terminal: XTerm } = require('@xterm/xterm') as typeof import('@xterm/xterm');
-      return new XTerm({ convertEol: true, fontSize: 12, cursorBlink: true });
-    }))();
+    const term = (createTerminal ?? (() =>
+      new XTerm({ convertEol: true, fontSize: 12, cursorBlink: true })))();
     termRef.current = term;
 
-    const fit = (createFitAddon ?? (() => {
-      const { FitAddon } = require('@xterm/addon-fit') as typeof import('@xterm/addon-fit');
-      return new FitAddon() as FitLike;
-    }))();
+    const fit = (createFitAddon ?? (() => new FitAddon() as FitLike))();
     term.loadAddon(fit);
     term.open(host);
     try { fit.fit(); } catch { /* no layout under jsdom */ }

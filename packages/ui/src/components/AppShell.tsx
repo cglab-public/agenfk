@@ -33,10 +33,12 @@ import {
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
+import { TerminalTab } from './TerminalTab';
+import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
 
-type TabId = 'kanban' | 'runs';
+type TabId = 'kanban' | 'terminal' | 'runs';
 
 interface Tab {
   id: TabId;
@@ -45,6 +47,7 @@ interface Tab {
 
 const TABS: Tab[] = [
   { id: 'kanban', label: 'Kanban' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'runs', label: 'Runs' },
 ];
 
@@ -193,6 +196,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="min-h-0 flex-1 overflow-auto scrollbar-slim"
           >
             {children}
+          </div>
+
+          {/* Mounted only while selected, unlike the board. A terminal is a live
+              child process: keeping it rendered behind a `hidden` panel would
+              hold a shell open for a card the user has moved on from. */}
+          <div
+            role="tabpanel"
+            id="panel-terminal"
+            aria-labelledby="tab-terminal"
+            tabIndex={0}
+            hidden={active !== 'terminal'}
+            className="min-h-0 flex-1"
+          >
+            {active === 'terminal' && <TerminalTab itemId={focusedItemId ? focusedItemId.slice(0, focusedItemId.lastIndexOf('#')) : null} />}
           </div>
 
           <div
@@ -571,11 +588,4 @@ function SidebarLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function EmptyState({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="mx-auto mt-16 max-w-sm text-center">
-      <p className="text-sm font-semibold text-ink-secondary">{title}</p>
-      <p className="mt-1.5 text-xs leading-relaxed text-ink-tertiary">{body}</p>
-    </div>
-  );
-}
+
