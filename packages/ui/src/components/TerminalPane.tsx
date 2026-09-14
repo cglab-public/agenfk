@@ -30,6 +30,14 @@ export interface TerminalBridge {
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
+  /**
+   * Report how much of what was sent has been drawn.
+   *
+   * Optional, like `onActivity`, because an older preload will not have it —
+   * and a pane that threw here would be a blank terminal, which is a far worse
+   * outcome than no backpressure.
+   */
+  ack?(sessionId: string, bytes: number): Promise<boolean>;
   onData(cb: (e: { sessionId: string; data: string }) => void): () => void;
   onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
   /** The agent published its own state via the terminal title. Optional: an
@@ -145,6 +153,9 @@ export function TerminalPane({
   // a render that never happens on an unmounting component.
   // Last time output was reported upward, for the throttle above.
   const lastReport = React.useRef(0);
+  /** Drawn bytes not yet reported to main, and whether a flush is scheduled. */
+  const pendingAck = React.useRef(0);
+  const ackQueued = React.useRef(false);
   const sessionRef = React.useRef<string | null>(null);
   const termRef = React.useRef<Terminal | null>(null);
 
@@ -208,7 +219,34 @@ export function TerminalPane({
         lastReport.current = now;
         onOutput?.();
       }
-      term.write(data);
+      /*
+       * The callback is the whole point, and it was always available and never
+       * used. xterm calls it once this chunk has actually been PARSED, which
+       * is the only honest measure of whether the terminal is keeping up —
+       * `write` returning simply means the bytes were queued, and the queue is
+       * exactly what was growing to 50 MB.
+       *
+       * Coalesced rather than sent per chunk: output arrives in thousands of
+       * small reads, and one IPC round trip each would cost more than the
+       * problem. Bytes accumulate and are flushed on a microtask, so a burst
+       * of a thousand chunks becomes one message carrying their sum.
+       */
+      term.write(data, () => {
+        pendingAck.current += data.length;
+        if (ackQueued.current) return;
+        ackQueued.current = true;
+        queueMicrotask(() => {
+          ackQueued.current = false;
+          const bytes = pendingAck.current;
+          pendingAck.current = 0;
+          const id = sessionRef.current;
+          // Nothing to say, or the session is already gone. Main forgives an
+          // ack for a session it no longer has, but there is no reason to send
+          // one.
+          if (!bytes || !id) return;
+          void api.ack?.(id, bytes);
+        });
+      });
 
       /*
        * Read the state off the RENDERED screen, for agents that publish

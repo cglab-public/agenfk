@@ -142,6 +142,10 @@ describe('the channels that exist', () => {
       // Read-only, takes no renderer input: whether sessions survive quitting,
       // and why not when they do not.
       'sessions:persistence',
+      // The renderer reporting what it has drawn. It is the return path of the
+      // flow control in flowControl.ts, and it carries a NUMBER rather than
+      // anything that becomes a command — see the clamp in the handler.
+      'pty:ack',
       'pty:kill',
       'pty:resize',
       'pty:spawn',

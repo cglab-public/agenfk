@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
+import { HIGH_WATERMARK } from '../main/flowControl';
 
 interface FakePty {
   pid: number;
@@ -30,6 +31,12 @@ interface FakePty {
   write: (d: string) => void;
   resize: (c: number, r: number) => void;
   kill: () => void;
+  /** Flow control. Counted rather than flagged: calling pause per chunk of a
+   *  firehose is thousands of no-op syscalls a second, so the COUNT matters. */
+  pause: () => void;
+  resume: () => void;
+  pauses: number;
+  resumes: number;
   /** Test hooks to drive the fake from outside. */
   emitData?: (d: string) => void;
   emitExit?: (code: number) => void;
@@ -51,6 +58,10 @@ const makeSpawner = () =>
       write: d => { pty.written.push(d); },
       resize: (c, r) => { pty.resizes.push([c, r]); },
       kill: () => { pty.killed = true; },
+      pauses: 0,
+      resumes: 0,
+      pause: () => { pty.pauses += 1; },
+      resume: () => { pty.resumes += 1; },
     };
     pty.emitData = d => dataCb(d);
     pty.emitExit = code => exitCb({ exitCode: code });
@@ -650,5 +661,68 @@ describe('a resume that finds nothing to continue', () => {
     spawned[0].pty.emitExit!(0);
     expect(spawned).toHaveLength(1);
     expect(emitted.some(e => e.channel === 'pty:exit')).toBe(true);
+  });
+});
+
+/**
+ * Wiring the flow control to a real session.
+ *
+ * flowControl.ts decides WHEN to stop reading; these are about whether the
+ * registry actually feeds it. A mutation that replaced `flow.sent(data.length)`
+ * with `flow.sent(0)` left every other test in this file green, which is
+ * exactly the shape of bug this describe block exists to catch: the accounting
+ * is perfect and nothing is counted.
+ */
+describe('backpressure on a live session', () => {
+  const flood = (pty: FakePty, bytes: number): void => {
+    // Many small reads, like a real firehose, rather than one giant chunk.
+    const chunk = 'x'.repeat(1_000);
+    for (let i = 0; i < bytes / 1_000; i += 1) pty.emitData?.(chunk);
+  };
+
+  it('stops reading from a pty whose output is piling up undrawn', async () => {
+    await open(registry, 1);
+    const pty = spawned[0].pty;
+    flood(pty, HIGH_WATERMARK + 4_000);
+    expect(pty.pauses).toBe(1);
+  });
+
+  it('leaves an ordinary session alone', async () => {
+    // The overwhelmingly common case. A prompt and a few lines of output must
+    // never involve any of this.
+    await open(registry, 1);
+    spawned[0].pty.emitData?.('ready\r\n');
+    expect(spawned[0].pty.pauses).toBe(0);
+  });
+
+  it('starts reading again once the renderer says it caught up', async () => {
+    const id = await open(registry, 1);
+    const pty = spawned[0].pty;
+    flood(pty, HIGH_WATERMARK + 4_000);
+    expect(pty.pauses).toBe(1);
+    registry.ack(id, 1, HIGH_WATERMARK + 4_000);
+    expect(pty.resumes).toBe(1);
+  });
+
+  it('will not let another window ack your session', async () => {
+    /*
+     * Same rule as write and kill, and it matters for the same reason: an ack
+     * is the only thing that lifts a pause, so a window that could ack a
+     * session it does not own could resume a producer the owner had stopped.
+     * Silent, and it undoes the protection rather than raising an error.
+     */
+    const id = await open(registry, 1);
+    const pty = spawned[0].pty;
+    flood(pty, HIGH_WATERMARK + 4_000);
+    registry.ack(id, 999, HIGH_WATERMARK + 4_000);
+    expect(pty.resumes).toBe(0);
+  });
+
+  it('shrugs at an ack for a session that has gone', async () => {
+    // Unlike write and kill, which throw. An ack is a report about the past,
+    // and one arriving just after the session exited is ordinary — throwing
+    // would turn a routine race into an error in the user's face.
+    await open(registry, 1);
+    expect(() => registry.ack('no-such-session', 1, 100)).not.toThrow();
   });
 });

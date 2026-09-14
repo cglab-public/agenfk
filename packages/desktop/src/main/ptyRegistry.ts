@@ -20,6 +20,7 @@ import { resolveAgentCommand, canDictateSessionId } from './agents.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
+import { FlowControl } from './flowControl.js';
 
 /** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
 export interface PtyLike {
@@ -29,6 +30,17 @@ export interface PtyLike {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(): void;
+  /**
+   * Stop and restart reading from the child.
+   *
+   * The two that make backpressure possible at all, and their absence is why
+   * there was none: with no way to stop the producer, every byte a firehose
+   * emitted had to be forwarded and held somewhere. node-pty has had both all
+   * along ("for customizable flow control"); this interface simply never asked
+   * for them. See flowControl.ts for when they are called.
+   */
+  pause(): void;
+  resume(): void;
 }
 
 export type PtySpawner = (
@@ -124,6 +136,8 @@ export interface SpawnRequest {
 interface Session {
   readonly pty: PtyLike;
   readonly windowId: number;
+  /** Bytes in flight to this session's terminal. See flowControl.ts. */
+  readonly flow: FlowControl;
 }
 
 /**
@@ -218,7 +232,15 @@ export class PtyRegistry {
      */
     const launch = (launchArgs: readonly string[], resuming: boolean): void => {
       const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
-      this.sessions.set(sessionId, { pty, windowId: req.windowId });
+      /*
+       * Backpressure, per session.
+       *
+       * Held here rather than in the renderer because the producer is here:
+       * the only thing that can actually slow a firehose down is not reading
+       * from it. The renderer's part is to say what it has drawn.
+       */
+      const flow = new FlowControl({ pause: () => pty.pause(), resume: () => pty.resume() });
+      this.sessions.set(sessionId, { pty, windowId: req.windowId, flow });
       const startedAt = Date.now();
 
       /*
@@ -239,6 +261,14 @@ export class PtyRegistry {
         // Only to the owner. Broadcasting would put one card's shell output —
         // including whatever the agent prints — into every open window.
         this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+
+        /*
+         * Counted in the same unit the renderer will ack in — the length of
+         * the string that just crossed, not its encoded byte count. The two
+         * sides only have to AGREE; an absolute measure of bytes on the wire
+         * would be more accurate and, if only one side used it, wrong.
+         */
+        flow.sent(data.length);
 
         const title = titles.push(data);
         if (title === null) return;
@@ -274,6 +304,10 @@ export class PtyRegistry {
          *  - only ONCE, or a command that always fails becomes a spawn loop.
          */
         const diedOnTheSpot = Date.now() - startedAt < RESUME_FAILURE_MS;
+        // This pty is finished either way, so its accounting goes with it —
+        // before the branch, because the relaunch below replaces the map entry
+        // and would otherwise strand this one's grace-period timer.
+        flow.dispose();
         if (resuming && exitCode !== 0 && diedOnTheSpot) {
           // Said out loud. Silently swapping a resumed session for a fresh one
           // would leave the user believing they still have the context.
@@ -324,8 +358,23 @@ export class PtyRegistry {
     this.own(sessionId, windowId).pty.resize(cols, rows);
   }
 
+  /**
+   * The renderer has drawn this much of what we sent it.
+   *
+   * Deliberately forgiving about an unknown session, unlike its neighbours: an
+   * ack is a report about the past, and one arriving just after a session
+   * exited is ordinary rather than a fault. Throwing would turn a routine race
+   * into an error dialog.
+   */
+  ack(sessionId: string, windowId: number, bytes: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.windowId !== windowId) return;
+    session.flow.acked(bytes);
+  }
+
   kill(sessionId: string, windowId: number): void {
     const session = this.own(sessionId, windowId);
+    session.flow.dispose();
     session.pty.kill();
     this.sessions.delete(sessionId);
   }
@@ -334,6 +383,7 @@ export class PtyRegistry {
   killAllForWindow(windowId: number): void {
     for (const [id, session] of [...this.sessions]) {
       if (session.windowId !== windowId) continue;
+      session.flow.dispose();
       session.pty.kill();
       this.sessions.delete(id);
     }
@@ -342,6 +392,7 @@ export class PtyRegistry {
   /** The app is quitting. */
   killAll(): void {
     for (const [id, session] of [...this.sessions]) {
+      session.flow.dispose();
       session.pty.kill();
       this.sessions.delete(id);
     }

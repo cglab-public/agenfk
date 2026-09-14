@@ -27,9 +27,19 @@ interface FakeTerm {
   cols: number;
   rows: number;
   open: (el: HTMLElement) => void;
-  write: (d: string) => void;
+  /**
+   * Takes the DONE callback, like the real one.
+   *
+   * The fake used to drop it, which made the ack path untestable — and the ack
+   * path is what stops the pty when the terminal falls behind.
+   */
+  write: (d: string, done?: () => void) => void;
   dispose: () => void;
   onData: (cb: (d: string) => void) => { dispose: () => void };
+  /** Write callbacks not yet fired, and a way to fire them. Real xterm parses
+   *  asynchronously, so a test that wants the ack has to say when. */
+  pendingWrites: Array<(() => void) | undefined>;
+  drain: () => void;
   loadAddon: (a: unknown) => void;
   emitInput?: (d: string) => void;
 }
@@ -43,6 +53,7 @@ let bridge: {
   kill: ReturnType<typeof vi.fn>;
   onData: ReturnType<typeof vi.fn>;
   onExit: ReturnType<typeof vi.fn>;
+  ack: ReturnType<typeof vi.fn>;
 };
 let dataSubscribers: Array<(e: { sessionId: string; data: string }) => void>;
 let exitSubscribers: Array<(e: { sessionId: string; exitCode: number }) => void>;
@@ -57,9 +68,10 @@ const fireResize = (): void => { roCallbacks.forEach(cb => cb()); };
 const makeTerm = (): FakeTerm => {
   let inputCb: (d: string) => void = () => {};
   const term: FakeTerm = {
-    opened: null, written: [], disposed: false, cols: 80, rows: 24,
+    opened: null, written: [], disposed: false, cols: 80, rows: 24, pendingWrites: [],
+    drain: () => { const q = term.pendingWrites.splice(0); q.forEach(done => done?.()); },
     open: el => { term.opened = el; },
-    write: d => { term.written.push(d); },
+    write: (d, done) => { term.written.push(d); term.pendingWrites.push(done); },
     dispose: () => { term.disposed = true; },
     onData: cb => { inputCb = cb; return { dispose: () => {} }; },
     loadAddon: () => {},
@@ -100,6 +112,7 @@ beforeEach(() => {
     write: vi.fn(async () => true),
     resize: vi.fn(async () => true),
     kill: vi.fn(async () => true),
+    ack: vi.fn(async () => true),
     onData: vi.fn((cb: (e: { sessionId: string; data: string }) => void) => {
       dataSubscribers.push(cb);
       return () => { unsubscribes += 1; };
@@ -312,5 +325,86 @@ describe('reporting that output arrived', () => {
     await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
     for (let i = 0; i < 20; i += 1) dataSubscribers[0]({ sessionId: 'sess-1', data: `chunk ${i}` });
     expect(onOutput).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Telling main what has actually been drawn (flow control).
+ *
+ * The return half of the backpressure in flowControl.ts. Main stops reading
+ * from the pty when too much output is in flight and undrawn; these acks are
+ * the only thing that ever tells it the terminal caught up.
+ *
+ * It is worth testing precisely because it fails QUIETLY. If the ack stops
+ * being sent, nothing breaks visibly — main's grace period force-resumes the
+ * session after ten seconds and the terminal keeps working. Flow control would
+ * simply be off, and the 50 MB ceiling would be back with no symptom until a
+ * window froze.
+ */
+describe('acking drawn output', () => {
+  it('reports only once xterm says it parsed the chunk', async () => {
+    /*
+     * The distinction the whole design rests on. `write()` RETURNING means the
+     * bytes were queued, and that queue is exactly what was growing unbounded.
+     * Only the callback means they were parsed, so acking on the call instead
+     * of the callback would report a terminal as keeping up while it fell
+     * further behind — flow control that measures the wrong thing.
+     */
+    renderPane({});
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'sess-1', data: 'hello' });
+    expect(bridge.ack).not.toHaveBeenCalled();
+
+    terms[0].drain();
+    await waitFor(() => expect(bridge.ack).toHaveBeenCalledWith('sess-1', 5));
+  });
+
+  it('sends one message for a burst, not one per chunk', async () => {
+    // Output arrives in thousands of small reads. An IPC round trip each would
+    // cost more than the problem being solved, so bytes accumulate and flush
+    // together.
+    renderPane({});
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    for (let i = 0; i < 50; i += 1) dataSubscribers[0]({ sessionId: 'sess-1', data: '0123456789' });
+    terms[0].drain();
+    await waitFor(() => expect(bridge.ack).toHaveBeenCalledTimes(1));
+    expect(bridge.ack).toHaveBeenCalledWith('sess-1', 500);
+  });
+
+  it('counts in the same unit main counts in', async () => {
+    // Main adds `data.length` of the string it forwarded; this subtracts the
+    // length of the same string. The two only have to AGREE — a more accurate
+    // byte count on one side alone would be worse than a crude one on both.
+    renderPane({});
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'sess-1', data: 'héllo ✳' });
+    terms[0].drain();
+    await waitFor(() => expect(bridge.ack).toHaveBeenCalledWith('sess-1', 'héllo ✳'.length));
+  });
+
+  it('does not ack another card\'s output', async () => {
+    // The filter runs before the write, so a chunk for a different session is
+    // never drawn here and must never be counted against this one either.
+    renderPane({});
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'someone-else', data: 'not mine' });
+    terms[0].drain();
+    await new Promise(r => setTimeout(r, 0));
+    expect(bridge.ack).not.toHaveBeenCalled();
+  });
+
+  it('works against a preload that has no ack at all', async () => {
+    /*
+     * Version skew is real here: the renderer bundle and the preload ship
+     * together but a stale install can pair an old preload with a new bundle.
+     * Throwing would leave a BLANK TERMINAL, which is far worse than running
+     * without backpressure.
+     */
+    (bridge as unknown as Record<string, unknown>).ack = undefined;
+    renderPane({});
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'sess-1', data: 'hello' });
+    expect(() => terms[0].drain()).not.toThrow();
+    expect(terms[0].written).toContain('hello');
   });
 });

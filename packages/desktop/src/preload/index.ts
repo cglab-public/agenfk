@@ -53,6 +53,15 @@ export interface AgenfkTerminalApi {
   }>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
+  /**
+   * Report how much of what was sent has actually been drawn.
+   *
+   * The return path of the flow control in flowControl.ts: main stops reading
+   * from the pty when too much is in flight and undrawn, and this is the only
+   * thing that tells it the terminal caught up. A renderer that stops calling
+   * it gets its session force-resumed after a grace period rather than frozen.
+   */
+  ack(sessionId: string, bytes: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
   /** Returns an unsubscribe function; a tab that unmounts must stop listening. */
   onData(cb: (e: { sessionId: string; data: string }) => void): () => void;
@@ -140,6 +149,7 @@ const terminal: AgenfkTerminalApi = {
   spawn: req => ipcRenderer.invoke('pty:spawn', req),
   write: (sessionId, data) => ipcRenderer.invoke('pty:write', { sessionId, data }),
   resize: (sessionId, cols, rows) => ipcRenderer.invoke('pty:resize', { sessionId, cols, rows }),
+  ack: (sessionId, bytes) => ipcRenderer.invoke('pty:ack', { sessionId, bytes }),
   kill: sessionId => ipcRenderer.invoke('pty:kill', { sessionId }),
   onData: cb => subscribe('pty:data', cb),
   onExit: cb => subscribe('pty:exit', cb),

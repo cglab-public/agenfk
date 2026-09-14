@@ -127,6 +127,24 @@ export function registerPtyIpc(
     return true;
   });
 
+  /*
+   * The renderer reporting what it has drawn, which is the return path of the
+   * flow control in flowControl.ts.
+   *
+   * `bytes` is renderer input like any other, so it is bounded rather than
+   * trusted: a huge or negative number would drive the in-flight count to zero
+   * or below and switch backpressure off — silently, which is the failure mode
+   * this whole card exists to remove.
+   */
+  ipc.handle('pty:ack', (event, raw) => {
+    const req = (raw ?? {}) as Record<string, unknown>;
+    const bytes = typeof req.bytes === 'number' && Number.isFinite(req.bytes)
+      ? Math.max(0, Math.floor(req.bytes))
+      : 0;
+    registry.ack(asString(req.sessionId, 'sessionId'), senderWindowId(event), bytes);
+    return true;
+  });
+
   ipc.handle('pty:kill', (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
     registry.kill(asString(req.sessionId, 'sessionId'), senderWindowId(event));
