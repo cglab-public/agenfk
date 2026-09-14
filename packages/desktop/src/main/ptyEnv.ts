@@ -59,6 +59,40 @@ const STRIP_INHERITED_AGENT_SESSION = [
   'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_BRIDGE_SESSION_ID',
+  'CLAUDE_CODE_INVOKED_SKILLS',
+  'CLAUDE_CODE_SSE_PORT',
+  /*
+   * The four without the `CLAUDE_CODE_` prefix, which is exactly why a prefix
+   * rule would not have been a shortcut — it would have missed these and taken
+   * configuration instead.
+   *
+   *   CLAUDECODE     the canonical "you are inside Claude Code" flag. Left in
+   *                  place, every agent this app spawns — codex and pi included
+   *                  — is told it is inside a session it is not in, and
+   *                  third-party tooling branches on it.
+   *   CLAUDE_EFFORT  the LAUNCHING conversation's reasoning-effort level, which
+   *                  the agent's own hooks and Bash tool then read as theirs.
+   *   CLAUDE_PID     names the launching process. A `pkill` guard built from it
+   *                  protects the wrong one.
+   *   AI_AGENT       identity of whoever launched us.
+   *   TRACEPARENT    grafts the spawned agent's spans onto somebody else's
+   *                  trace.
+   */
+  'CLAUDECODE',
+  'CLAUDE_EFFORT',
+  'CLAUDE_PID',
+  'AI_AGENT',
+  'TRACEPARENT',
+  /*
+   * Not Claude's, but the same kind of fact and the same launch scenario.
+   * `tmux.ts` attaches a session of its own, and `attach-session` refuses from
+   * inside another server — "sessions should be nested with care, unset $TMUX
+   * to force". Unsetting is precisely what tmux asks for, and the session this
+   * app manages is its own.
+   */
+  'TMUX',
+  'TMUX_PANE',
 ];
 
 const STRIP_EXACT = new Set([

@@ -107,6 +107,12 @@ describe('what must not leak into a spawned agent', () => {
  * whether it remembered the session.
  */
 describe('a Claude Code session this app was launched from', () => {
+  /*
+   * Taken from a real `ps -Eww` on the Electron process and a real `env`, not
+   * invented. Four of them carry no `CLAUDE_CODE_` prefix at all, which is the
+   * concrete reason a prefix rule would have been wrong in BOTH directions:
+   * it would have missed these and swallowed configuration.
+   */
   const INHERITED = {
     CLAUDE_CODE_CHILD_SESSION: '1',
     CLAUDE_CODE_SESSION_ID: 'c62e39bb-1d4b-4e51-a6a9-e25fd08e5547',
@@ -114,6 +120,14 @@ describe('a Claude Code session this app was launched from', () => {
     CLAUDE_CODE_MESSAGING_TOKEN: '621e2153',
     CLAUDE_CODE_ENTRYPOINT: 'cli',
     CLAUDE_CODE_EXECPATH: '/usr/local/bin/claude.exe',
+    CLAUDE_CODE_BRIDGE_SESSION_ID: 'bridge-1',
+    CLAUDE_CODE_INVOKED_SKILLS: 'artifact-design',
+    CLAUDE_CODE_SSE_PORT: '51234',
+    CLAUDECODE: '1',
+    CLAUDE_EFFORT: 'high',
+    CLAUDE_PID: '50270',
+    AI_AGENT: 'claude-code',
+    TRACEPARENT: '00-4bf92f-00f067aa-01',
   };
 
   it('does not follow the agent we spawn', () => {
@@ -132,21 +146,60 @@ describe('a Claude Code session this app was launched from', () => {
       .toBeUndefined();
   });
 
-  it('keeps the user\'s own Claude configuration', () => {
+  it('keeps the user\'s own Claude configuration, prefix and all', () => {
     /*
-     * The line this must not cross. Stripping by prefix would take
-     * ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR with it and break the agent
-     * outright — a worse bug than the one being fixed. Only the per-session
-     * markers go, and they are listed by name.
+     * The line this must not cross, and the first version of this test did not
+     * actually guard it. Its fixtures were ANTHROPIC_API_KEY and
+     * CLAUDE_CONFIG_DIR — NEITHER of which starts with `CLAUDE_CODE_` — so a
+     * reviewer could rewrite `shouldStrip` to strip the whole prefix and all
+     * twenty-four tests still passed. The test forbidding prefix-stripping did
+     * not detect prefix-stripping.
+     *
+     * These three are real names from the binary and they are configuration a
+     * user sets deliberately. Taking them would break the agent outright,
+     * which is a worse bug than the one this file fixes.
      */
     const env = buildPtyEnv({
       ANTHROPIC_API_KEY: 'sk-test',
       CLAUDE_CONFIG_DIR: '/Users/me/.claude',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oat-secret',
       CLAUDE_CODE_CHILD_SESSION: '1',
     });
     expect(env.ANTHROPIC_API_KEY).toBe('sk-test');
     expect(env.CLAUDE_CONFIG_DIR).toBe('/Users/me/.claude');
+    expect(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('8192');
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('oat-secret');
     expect(env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+  });
+
+  it('takes the markers that carry no CLAUDE_CODE_ prefix', () => {
+    /*
+     * Named separately because they are the half a prefix rule would miss, and
+     * they were missed: CLAUDECODE, CLAUDE_EFFORT, CLAUDE_PID and AI_AGENT
+     * were all live in the environment of the Electron process this bug was
+     * diagnosed in, and none of them was being stripped.
+     */
+    const env = buildPtyEnv({
+      CLAUDECODE: '1', CLAUDE_EFFORT: 'high', CLAUDE_PID: '50270',
+      AI_AGENT: 'claude-code', TRACEPARENT: '00-4bf92f-00f067aa-01',
+    });
+    expect(env.CLAUDECODE).toBeUndefined();
+    expect(env.CLAUDE_EFFORT).toBeUndefined();
+    expect(env.CLAUDE_PID).toBeUndefined();
+    expect(env.AI_AGENT).toBeUndefined();
+    expect(env.TRACEPARENT).toBeUndefined();
+  });
+
+  it('does not hand our tmux a tmux it is already inside', () => {
+    // The app attaches a tmux session of its own for persistent terminals, and
+    // `attach-session` refuses from inside another server — "unset $TMUX to
+    // force". Same launch scenario as the rest of this block.
+    const env = buildPtyEnv({ TMUX: '/tmp/tmux-501/default,123,0', TMUX_PANE: '%4' });
+    expect(env.TMUX).toBeUndefined();
+    expect(env.TMUX_PANE).toBeUndefined();
   });
 });
 
