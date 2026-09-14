@@ -1596,6 +1596,32 @@ describe('flow editor footer CTAs', () => {
     fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
   };
 
+/**
+ * Wait for a write to LAND, not merely to depart (BUG c3ff590a).
+ *
+ * `waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1))` resolves the
+ * moment the call goes out, while the mutation is still pending. The footer's
+ * buttons are disabled for exactly that window — `isSaveDisabled` includes
+ * `isBusy` — and `fireEvent.click` on a disabled button does nothing at all, in
+ * silence. A test that clicks the next button there sees "0 calls" and looks
+ * like a product bug.
+ *
+ * Without load the mocked promise settles in the same tick and the window is
+ * invisible; under load it opens and the click falls into it. That is the whole
+ * of this file's flakiness: the failure rate went from 0-in-6 running the file
+ * alone to 2-in-3 running the whole ui suite.
+ *
+ * The label going back to "Save"/"Saved" is the visible half of the same fact,
+ * which is the signal the bind test at the bottom of this file was already
+ * using.
+ */
+const saveSettled = async () => {
+  await waitFor(() => {
+    const btn = screen.getByTestId('save-flow-btn') as HTMLButtonElement;
+    expect(btn.disabled, 'the save is still in flight').toBe(false);
+  });
+};
+
   /** The JSON the editor would send for the current panel state. */
   const lastWrite = () => {
     const updateCall = vi.mocked(api.updateFlow).mock.calls[0];
@@ -1737,6 +1763,9 @@ describe('flow editor footer CTAs', () => {
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
     await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
+    // The write has to LAND before the next button is clickable — see
+    // saveSettled. Waiting for the call alone is what made this file flaky.
+    await saveSettled();
 
     fireEvent.click(screen.getByTestId('publish-flow-btn'));
     await waitFor(() => expect(api.publishToRegistry).toHaveBeenCalledWith('created-flow'));
@@ -1785,6 +1814,10 @@ describe('flow editor footer CTAs', () => {
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Renamed' } });
     fireEvent.click(screen.getByTestId('save-flow-btn'));
     await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+
+    // The write has to LAND before the next button is clickable — see
+    // saveSettled. Waiting for the call alone is what made this file flaky.
+    await saveSettled();
 
     fireEvent.click(screen.getByTestId('use-flow-btn'));
     await waitFor(() => expect(api.setProjectFlow).toHaveBeenCalled());
