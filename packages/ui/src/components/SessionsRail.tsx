@@ -69,6 +69,15 @@ export interface SessionRow {
    * pretending to attach to a shell that does not exist.
    */
   readonly hasTerminal: boolean;
+  /**
+   * Whether this terminal's process has ended.
+   *
+   * Only meaningful with `hasTerminal`. It decides whether the row is shown at
+   * all — see liveSessions — and the distinction it draws is ALIVE versus
+   * DEAD, never idle versus running: a terminal sitting at a prompt is still a
+   * session you can click into.
+   */
+  readonly exited?: boolean;
 }
 
 export interface SessionsRailProps {

@@ -47,6 +47,7 @@ import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
 import { moveTab } from '../tabReorder';
+import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
 
 type TabId = 'kanban' | 'terminal' | 'runs' | 'settings';
@@ -528,11 +529,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // card's event. `openedAt` is the terminal's own truth.
         startedAt: byAgent.get(key(open.itemId, open.agentId))?.startedAt ?? open.openedAt,
         hasTerminal: true,
+        // Carried so the rail can drop it once the process is gone. The row
+        // stays while the terminal is merely idle — the tab is still there.
+        exited: open.exited === true,
       });
     }
 
-    return [...byAgent.values()];
-  }, [runs, sessions, live, liveTick]);
+    /*
+     * Only what is still alive.
+     *
+     * The rail listed everything it had ever heard of — exited terminals and
+     * AgentRuns from previous launches, the rows that read as a bare
+     * `323cd4ad`. A list of things that finished hours ago buries the two or
+     * three that are actually yours.
+     *
+     * A failed run is the exception and survives this, however old: it is the
+     * row that needs a person.
+     */
+    // `liveItems` rather than a closure over `live`: the set is already
+    // computed above, on the same inputs, and handing the filter a callback
+    // that reaches into the ref would let it read whenever it happened to run.
+    return liveSessions([...byAgent.values()], { isLive: id => liveItems.has(id) });
+  }, [runs, sessions, live, liveItems, liveTick]);
 
   const openSession = React.useCallback((row: SessionRow): void => {
     // Always the terminal. The rail lists AGENTS, and clicking an agent means
