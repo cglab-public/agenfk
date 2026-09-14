@@ -62,8 +62,14 @@ async function api(path, init) {
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     });
-    if (!res.ok) return null;
-    return await res.json().catch(() => ({}));
+    // The STATUS is reported back, not just success/failure. A 404 on an
+    // event means the run this session cached no longer exists — a reset
+    // database, a restored backup — and the caller has to be able to tell
+    // that apart from "the server is down", because the fix is different:
+    // forget the cached id and open a new run, rather than give up.
+    if (!res.ok) return { __status: res.status };
+    const body = await res.json().catch(() => ({}));
+    return { ...body, __status: res.status };
   } catch {
     return null;
   } finally {
@@ -78,6 +84,26 @@ function readRunMap() {
   } catch {
     return {};
   }
+}
+
+/**
+ * Drop a cached run id.
+ *
+ * Called when the server says the run is gone. Without this the entry lives
+ * forever: every subsequent event for that session POSTs to a run that does
+ * not exist, gets a 404, is discarded — and the session silently stops
+ * recording anything at all until the process restarts. Silently is the part
+ * that matters; nothing surfaces.
+ */
+function forgetRun(sessionId) {
+  try {
+    const map = readRunMap();
+    if (!(sessionId in map)) return;
+    delete map[sessionId];
+    const tmp = `${RUN_MAP}.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(map), 'utf8');
+    renameSync(tmp, RUN_MAP);
+  } catch { /* a stale entry costs one more 404, not a broken session */ }
 }
 
 function rememberRun(sessionId, runId) {
@@ -123,7 +149,10 @@ async function ensureRun(sessionId, readActiveWork) {
 
   const cacheKey = `${sessionId || 'nosession'}::${item.id}`;
   const map = readRunMap();
-  if (map[cacheKey]) return map[cacheKey];
+  // The KEY comes back with the id. The caller needs it to drop the entry when
+  // the server says the run is gone, and recomputing it there would be a
+  // second place that has to agree about how the key is built.
+  if (map[cacheKey]) return { runId: map[cacheKey], cacheKey };
 
   const run = await api('/agent-runs', {
     method: 'POST',
@@ -139,7 +168,7 @@ async function ensureRun(sessionId, readActiveWork) {
   });
   if (!run?.id) return null;
   rememberRun(cacheKey, run.id);
-  return run.id;
+  return { runId: run.id, cacheKey };
 }
 
 async function main() {
@@ -172,17 +201,40 @@ async function main() {
   const event = toRunEvent(payload);
   if (!event) return;
 
-  const runId = await ensureRun(payload.session_id, readActiveWork);
-  if (!runId) return;
+  const run = await ensureRun(payload.session_id, readActiveWork);
+  if (!run) return;
 
-  await api(`/agent-runs/${runId}/events`, {
+  const posted = await api(`/agent-runs/${run.runId}/events`, {
     method: 'POST',
     body: JSON.stringify(event),
   });
+
+  // 404 means the run is gone from the server while this session still holds
+  // its id — a reset database, a restored backup. Forget it so the NEXT event
+  // opens a fresh run, rather than posting into a void for the rest of the
+  // session with nothing surfacing.
+  if (posted?.__status === 404) forgetRun(run.cacheKey);
 }
 
 // Nothing this hook does is worth failing a tool call over — including taking
 // too long. Without this watchdog a stdin that never reaches EOF would leave
 // main() pending and stall the session until the client's own hook timeout.
-setTimeout(() => process.exit(0), 3000).unref();
-main().catch(() => {}).finally(() => process.exit(0));
+/*
+ * Only when RUN as a hook, not when imported.
+ *
+ * Without the guard this file starts a watchdog and exits the process the
+ * moment anything imports it — which is why its internals had no tests: a test
+ * that imported it killed its own runner. The helpers below are exported for
+ * that reason and for no other; nothing outside this file uses them.
+ */
+const runningAsHook = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (runningAsHook) {
+  // Nothing this hook does is worth failing a tool call over — including
+  // taking too long. Without this watchdog a stdin that never reaches EOF
+  // would leave main() pending and stall the session until the client's own
+  // hook timeout.
+  setTimeout(() => process.exit(0), 3000).unref();
+  main().catch(() => {}).finally(() => process.exit(0));
+}
+
+export { forgetRun, rememberRun, readRunMap, RUN_MAP };
