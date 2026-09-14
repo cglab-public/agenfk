@@ -655,3 +655,95 @@ describe('the tab that takes over when one is closed', () => {
     await waitFor(() => expect(openTabs().length).toBe(0));
   });
 });
+
+/**
+ * The `+` in the terminal strip (CGLAB-184).
+ *
+ * It used to reopen on the ACTIVE session's card and nothing else — no route
+ * from the Terminal view to any other card without going back to the sidebar.
+ * And with no active session it did nothing at all: no dialog, no message, not
+ * even a disabled state.
+ */
+describe('opening another terminal from the strip', () => {
+  const restored = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+  }];
+
+  /** The strip lives in the Terminal view, which a restore does not switch to. */
+  const goToTerminalView = async () => {
+    fireEvent.click(within(await screen.findByRole('tablist', { name: /views/i }))
+      .getByRole('tab', { name: /terminal/i }));
+  };
+
+  it('asks which card, instead of assuming the one you are on', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(restored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    await goToTerminalView();
+    fireEvent.click(await screen.findByRole('button', { name: /new terminal/i }));
+    expect(await screen.findByRole('dialog', { name: /which card/i })).toBeTruthy();
+  });
+
+  it('answers with something even when no terminal is open', async () => {
+    // The case that was pure silence. A control that does not respond reads as
+    // a broken app rather than as one with nothing to act on — and the picker
+    // says "no work in flight", which tells the user what to do next.
+    vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(restored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    await goToTerminalView();
+    fireEvent.click(await screen.findByRole('button', { name: /new terminal/i }));
+    const picker = await screen.findByRole('dialog', { name: /which card/i });
+    expect(picker.textContent).toMatch(/no work in flight/i);
+  });
+
+  it('takes a DIFFERENT card through to the agent dialog', async () => {
+    // End to end. The picker is a step BEFORE the agent dialog, which keeps
+    // its identity of "open a terminal on THIS card" and is named after the
+    // card just chosen — which is the whole point, since reaching another card
+    // was impossible from here.
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      ...ACTIVE,
+      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'A different card', status: 'REVIEW' },
+    ] as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(restored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    await goToTerminalView();
+    fireEvent.click(await screen.findByRole('button', { name: /new terminal/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: /which card/i }))
+      .getByTitle('A different card'));
+    expect(await screen.findByRole('dialog', { name: /open a terminal on A different card/i })).toBeTruthy();
+  });
+
+  it('goes to the terminal you already have rather than opening a second', async () => {
+    /*
+     * Picking the card you are already on does NOT put up the agent dialog,
+     * and that is deliberate rather than a gap: a second agent in the same
+     * worktree, both editing the same files, is the failure this whole
+     * component is arranged to avoid. `requestTerminal` already refused it;
+     * routing the picker through it means the picker inherits the rule instead
+     * of needing its own copy.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(restored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    await goToTerminalView();
+    fireEvent.click(await screen.findByRole('button', { name: /new terminal/i }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: /which card/i }))
+      .getByTitle('Something in agenfk'));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /which card/i })).toBeNull());
+    expect(screen.queryByRole('dialog', { name: /open a terminal on/i })).toBeNull();
+    expect(spawnCalls.length, 'a second agent was spawned in the same worktree').toBe(1);
+  });
+});

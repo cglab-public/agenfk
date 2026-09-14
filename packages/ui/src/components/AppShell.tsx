@@ -47,6 +47,7 @@ import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
 import { moveTab } from '../tabReorder';
+import { CardPicker } from './CardPicker';
 
 type TabId = 'kanban' | 'terminal' | 'runs' | 'settings';
 
@@ -229,6 +230,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * reflected here without a reload: one cache entry, one source of truth.
    */
   const { data: appSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  /*
+   * Work in flight, for the "which card?" picker.
+   *
+   * The SAME query key the sidebar uses, so this is one cache entry and one
+   * request rather than a second source of the same list — two lists of the
+   * same thing is how the rail and the terminal came to disagree earlier in
+   * this epic.
+   */
+  const { data: activeWork = [] } = useQuery<AgEnFKItem[]>({
+    queryKey: ['active-items'],
+    queryFn: api.listActiveItems,
+  });
   // Same query key the settings screen uses, so a change there is reflected
   // here without a reload. Auto-approve is desktop-owned, not on the server.
   const { data: desktopPrefs } = useQuery({ queryKey: ['desktop-prefs'], queryFn: readPrefsFromBridge });
@@ -239,6 +252,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     queryFn: listEditorsFromBridge,
     staleTime: 60_000,
   });
+  /**
+   * Whether the "which card?" picker is up.
+   *
+   * A step BEFORE `pending` rather than a field inside it: the agent dialog's
+   * identity is "open a terminal on THIS card", and three other callers reach
+   * it having already decided which card they mean.
+   */
+  const [pickingCard, setPickingCard] = React.useState(false);
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
     { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
@@ -996,17 +1017,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 // only offers STOP for running or waiting, so the one state
                 // they could reach was the one with no controls.
                 onOutput={itemId => { live.touch(itemId); }}
-                onNew={() => {
-                  const current = sessions.find(s => s.id === activeSession);
-                  if (current) {
-                    setPending({
-                      itemId: current.itemId,
-                      title: current.title,
-                      agentId: current.agentId,
-                      branchName: current.branchName,
-                    });
-                  }
-                }}
+                /*
+                 * Asks WHICH CARD, instead of assuming the active one.
+                 *
+                 * It used to reopen on the active session's card and nothing
+                 * else, so there was no route from the Terminal view to any
+                 * other card — back to the sidebar every time. And with no
+                 * active session it did nothing whatsoever: no dialog, no
+                 * message, not even a disabled state. A control that does not
+                 * respond reads as a broken app, not as one with nothing to
+                 * act on.
+                 */
+                onNew={() => setPickingCard(true)}
               />
             )}
           </div>
@@ -1088,6 +1110,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {info && <span className="ml-auto font-mono">Electron {info.versions.electron}</span>}
       </footer>
+
+      {pickingCard && (
+        <CardPicker
+          items={activeWork}
+          currentItemId={sessions.find(s => s.id === activeSession)?.itemId}
+          onClose={() => setPickingCard(false)}
+          onPick={item => {
+            setPickingCard(false);
+            // Straight into the dialog that already exists, unchanged, for the
+            // card just chosen.
+            requestTerminal(item);
+          }}
+        />
+      )}
 
       {pending && (
         <NewTerminalDialog
