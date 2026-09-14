@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import type { DB } from '../db.js';
 
 /**
  * HMAC-signed, self-describing invite tokens (`<base64url body>.<base64url sig>`).
@@ -56,4 +57,38 @@ export function verifyInviteToken(token: string, secret: string, kind: InviteKin
   const tokenKind: InviteKind = parsed.kind === undefined ? 'installation' : parsed.kind;
   if (tokenKind !== kind) return null;
   return { orgId: parsed.orgId, nonce: parsed.nonce, exp: parsed.exp, kind: tokenKind };
+}
+
+/**
+ * Is this error the backend's "row already exists" signal?
+ *
+ * Both invite kinds burn their nonce by INSERTing the PRIMARY KEY, so the
+ * unique violation IS the single-use check under concurrency. Everything else
+ * (a DB outage, a disk error) must propagate: reporting those as "invite
+ * already used" would tell a child hub to give up on a perfectly good invite.
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown };
+  if (e?.code === '23505') return true;                                    // Postgres unique_violation
+  if (typeof e?.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT')) return true;
+  return typeof e?.message === 'string'
+    && /UNIQUE constraint failed|duplicate key value/i.test(e.message);
+}
+
+/**
+ * Burn an invite nonce inside the caller's transaction. Returns false when the
+ * invite was already spent (either seen up front, or lost the INSERT race).
+ * Any other failure throws, so the caller's transaction rolls back and the
+ * invite stays usable.
+ */
+export async function burnInviteNonce(db: DB, nonce: string, orgId: string): Promise<boolean> {
+  const seen = await db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [nonce]);
+  if (seen) return false;
+  try {
+    await db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [nonce, orgId]);
+  } catch (err) {
+    if (isUniqueViolation(err)) return false;
+    throw err;
+  }
+  return true;
 }

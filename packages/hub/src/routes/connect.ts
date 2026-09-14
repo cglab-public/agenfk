@@ -1,6 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
-import { signInviteToken, verifyInviteToken, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
@@ -222,15 +222,13 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/invite/redeem', async (req: Request, res: Response) => {
+  router.post('/invite/redeem', async (req: Request, res: Response, next: NextFunction) => {
+    try {
     const inviteToken = String(req.body?.inviteToken ?? '');
     if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
     const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'installation');
     if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
     if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
-    const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);
-    if (seen) { res.status(400).json({ error: 'invite token already used' }); return; }
-
     // Bind the issued token to the redeeming installation when the CLI
     // supplied one, so admins can see who's behind the key and revoke it
     // surgically. Each field is sanitised to a string-or-null.
@@ -242,9 +240,21 @@ export function connectRouter(ctx: HubServerContext): Router {
       ? identityLabel('invite', bind, bind.installationId ?? '')
       : 'invite';
 
-    const token = await issueApiKey(ctx.db, parsed.orgId, label, bind);
-    await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);
+    // Burn the nonce inside the same transaction that mints the key, and burn
+    // it FIRST: minting before the insert let two concurrent redeems of one
+    // invite hand out two api_keys, with the loser's constraint error landing
+    // after the key had already been returned.
+    const token = await ctx.db.transaction(async () => {
+      if (!await burnInviteNonce(ctx.db, parsed.nonce, parsed.orgId)) return null;
+      return issueApiKey(ctx.db, parsed.orgId, label, bind);
+    });
+    if (!token) { res.status(400).json({ error: 'invite token already used' }); return; }
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
+    } catch (err) {
+      // express 4 does not forward a rejected promise, so without this a DB
+      // failure here leaves the caller waiting for a timeout with no response.
+      next(err);
+    }
   });
 
   return router;

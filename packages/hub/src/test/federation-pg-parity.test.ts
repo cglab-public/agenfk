@@ -48,6 +48,15 @@ describe('PG parity: hub federation enrollment (CGLAB-181)', () => {
     const after = await db.get<any>('SELECT hub_version FROM child_hubs WHERE id = ?', [enr.body.childHubId]);
     expect(after.hub_version).toBe('1.2.0');
 
+    // A malformed version sends NULL into COALESCE(?, hub_version). That
+    // untyped-parameter shape is exactly what the dialect translator has to
+    // get right, and the SQLite test alone never exercises it here.
+    const junk = await supertest(app).post('/v1/federation/ping')
+      .set('Authorization', `Bearer ${enr.body.token}`).send({ hubVersion: 'not-a-version' });
+    expect(junk.status).toBe(200);
+    const kept = await db.get<any>('SELECT hub_version FROM child_hubs WHERE id = ?', [enr.body.childHubId]);
+    expect(kept.hub_version).toBe('1.2.0');
+
     const dir = await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${enr.body.token}`);
     expect(dir.status).toBe(204);
 

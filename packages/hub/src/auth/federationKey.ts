@@ -51,12 +51,15 @@ export function requireFederationKey(db: DB) {
       }
       const tokenHash = hashFederationToken(token);
       // The join to child_hubs makes detachment authoritative on its own: a
-      // detached hub is refused even when its key row was never revoked.
+      // detached hub is refused even when its key row was never revoked. The
+      // org_id equality is belt-and-braces: authorisation reads detached_at
+      // from child_hubs while tenant scoping reads org_id from the key, so a
+      // future writer that lets the two drift would otherwise cross tenants.
       const row = await db.get<{ org_id: string; child_hub_id: string; revoked_at: string | null; detached_at: string | null }>(
         `SELECT k.org_id, k.child_hub_id, k.revoked_at, c.detached_at
            FROM federation_keys k
            JOIN child_hubs c ON c.id = k.child_hub_id
-          WHERE k.token_hash = ?`,
+          WHERE k.token_hash = ? AND c.org_id = k.org_id`,
         [tokenHash],
       );
       if (!row || row.revoked_at || row.detached_at) {

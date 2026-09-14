@@ -152,7 +152,6 @@ export function eventsRouter(ctx: HubServerContext): Router {
     });
   });
 
-
   // Hard ceiling on events processed in a single /v1/events transaction.
   const MAX_EVENTS_PER_BATCH = 500;
 

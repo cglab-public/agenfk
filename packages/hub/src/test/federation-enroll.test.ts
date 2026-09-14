@@ -13,6 +13,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { signInviteToken } from '../auth/inviteToken';
 import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-federation-enroll-${process.pid}.sqlite`);
@@ -132,13 +133,44 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
       expect(second.body.error).toMatch(/already used/i);
     });
 
-    it('rejects a missing, malformed or forged invite', async () => {
+    it('rejects a missing or malformed invite', async () => {
       expect((await supertest(app).post('/v1/federation/enroll').send({})).status).toBe(400);
       expect((await supertest(app).post('/v1/federation/enroll').send({ inviteToken: 'nope' })).status).toBe(400);
+    });
+
+    it('rejects a forged signature on an invite that was never redeemed', async () => {
+      // The signature must be what refuses this token. An earlier version of
+      // this test forged a token whose body was already burned, so it passed
+      // even with the HMAC check removed.
       const inviteToken = await createInvite();
-      const forged = inviteToken.slice(0, -2) + (inviteToken.endsWith('AA') ? 'BB' : 'AA');
-      expect((await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'x' } })).status).toBe(200);
-      expect((await supertest(app).post('/v1/federation/enroll').send({ inviteToken: forged, childHub: { name: 'x' } })).status).toBe(400);
+      const [body, sig] = inviteToken.split('.');
+      const forged = `${body}.${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`;
+      const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: forged, childHub: { name: 'x' } });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/invalid/i);
+      expect(Number((await ctx.db.get('SELECT COUNT(*) AS n FROM child_hubs')).n)).toBe(0);
+      // the nonce was NOT burned, so the genuine invite still works
+      const ok = await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'x' } });
+      expect(ok.status).toBe(200);
+    });
+
+    it('refuses an over-long invite token before hashing it', async () => {
+      const r = await supertest(app).post('/v1/federation/enroll')
+        .send({ inviteToken: 'x'.repeat(5000), childHub: { name: 'x' } });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/invalid/i);
+    });
+
+    it('accepts a legacy kind-less installation invite only on the installation route', async () => {
+      // Tokens minted before federation existed carry no `kind`.
+      const legacy = signInviteToken(
+        { orgId: 'org', nonce: 'legacy-nonce-1', exp: Date.now() + 60_000 }, SECRET,
+      );
+      const fed = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: legacy, childHub: { name: 'x' } });
+      expect(fed.status).toBe(400);
+      const inst = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: legacy });
+      expect(inst.status).toBe(200);
+      expect(inst.body.token).toMatch(/^agk_/);
     });
 
     it('rejects an INSTALLATION invite — the two invite kinds are not interchangeable', async () => {
@@ -163,10 +195,63 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
     it('requires a non-empty child hub name and trims it', async () => {
       const noName = await enroll('   ');
       expect(noName.status).toBe(400);
+      expect(noName.body.error).toMatch(/required/i);
+      const tooLong = await enroll('x'.repeat(121));
+      expect(tooLong.status).toBe(400);
+      expect(tooLong.body.error).toMatch(/exceeds/i);
       const padded = await enroll('  padded  ');
       expect(padded.status).toBe(200);
       const row = await ctx.db.get('SELECT name FROM child_hubs WHERE id = ?', [padded.body.childHubId]);
       expect(row.name).toBe('padded');
+    });
+  });
+
+  describe('enrollment is atomic', () => {
+    it('rolls the invite back when a later write fails, instead of hanging or spending it', async () => {
+      const inviteToken = await createInvite();
+      const realRun = ctx.db.run.bind(ctx.db);
+      let broken = true;
+      ctx.db.run = async (sql: string, params?: unknown[]) => {
+        if (broken && /INSERT INTO child_hubs/i.test(sql)) throw new Error('disk I/O error');
+        return realRun(sql, params);
+      };
+      const boom = await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'doomed' } });
+      ctx.db.run = realRun;
+      // A rejected promise in express 4 is not forwarded on its own — the child
+      // would wait for a timeout rather than see this.
+      expect(boom.status).toBe(500);
+      expect(Number((await ctx.db.get('SELECT COUNT(*) AS n FROM child_hubs')).n)).toBe(0);
+      expect(Number((await ctx.db.get('SELECT COUNT(*) AS n FROM federation_keys')).n)).toBe(0);
+      // the invite survived the failure and still enrolls
+      const retry = await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'recovered' } });
+      expect(retry.status).toBe(200);
+    });
+
+    it('burns the invite before minting the key, so a burn failure hands out nothing', async () => {
+      // Ordering matters under concurrency: minting first means a losing
+      // racer has already been given a credential by the time the nonce
+      // insert fails. Forcing the burn to fail is the deterministic way to
+      // observe which side of the mint it runs on.
+      const inviteToken = await createInvite();
+      const realRun = ctx.db.run.bind(ctx.db);
+      ctx.db.run = async (sql: string, params?: unknown[]) => {
+        if (/INSERT INTO used_invites/i.test(sql)) throw new Error('disk I/O error');
+        return realRun(sql, params);
+      };
+      const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'x' } });
+      ctx.db.run = realRun;
+      expect(r.status).toBe(500);
+      expect(Number((await ctx.db.get('SELECT COUNT(*) AS n FROM federation_keys')).n)).toBe(0);
+      expect(Number((await ctx.db.get('SELECT COUNT(*) AS n FROM child_hubs')).n)).toBe(0);
+    });
+
+    it('rate-limits the unauthenticated enroll endpoint on its own, not by accident', async () => {
+      let sawLimit = false;
+      for (let i = 0; i < 70 && !sawLimit; i++) {
+        const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: 'bad' });
+        if (r.status === 429) sawLimit = true;
+      }
+      expect(sawLimit).toBe(true);
     });
   });
 

@@ -1,11 +1,12 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
-import { signInviteToken, verifyInviteToken, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
+import { rateLimit } from '../util/rateLimit.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for
@@ -15,6 +16,9 @@ import { publicHubUrl } from '../util/publicUrl.js';
 // /v1 like every other machine-to-machine route.
 
 const MAX_NAME_LEN = 120;
+// An invite is ~200 chars. Cap the input before it reaches createHmac so an
+// unauthenticated caller cannot make the hub HMAC megabytes per request.
+const MAX_INVITE_TOKEN_LEN = 4096;
 
 /** Admin-facing: mint a child-hub invite. Mounted under /hub/federation. */
 export function federationInviteRouter(ctx: HubServerContext): Router {
@@ -41,48 +45,66 @@ export function federationRouter(ctx: HubServerContext): Router {
   const router = Router();
   const requireKey = requireFederationKey(ctx.db);
 
-  router.post('/enroll', async (req: Request, res: Response) => {
-    const inviteToken = String(req.body?.inviteToken ?? '');
-    if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
-    const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'child-hub');
-    if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
-    if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
-
-    const rawName = req.body?.childHub?.name;
-    const name = typeof rawName === 'string' ? rawName.trim() : '';
-    if (!name || name.length > MAX_NAME_LEN) { res.status(400).json({ error: 'childHub.name required' }); return; }
-    const hubVersion = semverOrNull(req.body?.childHub?.hubVersion);
-
-    // Burn the nonce FIRST. used_invites.nonce is the primary key, so two
-    // concurrent redeems of the same invite cannot both enroll — the loser's
-    // insert fails on the constraint and it is told the token was used.
-    const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);
-    if (seen) { res.status(400).json({ error: 'invite token already used' }); return; }
-    try {
-      await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);
-    } catch {
-      res.status(400).json({ error: 'invite token already used' });
-      return;
-    }
-
-    const childHubId = randomUUID();
-    const now = new Date().toISOString();
-    await ctx.db.run(
-      'INSERT INTO child_hubs (id, org_id, name, hub_version, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)',
-      [childHubId, parsed.orgId, name, hubVersion, now, now],
-    );
-    const token = await issueFederationKey(ctx.db, parsed.orgId, childHubId, `child-hub:${name}`);
-    res.json({ token, childHubId, orgId: parsed.orgId, parentUrl: publicHubUrl(req) });
+  // /enroll is the one unauthenticated federation route, so it carries its own
+  // limiter rather than relying on one an unrelated router happens to apply at
+  // the shared /v1 mount. Same budget as /hub/device/start.
+  const enrollRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000, max: 60,
+    message: 'Too many enrollment attempts, slow down.',
   });
 
-  router.post('/ping', requireKey, async (req: Request, res: Response) => {
-    const { childHubId, orgId } = req.hubFederation!;
-    const hubVersion = semverOrNull(req.body?.hubVersion);
-    await ctx.db.run(
-      'UPDATE child_hubs SET last_seen = ?, hub_version = COALESCE(?, hub_version) WHERE id = ? AND org_id = ?',
-      [new Date().toISOString(), hubVersion, childHubId, orgId],
-    );
-    res.json({ ok: true, childHubId, orgId });
+  router.post('/enroll', enrollRateLimit, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const inviteToken = String(req.body?.inviteToken ?? '');
+      if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
+      if (inviteToken.length > MAX_INVITE_TOKEN_LEN) { res.status(400).json({ error: 'invalid invite token' }); return; }
+      const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'child-hub');
+      if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
+      if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
+
+      const rawName = req.body?.childHub?.name;
+      const name = typeof rawName === 'string' ? rawName.trim() : '';
+      if (!name) { res.status(400).json({ error: 'childHub.name required' }); return; }
+      if (name.length > MAX_NAME_LEN) { res.status(400).json({ error: `childHub.name exceeds ${MAX_NAME_LEN} characters` }); return; }
+      const hubVersion = semverOrNull(req.body?.childHub?.hubVersion);
+
+      const childHubId = randomUUID();
+      const now = new Date().toISOString();
+
+      // One transaction for all three writes. Burning the nonce first makes the
+      // PRIMARY KEY the concurrency control, and rolling back together means a
+      // failure part-way leaves neither an orphan child_hubs row nor a spent
+      // invite — the admin's invite stays usable.
+      const outcome = await ctx.db.transaction(async () => {
+        if (!await burnInviteNonce(ctx.db, parsed.nonce, parsed.orgId)) return null;
+        await ctx.db.run(
+          'INSERT INTO child_hubs (id, org_id, name, hub_version, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)',
+          [childHubId, parsed.orgId, name, hubVersion, now, now],
+        );
+        return issueFederationKey(ctx.db, parsed.orgId, childHubId, `child-hub:${name}`);
+      });
+      if (!outcome) { res.status(400).json({ error: 'invite token already used' }); return; }
+
+      res.json({ token: outcome, childHubId, orgId: parsed.orgId, parentUrl: publicHubUrl(req) });
+    } catch (err) {
+      // express 4 does not forward a rejected promise, so without this the
+      // child would hang until timeout instead of seeing a 500.
+      next(err);
+    }
+  });
+
+  router.post('/ping', requireKey, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { childHubId, orgId } = req.hubFederation!;
+      const hubVersion = semverOrNull(req.body?.hubVersion);
+      await ctx.db.run(
+        'UPDATE child_hubs SET last_seen = ?, hub_version = COALESCE(?, hub_version) WHERE id = ? AND org_id = ?',
+        [new Date().toISOString(), hubVersion, childHubId, orgId],
+      );
+      res.json({ ok: true, childHubId, orgId });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // No directive kinds exist yet — flow dispatch (CGLAB-182) and upgrade
