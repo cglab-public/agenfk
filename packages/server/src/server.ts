@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -3287,7 +3287,19 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
     // was invoked from a subdirectory — and never in the daemon's own dir (CGLAB-13).
     const resolvedRoot = findProjectRoot(cwd);
     const item = await storage.getItem(req.params.id);
-    if (item) await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+    // Refused, not corrected. findProjectRoot walks up for a `.agenfk`
+    // directory and `~/.agenfk` exists, so a verify run from anywhere under
+    // $HOME with no closer `.agenfk` resolves to the HOME DIRECTORY — which is
+    // how four projects on one machine came to share it. projectRoot is the
+    // directory a worktree is cut from and the cwd `git add -A && git commit`
+    // runs in, so recording $HOME points both at the user's private files.
+    // Keeping whatever was there is strictly better than overwriting it with
+    // that.
+    if (item && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+      await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+    } else if (item) {
+      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot} as a project root (item ${item.id})`);
+    }
   }
   // One active run per item — a second verify while one runs is almost always
   // an agent misreading slowness as failure. Applies to sync requests too so
