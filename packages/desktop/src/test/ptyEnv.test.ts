@@ -90,6 +90,93 @@ describe('what must not leak into a spawned agent', () => {
   });
 });
 
+/**
+ * Inheriting a Claude Code session (BUG 9a961390).
+ *
+ * The bug behind "going back to a session does not work", and it was never in
+ * the resume code at all. Launch this app from a terminal that is already
+ * running Claude Code — an ordinary thing to do in a repo about orchestrating
+ * agents — and the Electron process inherits that session's markers. They were
+ * passed straight through to every agent the app spawned, Claude saw
+ * CLAUDE_CODE_CHILD_SESSION, turned transcript saving OFF, and with no
+ * transcript there was no conversation for `--continue` to continue. Resume
+ * never had anything to find.
+ *
+ * Confirmed from the running app (`ps -Eww` on the Electron process) and from
+ * the agent itself, which answered "no prior conversation history" when asked
+ * whether it remembered the session.
+ */
+describe('a Claude Code session this app was launched from', () => {
+  const INHERITED = {
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_SESSION_ID: 'c62e39bb-1d4b-4e51-a6a9-e25fd08e5547',
+    CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/50270.sock',
+    CLAUDE_CODE_MESSAGING_TOKEN: '621e2153',
+    CLAUDE_CODE_ENTRYPOINT: 'cli',
+    CLAUDE_CODE_EXECPATH: '/usr/local/bin/claude.exe',
+  };
+
+  it('does not follow the agent we spawn', () => {
+    // The same rule already applied to TERM: a variable that describes WHO
+    // LAUNCHED US is not a fact about the agent we start.
+    const env = buildPtyEnv(INHERITED);
+    for (const key of Object.keys(INHERITED)) {
+      expect(env[key], key).toBeUndefined();
+    }
+  });
+
+  it('is what turned transcript saving off, so the marker matters most', () => {
+    // Named separately because it is the one that caused the damage. The
+    // others are noise; this one silently disabled the feature.
+    expect(buildPtyEnv({ CLAUDE_CODE_CHILD_SESSION: '1' }).CLAUDE_CODE_CHILD_SESSION)
+      .toBeUndefined();
+  });
+
+  it('keeps the user\'s own Claude configuration', () => {
+    /*
+     * The line this must not cross. Stripping by prefix would take
+     * ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR with it and break the agent
+     * outright — a worse bug than the one being fixed. Only the per-session
+     * markers go, and they are listed by name.
+     */
+    const env = buildPtyEnv({
+      ANTHROPIC_API_KEY: 'sk-test',
+      CLAUDE_CONFIG_DIR: '/Users/me/.claude',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+    });
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-test');
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/Users/me/.claude');
+    expect(env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+  });
+});
+
+/**
+ * Making persistence a guarantee rather than a hope.
+ *
+ * Stripping the inherited marker fixes the case we found. It does not make
+ * resume RELIABLE: transcript saving can be off for reasons this app cannot
+ * see, and the failure is silent — the terminal works perfectly and the
+ * conversation simply is not there tomorrow.
+ *
+ * Resume is a feature this app offers, so it asks for what that feature needs
+ * instead of depending on the ambient environment. The variable name is taken
+ * from the Claude binary itself (`strings`), not from the truncated warning
+ * text that led us here.
+ */
+describe('transcript persistence', () => {
+  it('is asked for explicitly', () => {
+    expect(buildPtyEnv({}).CLAUDE_CODE_FORCE_SESSION_PERSISTENCE).toBe('1');
+  });
+
+  it('is forced even when the environment says otherwise', () => {
+    // The point of forcing. An inherited '0' is exactly the silent-failure
+    // case, and deferring to it would leave resume broken for that user
+    // forever with no visible symptom.
+    const env = buildPtyEnv({ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: '0' });
+    expect(env.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE).toBe('1');
+  });
+});
+
 describe('merging a login shell PATH', () => {
   it('puts the recovered entries first', () => {
     // They are the ones the inherited PATH is missing.

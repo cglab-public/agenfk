@@ -39,7 +39,32 @@ export const LOGIN_CAPTURE_GUARD = 'AGENFK_SHELL_CAPTURE';
  * one — an agent that shells out to node would re-enter our own binary.
  */
 const STRIP_PREFIXES = ['ELECTRON_', 'VITE_', 'MAIN_VITE_', 'PRELOAD_VITE_', 'RENDERER_VITE_', 'npm_', 'AGENFK_SHELL_'];
-const STRIP_EXACT = new Set(['NODE_ENV', 'NODE_OPTIONS', 'INIT_CWD', 'VITEST', 'VITEST_WORKER_ID', 'VITEST_POOL_ID']);
+/**
+ * The Claude Code session this app was LAUNCHED FROM, if it was.
+ *
+ * Listed by name and never by prefix. `CLAUDE_CODE_CHILD_SESSION` is the one
+ * that did the damage — Claude sees it, turns transcript saving off, and then
+ * `--continue` has no conversation to continue, which is the whole of "going
+ * back to a session does not work". The rest are the same session's identity
+ * and control channel, which describe a conversation our agent is not part of.
+ *
+ * By name because the prefix is shared with configuration that MUST survive:
+ * stripping `CLAUDE_CODE_*` wholesale would be a worse bug than the one this
+ * fixes. Anything the user exported for their own agent stays.
+ */
+const STRIP_INHERITED_AGENT_SESSION = [
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+];
+
+const STRIP_EXACT = new Set([
+  'NODE_ENV', 'NODE_OPTIONS', 'INIT_CWD', 'VITEST', 'VITEST_WORKER_ID', 'VITEST_POOL_ID',
+  ...STRIP_INHERITED_AGENT_SESSION,
+]);
 
 const shouldStrip = (key: string): boolean =>
   STRIP_EXACT.has(key) || STRIP_PREFIXES.some(p => key.startsWith(p));
@@ -128,6 +153,28 @@ export function buildPtyEnv(base: NodeJS.ProcessEnv, loginPath?: string | null):
   env.TERM = 'xterm-256color';
   env.COLORTERM = 'truecolor';
   env.TERM_PROGRAM = 'agenfk';
+
+  /*
+   * Ask for the transcript, rather than hoping it is on.
+   *
+   * Stripping the inherited marker above fixes the case we found. It does not
+   * make resume reliable: persistence can be off for reasons this process
+   * cannot see, and the failure is SILENT — the terminal behaves perfectly and
+   * the conversation is simply not there when you come back for it.
+   *
+   * Resume is something this app offers, so it asks for what resume needs.
+   * Forced rather than defaulted, for the same reason as TERM: an inherited
+   * value describes somebody else's intent, and here that value being '0' is
+   * exactly the case that leaves the feature quietly broken.
+   *
+   * Set unconditionally because the name is namespaced — an agent that is not
+   * Claude ignores it — and the alternative, threading the agent id down here,
+   * would make the environment depend on the launch instead of on the machine.
+   *
+   * The name comes from the Claude binary itself, not from the truncated
+   * warning that led us here.
+   */
+  env.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1';
 
   // A shell with no HOME cannot read its own configuration.
   if (!env.HOME) env.HOME = os.homedir();
