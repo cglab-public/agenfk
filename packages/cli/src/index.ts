@@ -1794,11 +1794,35 @@ program
      * not a machine with broken pi enforcement, and a check that complains
      * about absent software trains people to ignore it.
      */
-    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-    if (fs.existsSync(claudeSettingsPath)) {
+    /*
+     * Gated on the CLIENT's directory, not on settings.json.
+     *
+     * Gating on the file reopened the very bug this check exists to close:
+     * Claude Code creates ~/.claude without necessarily creating
+     * settings.json, so the single most important case — Claude installed,
+     * enforcement never installed — skipped the check entirely and printed
+     * "All systems healthy".
+     */
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const claudeSettingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(claudeDir)) {
       process.stdout.write('Checking Claude Code enforcement... ');
+      // Three distinct states, and collapsing them misdiagnoses two of them.
+      // An unreadable file is NOT "not registered": the remedy for that one
+      // rewrites settings.json wholesale, so telling a user with a trailing
+      // comma to reinstall would silently delete the rest of their config.
       let parsed: unknown = null;
-      try { parsed = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8')); } catch { parsed = null; }
+      let unreadable = false;
+      if (fs.existsSync(claudeSettingsPath)) {
+        try { parsed = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8')); }
+        catch { unreadable = true; }
+      }
+      if (unreadable) {
+        console.log(chalk.red('UNREADABLE'));
+        console.log(chalk.yellow(`   - Could not parse ${claudeSettingsPath}`));
+        console.log(chalk.gray('   - Fix that file by hand. Reinstalling would overwrite it.'));
+        issues++;
+      } else {
       const result = checkClaudeCodeEnforcement(
         parsed,
         hook => ['', '.cmd', '.mjs'].some(ext =>
@@ -1818,6 +1842,11 @@ program
         console.log(chalk.gray(`   - Fix: ${result.hint}`));
         issues++;
       }
+      }
+    } else {
+      // Said, not skipped. Every sibling check prints a line even when it does
+      // not apply, and silence here is indistinguishable from "fine".
+      console.log('Checking Claude Code enforcement... ' + chalk.gray('N/A (Claude Code not detected)'));
     }
 
     const piDir = path.join(os.homedir(), '.pi');
@@ -1825,15 +1854,26 @@ program
       process.stdout.write('Checking pi enforcement... ');
       const result = checkPiEnforcement(
         fs.existsSync(path.join(piDir, 'agent', 'extensions', 'agenfk.ts')),
+        // The extension delegates every decision to these, and its runner
+        // swallows a spawn failure rather than break the host — so missing
+        // scripts mean pi allows every edit, silently.
+        script => fs.existsSync(path.join(os.homedir(), '.agenfk', 'bin', script)),
       );
       if (result.ok) {
         console.log(chalk.green('OK'));
       } else {
-        console.log(chalk.red('MISSING'));
-        console.log(chalk.yellow(`   - Absent: ${result.missing.join(', ')}`));
+        console.log(chalk.red('INCOMPLETE'));
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Absent: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Extension present but its scripts are gone: ${result.missingBinaries.join(', ')}`));
+        }
         console.log(chalk.gray(`   - Fix: ${result.hint}`));
         issues++;
       }
+    } else {
+      console.log('Checking pi enforcement... ' + chalk.gray('N/A (pi not detected)'));
     }
 
     // 4. Skills Check
