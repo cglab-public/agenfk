@@ -34,6 +34,7 @@ export function AdminFederation() {
   const qc = useQueryClient();
   const [parentUrl, setParentUrl] = useState('');
   const [inviteToken, setInviteToken] = useState('');
+  const [name, setName] = useState('');
   const [reason, setReason] = useState('');
   const [confirmLeave, setConfirmLeave] = useState(false);
 
@@ -46,8 +47,11 @@ export function AdminFederation() {
   const join = useMutation({
     mutationFn: () => api.post('/v1/admin/federation/join', {
       parentUrl: parentUrl.trim(), inviteToken: inviteToken.trim(),
+      // Omitted rather than sent empty, so the server picks its own default
+      // instead of being handed a blank name to validate.
+      ...(name.trim() ? { name: name.trim() } : {}),
     }),
-    onSuccess: () => { setParentUrl(''); setInviteToken(''); invalidate(); },
+    onSuccess: () => { setParentUrl(''); setInviteToken(''); setName(''); invalidate(); },
   });
   const requestRelease = useMutation({
     mutationFn: () => api.post('/v1/admin/federation/release-request', { reason: reason.trim() }),
@@ -107,6 +111,11 @@ export function AdminFederation() {
               value={parentUrl} onChange={e => setParentUrl(e.target.value)} placeholder="https://hub.example.com" />
           </label>
           <label className="text-xs text-ink-tertiary">
+            Name on the parent&apos;s roster (optional)
+            <input aria-label="Name on the parent's roster" className={`mt-1 ${inputCls}`}
+              value={name} onChange={e => setName(e.target.value)} placeholder="acme-emea" />
+          </label>
+          <label className="text-xs text-ink-tertiary">
             Join token
             <input aria-label="Join token" className={`mt-1 ${inputCls}`}
               value={inviteToken} onChange={e => setInviteToken(e.target.value)} />
@@ -126,7 +135,9 @@ export function AdminFederation() {
     );
   }
 
-  const released = d.state === 'revoked';
+  // The server's own verdict, not a second copy of the rule. Two predicates
+  // for one guarantee is how they drift.
+  const released = d.canLeave === true;
   return (
     <div className="space-y-5">
       <section className={cardCls}>

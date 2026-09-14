@@ -59,6 +59,21 @@ describe('Admin → Parent hub', () => {
     }));
   });
 
+  it('sends a roster name when one is given, and omits it when not', async () => {
+    // Without a name every unconfigured child lands on the parent's board as
+    // the internal org id, indistinguishable from its siblings.
+    renderPage({ bound: false, outboxDepth: 0 });
+    await screen.findByRole('textbox', { name: /parent hub url/i });
+    post.mockResolvedValue({ data: { parentUrl: 'https://p.example.com', childHubId: 'ch-1', state: 'active' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /parent hub url/i }), { target: { value: 'https://p.example.com' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /join token/i }), { target: { value: 'tok' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /name on the parent/i }), { target: { value: '  acme-emea  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/federation/join', {
+      parentUrl: 'https://p.example.com', inviteToken: 'tok', name: 'acme-emea',
+    }));
+  });
+
   it('surfaces the parent refusing the invite', async () => {
     renderPage({ bound: false, outboxDepth: 0 });
     await screen.findByRole('textbox', { name: /parent hub url/i });
@@ -98,6 +113,13 @@ describe('Admin → Parent hub', () => {
     renderPage({ ...BOUND, releaseRequested: true });
     expect(await screen.findByText(/waiting for the parent/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /leave/i })).toBeDisabled();
+  });
+
+  it('follows the server\'s canLeave verdict rather than second-guessing it', async () => {
+    // If the UI recomputed the rule it could drift from the route that
+    // enforces it, and the screen would offer a button the API refuses.
+    renderPage({ ...BOUND, state: 'revoked', canLeave: false });
+    expect(await screen.findByRole('button', { name: /leave/i })).toBeDisabled();
   });
 
   it('enables leave once the parent has released the hub, behind a confirmation', async () => {

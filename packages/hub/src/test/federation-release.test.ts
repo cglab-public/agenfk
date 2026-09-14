@@ -87,6 +87,18 @@ describe('parent hub: a child asking to be released', () => {
     expect(row.release_reason).toBe('second');
   });
 
+  it('re-asking with no reason keeps the sentence the admin was reading', async () => {
+    // "no reason" is not a newer reason. Overwriting unconditionally erased
+    // the only thing on the roster explaining why the hub wants out.
+    const a = await enroll('alpha');
+    await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${a.token}`).send({ reason: 'splitting off' });
+    await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${a.token}`).send({});
+    const row = await ctx.db.get('SELECT release_reason FROM child_hubs WHERE id = ?', [a.childHubId]);
+    expect(row.release_reason).toBe('splitting off');
+  });
+
   it('shows up on the admin roster so an admin can act on it', async () => {
     const a = await enroll('alpha');
     await enroll('beta');

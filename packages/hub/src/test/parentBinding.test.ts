@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../db';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, markBindingRevoked,
-  PARENT_BINDING_KEY, assertHttpUrl,
+  PARENT_BINDING_KEY, assertHttpUrl, readBindingStateUnverified,
 } from '../services/federation/parentBinding';
 
 const SECRET = 'a'.repeat(64);
@@ -105,8 +105,27 @@ describe('assertHttpUrl', () => {
     expect(assertHttpUrl('https://parent.example.com/?x=1#frag')).toBe('https://parent.example.com');
   });
 
-  it('accepts http as well as https, for a LAN parent', () => {
-    expect(assertHttpUrl('http://hub.internal:4000')).toBe('http://hub.internal:4000');
+  it('accepts http as well as https, for a plain-HTTP parent', () => {
+    expect(assertHttpUrl('http://hub.example.com:4000')).toBe('http://hub.example.com:4000');
+  });
+
+  it('refuses a private or loopback parent unless the operator opts in', () => {
+    // The admin chooses this URL and the join route reflects the upstream
+    // status, so without a guard the form is a probe for internal services.
+    for (const host of [
+      'http://localhost:4000', 'http://127.0.0.1:4000', 'http://10.1.2.3',
+      'http://192.168.0.5', 'http://169.254.169.254', 'http://172.20.0.1',
+      'http://hub.internal', 'http://hub.local',
+    ]) {
+      expect(() => assertHttpUrl(host)).toThrow(/private or loopback/i);
+      expect(assertHttpUrl(host, { allowPrivate: true })).toBe(host.replace(/\/$/, ''));
+    }
+  });
+
+  it('does not mistake a public host for a private one', () => {
+    for (const host of ['https://hub.example.com', 'https://10x.example.com', 'https://internal.example.com']) {
+      expect(() => assertHttpUrl(host)).not.toThrow();
+    }
   });
 
   it('refuses anything that is not http(s), and anything unparseable', () => {
@@ -115,5 +134,29 @@ describe('assertHttpUrl', () => {
     }
     expect(() => assertHttpUrl('not a url')).toThrow(/valid/i);
     expect(() => assertHttpUrl('')).toThrow(/valid/i);
+  });
+});
+
+describe('readBindingStateUnverified', () => {
+  it('reports the state without the key, because release is not a secret', async () => {
+    const db = await openDb(':memory:');
+    expect(await readBindingStateUnverified(db)).toEqual({ present: false, state: null });
+    await writeParentBinding(db, SECRET, binding);
+    expect(await readBindingStateUnverified(db)).toEqual({ present: true, state: 'active' });
+    await markBindingRevoked(db, SECRET);
+    // the whole point: still readable under a key that cannot decrypt the token
+    expect(await readBindingStateUnverified(db)).toEqual({ present: true, state: 'revoked' });
+    await expect(readParentBinding(db, OTHER)).rejects.toThrow();
+    await db.close();
+  });
+
+  it('treats a corrupt or tokenless row as absent', async () => {
+    const db = await openDb(':memory:');
+    await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [PARENT_BINDING_KEY, 'not json']);
+    expect(await readBindingStateUnverified(db)).toEqual({ present: false, state: null });
+    await db.run('DELETE FROM system_state WHERE key = ?', [PARENT_BINDING_KEY]);
+    await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [PARENT_BINDING_KEY, JSON.stringify({ parentUrl: 'x' })]);
+    expect(await readBindingStateUnverified(db)).toEqual({ present: false, state: null });
+    await db.close();
   });
 });

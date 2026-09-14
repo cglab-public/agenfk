@@ -36,8 +36,27 @@ interface StoredBinding {
   state: BindingState;
 }
 
+/**
+ * Hosts a parent hub may not live on unless an operator says otherwise.
+ *
+ * The child fetches this URL with an admin-supplied value, so without a guard
+ * the join form is a semi-blind SSRF probe: the route reflects the upstream
+ * status and error body, which is enough to map internal ports. A LAN parent
+ * is a legitimate deployment, so this is an opt-in rather than a hard no.
+ */
+const PRIVATE_HOST_RE = new RegExp([
+  '^localhost$', '^127\\.', '^0\\.0\\.0\\.0$', '^\\[?::1\\]?$',
+  '^10\\.', '^192\\.168\\.', '^169\\.254\\.',
+  '^172\\.(1[6-9]|2[0-9]|3[01])\\.',
+  '\\.local$', '\\.internal$',
+].join('|'), 'i');
+
+export function isPrivateHost(host: string): boolean {
+  return PRIVATE_HOST_RE.test(host.replace(/^\[|\]$/g, ''));
+}
+
 /** Only http(s): the URL is fetched by the worker, so file:// and javascript: are refused. */
-export function assertHttpUrl(raw: string): string {
+export function assertHttpUrl(raw: string, opts: { allowPrivate?: boolean } = {}): string {
   let u: URL;
   try {
     u = new URL(raw);
@@ -46,6 +65,11 @@ export function assertHttpUrl(raw: string): string {
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error('parentUrl must be an http(s) URL');
+  }
+  if (!opts.allowPrivate && isPrivateHost(u.hostname)) {
+    throw new Error(
+      'parentUrl points at a private or loopback address. Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.',
+    );
   }
   return u.origin + (u.pathname === '/' ? '' : u.pathname.replace(/\/+$/, ''));
 }
@@ -124,4 +148,29 @@ export async function releaseRequestedFlag(db: DB): Promise<boolean> {
 export async function setReleaseRequestedFlag(db: DB, on: boolean): Promise<void> {
   await db.run('DELETE FROM system_state WHERE key = ?', [RELEASE_REQUESTED_KEY]);
   if (on) await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [RELEASE_REQUESTED_KEY, '1']);
+}
+
+/**
+ * The binding's state WITHOUT decrypting it.
+ *
+ * `state` is stored in clear alongside the encrypted token precisely so this is
+ * possible. The leave route needs it: it used to treat "cannot decrypt" as "no
+ * parent" and clear the row, which turned rotating AGENFK_HUB_SECRET_KEY into a
+ * way for a child to let itself out of a group through the product. Whether the
+ * parent has released this hub is not a secret, and must not depend on holding
+ * the key.
+ */
+export async function readBindingStateUnverified(
+  db: DB,
+): Promise<{ present: boolean; state: BindingState | null }> {
+  const row = await db.get<{ value: string }>('SELECT value FROM system_state WHERE key = ?', [PARENT_BINDING_KEY]);
+  if (!row?.value) return { present: false, state: null };
+  try {
+    const parsed = JSON.parse(row.value);
+    if (!parsed || typeof parsed.encToken !== 'string') return { present: false, state: null };
+    return { present: true, state: parsed.state === 'revoked' ? 'revoked' : 'active' };
+  } catch {
+    // Unparseable is not a binding — the same call readParentBinding makes.
+    return { present: false, state: null };
+  }
 }

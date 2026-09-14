@@ -172,6 +172,39 @@ describe('child hub: join, request release, leave', () => {
       expect(status.body.releaseRequested).toBe(true);
     });
 
+    it('leaves the local flag alone when the parent refuses the request', async () => {
+      // Setting it first stranded the admin: the UI hides the reason field on
+      // this flag, so a failed request showed "waiting for the parent" forever
+      // with no way to ask again.
+      const out = await createHubApp({
+        dbPath: TEST_DB + '3', secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org',
+        federationClient: {
+          async enroll() { return { token: TOKEN, childHubId: 'ch-9' }; },
+          async requestRelease() { throw Object.assign(new Error('nope'), { response: { status: 503 } }); },
+        },
+      } as any);
+      await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
+      const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+      await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ parentUrl: PARENT, inviteToken: 't' });
+      const bad = await supertest(out.app).post('/v1/admin/federation/release-request').set('Cookie', cookie).send({ reason: 'please' });
+      expect(bad.status).toBeGreaterThanOrEqual(400);
+      const status = await supertest(out.app).get('/v1/admin/federation').set('Cookie', cookie);
+      expect(status.body.releaseRequested).toBe(false);
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
+      for (const sfx of ['', '-wal', '-shm']) { const f = TEST_DB + '3' + sfx; if (fs.existsSync(f)) fs.unlinkSync(f); }
+    });
+
+    it('is refused once the hub has already been released', async () => {
+      await join({ parentUrl: PARENT, inviteToken: 't' });
+      const current = (await readParentBinding(ctx.db, SECRET))!;
+      await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
+      const r = await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
+      expect(r.status).toBe(409);
+      expect(r.body.error).toMatch(/already been released/i);
+    });
+
     it('is refused when the hub has no parent', async () => {
       expect((await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({})).status).toBe(409);
     });
@@ -203,6 +236,34 @@ describe('child hub: join, request release, leave', () => {
       expect(await readParentBinding(ctx.db, SECRET)).not.toBeNull();
     });
 
+    it('cannot be escaped by rotating AGENFK_HUB_SECRET_KEY', async () => {
+      // The route used to read the binding with the key and treat "cannot
+      // decrypt" as "no parent", clearing it. That made a key rotation a
+      // product-surface way out of the group. Whether the parent has released
+      // this hub is stored in clear precisely so it does not need the key.
+      await join({ parentUrl: PARENT, inviteToken: 't' });
+      ctx.config.secretKey = 'b'.repeat(64);
+      const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
+      expect(status.body).toMatchObject({ bound: true, unreadable: true });
+      const r = await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
+      expect(r.status).toBe(409);
+      // still bound under the original key
+      ctx.config.secretKey = SECRET;
+      expect((await readParentBinding(ctx.db, SECRET))!.state).toBe('active');
+    });
+
+    it('still lets a genuinely released hub leave under a rotated key', async () => {
+      // The refusal above must not strand a hub the parent HAS let go.
+      await join({ parentUrl: PARENT, inviteToken: 't' });
+      const current = (await readParentBinding(ctx.db, SECRET))!;
+      await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
+      ctx.config.secretKey = 'b'.repeat(64);
+      const r = await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
+      expect(r.status).toBe(200);
+      ctx.config.secretKey = SECRET;
+      expect(await readParentBinding(ctx.db, SECRET)).toBeNull();
+    });
+
     it('succeeds once the parent has released the hub', async () => {
       await join({ parentUrl: PARENT, inviteToken: 't' });
       // What the parent detaching looks like from here: the worker's next call
@@ -214,6 +275,18 @@ describe('child hub: join, request release, leave', () => {
       const r = await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
       expect(r.status).toBe(200);
       expect(await readParentBinding(ctx.db, SECRET)).toBeNull();
+    });
+
+    it('does not carry a stale release request into the next group', async () => {
+      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
+      const current = (await readParentBinding(ctx.db, SECRET))!;
+      await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
+      await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
+      await join({ parentUrl: 'https://another.example.com', inviteToken: 't2' });
+      const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
+      // a freshly joined hub must not show as already waiting to be let go
+      expect(status.body).toMatchObject({ bound: true, releaseRequested: false, canLeave: false });
     });
 
     it('is a no-op rather than an error on a hub that never had a parent', async () => {

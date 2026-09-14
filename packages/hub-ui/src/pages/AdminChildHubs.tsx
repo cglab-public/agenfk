@@ -234,8 +234,13 @@ export function AdminChildHubs() {
                     {c.name}
                     {c.releaseRequested && !c.detached && (
                       <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
-                        <AlertTriangle className="w-3 h-3" /> release requested
-                        {c.releaseReason ? `: ${c.releaseReason}` : ''}
+                        <AlertTriangle className="w-3 h-3" />
+                        <span title={c.releaseReason ?? undefined}>
+                          release requested
+                          {c.releaseReason
+                            ? `: ${c.releaseReason.length > 60 ? `${c.releaseReason.slice(0, 60)}…` : c.releaseReason}`
+                            : ''}
+                        </span>
                       </span>
                     )}
                     {c.detached && (

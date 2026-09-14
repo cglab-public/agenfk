@@ -170,3 +170,41 @@ describe('PG parity: child-side federation outbox (CGLAB-181)', () => {
     await db.close();
   });
 });
+
+describe('PG parity: release requests (CGLAB-181)', () => {
+  it('records a request, keeps the original timestamp, and surfaces it on the roster', async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enr = await supertest(app).post('/v1/federation/enroll').send({
+      inviteToken: inv.body.inviteToken, childHub: { name: 'pg-child' },
+    });
+    expect(enr.status).toBe(200);
+
+    // An untyped NULL into release_reason TEXT and an ISO string into
+    // COALESCE(release_requested_at, $1) against TIMESTAMPTZ — exactly the
+    // parameter shapes this file exists to catch.
+    const first = await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${enr.body.token}`).send({});
+    expect(first.status).toBe(200);
+
+    const MARKER = '2020-01-01T00:00:00.000Z';
+    await db.run('UPDATE child_hubs SET release_requested_at = ? WHERE id = ?', [MARKER, enr.body.childHubId]);
+    const second = await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${enr.body.token}`).send({ reason: 'splitting off' });
+    expect(second.status).toBe(200);
+
+    const list = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', cookie);
+    const row = list.body.childHubs[0];
+    expect(row).toMatchObject({ releaseRequested: true, releaseReason: 'splitting off' });
+    // Date-shaped on real pg, string on pg-mem; the DTO must emit one shape
+    expect(new Date(row.releaseRequestedAt).toISOString()).toBe(MARKER);
+
+    // re-asking with no reason must not erase the sentence the admin is reading
+    await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${enr.body.token}`).send({});
+    const after = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', cookie);
+    expect(after.body.childHubs[0].releaseReason).toBe('splitting off');
+
+    await db.close();
+  });
+});

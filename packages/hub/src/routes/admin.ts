@@ -18,7 +18,7 @@ import { mintChildHubInvite } from './federation.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
-  releaseRequestedFlag, setReleaseRequestedFlag,
+  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified,
 } from '../services/federation/parentBinding.js';
 import { outboxDepth } from '../services/federation/federationSync.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
@@ -2295,12 +2295,19 @@ export function adminRouter(ctx: HubServerContext): Router {
   const federationClient = (): FederationClient =>
     (ctx.config.federationClient as FederationClient | undefined) ?? httpFederationClient();
 
-  /** Surface the parent's own error text rather than a bare 500. */
+  /**
+   * Surface the parent's own sentence rather than a bare 500 — "invite token
+   * already used" is the message worth reading. Bounded and shape-checked,
+   * because the admin chooses the URL: reflecting an arbitrary upstream body
+   * would turn this route into a readout for whatever it was pointed at.
+   */
   const parentError = (err: unknown): { status: number; error: string } => {
     const status = (err as any)?.response?.status;
     const fromParent = (err as any)?.response?.data?.error;
-    if (typeof fromParent === 'string') return { status: status >= 400 && status < 500 ? status : 502, error: fromParent };
-    return { status: 502, error: `could not reach the parent hub: ${(err as Error).message}` };
+    const looksLikeHub = typeof fromParent === 'string' && fromParent.length > 0 && fromParent.length <= 200
+      && !/[<>]/.test(fromParent);
+    if (looksLikeHub && status >= 400 && status < 500) return { status, error: fromParent };
+    return { status: 502, error: 'the parent hub refused the request or could not be reached' };
   };
 
   router.post('/federation/join', guard, async (req: Request, res: Response, next) => {
@@ -2310,29 +2317,42 @@ export function adminRouter(ctx: HubServerContext): Router {
 
       let parentUrl: string;
       try {
-        parentUrl = assertHttpUrl(String(req.body?.parentUrl ?? ''));
+        parentUrl = assertHttpUrl(String(req.body?.parentUrl ?? ''), {
+          allowPrivate: process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT === '1',
+        });
       } catch (err) {
         res.status(400).json({ error: (err as Error).message });
         return;
       }
-      // Pointing a hub at itself would have it enrol as its own child and then
-      // heartbeat into a loop.
-      if (parentUrl === assertHttpUrl(publicHubUrl(req))) {
-        res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
-        return;
-      }
+      // A footgun guard, not a control: publicHubUrl comes from proxy headers,
+      // so an admin typing a loopback address or a different scheme walks past
+      // it. It catches the obvious paste, which is what it is for.
+      try {
+        if (parentUrl === assertHttpUrl(publicHubUrl(req), { allowPrivate: true })) {
+          res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
+          return;
+        }
+      } catch { /* a malformed Host header is not the admin's problem */ }
 
       if (await readParentBinding(ctx.db, ctx.config.secretKey)) {
         res.status(409).json({ error: 'this hub already has a parent; it must be released before joining another' });
         return;
       }
 
+      // What this hub will be CALLED on the parent's roster. Defaulting to the
+      // org id put every unconfigured child on the board as "default", which is
+      // an internal tenant key and indistinguishable between siblings.
+      const requested = typeof req.body?.name === 'string' ? req.body.name : '';
+      const name = validChildHubName(requested)
+        ?? validChildHubName(new URL(publicHubUrl(req)).host)
+        ?? ctx.config.defaultOrgId;
+
       let enrolled;
       try {
         enrolled = await federationClient().enroll({
           parentUrl,
           inviteToken,
-          name: ctx.config.defaultOrgId,
+          name,
           hubVersion: HUB_VERSION,
         });
       } catch (err) {
@@ -2345,9 +2365,19 @@ export function adminRouter(ctx: HubServerContext): Router {
         return;
       }
 
-      await writeParentBinding(ctx.db, ctx.config.secretKey, {
-        parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
-      });
+      try {
+        await writeParentBinding(ctx.db, ctx.config.secretKey, {
+          parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
+        });
+      } catch (err) {
+        // The parent has already created the row and burnt the invite, so a
+        // bare 500 would leave an orphan on its roster that nobody can name.
+        console.error(`[FEDERATION] enrolled as ${enrolled.childHubId} at ${parentUrl} but could not store the binding:`, (err as Error).message);
+        res.status(500).json({
+          error: `enrolled with the parent as ${enrolled.childHubId}, but this hub could not store the credential. Ask the parent hub to detach ${enrolled.childHubId}, then try again.`,
+        });
+        return;
+      }
       // Deliberately no token in the response: it is a credential the browser
       // has no use for.
       res.json({ parentUrl, childHubId: enrolled.childHubId, state: 'active' });
@@ -2395,6 +2425,9 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(status).json({ error });
         return;
       }
+      // Only after the parent accepted. Setting it first meant a refused
+      // request still hid the reason field behind "waiting for the parent",
+      // stranding the admin with no way to ask again.
       await setReleaseRequestedFlag(ctx.db, true);
       res.json({ ok: true, releaseRequested: true });
     } catch (err) { next(err); }
@@ -2402,16 +2435,21 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.delete('/federation', guard, async (_req: Request, res: Response, next) => {
     try {
-      const binding = await readParentBinding(ctx.db, ctx.config.secretKey).catch(() => null);
-      if (!binding) {
-        // Nothing to leave. Clearing anyway so an unreadable row cannot strand
-        // a hub with a binding it can neither use nor remove.
+      // Read the state WITHOUT the key. Treating "cannot decrypt" as "no
+      // parent" and clearing the row made rotating AGENFK_HUB_SECRET_KEY a
+      // product-surface way out of the group: restart under a new key, and
+      // two clicks later the hub was standalone and free to join elsewhere.
+      // Whether the parent has released this hub is not a secret, so it is
+      // stored in clear and gates this route on its own.
+      const { present, state } = await readBindingStateUnverified(ctx.db);
+      if (!present) {
+        // Nothing usable to leave: an absent or unparseable row.
         await clearParentBinding(ctx.db);
         await setReleaseRequestedFlag(ctx.db, false);
         res.json({ bound: false });
         return;
       }
-      if (binding.state !== 'revoked') {
+      if (state !== 'revoked') {
         res.status(409).json({
           error: 'this hub cannot leave on its own — ask the parent hub to release it, then leave once it has',
         });

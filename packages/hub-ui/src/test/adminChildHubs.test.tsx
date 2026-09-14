@@ -212,6 +212,19 @@ describe('Admin → Child hubs', () => {
     expect(within(latam).queryByText(/release requested/i)).toBeNull();
   });
 
+  it('truncates a long release reason rather than letting it disfigure the table', async () => {
+    const long = 'x'.repeat(400);
+    renderPage({
+      isParent: true,
+      childHubs: [{ ...TWO.childHubs[0], releaseRequested: true, releaseReason: long }],
+    });
+    const rows = await screen.findAllByRole('row');
+    const emea = rows.find(r => r.textContent?.includes('acme-emea'))!;
+    expect(emea.textContent!.length).toBeLessThan(200);
+    // the whole sentence is still reachable
+    expect(within(emea).getByTitle(long)).toBeInTheDocument();
+  });
+
   it('tells the admin that detaching is how a release request is granted', async () => {
     renderPage({
       isParent: true,

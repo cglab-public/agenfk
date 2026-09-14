@@ -126,12 +126,13 @@ export function federationRouter(ctx: HubServerContext): Router {
       const raw = req.body?.reason;
       const reason = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 500) : null;
       // COALESCE keeps the ORIGINAL timestamp: an impatient child re-asking
-      // must not jump the queue an admin is working through. The newest reason
-      // still wins, because that is the one worth reading.
+      // must not jump the queue an admin is working through. The reason is
+      // COALESCEd the other way round — a NEW reason replaces, but re-asking
+      // with none must not erase the sentence the admin was reading.
       await ctx.db.run(
         `UPDATE child_hubs
             SET release_requested_at = COALESCE(release_requested_at, ?),
-                release_reason = ?
+                release_reason = COALESCE(?, release_reason)
           WHERE id = ? AND org_id = ?`,
         [new Date().toISOString(), reason, childHubId, orgId],
       );
