@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import type { DB } from '../../db.js';
-import { readParentBinding, markBindingRevoked, type ParentBinding } from './parentBinding.js';
+import { readParentBinding, markBindingRevoked, PARENT_BINDING_KEY, type ParentBinding } from './parentBinding.js';
 
 /**
  * The child half of hub federation (CGLAB-181).
@@ -84,7 +84,7 @@ function messageOf(err: unknown): string {
  */
 export async function enqueueOutbox(db: DB, kind: string, payload: unknown): Promise<boolean> {
   const bound = await db.get<{ value: string }>(
-    'SELECT value FROM system_state WHERE key = ?', ['federation.parent'],
+    'SELECT value FROM system_state WHERE key = ?', [PARENT_BINDING_KEY],
   );
   if (!bound?.value) return false;
   const now = new Date().toISOString();
