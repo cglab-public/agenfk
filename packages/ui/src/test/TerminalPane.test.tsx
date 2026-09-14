@@ -36,7 +36,9 @@ interface FakeTerm {
    */
   write: (d: string, done?: () => void) => void;
   dispose: () => void;
-  onData: (_sessionId: string, cb: (d: string) => void) => { dispose: () => void };
+  /** xterm's own onData - the USER typing. Nothing to do with the bridge's
+   *  session-scoped onData; a blanket rename once conflated the two. */
+  onData: (cb: (d: string) => void) => { dispose: () => void };
   /** Write callbacks not yet fired, and a way to fire them. Real xterm parses
    *  asynchronously, so a test that wants the ack has to say when. */
   pendingWrites: Array<(() => void) | undefined>;
