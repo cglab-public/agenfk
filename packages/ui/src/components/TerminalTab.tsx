@@ -19,6 +19,7 @@ import { X, Plus, GitBranch } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
 import { AgentIcon } from './AgentIcon';
+import { EditorIcon } from './EditorIcon';
 
 export interface TerminalSession {
   /** Stable per open terminal, not per card: a card may have more than one. */
@@ -158,8 +159,9 @@ export function TerminalTab({
             key={editor.id}
             type="button"
             onClick={() => onOpenInEditor?.(current.itemId, editor.id)}
-            className="shrink-0 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-brand hover:text-ink"
+            className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-brand hover:text-ink"
           >
+            <EditorIcon editorId={editor.id} />
             Open in {editor.label}
           </button>
         ))}
