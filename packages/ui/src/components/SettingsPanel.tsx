@@ -25,7 +25,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
-import { sessionPersistenceFromBridge } from './agentBridge';
+import { sessionPersistenceFromBridge, listAgentsFromBridge } from './agentBridge';
 import { api } from '../api';
 
 export interface AppSettings {
@@ -125,6 +125,24 @@ export function SettingsPanel(): React.ReactElement {
     staleTime: Infinity,
   });
 
+  /**
+   * Which installed agents have no flag for skipping their own prompts.
+   *
+   * The setting is global; the support is not. Without naming them, a switch
+   * reading "on" over an agent that ignores it tells the user the rails are off
+   * when they are not — which is exactly what the terminal dialog's per-agent
+   * toggle used to prevent before it moved here.
+   *
+   * Installed only: warning about an agent the user cannot launch is noise
+   * about a choice they cannot make.
+   */
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: listAgentsFromBridge,
+    staleTime: Infinity,
+  });
+  const ignoring = agents.filter(a => a.installed && !a.supportsAutoApprove).map(a => a.label);
+
   const tmuxByDefault = settings?.tmuxByDefault ?? false;
   const autoApproveByDefault = settings?.autoApproveByDefault ?? false;
 
@@ -142,17 +160,24 @@ export function SettingsPanel(): React.ReactElement {
           busy={save.isPending}
           onChange={next => save.mutate({ tmuxByDefault: next })}
           note={persistence && !persistence.available ? (
-            <>
-              tmux is not available here, so sessions will not survive quitting.
-              {persistence.hint && (
-                <>
-                  {' '}
-                  <code className="rounded bg-canvas px-1 py-px font-mono text-[11px]">
-                    {persistence.hint}
-                  </code>
-                </>
-              )}
-            </>
+            persistence.warning === 'tmux_unsupported_on_windows' ? (
+              // The platform reason, never an install command. Telling a
+              // Windows user to `brew install tmux` is worse than saying
+              // nothing: it sends them after a fix that cannot exist there.
+              <>tmux is not available on Windows, so sessions will not survive quitting.</>
+            ) : (
+              <>
+                tmux is not available here, so sessions will not survive quitting.
+                {persistence.hint && (
+                  <>
+                    {' '}
+                    <code className="rounded bg-canvas px-1 py-px font-mono text-[11px]">
+                      {persistence.hint}
+                    </code>
+                  </>
+                )}
+              </>
+            )
           ) : undefined}
         />
       ),
@@ -173,6 +198,12 @@ export function SettingsPanel(): React.ReactElement {
           checked={autoApproveByDefault}
           busy={save.isPending}
           onChange={next => save.mutate({ autoApproveByDefault: next })}
+          /* Only the ones that will ignore it. Listing every agent would be a
+             list of nothing, leaving the reader to work out which half
+             matters. */
+          note={ignoring.length > 0
+            ? `${ignoring.join(' and ')} will ignore this: they have no flag for it and always ask.`
+            : undefined}
         />
       ),
     },

@@ -311,3 +311,130 @@ describe('when tmux is not installed', () => {
     expect(row).not.toHaveTextContent(/brew|not installed/i);
   });
 });
+
+describe('on Windows, where tmux cannot exist at all', () => {
+  it('gives the platform reason instead of an install command that would not work', async () => {
+    // Restored after nearly being lost with the terminal dialog. Telling a
+    // Windows user to `brew install tmux` is worse than saying nothing: it
+    // sends them after a fix that does not exist on their machine.
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'win32',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [],
+        sessionPersistence: async () => ({ available: false, warning: 'tmux_unsupported_on_windows' }),
+      },
+    };
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    await waitFor(() => expect(row).toHaveTextContent(/windows/i));
+    expect(row).not.toHaveTextContent(/brew|apt/i);
+  });
+});
+
+/**
+ * Saying which agents will ignore auto-approve.
+ *
+ * The terminal dialog used to disable its toggle for an agent that has no flag
+ * for this, and say which agent and why. That disappeared with the dialog, and
+ * what disappeared with it was the honesty: the setting is global, the support
+ * is not, and a switch reading "on" over an agent that silently ignores it
+ * tells the user the rails are off when they are not — the precise failure the
+ * old toggle existed to prevent.
+ */
+describe('auto-approve is not honoured by every agent', () => {
+  const withAgents = (agents: unknown[]) => {
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => agents,
+        sessionPersistence: async () => ({ available: true }),
+      },
+    };
+  };
+  const agentsRow = async () => {
+    fireEvent.click(within(
+      await screen.findByRole('navigation', { name: /settings sections/i }),
+    ).getByRole('button', { name: /agents/i }));
+    return (await screen.findByText(/auto-approve/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+  };
+
+  it('names the ones that will ignore it', async () => {
+    withAgents([
+      { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+      { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
+      { id: 'pi', label: 'Pi', installed: true, supportsAutoApprove: false },
+    ]);
+    renderShell();
+    await openSettings();
+    const row = await agentsRow();
+    await waitFor(() => expect(row).toHaveTextContent(/Gemini CLI/));
+    expect(row).toHaveTextContent(/Pi/);
+    // Never the ones that DO honour it: a list of everything is a list of
+    // nothing, and the reader has to work out which half matters.
+    expect(row).not.toHaveTextContent(/Claude Code/);
+  });
+
+  it('says nothing when every installed agent honours it', async () => {
+    // A caveat permanently on screen stops being read.
+    withAgents([
+      { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+    ]);
+    renderShell();
+    await openSettings();
+    const row = await agentsRow();
+    await waitFor(() => expect(row).toHaveTextContent(/auto-approve/i));
+    expect(row).not.toHaveTextContent(/ignore/i);
+  });
+
+  it('ignores agents that are not installed', async () => {
+    // Warning about an agent the user cannot launch is noise about a choice
+    // they cannot make.
+    withAgents([
+      { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+      { id: 'gemini', label: 'Gemini CLI', installed: false, supportsAutoApprove: false },
+    ]);
+    renderShell();
+    await openSettings();
+    const row = await agentsRow();
+    await waitFor(() => expect(row).toHaveTextContent(/auto-approve/i));
+    expect(row).not.toHaveTextContent(/Gemini/);
+  });
+});
+
+describe('when the machine cannot be asked', () => {
+  it('claims nothing while the probe is still in flight', async () => {
+    // An enabled-looking warning that appears and then corrects itself reads as
+    // a glitch; claiming availability before checking is worse.
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: { listAgents: async () => [], sessionPersistence: () => new Promise(() => {}) },
+    };
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    expect(row).not.toHaveTextContent(/not available/i);
+  });
+
+  it('claims nothing when the probe fails outright', async () => {
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [],
+        sessionPersistence: async () => { throw new Error('ipc down'); },
+      },
+    };
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    expect(row).not.toHaveTextContent(/not available/i);
+  });
+});
