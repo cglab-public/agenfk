@@ -54,6 +54,13 @@ interface Tab {
   label: string;
 }
 
+/**
+ * The views the shell can show, and the order it falls back to.
+ *
+ * The ORDER is the user's, not this list's — see `useShellTabs`. This is the
+ * set of what exists, which is a different question from what order they sit
+ * in, and conflating the two is why the bar was a constant in the first place.
+ */
 const TABS: Tab[] = [
   { id: 'kanban', label: 'Kanban' },
   { id: 'terminal', label: 'Terminal' },
@@ -63,6 +70,33 @@ const TABS: Tab[] = [
 type Connection = 'connecting' | 'connected' | 'offline';
 
 const SIDEBAR_KEY = 'agenfk_shell_sidebar';
+const TABS_KEY = 'agenfk_shell_tabs';
+
+/**
+ * The tab bar's order, remembered.
+ *
+ * Rearranging something that resets on the next launch is worse than not being
+ * able to rearrange it at all, so the order is stored — but the stored value is
+ * treated as a SUGGESTION and not as the truth:
+ *
+ *  - an id it names that this build does not have is dropped, because
+ *    rendering a tab with no panel is a hole in the bar;
+ *  - a tab this build has that it does not name is appended, because a build
+ *    that adds a view must not hide it from everyone who has ever reordered;
+ *  - anything that is not a list of strings is ignored entirely.
+ *
+ * All three are "written by a different version", which is the ordinary case
+ * for anything kept in localStorage across upgrades.
+ */
+function readTabOrder(): TabId[] {
+  const known = TABS.map(t => t.id);
+  let stored: unknown;
+  try { stored = JSON.parse(localStorage.getItem(TABS_KEY) ?? 'null'); } catch { stored = null; }
+  if (!Array.isArray(stored)) return known;
+  const kept = stored.filter((id): id is TabId => typeof id === 'string' && (known as string[]).includes(id));
+  const missing = known.filter(id => !kept.includes(id));
+  return [...kept, ...missing];
+}
 
 const CONNECTION_LABEL: Record<Connection, string> = {
   connecting: 'Connecting…',
@@ -76,6 +110,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // CLI, so it must not happen before the user asks — but once it has, the
   // session outlives every tab switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
+  // The bar's order, seeded from storage in the initializer so there is no
+  // first paint in an order the user already changed away from.
+  const [tabOrder, setTabOrder] = React.useState<TabId[]>(() => readTabOrder());
+  const orderedTabs = React.useMemo(
+    () => tabOrder.map(id => TABS.find(t => t.id === id)!).filter(Boolean),
+    [tabOrder],
+  );
+  const moveTabLeft = React.useCallback((id: TabId) => {
+    setTabOrder(prev => {
+      const at = prev.indexOf(id);
+      if (at <= 0) return prev;
+      const next = [...prev];
+      [next[at - 1], next[at]] = [next[at], next[at - 1]];
+      try { localStorage.setItem(TABS_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
+      return next;
+    });
+  }, []);
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
@@ -566,7 +617,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex min-w-0 flex-1 flex-col">
           <div
             role="tablist"
-            aria-label="Workspace"
+            aria-label="Views"
             onKeyDown={onTablistKeyDown}
             // The main column's top row IS the title bar here, so it drags the
             // window like one. Without this the only handle is the sliver of
@@ -582,7 +633,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               reservesWindowControls ? 'pl-12' : 'pl-3',
             )}
           >
-            {TABS.map(tab => (
+            {orderedTabs.map((tab, index) => (
+              <div key={tab.id} className="group relative flex items-end">
               <button
                 key={tab.id}
                 role="tab"
@@ -596,7 +648,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  tab tabIndex -1 and dropped the whole tablist out of the keyboard
                  order, with no way back to the board without a mouse. The first tab
                  holds the stop in that case. */
-              tabIndex={active === tab.id || (!TABS.some(t => t.id === active) && tab.id === TABS[0].id) ? 0 : -1}
+              tabIndex={active === tab.id || (!TABS.some(t => t.id === active) && tab.id === orderedTabs[0]?.id) ? 0 : -1}
                 // Opt back out: a drag region swallows pointer events.
                 data-app-region="no-drag"
                 onClick={() => setActive(tab.id)}
@@ -609,6 +661,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               >
                 {tab.label}
               </button>
+              {/* No move-left on the first tab: it has nowhere to go, and a
+                  control that does nothing is worse than its absence. The
+                  built-in views have no close button either — closing Kanban
+                  would leave no way back to the board, and a bar that can be
+                  emptied is a dead end. */}
+              {index > 0 && (
+                <button
+                  data-app-region="no-drag"
+                  aria-label={`Move ${tab.label} left`}
+                  title={`Move ${tab.label} left`}
+                  onClick={() => moveTabLeft(tab.id)}
+                  className="absolute -left-1 bottom-1.5 rounded px-0.5 font-mono text-[9px] text-ink-tertiary opacity-0 transition-opacity hover:text-ink focus:opacity-100 group-hover:opacity-100"
+                >
+                  ‹
+                </button>
+              )}
+              </div>
             ))}
           </div>
 
