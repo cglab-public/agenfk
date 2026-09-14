@@ -197,6 +197,32 @@ describe('Admin → Child hubs', () => {
     expect(screen.queryByText(/this hub has no child hubs/i)).toBeNull();
   });
 
+  it('flags a child hub that has asked to be released, with its reason', async () => {
+    renderPage({
+      isParent: true,
+      childHubs: [{
+        ...TWO.childHubs[0], releaseRequested: true,
+        releaseRequestedAt: '2026-09-12T10:00:00.000Z', releaseReason: 'splitting off',
+      }, TWO.childHubs[1]],
+    });
+    const rows = await screen.findAllByRole('row');
+    const emea = rows.find(r => r.textContent?.includes('acme-emea'))!;
+    expect(within(emea).getByText(/release requested: splitting off/i)).toBeInTheDocument();
+    const latam = rows.find(r => r.textContent?.includes('acme-latam'))!;
+    expect(within(latam).queryByText(/release requested/i)).toBeNull();
+  });
+
+  it('tells the admin that detaching is how a release request is granted', async () => {
+    renderPage({
+      isParent: true,
+      childHubs: [{ ...TWO.childHubs[0], releaseRequested: true, releaseReason: 'splitting off' }],
+    });
+    await screen.findByText('acme-emea');
+    fireEvent.click(screen.getByRole('button', { name: /detach acme-emea/i }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/asked to be released/i)).toBeInTheDocument();
+  });
+
   it('asks the server for detached hubs only when the toggle is on', async () => {
     renderPage();
     await screen.findByText('acme-emea');

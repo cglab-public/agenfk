@@ -32,6 +32,8 @@ export interface ChildHubDbRow {
   last_seen?: string | Date | null;
   detached_at?: string | Date | null;
   detached_by_email?: string | null;
+  release_requested_at?: string | Date | null;
+  release_reason?: string | null;
 }
 
 export interface ChildHubDto {
@@ -44,6 +46,10 @@ export interface ChildHubDto {
   detached: boolean;
   detachedAt: string | null;
   detachedByEmail: string | null;
+  /** The child has asked to be let go. Detaching it is how an admin agrees. */
+  releaseRequested: boolean;
+  releaseRequestedAt: string | null;
+  releaseReason: string | null;
 }
 
 /** ISO-8601 for a value that may already be a string, a Date, or absent. */
@@ -68,5 +74,8 @@ export function toChildHubDto(row: ChildHubDbRow, now: number = Date.now()): Chi
     detached: !!detachedAt,
     detachedAt,
     detachedByEmail: row.detached_by_email ?? null,
+    releaseRequested: !!row.release_requested_at,
+    releaseRequestedAt: isoOrNull(row.release_requested_at),
+    releaseReason: row.release_reason ?? null,
   };
 }

@@ -75,10 +75,14 @@ describe('parent hub: a child asking to be released', () => {
   it('does not let a request move the original timestamp, so the queue keeps its order', async () => {
     const a = await enroll('alpha');
     await supertest(app).post('/v1/federation/release-request').set('Authorization', `Bearer ${a.token}`).send({ reason: 'first' });
-    const first = (await ctx.db.get('SELECT release_requested_at FROM child_hubs WHERE id = ?', [a.childHubId])).release_requested_at;
+    // Two live `new Date()` values tie whenever both calls land in the same
+    // millisecond, which let a re-stamping bug pass. Pin it to a value no
+    // clock produces instead.
+    const MARKER = '2020-01-01T00:00:00.000Z';
+    await ctx.db.run('UPDATE child_hubs SET release_requested_at = ? WHERE id = ?', [MARKER, a.childHubId]);
     await supertest(app).post('/v1/federation/release-request').set('Authorization', `Bearer ${a.token}`).send({ reason: 'second' });
     const row = await ctx.db.get('SELECT release_requested_at, release_reason FROM child_hubs WHERE id = ?', [a.childHubId]);
-    expect(new Date(row.release_requested_at).toISOString()).toBe(new Date(first).toISOString());
+    expect(new Date(row.release_requested_at).toISOString()).toBe(MARKER);
     // the newest reason wins, since that is what the admin should read
     expect(row.release_reason).toBe('second');
   });

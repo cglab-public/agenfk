@@ -44,6 +44,9 @@ export function AdminLayout() {
         <NavLink to="child-hubs" className={link}>
           <span className="inline-flex items-center gap-1.5"><Network className="w-3.5 h-3.5" /> Child hubs</span>
         </NavLink>
+        <NavLink to="parent-hub" className={link}>
+          <span className="inline-flex items-center gap-1.5"><Network className="w-3.5 h-3.5" /> Parent hub</span>
+        </NavLink>
         <NavLink to="repoint" className={link}>
           <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="w-3.5 h-3.5" /> Repoint</span>
         </NavLink>

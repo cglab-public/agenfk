@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { HubServerContext } from '../server.js';
+import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
@@ -16,6 +16,12 @@ import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/us
 import { rateLimit } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
+import {
+  readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
+  releaseRequestedFlag, setReleaseRequestedFlag,
+} from '../services/federation/parentBinding.js';
+import { outboxDepth } from '../services/federation/federationSync.js';
+import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import {
@@ -2181,7 +2187,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       // dispatch picker and inflate denominators forever.
       const includeDetached = req.query.includeDetached === '1' || req.query.includeDetached === 'true';
       const rows = await ctx.db.all<Record<string, unknown>>(
-        `SELECT id, name, hub_version, first_seen, last_seen, detached_at
+        `SELECT id, name, hub_version, first_seen, last_seen, detached_at, detached_by_email,
+                release_requested_at, release_reason
            FROM child_hubs
           WHERE org_id = ?
           ORDER BY last_seen DESC`,
@@ -2273,6 +2280,150 @@ export function adminRouter(ctx: HubServerContext): Router {
   // that manages child hubs so an admin never has to leave it.
   router.post('/child-hubs/invite', guard, (req: Request, res: Response) => {
     res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));
+  });
+
+
+  // ── This hub's own parent (CGLAB-181) ─────────────────────────────────────
+  //
+  // Joining is the child's to do; LEAVING IS NOT. A child hub cannot let
+  // itself out of a group: DELETE succeeds only once the parent has detached
+  // it, which is what flips the binding to 'revoked'. That keeps the roster at
+  // the parent authoritative — a child cannot quietly vanish from a dispatch
+  // target list — and it is why there is a release REQUEST rather than a
+  // release action.
+
+  const federationClient = (): FederationClient =>
+    (ctx.config.federationClient as FederationClient | undefined) ?? httpFederationClient();
+
+  /** Surface the parent's own error text rather than a bare 500. */
+  const parentError = (err: unknown): { status: number; error: string } => {
+    const status = (err as any)?.response?.status;
+    const fromParent = (err as any)?.response?.data?.error;
+    if (typeof fromParent === 'string') return { status: status >= 400 && status < 500 ? status : 502, error: fromParent };
+    return { status: 502, error: `could not reach the parent hub: ${(err as Error).message}` };
+  };
+
+  router.post('/federation/join', guard, async (req: Request, res: Response, next) => {
+    try {
+      const inviteToken = typeof req.body?.inviteToken === 'string' ? req.body.inviteToken.trim() : '';
+      if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
+
+      let parentUrl: string;
+      try {
+        parentUrl = assertHttpUrl(String(req.body?.parentUrl ?? ''));
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      // Pointing a hub at itself would have it enrol as its own child and then
+      // heartbeat into a loop.
+      if (parentUrl === assertHttpUrl(publicHubUrl(req))) {
+        res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
+        return;
+      }
+
+      if (await readParentBinding(ctx.db, ctx.config.secretKey)) {
+        res.status(409).json({ error: 'this hub already has a parent; it must be released before joining another' });
+        return;
+      }
+
+      let enrolled;
+      try {
+        enrolled = await federationClient().enroll({
+          parentUrl,
+          inviteToken,
+          name: ctx.config.defaultOrgId,
+          hubVersion: HUB_VERSION,
+        });
+      } catch (err) {
+        const { status, error } = parentError(err);
+        res.status(status).json({ error });
+        return;
+      }
+      if (!enrolled?.token || !enrolled?.childHubId) {
+        res.status(502).json({ error: 'the parent hub returned an unusable enrolment response' });
+        return;
+      }
+
+      await writeParentBinding(ctx.db, ctx.config.secretKey, {
+        parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
+      });
+      // Deliberately no token in the response: it is a credential the browser
+      // has no use for.
+      res.json({ parentUrl, childHubId: enrolled.childHubId, state: 'active' });
+    } catch (err) { next(err); }
+  });
+
+  router.get('/federation', guard, async (_req: Request, res: Response, next) => {
+    try {
+      const depth = await outboxDepth(ctx.db);
+      let binding;
+      try {
+        binding = await readParentBinding(ctx.db, ctx.config.secretKey);
+      } catch (err) {
+        // A binding encrypted under a rotated key: say so rather than claiming
+        // the hub has no parent.
+        res.json({ bound: true, unreadable: true, error: (err as Error).message, outboxDepth: depth });
+        return;
+      }
+      if (!binding) { res.json({ bound: false, outboxDepth: depth }); return; }
+      const releaseRequested = await releaseRequestedFlag(ctx.db);
+      res.json({
+        bound: true,
+        parentUrl: binding.parentUrl,
+        childHubId: binding.childHubId,
+        state: binding.state,
+        enrolledAt: binding.enrolledAt,
+        outboxDepth: depth,
+        releaseRequested,
+        // The UI disables Leave on this, and the route enforces it too.
+        canLeave: binding.state === 'revoked',
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/federation/release-request', guard, async (req: Request, res: Response, next) => {
+    try {
+      const binding = await readParentBinding(ctx.db, ctx.config.secretKey);
+      if (!binding) { res.status(409).json({ error: 'this hub has no parent to be released from' }); return; }
+      if (binding.state === 'revoked') { res.status(409).json({ error: 'this hub has already been released' }); return; }
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : null;
+      try {
+        await federationClient().requestRelease({ parentUrl: binding.parentUrl, token: binding.token, reason });
+      } catch (err) {
+        const { status, error } = parentError(err);
+        res.status(status).json({ error });
+        return;
+      }
+      await setReleaseRequestedFlag(ctx.db, true);
+      res.json({ ok: true, releaseRequested: true });
+    } catch (err) { next(err); }
+  });
+
+  router.delete('/federation', guard, async (_req: Request, res: Response, next) => {
+    try {
+      const binding = await readParentBinding(ctx.db, ctx.config.secretKey).catch(() => null);
+      if (!binding) {
+        // Nothing to leave. Clearing anyway so an unreadable row cannot strand
+        // a hub with a binding it can neither use nor remove.
+        await clearParentBinding(ctx.db);
+        await setReleaseRequestedFlag(ctx.db, false);
+        res.json({ bound: false });
+        return;
+      }
+      if (binding.state !== 'revoked') {
+        res.status(409).json({
+          error: 'this hub cannot leave on its own — ask the parent hub to release it, then leave once it has',
+        });
+        return;
+      }
+      // The outbox is deliberately left in place: it is this hub's own record
+      // of what it never managed to send, and discarding it here would destroy
+      // data as a side effect of tidying up a relationship.
+      await clearParentBinding(ctx.db);
+      await setReleaseRequestedFlag(ctx.db, false);
+      res.json({ bound: false });
+    } catch (err) { next(err); }
   });
 
   return router;

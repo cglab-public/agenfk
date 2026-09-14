@@ -115,6 +115,30 @@ export function federationRouter(ctx: HubServerContext): Router {
     }
   });
 
+  /**
+   * A child asking to be let go. Recording it is all this does: the parent's
+   * existing detach is the approval, so there is no approve verb and no second
+   * state machine to drift out of step with detached_at.
+   */
+  router.post('/release-request', requireKey, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { childHubId, orgId } = req.hubFederation!;
+      const raw = req.body?.reason;
+      const reason = typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 500) : null;
+      // COALESCE keeps the ORIGINAL timestamp: an impatient child re-asking
+      // must not jump the queue an admin is working through. The newest reason
+      // still wins, because that is the one worth reading.
+      await ctx.db.run(
+        `UPDATE child_hubs
+            SET release_requested_at = COALESCE(release_requested_at, ?),
+                release_reason = ?
+          WHERE id = ? AND org_id = ?`,
+        [new Date().toISOString(), reason, childHubId, orgId],
+      );
+      res.json({ ok: true, childHubId });
+    } catch (err) { next(err); }
+  });
+
   // No directive kinds exist yet — flow dispatch (CGLAB-182) and upgrade
   // dispatch (CGLAB-183) add them. The route exists so a child worker built
   // now polls the final URL and simply sees "nothing to do".

@@ -1,4 +1,6 @@
 export interface HubServerConfig {
+  /** Injected in tests so the child's join route needs no parent on the network. */
+  federationClient?: unknown;
   dbPath: string;
   secretKey: string;          // AES-256-GCM key (hex or base64, 32 bytes)
   sessionSecret: string;      // HMAC key for session JWTs

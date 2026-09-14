@@ -195,6 +195,9 @@ describe('child hub: join, request release, leave', () => {
     it('refuses even right after a release has been requested — asking is not being released', async () => {
       await join({ parentUrl: PARENT, inviteToken: 't' });
       await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
+      // The flag the UI disables Leave on must not flip merely because we asked.
+      const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
+      expect(status.body).toMatchObject({ releaseRequested: true, canLeave: false, state: 'active' });
       const r = await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
       expect(r.status).toBe(409);
       expect(await readParentBinding(ctx.db, SECRET)).not.toBeNull();

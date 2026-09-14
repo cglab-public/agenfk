@@ -25,7 +25,7 @@ import * as pathMod from 'path';
 // Read the package version once at module load. Resolved from this file's dir
 // so it works under both ts source (../package.json) and the built dist
 // (./package.json colocated with dist/server.js after `npm pack`).
-const HUB_VERSION: string = (() => {
+export const HUB_VERSION: string = (() => {
   const candidates = [
     pathMod.resolve(__dirname, '../package.json'),
     pathMod.resolve(__dirname, '../../package.json'),

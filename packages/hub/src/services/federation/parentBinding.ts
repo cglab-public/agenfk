@@ -108,3 +108,20 @@ export async function markBindingRevoked(db: DB, secretKey: string): Promise<voi
 export async function clearParentBinding(db: DB): Promise<void> {
   await db.run('DELETE FROM system_state WHERE key = ?', [PARENT_BINDING_KEY]);
 }
+
+/**
+ * Whether this hub has already asked its parent to release it. Kept beside the
+ * binding rather than inside it so asking does not rewrite the encrypted blob,
+ * and so it survives the binding flipping to 'revoked'.
+ */
+export const RELEASE_REQUESTED_KEY = 'federation.releaseRequested';
+
+export async function releaseRequestedFlag(db: DB): Promise<boolean> {
+  const row = await db.get<{ value: string }>('SELECT value FROM system_state WHERE key = ?', [RELEASE_REQUESTED_KEY]);
+  return row?.value === '1';
+}
+
+export async function setReleaseRequestedFlag(db: DB, on: boolean): Promise<void> {
+  await db.run('DELETE FROM system_state WHERE key = ?', [RELEASE_REQUESTED_KEY]);
+  if (on) await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [RELEASE_REQUESTED_KEY, '1']);
+}

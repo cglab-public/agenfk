@@ -13,6 +13,7 @@ import { AdminFlows } from './pages/AdminFlows';
 import { AdminUpgrades } from './pages/AdminUpgrades';
 import { AdminRepoint } from './pages/AdminRepoint';
 import { AdminChildHubs } from './pages/AdminChildHubs';
+import { AdminFederation } from './pages/AdminFederation';
 import { AdminIdentities } from './pages/AdminIdentities';
 import { AdminModels } from './pages/AdminModels';
 import { AdminOrg } from './pages/AdminOrg';
@@ -66,6 +67,7 @@ export function App() {
         <Route path="upgrades" element={<AdminUpgrades />} />
         <Route path="installations" element={<AdminInstallations />} />
         <Route path="child-hubs" element={<AdminChildHubs />} />
+        <Route path="parent-hub" element={<AdminFederation />} />
         <Route path="repoint" element={<AdminRepoint />} />
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />

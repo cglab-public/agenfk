@@ -131,7 +131,9 @@ const SCHEMA_PG = `
     last_seen TIMESTAMPTZ NOT NULL,
     detached_at TIMESTAMPTZ,
     detached_by_user_id TEXT,
-    detached_by_email TEXT
+    detached_by_email TEXT,
+    release_requested_at TIMESTAMPTZ,
+    release_reason TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
