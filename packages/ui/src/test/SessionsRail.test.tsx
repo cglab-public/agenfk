@@ -107,9 +107,19 @@ describe('what a row tells you without opening it', () => {
     expect(screen.getByText(/npx vitest run/)).toBeDefined();
   });
 
-  it('shows how long it has been going', () => {
+  it('does not show how long it has been going', () => {
+    /*
+     * Removed on use, with a screenshot: the BOARD button is positioned
+     * absolutely in this same corner, so the two were drawn on top of each
+     * other — "19hBOARD" on screen. Asked which to keep, the answer was the
+     * button: how long a terminal has been open is not something anyone acts
+     * on, and overlapping text reads as a broken app rather than a crowded one.
+     *
+     * Asserted rather than just deleted, so the row does not quietly grow it
+     * back and recreate the collision.
+     */
     renderRail([row({ startedAt: new Date(Date.now() - 125_000).toISOString() })]);
-    expect(screen.getByTestId('session-elapsed').textContent).toMatch(/2m/);
+    expect(screen.queryByTestId('session-elapsed')).toBeNull();
   });
 
   it('counts what is running in the header', () => {

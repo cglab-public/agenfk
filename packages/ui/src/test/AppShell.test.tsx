@@ -1311,3 +1311,74 @@ describe('the working dot in the sidebar', () => {
     }
   });
 });
+
+/**
+ * Sidebar rows that stopped overlapping (CGLAB-186).
+ *
+ * Two reports from use, with screenshots, and they are the same defect in two
+ * places: a control positioned absolutely, drawn on top of text that never got
+ * out of its way. Overlapping text reads as a broken app rather than a crowded
+ * one, so this is legibility, not polish.
+ */
+describe('the projects row when a project is pinned', () => {
+  const oneCard = [{ id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' }];
+
+  it('leaves room for the pin, instead of letting it sit on the age', async () => {
+    /*
+     * The hover case already worked — the age hides and the pin and + take the
+     * corner. A PINNED project keeps its pin at full opacity always, and
+     * rightly: otherwise there is no way to see it is pinned nor to reach the
+     * control by keyboard. With no hover to hide behind, the pin was simply
+     * drawn over the age.
+     *
+     * Asserting the reserved space rather than the absence of the age: losing
+     * information to fix a layout would be the wrong trade, and the age is why
+     * the column exists.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    const pin = await screen.findByRole('button', { name: /pin project horizon-lab/i });
+    fireEvent.click(pin);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /unpin project horizon-lab/i })).toBeTruthy());
+    // Scoped to the row whose pin was clicked — the fixture has several
+    // projects — and to the age itself rather than "a span with a digit in
+    // it", which matched the in-flight count first.
+    const row = screen.getByRole('button', { name: /unpin project horizon-lab/i }).parentElement!;
+    const age = row.querySelector('[data-testid="project-age"]')!;
+    expect(age.className, 'the age has no room reserved for the pin').toMatch(/mr-5/);
+  });
+});
+
+describe('right-clicking a card in the projects tree', () => {
+  const oneCard = [{ id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' }];
+
+  const openMenu = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /expand horizon-lab/i }));
+    fireEvent.contextMenu(await screen.findByTitle('Some work'));
+    return screen.findByRole('menu', { name: /actions for Some work/i });
+  };
+
+  it('offers Show in board, which a left click does not', async () => {
+    // A left click opens a TERMINAL — the thing you want from work in flight.
+    // The board had no route from here at all, and the row is far too narrow
+    // for a second button.
+    const menu = await openMenu();
+    expect(within(menu).getByRole('menuitem', { name: /show in board/i })).toBeTruthy();
+  });
+
+  it('does not open a terminal when the menu is opened', async () => {
+    // The gesture is secondary; it must not also fire the primary action.
+    await openMenu();
+    expect(screen.queryByRole('dialog', { name: /open a terminal/i })).toBeNull();
+  });
+
+  it('closes when you click away, not only when you choose', async () => {
+    // A menu that can only be dismissed by picking something is a trap.
+    const menu = await openMenu();
+    fireEvent.click(menu.previousElementSibling!);
+    await waitFor(() => expect(screen.queryByRole('menu', { name: /actions for/i })).toBeNull());
+  });
+});

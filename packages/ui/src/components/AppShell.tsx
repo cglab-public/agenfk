@@ -522,7 +522,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * scroll-to-and-highlight unreachable. This gives it one back without taking
    * the row's click away from the terminal.
    */
-  const revealOnBoard = React.useCallback((row: SessionRow): void => {
+  const revealOnBoard = React.useCallback((row: { itemId: string; projectId: string }): void => {
     focusItem(row.itemId, row.projectId);
     setActive('kanban');
   }, [focusItem]);
@@ -1256,7 +1256,15 @@ interface SidebarProps {
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
   /** Take the board to a card. The rail's secondary affordance. */
-  revealOnBoard: (row: SessionRow) => void;
+  /**
+   * Take the board to a card.
+   *
+   * Typed by what the action NEEDS rather than by where it came from: the
+   * session rail passes a full row, the card context menu passes a card. A
+   * SessionRow-shaped parameter would have forced the menu to invent fields it
+   * has no business knowing about, or to duplicate the navigation.
+   */
+  revealOnBoard: (row: { itemId: string; projectId: string }) => void;
   /** Opens the settings screen. Pinned, so it is reachable at any list length. */
   openSettings: () => void;
 }
@@ -1265,6 +1273,15 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
+  /**
+   * The card a right-click opened a menu on, and where to draw it.
+   *
+   * A card row's click opens a TERMINAL, which is the thing you want from work
+   * in flight. Getting to the same card on the BOARD had no route from here at
+   * all — the secondary action needed a secondary gesture rather than a second
+   * button competing for a row this narrow.
+   */
+  const [cardMenu, setCardMenu] = React.useState<{ item: AgEnFKItem; x: number; y: number } | null>(null);
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
   const [sort, setSort] = React.useState<ProjectSort>(() => readProjectSort());
@@ -1423,7 +1440,28 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                     {work.length}
                   </span>
                 )}
-                <span className="shrink-0 font-mono text-[10px] text-ink-tertiary group-hover:invisible">
+                <span
+                  data-testid="project-age"
+                  className={clsx(
+                    'shrink-0 font-mono text-[10px] text-ink-tertiary group-hover:invisible',
+                    /*
+                     * Room for the pin, permanently, when the project is
+                     * pinned.
+                     *
+                     * The hover case was already handled — this text hides and
+                     * the pin and + take the corner. But a pinned project
+                     * keeps its pin at full opacity ALWAYS, and rightly so:
+                     * otherwise there is no way to see that it is pinned, nor
+                     * to reach the control by keyboard. With no hover to hide
+                     * behind, the pin was simply drawn on top of this.
+                     *
+                     * Reserving the space rather than hiding the age: losing
+                     * information to fix a layout is the wrong trade, and the
+                     * age is why this column exists.
+                     */
+                    isPinned && 'mr-5',
+                  )}
+                >
                   {relativeAge(project.updatedAt)}
                 </span>
               </button>
@@ -1479,6 +1517,14 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           this row is the shortcut to the actual work. */}
                       <button
                         onClick={() => requestTerminal(item)}
+                        // The SECONDARY action, on a secondary gesture. The
+                        // row is far too narrow for a second button, and the
+                        // primary one — open a terminal — is what this list is
+                        // for.
+                        onContextMenu={e => {
+                          e.preventDefault();
+                          setCardMenu({ item, x: e.clientX, y: e.clientY });
+                        }}
                         title={item.title}
                         className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
                       >
@@ -1532,6 +1578,46 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
 
       {/* A footer, not a peer. Projects is what you scan all day; this is
           where the agents you have running report in (CGLAB-170). */}
+      {/* The card menu, drawn at the pointer.
+
+          Fixed rather than absolute: the projects list scrolls, and a menu
+          positioned inside it would slide away from the row it belongs to on
+          the first wheel event. */}
+      {cardMenu && (
+        <>
+          {/* Anything that is not the menu dismisses it, including a second
+              right-click elsewhere — a menu you can only close by choosing
+              something is a trap. */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setCardMenu(null)}
+            onContextMenu={e => { e.preventDefault(); setCardMenu(null); }}
+          />
+          <div
+            role="menu"
+            aria-label={`Actions for ${cardMenu.item.title}`}
+            style={{ top: cardMenu.y, left: cardMenu.x }}
+            className="fixed z-50 min-w-[10rem] overflow-hidden rounded-lg border border-border-soft bg-nav-surface py-1 shadow-2xl"
+          >
+            <button
+              role="menuitem"
+              onClick={() => {
+                // The SAME route the session rail's BOARD button takes —
+                // which focuses the card AND switches to the board. Calling
+                // focusItem alone left you on the Terminal tab watching
+                // nothing happen: half the action, which reads as a broken
+                // menu item.
+                revealOnBoard({ itemId: cardMenu.item.id, projectId: cardMenu.item.projectId });
+                setCardMenu(null);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink"
+            >
+              Show in board
+            </button>
+          </div>
+        </>
+      )}
+
       <div data-testid="sessions-section" className="flex min-h-0 shrink-0 flex-col border-t border-border-soft pt-1">
         <div className="flex items-center gap-2 px-2 pt-2">
           <h2 className="text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">Sessions</h2>

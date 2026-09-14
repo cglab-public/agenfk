@@ -223,11 +223,16 @@ export function SessionsRail({ rows, onOpen, onStop, onReveal }: SessionsRailPro
                   )}
                 </span>
               </span>
-              <span className="flex shrink-0 flex-col items-end gap-0.5">
-                <span data-testid="session-elapsed" className="font-mono text-[9.5px] tabular-nums text-ink-tertiary">
-                  {elapsedSince(row.startedAt)}
-                </span>
-              </span>
+              {/* No elapsed time here any more.
+                  The BOARD button is absolutely positioned in this same
+                  corner, so on hover the two were drawn on top of each other —
+                  "19hBOARD" on screen. Asked which to keep, the answer was the
+                  button: how long a terminal has been open is not something
+                  anyone acts on, and overlapping text reads as a broken app
+                  rather than as a crowded one.
+
+                  `elapsedSince` stays exported and tested — the Runs view uses
+                  it, where a duration IS the point. */}
             </button>
 
             {onReveal && (
