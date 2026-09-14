@@ -19,7 +19,7 @@
  * looked up.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { detectAgents, __resetAgentDetectionCache } from '../main/detectAgents';
+import { detectAgents, __resetAgentDetectionCache, setAgentDetectionDeps } from '../main/detectAgents';
 import { AGENT_IDS, resolveAgentCommand } from '../main/agents';
 
 /** A `which`-alike: resolves to a path for names the test says exist. */
@@ -219,5 +219,89 @@ describe('the guard against recursive capture', () => {
     } finally {
       delete process.env[LOGIN_CAPTURE_GUARD];
     }
+  });
+});
+
+/**
+ * One login shell per boot, not two (CGLAB-181).
+ *
+ * `$SHELL -lic env` runs the user's whole rc chain — on a typical zsh with nvm
+ * and oh-my-zsh that is 0.5-2s. The main process captured it once and the
+ * comment there said detection and spawning shared the result. Spawning did.
+ * Detection did not: every `detectAgents()` call with no deps fell through to
+ * its own default and ran the capture again.
+ *
+ * WHEN it actually costs anything is the part worth writing down, because it
+ * is the opposite of what it looks like in development: detection only reaches
+ * for the login PATH when the cheap probe found NOTHING. In a terminal that
+ * almost never happens, so the second capture is invisible. In the packaged
+ * app it happens every time — launchd hands Electron a minimal PATH with no
+ * agent on it, which is the whole reason the capture exists.
+ */
+describe('how often the login PATH is captured', () => {
+  beforeEach(() => __resetAgentDetectionCache());
+
+  /**
+   * A machine as the packaged app sees it: nothing on the inherited PATH, the
+   * agent reachable only once the login shell's PATH is known.
+   */
+  const launchdLikeDeps = () => {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      deps: {
+        which: async (file: string, pathOverride?: string) =>
+          (pathOverride && file === 'claude' ? '/opt/homebrew/bin/claude' : null),
+        loginPath: async () => { calls += 1; return '/opt/homebrew/bin:/usr/bin'; },
+      },
+    };
+  };
+
+  it('asks once, however many callers there are', async () => {
+    const { calls, deps } = launchdLikeDeps();
+    setAgentDetectionDeps(deps);
+    await detectAgents();
+    await detectAgents();
+    expect(calls()).toBe(1);
+  });
+
+  it('asks once when two callers arrive at the same time', async () => {
+    // The window the result-cache left open: both see an empty cache, both run
+    // a full detection, and that is two login shells. Caching the PROMISE is
+    // what closes it. Reachable at boot, where the main process warms
+    // detection while the renderer's first `agents:list` is already on its way.
+    const { calls, deps } = launchdLikeDeps();
+    setAgentDetectionDeps(deps);
+    await Promise.all([detectAgents(), detectAgents(), detectAgents()]);
+    expect(calls()).toBe(1);
+  });
+
+  it('probes with the PATH the main process installed', async () => {
+    // The defect itself: detection used to ignore what boot had already
+    // captured and go get its own.
+    const seen: string[] = [];
+    setAgentDetectionDeps({
+      which: async (file: string, pathOverride?: string) => {
+        if (pathOverride) seen.push(pathOverride);
+        return pathOverride && file === 'claude' ? '/installed/by/main/claude' : null;
+      },
+      loginPath: async () => '/installed/by/main',
+    });
+    await detectAgents();
+    expect(seen).toContain('/installed/by/main');
+  });
+
+  it('does not remember a detection that found nothing', async () => {
+    // The rule that predates the promise cache and had to survive it: a run
+    // that found no CLI at all is far more likely a broken probe than a bare
+    // machine, and remembering it leaves the picker wrong for the session.
+    let captures = 0;
+    setAgentDetectionDeps({
+      which: async () => null,
+      loginPath: async () => { captures += 1; return '/nothing/here'; },
+    });
+    await detectAgents();
+    await detectAgents();
+    expect(captures).toBe(2);
   });
 });

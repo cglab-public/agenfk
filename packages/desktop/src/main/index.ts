@@ -25,7 +25,7 @@ import { captureLoginPath } from './ptyEnv.js';
 import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
 import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
-import { whichOnPath } from './detectAgents.js';
+import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -304,10 +304,27 @@ async function boot(): Promise<void> {
     // load the native module degrades to "no terminals" rather than "the app
     // does not start".
     try {
-      // Started before the window so the first terminal does not wait on it,
-      // and awaited here because the registry is built with it. A broken rc
-      // file resolves to null rather than blocking the app.
-      loginPath = await captureLoginPath();
+      /*
+       * ONE capture, shared, and the window does not wait for it.
+       *
+       * Both halves were wrong before. The comment here claimed detection and
+       * spawning shared one capture — spawning did, detection did not: it fell
+       * through to its own default and ran `$SHELL -lic env` a second time, a
+       * whole extra rc chain per boot. And this was `await`ed, so despite the
+       * comment saying the window did not wait on it, the window waited on
+       * every launch; execFile does not close the child's stdin, so an rc file
+       * that reads input held the app at a blank screen until the 5s timeout.
+       *
+       * Not awaiting is only safe because both consumers can wait for the
+       * promise themselves: the registry's loginPath callback may return one,
+       * and detection is handed the same one. Otherwise a terminal opened in
+       * the first second would get a degraded PATH.
+       */
+      const loginPathReady = captureLoginPath().then(p => { loginPath = p; return p; });
+      setAgentDetectionDeps({
+        which: whichOnPath,
+        loginPath: () => loginPathReady,
+      });
       tmuxStatus = await detectTmux({ platform: process.platform, which: whichOnPath });
       if (!tmuxStatus.available) {
         console.log(`[DESKTOP] Terminal sessions will NOT survive quitting: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
@@ -318,7 +335,8 @@ async function boot(): Promise<void> {
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
-        loginPath: () => loginPath,
+        // The captured value once it is there, the promise until then.
+        loginPath: () => loginPath ?? loginPathReady,
         tmux: { available: tmuxStatus.available },
         emit: (windowId, channel, payload) => {
           // To that window only. Broadcasting would put one card's shell

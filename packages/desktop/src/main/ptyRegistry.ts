@@ -49,7 +49,15 @@ export interface PtyRegistryDeps {
    * spawn is the point: detecting against one PATH and launching against
    * another is how a picker that says "Installed" produces ENOENT.
    */
-  readonly loginPath?: () => string | null;
+  /**
+   * The PATH a login shell would have.
+   *
+   * May answer with a PROMISE, and that is what lets the app paint before the
+   * capture finishes. `spawn` is already async, so a terminal opened in the
+   * first second waits for the same capture instead of being handed null and
+   * a degraded PATH — which is the very thing the capture exists to prevent.
+   */
+  readonly loginPath?: () => string | null | Promise<string | null>;
   /**
    * Whether sessions should survive the app closing.
    *
@@ -182,7 +190,7 @@ export class PtyRegistry {
       rows: req.rows,
       // Never process.env directly. It carries launchd's minimal PATH, no TERM
       // at all, and every variable describing how Electron was launched.
-      env: buildPtyEnv(process.env, this.deps.loginPath?.()),
+      env: buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null),
     });
 
     // Opaque and unguessable, and deliberately not derived from the item id:

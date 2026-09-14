@@ -488,3 +488,55 @@ describe('auto-approve reaching the process', () => {
     expect(args).not.toContain('--dangerously-skip-permissions');
   });
 });
+
+/**
+ * A terminal opened before the login PATH has arrived (CGLAB-181).
+ *
+ * The main process no longer awaits `captureLoginPath()` before showing the
+ * window — it used to, which meant every launch sat at a blank screen for the
+ * length of the user's rc chain, and `execFile` does not close the child's
+ * stdin, so an rc file that reads input held it there until the 5s timeout.
+ *
+ * Not waiting is only safe because this callback may answer with a promise.
+ * Handing the spawn a null PATH instead would be the degraded-PATH failure the
+ * capture exists to prevent, just moved into the first second after launch.
+ */
+describe('the login PATH arriving late', () => {
+  it('waits for it rather than spawning with a degraded PATH', async () => {
+    let release: (v: string) => void = () => {};
+    const arriving = new Promise<string>(res => { release = res; });
+    const spy = makeSpawner();
+    const late = new PtyRegistry({
+      spawn: spy as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      loginPath: () => arriving,
+      emit: () => {},
+    });
+
+    spawned = [];
+    const opening = late.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    // Still nothing: the spawn is holding for the PATH rather than proceeding
+    // without it.
+    await Promise.resolve();
+    expect(spawned).toHaveLength(0);
+
+    release('/opt/homebrew/bin:/usr/bin');
+    await opening;
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('still works when the callback answers immediately', async () => {
+    // The steady state, once the capture has landed. Both shapes have to work
+    // from the same call site.
+    const spy = makeSpawner();
+    const ready = new PtyRegistry({
+      spawn: spy as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      loginPath: () => '/opt/homebrew/bin:/usr/bin',
+      emit: () => {},
+    });
+    spawned = [];
+    await ready.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned).toHaveLength(1);
+  });
+});

@@ -44,11 +44,42 @@ export interface DetectDeps {
 /** `shell` is the fallback and is always available; probing it is meaningless. */
 const ALWAYS_AVAILABLE = new Set(['shell']);
 
-let cache: DetectedAgent[] | null = null;
+/**
+ * The detection, cached as a PROMISE rather than as its result.
+ *
+ * Caching the result left a window: two callers arriving before the first
+ * finished both saw an empty cache and both ran a full detection, which means
+ * two login shells. The promise closes it — the second caller awaits the first
+ * one's work.
+ */
+let inFlight: Promise<DetectedAgent[]> | null = null;
+
+/**
+ * The dependencies detection uses when a caller does not pass any.
+ *
+ * Installed once at boot by the main process, so that the PATH captured there
+ * is the one detection uses. Before this, every call fell back to
+ * `loginShellPath`, which runs `$SHELL -lic env` AGAIN — a second login shell
+ * per boot, reading the user's whole rc chain, for a value already in hand.
+ * The comment in index.ts claimed detection and spawning shared one capture;
+ * half of it was true.
+ */
+let defaultDeps: DetectDeps = {
+  // Both indirected: these constants are declared further down, and naming
+  // them eagerly here is a temporal-dead-zone error.
+  which: (file, pathOverride) => whichOnPath(file, pathOverride),
+  loginPath: () => loginShellPath(),
+};
+
+export function setAgentDetectionDeps(deps: DetectDeps): void {
+  defaultDeps = deps;
+  // Anything already detected was found with the old PATH.
+  inFlight = null;
+}
 
 /** Called after an install, and by tests. */
 export function __resetAgentDetectionCache(): void {
-  cache = null;
+  inFlight = null;
 }
 
 const run = (file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string | null> =>
@@ -87,8 +118,30 @@ export const loginShellPath = (): Promise<string | null> => captureLoginPath();
  * "Installed" and "Not installed", and it cannot group what it was not told
  * about — a user would never learn the other agents exist.
  */
-export async function detectAgents(deps: DetectDeps = { which: whichOnPath, loginPath: loginShellPath }): Promise<DetectedAgent[]> {
-  if (cache) return cache;
+export async function detectAgents(deps: DetectDeps = defaultDeps): Promise<DetectedAgent[]> {
+  if (inFlight) return inFlight;
+  const attempt = detectOnce(deps);
+  inFlight = attempt;
+  const forget = () => { if (inFlight === attempt) inFlight = null; };
+
+  let result: DetectedAgent[];
+  try {
+    result = await attempt;
+  } catch (e) {
+    // A failed detection must not become the session's answer.
+    forget();
+    throw e;
+  }
+  // The rule that was here before the promise cache, kept: a run in which
+  // nothing real was found is far more likely a failed detection than a
+  // machine with no CLI at all, and remembering it would leave the picker
+  // wrong for the whole session. Concurrent callers still share this attempt —
+  // the point of the promise is one login shell, not one outcome forever.
+  if (!result.some(a => !ALWAYS_AVAILABLE.has(a.id) && a.installed)) forget();
+  return result;
+}
+
+async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
 
   const probe = async (id: string, pathOverride?: string): Promise<boolean> => {
     if (ALWAYS_AVAILABLE.has(id)) return true;
@@ -137,9 +190,7 @@ export async function detectAgents(deps: DetectDeps = { which: whichOnPath, logi
     installed: Boolean(found.get(id)),
   }));
 
-  // Do not cache a run in which nothing real was found: it is far more likely
-  // that detection failed than that the machine has no CLI at all, and caching
-  // it would leave the picker wrong for the whole session.
-  if (result.some(a => !ALWAYS_AVAILABLE.has(a.id) && a.installed)) cache = result;
+  // Whether this is worth remembering is decided by the caller above, which
+  // owns the cache.
   return result;
 }
