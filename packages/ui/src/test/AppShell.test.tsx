@@ -32,7 +32,8 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
-    updateProject: vi.fn(async () => ({})),
+    getSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    updateSettings: vi.fn(async () => ({ tmuxByDefault: false })),
     listRuns: vi.fn(async () => []),
   },
 }));
@@ -540,16 +541,14 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     expect(dialog.getAttribute('aria-label')).toMatch(/something in agenfk/i);
   });
 
-  it('opens the switch already on when the project stored that preference', async () => {
-    // The read side of the setting, checked THROUGH the shell rather than by
-    // handing the dialog a prop in isolation. Three times in this epic a value
-    // was produced in one place and consumed in another, each tested against
-    // its own fixture and agreeing with nobody; a stored preference nothing
-    // reads is the same defect wearing a server field.
+  it('opens the switch already on when the setting stored that default', async () => {
+    // The read side, checked THROUGH the shell rather than by handing the
+    // dialog a prop in isolation. Three times in this epic a value was produced
+    // in one place and consumed in another, each tested against its own
+    // fixture and agreeing with nobody; a stored setting nothing reads is the
+    // same defect wearing a database column.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.listProjects).mockResolvedValue([
-      { id: 'p1', name: 'agenfk', tmuxByDefault: true, createdAt: new Date(), updatedAt: new Date() },
-    ] as never);
+    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: true } as never);
     (window as unknown as Record<string, unknown>).agenfkDesktop = {
       isDesktop: true, platform: 'darwin',
       versions: { electron: '40', chrome: '1', node: '24' },
@@ -567,13 +566,12 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 
-  it('stores the preference on the project when the switch is moved', async () => {
-    // The write side. Without it the field is set by nobody and the user has to
-    // make the same choice on every machine.
+  it('leaves the stored default alone when the switch is moved for one terminal', async () => {
+    // The dialog's switch is a per-session override, not a preference. Writing
+    // it back would mean opening one terminal differently quietly changes how
+    // every future terminal opens.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.listProjects).mockResolvedValue([
-      { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
-    ] as never);
+    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: false } as never);
     (window as unknown as Record<string, unknown>).agenfkDesktop = {
       isDesktop: true, platform: 'darwin',
       versions: { electron: '40', chrome: '1', node: '24' },
@@ -588,8 +586,7 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Something in agenfk'));
     fireEvent.click(await screen.findByRole('switch', { name: /keep running/i }));
-    await waitFor(() =>
-      expect(api.updateProject).toHaveBeenCalledWith('p1', { tmuxByDefault: true }));
+    expect(api.updateSettings).not.toHaveBeenCalled();
   });
 
   it('switches to the project the card belongs to before opening it', async () => {

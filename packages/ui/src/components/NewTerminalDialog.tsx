@@ -66,22 +66,14 @@ export interface NewTerminalDialogProps {
    */
   readonly sessionPersistence?: () => Promise<SessionPersistence>;
   /**
-   * The project's stored answer, used to seed the switch.
+   * The installation's stored default, used to seed the switch.
    *
-   * Seeded, not enforced: the capability is applied here on READ, so a project
-   * whose preference is on shows the switch off on a machine without tmux and
-   * still has the preference intact when it goes back to one that has it.
-   * Visiting from Windows must not silently erase a choice.
+   * Seeded, not enforced: the capability is applied here on READ, so a stored
+   * preference of "on" shows the switch off on a machine without tmux and is
+   * still intact when the same setting is read on a machine that has it.
+   * Opening the app on Windows must not silently erase the choice.
    */
   readonly defaultPersist?: boolean;
-  /**
-   * Fired when the user moves the switch, so the caller can store it.
-   *
-   * Reported rather than written from in here. This component does not know
-   * what a project is, and handing it a server client would make it untestable
-   * for the sake of one boolean.
-   */
-  readonly onPersistChange?: (next: boolean) => void;
 }
 
 /**
@@ -110,7 +102,6 @@ export function NewTerminalDialog({
   listAgents,
   sessionPersistence,
   defaultPersist,
-  onPersistChange,
 }: NewTerminalDialogProps): React.ReactElement {
   // Claude Code only as the first-run default, when the card has never been
   // worked. After that the card itself is the source of truth.
@@ -286,12 +277,10 @@ export function NewTerminalDialog({
               aria-checked={persist && canPersist}
               disabled={!canPersist}
               aria-label="Keep running after quitting"
-              onClick={() => {
-                if (!canPersist) return;
-                const next = !persist;
-                setPersist(next);
-                onPersistChange?.(next);
-              }}
+              // A per-terminal override, not a preference. The stored default
+              // lives in Settings; moving it here changes this session only,
+              // which is why nothing is written back.
+              onClick={() => { if (canPersist) setPersist(v => !v); }}
               className={clsx(
                 'flex w-full items-center gap-3 text-left',
                 canPersist ? 'cursor-pointer' : 'cursor-default opacity-60',

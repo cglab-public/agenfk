@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1023,6 +1023,55 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(created);
 }));
 
+/**
+ * Installation-wide settings.
+ *
+ * Not project-scoped and not in ~/.agenfk/config.json. config.json is read and
+ * written directly by the CLI with no server in the path, so putting a value
+ * the UI also writes in there would give it two owners and no arbiter. The
+ * database is already one per installation, which makes a table here global
+ * across projects and reachable identically by the CLI, the UI and MCP.
+ */
+app.get("/settings", asyncHandler(async (_req: any, res: any) => {
+  // Always 200 with the defaults. A fresh install has nothing stored, and a
+  // 404 would push every caller into inventing its own idea of the default.
+  res.json(await storage.getSettings());
+}));
+
+app.put("/settings", asyncHandler(async (req: any, res: any) => {
+  const body = req.body || {};
+  const allowed = Object.keys(DEFAULT_APP_SETTINGS);
+  const unknown = Object.keys(body).filter(k => !allowed.includes(k));
+  if (unknown.length > 0) {
+    // Refused rather than ignored. Silently dropping a key means a typo writes
+    // a setting nothing ever reads back, and the user is left believing they
+    // changed something. Naming the key is what makes it fixable.
+    return res.status(400).json({
+      error: `Unknown setting(s): ${unknown.join(", ")}. Known: ${allowed.join(", ")}`,
+    });
+  }
+  const patch: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (!(key in body)) continue;
+    // Type-checked, never coerced: 'false' is a truthy string, and coercing it
+    // would switch a feature ON for a client trying to switch it off.
+    if (typeof body[key] !== typeof (DEFAULT_APP_SETTINGS as any)[key]) {
+      return res.status(400).json({
+        error: `Setting "${key}" must be ${typeof (DEFAULT_APP_SETTINGS as any)[key]}, got ${typeof body[key]}`,
+      });
+    }
+    patch[key] = body[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: `Provide at least one of: ${allowed.join(", ")}` });
+  }
+  const settled = await storage.updateSettings(patch);
+  // The whole settled state, so a caller never has to re-read to find out what
+  // it now has.
+  io.emit("settings_updated", settled);
+  res.json(settled);
+}));
+
 app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
@@ -1039,23 +1088,17 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // no execution semantics: the worst a caller can do is turn worktree
   // creation on or off. projectRoot and verifyCommand stay out — those are a
   // cwd and a shell string.
-  const updates: Partial<{ name: string; description: string; autoWorktree: boolean; tmuxByDefault: boolean }> = {};
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
   if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
-  // Whether this project's terminals run inside tmux, so they survive quitting.
-  // A boolean preference with no execution semantics, like autoWorktree — the
-  // desktop app decides what to do with it, and only where tmux exists.
-  //
-  // Stored regardless of whether tmux is available anywhere: the preference is
-  // a decision, availability is a fact about one machine, and collapsing the
-  // two would erase a choice made on a Mac the moment the project is opened on
-  // Windows. `typeof === 'boolean'` and not a coercion: 'false' is a truthy
-  // string and would switch the feature ON for a client meaning to switch it
-  // off.
-  if (typeof req.body?.tmuxByDefault === 'boolean') updates.tmuxByDefault = req.body.tmuxByDefault;
+  // tmuxByDefault deliberately does NOT belong here. It was project-scoped for
+  // one commit; the decision changed to installation-wide, and it now lives at
+  // PUT /settings. Accepting it in both places would give one preference two
+  // sources of truth, so whichever the UI read, the other would silently
+  // disagree — worse than either home alone.
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree, tmuxByDefault. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);
@@ -4265,7 +4308,7 @@ export function resolveUiDir(explicit?: string | null): string | null {
 export const API_PATH_PREFIXES = [
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/socket.io',
+  '/releases', '/agent-runs', '/settings', '/socket.io',
 ];
 
 /**

@@ -13,6 +13,8 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  DEFAULT_APP_SETTINGS,
   Pr,
   PrSizing,
   AgentRun,
@@ -118,6 +120,10 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
         ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -729,6 +735,63 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   // ── Observability: ingestion state (resumable file-watcher offsets) ────────
+
+  /**
+   * Installation-wide settings, as stored values layered over the defaults.
+   *
+   * Key/value rather than one column per setting: a new setting then needs no
+   * migration, and a row written by a NEWER version that this one does not know
+   * about is ignored on read instead of crashing — which matters because the
+   * desktop app, the CLI and the server can be different builds against the
+   * same database.
+   *
+   * Values are JSON so a boolean stays a boolean. Storing '1'/'0' or 'true' as
+   * bare text is how a preference comes back as a truthy string and inverts
+   * itself.
+   */
+  async getSettings(): Promise<AppSettings> {
+    const rows = this.database.prepare('SELECT key, value FROM app_settings')
+      .all() as Array<{ key: string; value: string }>;
+    const stored: Record<string, unknown> = {};
+    for (const row of rows) {
+      // A corrupt row must not take the whole settings read down with it; the
+      // default is a safe answer and the user can set it again.
+      try { stored[row.key] = JSON.parse(row.value); } catch { /* keep the default */ }
+    }
+    const settings = { ...DEFAULT_APP_SETTINGS };
+    // Only keys the CURRENT build knows. Anything else in the table belongs to
+    // another version and is none of this one's business.
+    for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
+      const value = stored[key];
+      if (typeof value === typeof DEFAULT_APP_SETTINGS[key]) {
+        (settings[key] as unknown) = value;
+      }
+    }
+    return settings;
+  }
+
+  async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    const write = this.database.prepare(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    // A transaction so a multi-key write cannot land half-applied and leave the
+    // user with a settings screen showing a state they never chose. Written as
+    // explicit BEGIN/COMMIT because the driver here is node:sqlite's
+    // DatabaseSync, which has no better-sqlite3-style transaction() wrapper.
+    this.database.exec('BEGIN');
+    try {
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        write.run(key, JSON.stringify(value));
+      }
+      this.database.exec('COMMIT');
+    } catch (err) {
+      this.database.exec('ROLLBACK');
+      throw err;
+    }
+    return this.getSettings();
+  }
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(

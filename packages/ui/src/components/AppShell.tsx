@@ -21,7 +21,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus } from 'lucide-react';
+import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
@@ -36,13 +36,14 @@ import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import { listAgentsFromBridge, sessionPersistenceFromBridge } from './agentBridge';
+import { SettingsPanel } from './SettingsPanel';
 import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
 
-type TabId = 'kanban' | 'terminal' | 'runs';
+type TabId = 'kanban' | 'terminal' | 'runs' | 'settings';
 
 interface Tab {
   id: TabId;
@@ -71,16 +72,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // CLI, so it must not happen before the user asks — but once it has, the
   // session outlives every tab switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId, activeProjectId } = useActiveProject();
+  // Same latch idea as the terminal, for a much smaller reason: no request goes
+  // out for a screen the user has never opened.
+  const [settingsOpened, setSettingsOpened] = React.useState(false);
+  const { focusedItemId, newItemRequest, setActiveProjectId } = useActiveProject();
   /**
-   * Only for the tmux preference, which lives on the project.
+   * The installation's settings, for the tmux default the dialog starts from.
    *
-   * `activeProjectId` is the CARD's project by the time a dialog is up, because
-   * requesting a terminal switches to it first — there is a test for exactly
-   * that. Same query key as the sidebar's, so this shares its cache rather than
-   * fetching the list twice.
+   * Same query key the settings screen uses, so turning it on there is
+   * reflected here without a reload: one cache entry, one source of truth.
    */
-  const { data: shellProjects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
+  const { data: appSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
     { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
@@ -343,6 +345,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           openTerminalCount={sessions.length}
           openSession={openSession}
           stopSession={stopSession}
+          openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -400,6 +403,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="min-h-0 flex-1 overflow-auto scrollbar-slim"
           >
             {children}
+          </div>
+
+          {/* Hidden, not unmounted, for the same reason as the board: coming
+              back from Settings must not have thrown away scroll position or
+              an edit in flight. It holds no process, so nothing worse than
+              that is at stake here. */}
+          <div
+            role="tabpanel"
+            id="panel-settings"
+            aria-label="Settings"
+            tabIndex={0}
+            hidden={active !== 'settings'}
+            className="min-h-0 flex-1 overflow-auto scrollbar-slim"
+          >
+            {settingsOpened && <SettingsPanel />}
           </div>
 
           {/* Rendered, not conditionally mounted — and more load-bearing here
@@ -491,21 +509,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           defaultAgentId={pending.agentId}
           listAgents={listAgentsFromBridge}
           sessionPersistence={sessionPersistenceFromBridge}
-          defaultPersist={
-            (shellProjects as Project[]).find(p => p.id === activeProjectId)?.tmuxByDefault === true
-          }
-          onPersistChange={next => {
-            // Stored on the PROJECT, not in localStorage: the same reasoning as
-            // the agent on a card. A preference that reaches no other client is
-            // a preference the user has to set again on every machine.
-            //
-            // Fire and forget, and deliberately so. Failing to remember the
-            // choice must never block the terminal the user is trying to open;
-            // the session they are creating already carries the decision.
-            if (activeProjectId) {
-              void api.updateProject(activeProjectId, { tmuxByDefault: next }).catch(() => {});
-            }
-          }}
+          defaultPersist={appSettings?.tmuxByDefault === true}
           onClose={() => setPending(null)}
           onCreate={async ({ agentId, autoApprove, persist }) => {
             // Latch and switch BEFORE clearing `pending`, so the panel exists
@@ -562,9 +566,11 @@ interface SidebarProps {
   stopSession: (runId: string) => void;
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
+  /** Opens the settings screen. Pinned, so it is reachable at any list length. */
+  openSettings: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession, openSettings }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -826,6 +832,24 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerm
         <div className="min-h-0 overflow-y-auto scrollbar-slim">
           <SessionsRail rows={sessionRows} onOpen={openSession} onStop={stopSession} />
         </div>
+      </div>
+
+      {/* Pinned, and that is the whole point of it being here rather than in
+          the list above. Projects grows without limit; anything that scrolls
+          with it is unreachable on the day a user has thirty cards in flight.
+          shrink-0 and no scroll container of its own. */}
+      <div
+        data-testid="shell-nav"
+        className="shrink-0 border-t border-border-soft px-1.5 py-1.5"
+      >
+        <button
+          type="button"
+          onClick={openSettings}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink"
+        >
+          <Settings size={13} className="shrink-0" />
+          {open && <span className="flex-1">Settings</span>}
+        </button>
       </div>
       </div>
       )}

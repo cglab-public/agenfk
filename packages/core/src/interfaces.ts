@@ -8,6 +8,7 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
   Pr,
   PrSizing,
   AgentRun,
@@ -67,6 +68,9 @@ export interface StorageProvider extends AgEnFKPlugin {
   // Observability — token events (server-side ingestion of per-client session logs)
   insertTokenEvent(event: TokenEvent): Promise<void>;
   queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]>;
+  getSettings(): Promise<AppSettings>;
+  /** Merges: keys left out keep their stored value rather than being blanked. */
+  updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   getIngestionState(sourcePath: string): Promise<IngestionState | null>;
   setIngestionState(state: IngestionState): Promise<void>;
 

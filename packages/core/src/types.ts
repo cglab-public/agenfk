@@ -58,6 +58,38 @@ export interface TokenEventQuery {
   limit?: number;
 }
 
+/**
+ * Settings that belong to the INSTALLATION, not to a project.
+ *
+ * Every field is optional in the wire payload and total here: a key nobody has
+ * written reads as its documented default rather than as undefined, because a
+ * missing setting is not a false setting and callers should never have to know
+ * which of the two they got.
+ *
+ * Deliberately small. This is not a junk drawer — a value earns a place here
+ * only when it is genuinely installation-wide. Per-project preferences stay on
+ * the project, and per-run decisions (notably disabling an agent's permission
+ * prompts) stay decisions, not stored state.
+ */
+export interface AppSettings {
+  /**
+   * Run agent sessions and terminals inside tmux, so they outlive the app.
+   *
+   * Off by default, and that default is a promise: every session that predates
+   * the feature worked without it, so an upgrade must not change how anyone's
+   * terminal behaves. Storing it says nothing about whether tmux exists — the
+   * preference is the user's decision, availability is a fact about one
+   * machine, and the two are combined at the point of use so a choice made on
+   * a Mac is not erased by opening the app on Windows.
+   */
+  tmuxByDefault: boolean;
+}
+
+/** What an unwritten settings store answers. Also the upgrade contract. */
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  tmuxByDefault: false,
+};
+
 export interface IngestionState {
   sourcePath: string;
   lastOffset: number;

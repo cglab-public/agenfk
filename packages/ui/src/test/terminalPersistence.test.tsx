@@ -184,7 +184,7 @@ describe('reaching the host', () => {
 });
 
 /**
- * The stored preference, and why the dialog reads it at all.
+ * The stored default, and why the dialog reads it at all.
  *
  * Without this the server field is dead weight: something writes it, nothing
  * reads it, and the code looks finished. That is the exact failure this epic
@@ -196,8 +196,8 @@ describe('reaching the host', () => {
  * and still have the preference intact when it goes back to a machine that has
  * it — otherwise visiting from Windows silently erases a choice.
  */
-describe('the project preference', () => {
-  it('starts the switch on when the project asked for it', async () => {
+describe('the stored default', () => {
+  it('starts the switch on when the setting asked for it', async () => {
     render(
       <NewTerminalDialog
         cardTitle="Work"
@@ -233,39 +233,4 @@ describe('the project preference', () => {
     expect(onCreate.mock.calls[0][0]).toMatchObject({ persist: false });
   });
 
-  it('reports a change so the caller can store it', async () => {
-    // Reported, not written from in here. The dialog does not know what a
-    // project is, and giving it a server client would make it untestable for
-    // the sake of one boolean.
-    const onPersistChange = vi.fn();
-    render(
-      <NewTerminalDialog
-        cardTitle="Work"
-        onCreate={vi.fn(async () => {})}
-        onClose={vi.fn()}
-        listAgents={async () => AGENTS}
-        sessionPersistence={async () => ({ available: true })}
-        onPersistChange={onPersistChange}
-      />,
-    );
-    fireEvent.click(await screen.findByRole('switch', { name: /keep running|survive/i }));
-    expect(onPersistChange).toHaveBeenCalledWith(true);
-  });
-
-  it('reports nothing when the switch cannot be moved', async () => {
-    const onPersistChange = vi.fn();
-    render(
-      <NewTerminalDialog
-        cardTitle="Work"
-        onCreate={vi.fn(async () => {})}
-        onClose={vi.fn()}
-        listAgents={async () => AGENTS}
-        sessionPersistence={async () => ({ available: false })}
-        onPersistChange={onPersistChange}
-      />,
-    );
-    fireEvent.click(await screen.findByRole('switch', { name: /keep running|survive/i }));
-    await waitFor(() => expect(screen.getByRole('switch', { name: /keep running/i })).toBeDisabled());
-    expect(onPersistChange).not.toHaveBeenCalled();
-  });
 });

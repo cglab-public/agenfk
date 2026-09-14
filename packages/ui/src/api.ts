@@ -115,18 +115,33 @@ export const api = {
     }
   },
   /**
-   * Project-level settings. Today only the tmux preference.
+   * Installation-wide settings. Global, not per project.
    *
-   * Deliberately narrow: the server's allowlist decides what is settable, and
-   * widening this signature to Partial<Project> would invite the UI to send
-   * fields the route silently drops.
+   * The read never fails into "unknown": the server answers a fresh install
+   * with the documented defaults rather than a 404, so callers never have to
+   * invent their own idea of what off means.
    */
-  updateProject: async (id: string, updates: { tmuxByDefault?: boolean }) => {
+  getSettings: async (): Promise<{ tmuxByDefault: boolean }> => {
     try {
-      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      const { data } = await axios.get(`${API_URL}/settings`);
       return data;
     } catch (e) {
-      console.error(`API Error updating project ${id}:`, e);
+      console.error('API Error reading settings:', e);
+      throw e;
+    }
+  },
+  /**
+   * Patches: keys left out keep their stored value.
+   *
+   * Returns the whole settled state, so a caller never has to re-read to find
+   * out what it now has.
+   */
+  updateSettings: async (patch: { tmuxByDefault?: boolean }): Promise<{ tmuxByDefault: boolean }> => {
+    try {
+      const { data } = await axios.put(`${API_URL}/settings`, patch);
+      return data;
+    } catch (e) {
+      console.error('API Error updating settings:', e);
       throw e;
     }
   },
