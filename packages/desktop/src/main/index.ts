@@ -27,6 +27,7 @@ import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
+import { makeLoginPathCache } from './loginPathCache.js';
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -323,47 +324,23 @@ async function boot(): Promise<void> {
        * and detection is handed the same one. Otherwise a terminal opened in
        * the first second would get a degraded PATH.
        */
-      let capturedAt = 0;
-      const capture = (): Promise<string | null> => {
-        capturedAt = Date.now();
-        return captureLoginPath().then(p => { loginPath = p; return p; });
-      };
-      let loginPathReady = capture();
-
-      /**
-       * The captured PATH, re-capturing when the memo is no longer trustworthy.
-       *
-       * A single memoised promise was the first version and review caught what
-       * it cost: the memo stopped being a boot optimisation and became a
-       * session-long pin. Two things broke.
-       *
-       * A capture that FAILED — `captureLoginPath` answers null on any
-       * execFile failure, including the 5s timeout from an rc file that reads
-       * stdin — was remembered as the answer for the whole session. Detection
-       * could never recover, so the picker reported everything missing and
-       * nothing the user did would change it.
-       *
-       * And `agents:refresh` exists so that installing a CLI updates the
-       * picker without a restart. If the install also added a directory to the
-       * user's rc files, only a fresh capture can see it; pinned to boot, the
-       * refresh could not.
-       *
-       * So the memo covers the BURST it was made for — the detection and any
-       * terminal opened while the app is still starting — and anything later
-       * asks again. Every re-capture is a login shell, which is what the whole
-       * card is about, so the window is short and the staleness rule explicit
-       * rather than accidental.
-       */
-      const LOGIN_PATH_MEMO_MS = 30_000;
-      // Comfortably past captureLoginPath's own 5s timeout; this is a backstop,
-      // not a second policy.
+      // Comfortably past captureLoginPath's own 5s timeout; this is a backstop
+      // for the spawn path, not a second policy.
       const LOGIN_PATH_DEADLINE_MS = 8_000;
-      const currentLoginPath = async (): Promise<string | null> => {
-        const value = await loginPathReady;
-        if (value !== null && Date.now() - capturedAt < LOGIN_PATH_MEMO_MS) return value;
-        loginPathReady = capture();
-        return loginPathReady;
-      };
+      /*
+       * The captured PATH, re-captured when the memo is no longer trustworthy.
+       *
+       * Both halves of that sentence are scar tissue. A single memoised promise
+       * turned a boot optimisation into a session-long pin, so a PATH that
+       * changed while the app was open was never seen again — hence the expiry.
+       * And the expiry without a single flight meant N concurrent spawns each
+       * forked their own login shell — hence loginPathCache.
+       */
+      const currentLoginPath = makeLoginPathCache({
+        capture: () => captureLoginPath().then(p => { loginPath = p; return p; }),
+      });
+      // Kick it off now, so the value is usually ready before anything asks.
+      void currentLoginPath();
 
       setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath });
       /*
