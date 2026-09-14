@@ -19,9 +19,17 @@
  * scramble a transcript, which is worse than being slow.
  */
 
-/** The shape this needs. The panel's own `RunEvent` is wider. */
+/**
+ * The shape this needs. The panel's own `RunEvent` is wider.
+ *
+ * `seq` is OPTIONAL here, and the type used to say otherwise — which made a
+ * real bug invisible. The server assigns the position inside the insert, and
+ * for a while it emitted the object it was handed rather than the one it
+ * wrote, so every socket event carried `seq: undefined`. Declaring the field
+ * required did not make it present; it only stopped TypeScript from asking.
+ */
 export interface Sequenced {
-  readonly seq: number;
+  readonly seq?: number;
 }
 
 /**
@@ -39,7 +47,18 @@ export function appendEvent<T extends Sequenced>(
   const list = Array.isArray(prev) ? prev : [];
   if (list.length === 0) return [event];
 
+  /*
+   * An event with no position cannot be placed or compared, so it goes on the
+   * end and nothing pretends to know more than that.
+   *
+   * This is the case that broke the live transcript. Two positionless events
+   * compare EQUAL to one another, so every event after the first read as a
+   * duplicate of it and was thrown away — a session showed one line and then
+   * nothing. Appending is the only honest answer: they arrived in order, and
+   * arrival order is all there is to go on.
+   */
   const last = list[list.length - 1];
+  if (event.seq === undefined || last.seq === undefined) return [...list, event];
 
   // The overwhelmingly common case: the newest event, arriving newest-last.
   // One comparison, no scan, no sort.

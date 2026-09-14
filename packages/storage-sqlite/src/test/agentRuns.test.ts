@@ -90,3 +90,79 @@ describe('concurrent run events', () => {
     expect((await storage.listRunEvents(run.id))[0].seq).toBe(42);
   });
 });
+
+/**
+ * Telling the caller where the event landed (BUG 510df783).
+ *
+ * The position is assigned inside the INSERT, which was the right fix for a
+ * real race — two events in flight used to compute the same number and the
+ * second was dropped silently. What it left behind is that the caller never
+ * learns the number: the object it handed over still carries
+ * `seq: undefined`, and the server emits THAT object over the socket.
+ *
+ * Downstream, every live consumer compares events by `seq`, so a transcript
+ * of undefineds collapses to a single event. A Claude Code session with the
+ * Runs panel open shows one line and then nothing, for as long as it runs.
+ */
+describe('the position an appended event was given', () => {
+  const event = (over: Record<string, unknown> = {}) => ({
+    id: `ev-${Math.random().toString(36).slice(2)}`,
+    runId: 'run-1',
+    ts: new Date().toISOString(),
+    lane: 'worker' as const,
+    kind: 'tool' as const,
+    tool: 'Bash',
+    text: 'npm test',
+    ...over,
+  });
+
+  beforeEach(async () => { await storage.createAgentRun(sampleRun()); });
+
+  it('comes back, instead of being kept inside the insert', async () => {
+    // The whole bug in one assertion. Without this the caller cannot emit a
+    // usable event, however correct the row in the database is.
+    const seq = await storage.appendRunEvent(event() as never);
+    expect(seq).toBe(0);
+  });
+
+  it('counts upward as events arrive', async () => {
+    const a = await storage.appendRunEvent(event() as never);
+    const b = await storage.appendRunEvent(event() as never);
+    const c = await storage.appendRunEvent(event() as never);
+    expect([a, b, c]).toEqual([0, 1, 2]);
+  });
+
+  it('gives back an explicit position unchanged', async () => {
+    // The pi tailer knows the real order from the transcript, and that order
+    // beats arrival order. What comes back must be what was asked for.
+    expect(await storage.appendRunEvent(event({ seq: 41 }) as never)).toBe(41);
+  });
+
+  it('answers null when the row was already there', async () => {
+    /*
+     * The insert is INSERT OR IGNORE against UNIQUE(run_id, seq), so a repeat
+     * writes nothing. Reporting a position for a row that was not written
+     * would let the caller emit a duplicate to every open panel — and saying
+     * "nothing happened" is the only honest answer.
+     */
+    const dup = event({ seq: 7 });
+    expect(await storage.appendRunEvent(dup as never)).toBe(7);
+    expect(await storage.appendRunEvent(dup as never)).toBeNull();
+  });
+
+  it('keeps numbering per run, not globally', async () => {
+    // Two runs each start at zero; the UNIQUE constraint is on (run_id, seq).
+    await storage.createAgentRun({ ...sampleRun(), id: 'run-2' });
+    await storage.appendRunEvent(event() as never);
+    expect(await storage.appendRunEvent(event({ runId: 'run-2' }) as never)).toBe(0);
+  });
+
+  it('agrees with what the transcript reads back', async () => {
+    // Belt and braces: the number returned has to be the number stored, or
+    // the socket and a refresh would disagree about the order.
+    await storage.appendRunEvent(event() as never);
+    const second = await storage.appendRunEvent(event() as never);
+    const stored = await storage.listRunEvents('run-1');
+    expect(stored[stored.length - 1].seq).toBe(second);
+  });
+});

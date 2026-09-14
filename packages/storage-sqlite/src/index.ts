@@ -759,7 +759,23 @@ export class SQLiteStorageProvider implements StorageProvider {
     return rows.map((r) => this.mapAgentRunRow(r)).reverse();
   }
 
-  async appendRunEvent(event: RunEvent): Promise<void> {
+  /**
+   * Append an event and report WHERE it landed.
+   *
+   * Returning the position is not bookkeeping. The number is assigned inside
+   * the insert — correctly, because computing it in the route raced — but that
+   * left the caller holding an object whose `seq` is still undefined, which is
+   * the object the server then emits over the socket. Every live consumer
+   * compares events by `seq`, so a stream of undefineds collapses to one
+   * event: a Claude Code session showed a single line in the Runs panel and
+   * then nothing, for as long as it ran.
+   *
+   * Null means nothing was written. The insert is `INSERT OR IGNORE` against
+   * `UNIQUE(run_id, seq)`, so a repeat is silently dropped — and reporting a
+   * position for a row that does not exist would have the caller broadcast a
+   * duplicate to every open panel.
+   */
+  async appendRunEvent(event: RunEvent): Promise<number | null> {
     /*
      * The position is assigned INSIDE the insert when the caller did not give
      * one, and that is the whole fix.
@@ -782,7 +798,7 @@ export class SQLiteStorageProvider implements StorageProvider {
      * on the run with a single indexed aggregate.
      */
     if (event.seq === undefined || event.seq === null) {
-      this.database.prepare(
+      const written = this.database.prepare(
         `INSERT OR IGNORE INTO run_events
           (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
          SELECT ?, ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?, ?, ?, ?, ?
@@ -802,12 +818,21 @@ export class SQLiteStorageProvider implements StorageProvider {
         event.tokens ?? null,
         event.runId,
       );
-      return;
+      /*
+       * Read back by ID, not by recomputing the maximum. Another writer may
+       * have appended in between, and `MAX(seq)` would then report their
+       * position as ours. The id is the only thing that identifies this row.
+       */
+      if (written.changes === 0) return null;
+      const row = this.database
+        .prepare('SELECT seq FROM run_events WHERE id = ?')
+        .get(event.id) as { seq: number } | undefined;
+      return row?.seq ?? null;
     }
 
     // An explicit position wins. The pi tailer knows the real order from the
     // transcript, and that order is better than arrival order.
-    this.database.prepare(
+    const explicit = this.database.prepare(
       `INSERT OR IGNORE INTO run_events
         (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -823,6 +848,8 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.payload ? JSON.stringify(event.payload) : null,
       event.tokens ?? null,
     );
+    // The position asked for, or nothing when the row was already there.
+    return explicit.changes === 0 ? null : event.seq;
   }
 
 

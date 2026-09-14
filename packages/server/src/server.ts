@@ -1917,9 +1917,22 @@ app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
     payload: payload !== undefined ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : undefined,
     tokens: Number.isFinite(tokens) ? tokens : undefined,
   };
-  await storage.appendRunEvent(event);
-  io.emit('run:event', { itemId: run.itemId, runId: run.id, event });
-  res.status(201).json(event);
+  /*
+   * Emitted WITH the position it was actually given.
+   *
+   * The store assigns it inside the insert, so `event.seq` is still undefined
+   * here — and broadcasting that object is what broke the live transcript: every
+   * consumer orders and de-duplicates by `seq`, and a stream of undefineds
+   * compares equal to itself, so the second event and every one after it was
+   * discarded. A Claude Code session showed one line in the Runs panel and then
+   * nothing, for as long as it ran.
+   */
+  const writtenSeq = await storage.appendRunEvent(event);
+  const stored = { ...event, seq: writtenSeq ?? event.seq };
+  // Nothing was written — the row was already there. Telling every open panel
+  // about it would paint a duplicate.
+  if (writtenSeq !== null) io.emit('run:event', { itemId: run.itemId, runId: run.id, event: stored });
+  res.status(201).json(stored);
 }));
 
 app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {

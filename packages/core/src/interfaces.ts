@@ -84,7 +84,15 @@ export interface StorageProvider extends AgEnFKPlugin {
   getAgentRun(id: string): Promise<AgentRun | null>;
   listAgentRuns(query: AgentRunQuery): Promise<AgentRun[]>;
   getAgentRunBySession(sessionId: string): Promise<AgentRun | null>;
-  appendRunEvent(event: RunEvent): Promise<void>;
+  /**
+   * Append an event, answering with the position it was given.
+   *
+   * The position may be assigned by the store when the caller omits it, and
+   * the caller needs it back: the object it handed over still says undefined,
+   * and anything that broadcasts that object leaves every consumer unable to
+   * order or de-duplicate. Null means nothing was written.
+   */
+  appendRunEvent(event: RunEvent): Promise<number | null>;
   listRunEvents(runId: string): Promise<RunEvent[]>;
 
   // Observability — PR sizing (agent-declared)

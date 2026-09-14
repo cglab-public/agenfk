@@ -102,3 +102,45 @@ describe('what it never does', () => {
     expect(result[0]).toBe(first);
   });
 });
+
+/**
+ * Events with no position at all (BUG 510df783).
+ *
+ * The server assigns the position inside the insert and, for a while, emitted
+ * the object it had been handed rather than the one it wrote — so every socket
+ * event carried `seq: undefined`. Two of those compare EQUAL, so the second
+ * event and every one after it read as a duplicate of the first and were
+ * discarded: a live session showed one line in the transcript and then nothing.
+ *
+ * The server is fixed. These exist because the UI must not collapse a
+ * transcript again if anything upstream ever stops numbering — the failure was
+ * total and completely silent.
+ */
+describe('an event with no seq', () => {
+  const bare = (text: string) => ({ text } as { seq?: number; text: string });
+
+  it('is kept, not mistaken for a duplicate of the last one', () => {
+    const list = appendEvent([bare('first')], bare('second'));
+    expect(list).toHaveLength(2);
+  });
+
+  it('keeps a whole stream of them, in arrival order', () => {
+    // The exact shape of the bug: five events in, one event out.
+    let list: readonly { seq?: number; text: string }[] = [];
+    for (const t of ['a', 'b', 'c', 'd', 'e']) list = appendEvent(list, bare(t));
+    expect(list.map(e => e.text)).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+
+  it('appends a numbered event onto unnumbered history without reordering it', () => {
+    // Mixed streams are possible: the pi tailer numbers its events and the
+    // hook does not. Sorting a list that is partly unnumbered would shuffle
+    // the unnumbered ones to the front.
+    const list = appendEvent([bare('a'), bare('b')], { seq: 7, text: 'c' });
+    expect(list.map(e => e.text)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('appends an unnumbered event onto numbered history', () => {
+    const list = appendEvent([{ seq: 1, text: 'a' }], bare('b'));
+    expect(list.map(e => e.text)).toEqual(['a', 'b']);
+  });
+});
