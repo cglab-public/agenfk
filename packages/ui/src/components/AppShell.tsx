@@ -71,7 +71,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // CLI, so it must not happen before the user asks — but once it has, the
   // session outlives every tab switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId } = useActiveProject();
+  const { focusedItemId, newItemRequest, setActiveProjectId, activeProjectId } = useActiveProject();
+  /**
+   * Only for the tmux preference, which lives on the project.
+   *
+   * `activeProjectId` is the CARD's project by the time a dialog is up, because
+   * requesting a terminal switches to it first — there is a test for exactly
+   * that. Same query key as the sidebar's, so this shares its cache rather than
+   * fetching the list twice.
+   */
+  const { data: shellProjects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
     { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
@@ -482,6 +491,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           defaultAgentId={pending.agentId}
           listAgents={listAgentsFromBridge}
           sessionPersistence={sessionPersistenceFromBridge}
+          defaultPersist={
+            (shellProjects as Project[]).find(p => p.id === activeProjectId)?.tmuxByDefault === true
+          }
+          onPersistChange={next => {
+            // Stored on the PROJECT, not in localStorage: the same reasoning as
+            // the agent on a card. A preference that reaches no other client is
+            // a preference the user has to set again on every machine.
+            //
+            // Fire and forget, and deliberately so. Failing to remember the
+            // choice must never block the terminal the user is trying to open;
+            // the session they are creating already carries the decision.
+            if (activeProjectId) {
+              void api.updateProject(activeProjectId, { tmuxByDefault: next }).catch(() => {});
+            }
+          }}
           onClose={() => setPending(null)}
           onCreate={async ({ agentId, autoApprove, persist }) => {
             // Latch and switch BEFORE clearing `pending`, so the panel exists

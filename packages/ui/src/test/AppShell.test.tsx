@@ -32,6 +32,7 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
+    updateProject: vi.fn(async () => ({})),
     listRuns: vi.fn(async () => []),
   },
 }));
@@ -537,6 +538,58 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
 
     const dialog = await screen.findByRole('dialog');
     expect(dialog.getAttribute('aria-label')).toMatch(/something in agenfk/i);
+  });
+
+  it('opens the switch already on when the project stored that preference', async () => {
+    // The read side of the setting, checked THROUGH the shell rather than by
+    // handing the dialog a prop in isolation. Three times in this epic a value
+    // was produced in one place and consumed in another, each tested against
+    // its own fixture and agreeing with nobody; a stored preference nothing
+    // reads is the same defect wearing a server field.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', tmuxByDefault: true, createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [
+          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+        ],
+        sessionPersistence: async () => ({ available: true }),
+      },
+    };
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Something in agenfk'));
+    const toggle = await screen.findByRole('switch', { name: /keep running/i });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('stores the preference on the project when the switch is moved', async () => {
+    // The write side. Without it the field is set by nobody and the user has to
+    // make the same choice on every machine.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [
+          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+        ],
+        sessionPersistence: async () => ({ available: true }),
+      },
+    };
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Something in agenfk'));
+    fireEvent.click(await screen.findByRole('switch', { name: /keep running/i }));
+    await waitFor(() =>
+      expect(api.updateProject).toHaveBeenCalledWith('p1', { tmuxByDefault: true }));
   });
 
   it('switches to the project the card belongs to before opening it', async () => {

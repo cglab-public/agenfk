@@ -30,7 +30,7 @@
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
-import { NewTerminalDialog } from '../components/NewTerminalDialog';
+import { NewTerminalDialog, type NewTerminalRequest } from '../components/NewTerminalDialog';
 
 afterEach(cleanup);
 
@@ -40,7 +40,7 @@ const AGENTS = [
 
 const renderDialog = (
   persistence: { available: boolean; hint?: string; warning?: string },
-  onCreate = vi.fn(async () => {}),
+  onCreate = vi.fn(async (_req: NewTerminalRequest) => {}),
 ) => {
   render(
     <NewTerminalDialog
@@ -147,7 +147,7 @@ describe('while the answer is still unknown', () => {
     // available would be the one failure mode that costs the user work.
     renderDialog({ available: true });
     cleanup();
-    const onCreate = vi.fn(async () => {});
+    const onCreate = vi.fn(async (_req: NewTerminalRequest) => {});
     render(
       <NewTerminalDialog
         cardTitle="Work"
@@ -180,5 +180,92 @@ describe('reaching the host', () => {
   it('reads "no persistence" in a browser, where there is no host at all', async () => {
     const { sessionPersistenceFromBridge } = await import('../components/agentBridge');
     await expect(sessionPersistenceFromBridge()).resolves.toEqual({ available: false });
+  });
+});
+
+/**
+ * The stored preference, and why the dialog reads it at all.
+ *
+ * Without this the server field is dead weight: something writes it, nothing
+ * reads it, and the code looks finished. That is the exact failure this epic
+ * has now hit three times (`supportsAutoApprove`, `sessions:persistence`), so
+ * the read side gets a test of its own rather than being assumed.
+ *
+ * The capability is applied HERE, on read, not at write time. A project whose
+ * preference is on, opened on a machine without tmux, must show the switch off
+ * and still have the preference intact when it goes back to a machine that has
+ * it — otherwise visiting from Windows silently erases a choice.
+ */
+describe('the project preference', () => {
+  it('starts the switch on when the project asked for it', async () => {
+    render(
+      <NewTerminalDialog
+        cardTitle="Work"
+        onCreate={vi.fn(async () => {})}
+        onClose={vi.fn()}
+        listAgents={async () => AGENTS}
+        sessionPersistence={async () => ({ available: true })}
+        defaultPersist
+      />,
+    );
+    const toggle = await screen.findByRole('switch', { name: /keep running|survive/i });
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  });
+
+  it('shows it off where tmux cannot run, without forgetting it', async () => {
+    // The preference is untouched; only the display reflects this machine. The
+    // dialog has no business writing a "no" the user never said.
+    const onCreate = vi.fn(async (_req: NewTerminalRequest) => {});
+    render(
+      <NewTerminalDialog
+        cardTitle="Work"
+        onCreate={onCreate}
+        onClose={vi.fn()}
+        listAgents={async () => AGENTS}
+        sessionPersistence={async () => ({ available: false, hint: 'brew install tmux' })}
+        defaultPersist
+      />,
+    );
+    const toggle = await screen.findByRole('switch', { name: /keep running|survive/i });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(screen.getByRole('button', { name: /^create|open terminal/i }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0][0]).toMatchObject({ persist: false });
+  });
+
+  it('reports a change so the caller can store it', async () => {
+    // Reported, not written from in here. The dialog does not know what a
+    // project is, and giving it a server client would make it untestable for
+    // the sake of one boolean.
+    const onPersistChange = vi.fn();
+    render(
+      <NewTerminalDialog
+        cardTitle="Work"
+        onCreate={vi.fn(async () => {})}
+        onClose={vi.fn()}
+        listAgents={async () => AGENTS}
+        sessionPersistence={async () => ({ available: true })}
+        onPersistChange={onPersistChange}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('switch', { name: /keep running|survive/i }));
+    expect(onPersistChange).toHaveBeenCalledWith(true);
+  });
+
+  it('reports nothing when the switch cannot be moved', async () => {
+    const onPersistChange = vi.fn();
+    render(
+      <NewTerminalDialog
+        cardTitle="Work"
+        onCreate={vi.fn(async () => {})}
+        onClose={vi.fn()}
+        listAgents={async () => AGENTS}
+        sessionPersistence={async () => ({ available: false })}
+        onPersistChange={onPersistChange}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('switch', { name: /keep running|survive/i }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: /keep running/i })).toBeDisabled());
+    expect(onPersistChange).not.toHaveBeenCalled();
   });
 });

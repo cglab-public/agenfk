@@ -65,6 +65,23 @@ export interface NewTerminalDialogProps {
    * process to keep alive.
    */
   readonly sessionPersistence?: () => Promise<SessionPersistence>;
+  /**
+   * The project's stored answer, used to seed the switch.
+   *
+   * Seeded, not enforced: the capability is applied here on READ, so a project
+   * whose preference is on shows the switch off on a machine without tmux and
+   * still has the preference intact when it goes back to one that has it.
+   * Visiting from Windows must not silently erase a choice.
+   */
+  readonly defaultPersist?: boolean;
+  /**
+   * Fired when the user moves the switch, so the caller can store it.
+   *
+   * Reported rather than written from in here. This component does not know
+   * what a project is, and handing it a server client would make it untestable
+   * for the sake of one boolean.
+   */
+  readonly onPersistChange?: (next: boolean) => void;
 }
 
 /**
@@ -92,6 +109,8 @@ export function NewTerminalDialog({
   onClose,
   listAgents,
   sessionPersistence,
+  defaultPersist,
+  onPersistChange,
 }: NewTerminalDialogProps): React.ReactElement {
   // Claude Code only as the first-run default, when the card has never been
   // worked. After that the card itself is the source of truth.
@@ -112,7 +131,7 @@ export function NewTerminalDialog({
    * the feature also worked without it, so defaulting it on would change how
    * someone's terminal behaves on an upgrade they did not ask for.
    */
-  const [persist, setPersist] = React.useState(false);
+  const [persist, setPersist] = React.useState(defaultPersist === true);
   /** null while the probe is in flight: unknown is not the same as no. */
   const [persistence, setPersistence] = React.useState<SessionPersistence | null>(null);
 
@@ -267,7 +286,12 @@ export function NewTerminalDialog({
               aria-checked={persist && canPersist}
               disabled={!canPersist}
               aria-label="Keep running after quitting"
-              onClick={() => { if (canPersist) setPersist(v => !v); }}
+              onClick={() => {
+                if (!canPersist) return;
+                const next = !persist;
+                setPersist(next);
+                onPersistChange?.(next);
+              }}
               className={clsx(
                 'flex w-full items-center gap-3 text-left',
                 canPersist ? 'cursor-pointer' : 'cursor-default opacity-60',

@@ -38,6 +38,14 @@ export interface Project {
   description?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Whether this project's terminals run inside tmux, so they outlive the app.
+   *
+   * Optional because it is absent on every project created before the setting
+   * existed, and absent must read as off: an upgrade may not change how
+   * someone's terminal already behaves.
+   */
+  tmuxByDefault?: boolean;
 }
 
 export interface TestRecord {

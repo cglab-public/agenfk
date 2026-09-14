@@ -1055,7 +1055,7 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // off.
   if (typeof req.body?.tmuxByDefault === 'boolean') updates.tmuxByDefault = req.body.tmuxByDefault;
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree, tmuxByDefault. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);

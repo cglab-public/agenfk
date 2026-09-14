@@ -114,6 +114,23 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Project-level settings. Today only the tmux preference.
+   *
+   * Deliberately narrow: the server's allowlist decides what is settable, and
+   * widening this signature to Partial<Project> would invite the UI to send
+   * fields the route silently drops.
+   */
+  updateProject: async (id: string, updates: { tmuxByDefault?: boolean }) => {
+    try {
+      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      return data;
+    } catch (e) {
+      console.error(`API Error updating project ${id}:`, e);
+      throw e;
+    }
+  },
+
   updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {
     try {
       const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
