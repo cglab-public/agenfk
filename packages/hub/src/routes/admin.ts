@@ -14,6 +14,9 @@ import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { mintChildHubInvite } from './federation.js';
+import { toChildHubDto } from '../util/childHubRow.js';
+import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import {
   PUBLIC_REGISTRY_REPO,
@@ -2155,6 +2158,105 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.json({ directiveId, cancelledCount, forcedCount, leftAlone });
+  });
+
+
+  // ── Child hubs (CGLAB-181) ────────────────────────────────────────────────
+  //
+  // Task 1 shipped the enforcement — every federation route refuses a detached
+  // hub — but no way to reach it. These are the routes that make a child hub's
+  // credential revocable through the product rather than through psql.
+
+  const MAX_CHILD_HUB_NAME_LEN = 120;
+
+  async function findChildHub(orgId: string, id: string) {
+    return ctx.db.get<{ id: string; name: string; detached_at: string | null }>(
+      'SELECT id, name, detached_at FROM child_hubs WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+  }
+
+  router.get('/child-hubs', guard, async (req: Request, res: Response, next) => {
+    try {
+      // Detached hubs are dead endpoints, hidden by the same reasoning as
+      // retired installations: left in the list they would sit in every future
+      // dispatch picker and inflate denominators forever.
+      const includeDetached = req.query.includeDetached === '1' || req.query.includeDetached === 'true';
+      const rows = await ctx.db.all<Record<string, unknown>>(
+        `SELECT id, name, hub_version, first_seen, last_seen, detached_at
+           FROM child_hubs
+          WHERE org_id = ?
+          ORDER BY last_seen DESC`,
+        [req.session!.orgId],
+      );
+      const childHubs = rows
+        .filter((r: any) => includeDetached || !r.detached_at)
+        .map((r: any) => toChildHubDto(r));
+      // Whether this hub is a parent at all — a standalone hub should say so
+      // rather than render an empty table. Counted over ALL rows, so detaching
+      // the last child does not make the tab claim the hub was never a parent.
+      res.json({ isParent: rows.length > 0, childHubs });
+    } catch (err) { next(err); }
+  });
+
+  router.put('/child-hubs/:id', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const raw = req.body?.name;
+      const name = typeof raw === 'string' ? raw.trim() : '';
+      if (!name) { res.status(400).json({ error: 'name required' }); return; }
+      if (name.length > MAX_CHILD_HUB_NAME_LEN) {
+        res.status(400).json({ error: `name exceeds ${MAX_CHILD_HUB_NAME_LEN} characters` });
+        return;
+      }
+      if (!(await findChildHub(orgId, req.params.id))) {
+        res.status(404).json({ error: 'Unknown child hub' });
+        return;
+      }
+      await ctx.db.run('UPDATE child_hubs SET name = ? WHERE id = ? AND org_id = ?', [name, req.params.id, orgId]);
+      res.json({ id: req.params.id, name });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/child-hubs/:id/detach', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const existing = await findChildHub(orgId, req.params.id);
+      if (!existing) { res.status(404).json({ error: 'Unknown child hub' }); return; }
+
+      let revokedKeys = 0;
+      // One transaction: marking the hub detached but failing to revoke its
+      // keys would leave a credential alive that the board says is gone.
+      await ctx.db.transaction(async () => {
+        // Idempotent — re-detaching must not move the original timestamp.
+        if (!existing.detached_at) {
+          await ctx.db.run(
+            'UPDATE child_hubs SET detached_at = ? WHERE id = ? AND org_id = ?',
+            [new Date().toISOString(), req.params.id, orgId],
+          );
+        }
+        const revoked = await ctx.db.run(
+          `UPDATE federation_keys SET revoked_at = ?
+            WHERE org_id = ? AND child_hub_id = ? AND revoked_at IS NULL`,
+          [new Date().toISOString(), orgId, req.params.id],
+        );
+        revokedKeys = revoked.changes;
+      });
+
+      const fresh = await findChildHub(orgId, req.params.id);
+      res.json({
+        id: req.params.id,
+        detached: true,
+        detachedAt: fresh?.detached_at ? new Date(fresh.detached_at).toISOString() : null,
+        revokedKeys,
+      });
+    } catch (err) { next(err); }
+  });
+
+  // The same invite as /hub/federation/invite/create, reachable from the tab
+  // that manages child hubs so an admin never has to leave it.
+  router.post('/child-hubs/invite', guard, (req: Request, res: Response) => {
+    res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));
   });
 
   return router;

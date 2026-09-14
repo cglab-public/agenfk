@@ -116,6 +116,16 @@ describe('admin: child hubs', () => {
       expect(typeof all.body.childHubs[0].detachedAt).toBe('string');
     });
 
+    it('still reports isParent after the last child hub is detached', async () => {
+      // Otherwise the tab tells an admin "this hub has no child hubs" and
+      // offers to enrol one, hiding the detached hub they just acted on.
+      const a = await enroll('alpha');
+      await supertest(app).post(`/v1/admin/child-hubs/${a.childHubId}/detach`).set('Cookie', adminCookie).send({});
+      const r = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', adminCookie);
+      expect(r.body.childHubs).toEqual([]);
+      expect(r.body.isParent).toBe(true);
+    });
+
     it('does not leak child hubs across orgs', async () => {
       await enroll('alpha');
       await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('other','other')");

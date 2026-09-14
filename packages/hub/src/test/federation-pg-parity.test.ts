@@ -72,3 +72,56 @@ describe('PG parity: hub federation enrollment (CGLAB-181)', () => {
     await db.close();
   });
 });
+
+describe('PG parity: child-hub administration (CGLAB-181)', () => {
+  it('lists, renames and detaches a child hub, with Date-shaped timestamps normalised', async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enr = await supertest(app).post('/v1/federation/enroll').send({
+      inviteToken: inv.body.inviteToken, childHub: { name: 'pg-child', hubVersion: '1.1.19' },
+    });
+    expect(enr.status).toBe(200);
+
+    // Postgres hands back Date objects where SQLite hands back strings, and
+    // the list both serialises those and derives `live` from them — the one
+    // place this route can differ between backends.
+    const list = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', cookie);
+    expect(list.status).toBe(200);
+    expect(list.body.isParent).toBe(true);
+    expect(list.body.childHubs).toHaveLength(1);
+    const row = list.body.childHubs[0];
+    expect(row).toMatchObject({ name: 'pg-child', hubVersion: '1.1.19', detached: false, live: true });
+    expect(typeof row.lastSeen).toBe('string');
+    expect(new Date(row.lastSeen).toISOString()).toBe(row.lastSeen);
+    expect(JSON.stringify(list.body)).not.toMatch(/fed_/);
+
+    const renamed = await supertest(app).put(`/v1/admin/child-hubs/${enr.body.childHubId}`)
+      .set('Cookie', cookie).send({ name: '  pg-renamed  ' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe('pg-renamed');
+
+    const det = await supertest(app).post(`/v1/admin/child-hubs/${enr.body.childHubId}/detach`)
+      .set('Cookie', cookie).send({});
+    expect(det.status).toBe(200);
+    expect(det.body.revokedKeys).toBe(1);
+    expect(typeof det.body.detachedAt).toBe('string');
+
+    // enforcement reaches the child on PG too
+    expect((await supertest(app).post('/v1/federation/ping')
+      .set('Authorization', `Bearer ${enr.body.token}`).send({})).status).toBe(401);
+
+    // detached is hidden by default, visible and flagged on request
+    expect((await supertest(app).get('/v1/admin/child-hubs').set('Cookie', cookie)).body.childHubs).toEqual([]);
+    const all = await supertest(app).get('/v1/admin/child-hubs?includeDetached=1').set('Cookie', cookie);
+    expect(all.body.childHubs[0]).toMatchObject({ detached: true, live: false });
+    expect(all.body.isParent).toBe(true);
+
+    // re-detaching is idempotent on PG as well
+    const again = await supertest(app).post(`/v1/admin/child-hubs/${enr.body.childHubId}/detach`)
+      .set('Cookie', cookie).send({});
+    expect(again.body.revokedKeys).toBe(0);
+    expect(again.body.detachedAt).toBe(det.body.detachedAt);
+
+    await db.close();
+  });
+});

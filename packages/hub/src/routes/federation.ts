@@ -7,6 +7,7 @@ import { semverOrNull } from '../util/semver.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
+export { CHILD_HUB_LIVE_WINDOW_HOURS } from '../util/childHubRow.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for
@@ -26,18 +27,21 @@ export function federationInviteRouter(ctx: HubServerContext): Router {
   const adminGuard = requireAdmin(ctx.config.sessionSecret);
 
   router.post('/invite/create', adminGuard, (req: Request, res: Response) => {
-    const orgId = req.session!.orgId;
-    const nonce = randomBytes(18).toString('base64url');
-    const exp = Date.now() + INVITE_TTL_MS;
-    const inviteToken = signInviteToken({ orgId, nonce, exp, kind: 'child-hub' }, ctx.config.secretKey);
-    res.json({
-      inviteToken,
-      parentUrl: publicHubUrl(req),
-      expiresAt: new Date(exp).toISOString(),
-    });
+    res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));
   });
 
   return router;
+}
+
+/** Mint a child-hub invite. Shared by the /hub route and the admin tab's button. */
+export function mintChildHubInvite(orgId: string, secretKey: string, parentUrl: string) {
+  const nonce = randomBytes(18).toString('base64url');
+  const exp = Date.now() + INVITE_TTL_MS;
+  return {
+    inviteToken: signInviteToken({ orgId, nonce, exp, kind: 'child-hub' }, secretKey),
+    parentUrl,
+    expiresAt: new Date(exp).toISOString(),
+  };
 }
 
 /** Child-facing: enroll, heartbeat, poll directives. Mounted under /v1/federation. */
