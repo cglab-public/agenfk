@@ -1399,6 +1399,62 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
   }
 }));
 
+/**
+ * Repoint a project at the repository it actually lives in (CGLAB-185).
+ *
+ * Behind the internal token for the same reason `verify-command` is, and the
+ * reason `PUT /projects/:id` deliberately refuses this field: `projectRoot` is a
+ * CWD. It is where `git add -A && git commit` runs and where worktrees are cut
+ * from, so an unauthenticated caller setting it is mass assignment with
+ * execution consequences — bug e60e20aa.
+ *
+ * It exists at all because there was NO way to correct a wrong one. The value is
+ * otherwise only ever written as a side effect of validating from inside a
+ * directory, which means a project that picked up the wrong root kept it. That
+ * is not hypothetical: four projects on this machine have `projectRoot` set to
+ * $HOME, so an auto-worktree would cut a branch from the user's home directory
+ * and an auto-commit would run `git add -A` over their dotfiles.
+ *
+ * `isPersistableProjectRoot` is the same guard the walk-up already uses. Worth
+ * saying that it was written for exactly this class of mistake and had no
+ * caller that could FIX one.
+ */
+app.put("/projects/:id/project-root", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { projectRoot } = req.body ?? {};
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) {
+    return res.status(400).json({ error: "projectRoot (non-empty string) required" });
+  }
+  const candidate = projectRoot.trim();
+  // Absolute only. A relative path resolves against whatever cwd the SERVER
+  // happens to have, which is nobody's intent and is not even visible to the
+  // person typing it.
+  if (!path.isAbsolute(candidate)) {
+    return res.status(400).json({ error: `Refusing a path that is not absolute: ${candidate}` });
+  }
+  if (!isPersistableProjectRoot(candidate, os.homedir())) {
+    return res.status(400).json({
+      error: `Refusing ${candidate}: a project root must not be your home directory, ~/.agenfk, or /. Those are what a bad walk-up finds, and a worktree or an auto-commit there runs over your own files.`,
+    });
+  }
+  // It has to BE a directory, and one that is there. A path that does not exist
+  // fails later, at worktree time, with an error about git rather than about
+  // the setting that caused it.
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+    return res.status(400).json({ error: `Not a directory: ${candidate}` });
+  }
+  try {
+    const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
+    if (!updated) return res.status(404).json({ error: "Project not found" });
+    io.emit('items_updated');
+    res.json(updated);
+  } catch {
+    res.status(404).json({ error: "Project not found" });
+  }
+}));
+
 app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
   await storage.deleteProject(req.params.id);
   io.emit('items_updated');

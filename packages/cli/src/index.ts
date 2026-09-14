@@ -1650,17 +1650,19 @@ program
 
 program
   .command('update-project <id>')
-  .description('Update a project\'s name, description, or verify command (MCP fallback: update_project)')
+  .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
   .option('--verify-command <cmd>', 'Project-level verification command')
+  .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
-      if (options.verifyCommand === undefined && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command.'));
+      if (options.verifyCommand === undefined && options.projectRoot === undefined
+          && Object.keys(updates).length === 0) {
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --project-root.'));
         process.exit(1);
         return;
       }
@@ -1681,6 +1683,33 @@ program
         ({ data } = await axios.put(
           `${API_URL}/projects/${id}/verify-command`,
           { verifyCommand: options.verifyCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * The project root is privileged for the same reason verifyCommand is:
+       * it is the CWD that `git add -A && git commit` runs in and that
+       * worktrees are cut from. So it goes through the internal endpoint too.
+       *
+       * It exists because there was NO way to correct a wrong one — the value
+       * is otherwise written only as a side effect of validating from inside a
+       * directory, so a project that picked up the wrong root kept it. Four
+       * projects pointing at $HOME is the state that made this necessary.
+       */
+      if (options.projectRoot !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        // Resolved here rather than on the server: a relative path means
+        // relative to where the PERSON is standing, and the server has a
+        // different cwd entirely.
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/project-root`,
+          { projectRoot: path.resolve(process.cwd(), options.projectRoot) },
           { headers: { 'x-agenfk-internal': token } },
         ));
       }
