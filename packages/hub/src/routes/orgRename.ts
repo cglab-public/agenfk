@@ -13,8 +13,10 @@ import { requireAdmin, signSession, setSessionCookie } from '../auth/session.js'
 export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'api_keys',
   'auth_config',
+  'child_hubs',
   'device_codes',
   'events',
+  'federation_keys',
   'flow_assignments',
   'flows',
   'hidden_users',

@@ -118,6 +118,33 @@ const SCHEMA_SQLITE = `
     used_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Hub federation (CGLAB-181): child hubs enrolled with this (parent) hub,
+  -- and the federation keys they authenticate with. A federation key is a
+  -- principal of its own — never an api_keys row — so the two credential
+  -- kinds cannot reach each other's routes. detached_at is the parent-side
+  -- "leave the group" marker: every federation route refuses a detached hub
+  -- even if its key row was not revoked.
+  CREATE TABLE IF NOT EXISTS child_hubs (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hub_version TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    detached_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
+
+  CREATE TABLE IF NOT EXISTS federation_keys (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_keys_child ON federation_keys(child_hub_id);
+
   CREATE TABLE IF NOT EXISTS auth_config (
     org_id TEXT PRIMARY KEY,
     password_enabled INTEGER NOT NULL DEFAULT 1,

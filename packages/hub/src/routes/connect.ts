@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
-import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
+import { randomBytes } from 'crypto';
+import { signInviteToken, verifyInviteToken } from '../auth/inviteToken.js';
+import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
@@ -45,15 +47,6 @@ function isoPlus(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-function publicHubUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim()
-    || (req.secure ? 'https' : 'http');
-  const host = (req.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim()
-    || req.headers.host
-    || 'localhost';
-  return `${proto}://${host}`;
-}
-
 /**
  * Sanitise the identity payload a CLI sends about itself. Each field is a
  * string-or-null; anything else is dropped rather than stored, since it lands in
@@ -78,35 +71,6 @@ function sanitiseIdentity(raw: unknown): {
  */
 function identityLabel(prefix: string, id: { gitEmail: string | null; osUser: string | null }, fallback: string): string {
   return `${prefix}:${id.gitEmail ?? id.osUser ?? fallback}`;
-}
-
-function signInviteToken(payload: { orgId: string; nonce: string; exp: number }, secret: string): string {
-  const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = createHmac('sha256', secret).update(body).digest('base64url');
-  return `${body}.${sig}`;
-}
-
-function verifyInviteToken(token: string, secret: string): { orgId: string; nonce: string; exp: number } | null {
-  const dot = token.lastIndexOf('.');
-  if (dot <= 0) return null;
-  const body = token.slice(0, dot);
-  const sigStr = token.slice(dot + 1);
-  let expected: Buffer;
-  let actual: Buffer;
-  try {
-    expected = Buffer.from(createHmac('sha256', secret).update(body).digest('base64url'));
-    actual = Buffer.from(sigStr);
-  } catch {
-    return null;
-  }
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    if (typeof parsed.orgId !== 'string' || typeof parsed.nonce !== 'string' || typeof parsed.exp !== 'number') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
 }
 
 export function connectRouter(ctx: HubServerContext): Router {
@@ -248,7 +212,7 @@ export function connectRouter(ctx: HubServerContext): Router {
     const orgId = req.session!.orgId;
     const nonce = randomBytes(18).toString('base64url');
     const exp = Date.now() + INVITE_TTL_MS;
-    const inviteToken = signInviteToken({ orgId, nonce, exp }, ctx.config.secretKey);
+    const inviteToken = signInviteToken({ orgId, nonce, exp, kind: 'installation' }, ctx.config.secretKey);
     const hubUrl = publicHubUrl(req);
     res.json({
       inviteToken,
@@ -262,7 +226,7 @@ export function connectRouter(ctx: HubServerContext): Router {
   router.post('/invite/redeem', async (req: Request, res: Response) => {
     const inviteToken = String(req.body?.inviteToken ?? '');
     if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
-    const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey);
+    const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'installation');
     if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
     if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
     const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);

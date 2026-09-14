@@ -14,6 +14,7 @@ import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
+import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
@@ -197,6 +198,8 @@ export async function createHubApp(
   app.use('/v1/admin', orgRenameRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
+  app.use('/hub/federation', federationInviteRouter(ctx));
+  app.use('/v1/federation', federationRouter(ctx));
   // One-time rewrite of historical bare-osUser identity keys. Reported rather
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
