@@ -551,15 +551,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // on the next launch would be the app arguing with them.
     const closing = sessionsRef.current.find(s => s.id === id);
     if (closing?.recordId) void api.forgetTerminalSession(closing.recordId).catch(() => {});
-    setSessions(prev => {
-      const next = prev.filter(s => s.id !== id);
-      // Fall to the LAST remaining tab — not an adjacent one, despite what
-      // "neighbour" would suggest. Either is defensible; what is not is
-      // leaving the panel blank with tabs still showing, which reads as a
-      // crash.
-      setActiveSession(cur => (cur === id ? (next.at(-1)?.id ?? null) : cur));
-      return next;
-    });
+    /*
+     * Two setters, neither reaching into the other's updater.
+     *
+     * `setActiveSession` used to be called from INSIDE the `setSessions`
+     * updater. It happened to be harmless — StrictMode invokes the updater
+     * twice, and the second pass saw `cur !== id` and returned `cur`
+     * unchanged — but that is a property nobody wrote down and the next edit
+     * would break without a word. The same impurity in `rememberSession`
+     * would have written a duplicate record, and in `closeSession` the cost is
+     * paid by the person whose terminal is involved.
+     *
+     * The sessions updater stays in its `prev` form, which is what keeps it
+     * correct if two closes ever land in one batch. The next ACTIVE tab is
+     * chosen from the ref, because choosing it needs the list and an updater
+     * is the wrong place to go looking.
+     */
+    const next = sessionsRef.current.filter(s => s.id !== id);
+    setSessions(prev => prev.filter(s => s.id !== id));
+    // Fall to the LAST remaining tab — not an adjacent one, despite what
+    // "neighbour" would suggest. Either is defensible; what is not is leaving
+    // the panel blank with tabs still showing, which reads as a crash.
+    setActiveSession(cur => (cur === id ? (next.at(-1)?.id ?? null) : cur));
   }, []);
   // stopSession is declared above closeSession and needs to reach it; a ref
   // avoids reordering two callbacks that each read state the other does not.

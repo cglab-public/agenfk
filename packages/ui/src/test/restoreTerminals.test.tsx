@@ -12,7 +12,7 @@
  * So every test here is about whether the right conversation comes back, or
  * whether the app is honest when it cannot.
  */
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { AppShell } from '../components/AppShell';
@@ -556,5 +556,102 @@ describe('failed runs', () => {
         .map(d => d.getAttribute('data-state'));
       expect(states).toContain('failed');
     });
+  });
+});
+
+/**
+ * Which tab is selected after one is closed (CGLAB-182).
+ *
+ * The behaviour was already right; what was wrong was how it was reached.
+ * `setActiveSession` was called from INSIDE the `setSessions` updater, and an
+ * updater has to be pure — React invokes it twice in development and may
+ * replay the queue. It happened to be harmless, because the second pass saw
+ * `cur !== id` and returned `cur` untouched. That is a property nobody had
+ * written down, in a file where the same impurity elsewhere already cost a
+ * duplicate record and a killed terminal.
+ *
+ * So these tests pin the OUTCOME rather than the mechanism, and they run under
+ * StrictMode, which is where an impure updater shows itself.
+ */
+describe('the tab that takes over when one is closed', () => {
+  const threeRestored = ['claude-code', 'codex', 'pi'].map((agentId, i) => ({
+    id: `row-${i + 1}`, itemId: 'i1', projectId: 'p1', agentId,
+    itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+  }));
+
+  const renderStrict = () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <React.StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <ActiveProjectProvider>
+            <SocketProvider>
+              <AppShell><div>board</div></AppShell>
+            </SocketProvider>
+          </ActiveProjectProvider>
+        </QueryClientProvider>
+      </React.StrictMode>,
+    );
+  };
+
+  const openTabs = () => Array.from(
+    document.querySelectorAll('[role="tablist"][aria-label="Open terminals"] [role="tab"]'));
+  /*
+   * Re-queried on every call, never held across a click.
+   *
+   * A node captured before an interaction can be detached by the re-render
+   * that follows, and `within()` on a detached subtree reports no accessible
+   * roles at all — which reads as "the button is gone" when the button is
+   * right there. Cost me a debugging round.
+   */
+  const closeTab = (index: number) => {
+    const buttons = Array.from(document.querySelectorAll<HTMLElement>(
+      '[role="tablist"][aria-label="Open terminals"] button[aria-label^="Close terminal on"]'));
+    fireEvent.click(buttons[index]);
+  };
+
+  it('falls to the last remaining tab, never to a blank panel', async () => {
+    // The one outcome that is not defensible is tabs on screen with nothing
+    // under them, which reads as a crash rather than as a closed tab.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(threeRestored as never);
+    renderStrict();
+    await waitFor(() => expect(openTabs().length).toBe(3));
+
+    fireEvent.click(openTabs()[1]);
+    await waitFor(() => expect(openTabs()[1]).toHaveAttribute('aria-selected', 'true'));
+
+    closeTab(1);
+    await waitFor(() => expect(openTabs().length).toBe(2));
+    const selected = openTabs().filter(t => t.getAttribute('aria-selected') === 'true');
+    expect(selected, 'no tab is selected — the panel is blank with tabs showing').toHaveLength(1);
+    expect(selected[0]).toBe(openTabs().at(-1));
+  });
+
+  it('leaves the selection alone when a different tab is closed', async () => {
+    // The other half of the rule, and the one the impure updater relied on
+    // being true: closing a tab you are not looking at must not move you.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(threeRestored as never);
+    renderStrict();
+    await waitFor(() => expect(openTabs().length).toBe(3));
+
+    fireEvent.click(openTabs()[0]);
+    await waitFor(() => expect(openTabs()[0]).toHaveAttribute('aria-selected', 'true'));
+    const stayingLabel = openTabs()[0].textContent;
+
+    closeTab(2);
+    await waitFor(() => expect(openTabs().length).toBe(2));
+    expect(openTabs()[0]).toHaveAttribute('aria-selected', 'true');
+    expect(openTabs()[0].textContent).toBe(stayingLabel);
+  });
+
+  it('leaves nothing selected once the last tab is gone', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue([threeRestored[0]] as never);
+    renderStrict();
+    await waitFor(() => expect(openTabs().length).toBe(1));
+    closeTab(0);
+    await waitFor(() => expect(openTabs().length).toBe(0));
   });
 });
