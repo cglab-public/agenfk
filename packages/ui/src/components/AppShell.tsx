@@ -406,6 +406,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (restored.current || !rememberedSessions?.length) return;
     restored.current = true;
+    /*
+     * Which agents resume by DIRECTORY rather than by id.
+     *
+     * claude does (`--continue`), and a directory holds one most recent
+     * conversation — not two. Two claude tabs on one card would both resume
+     * it, attaching two processes to a single transcript: the first tab would
+     * not be resumed at all, it would be showing the second's history.
+     *
+     * So at most one tab per card+agent resumes; the rest come back as fresh
+     * conversations, which is honest. Agents that resume by an explicit id
+     * (pi's `--session-id`) are unaffected — two of those resume two different
+     * conversations and neither has to give way.
+     */
+    const RESUMES_BY_DIRECTORY = new Set(['claude-code']);
+    const directoryResumeTaken = new Set<string>();
+
     const putBack = rememberedSessions.map(row => {
       sessionSeq.current += 1;
       return {
@@ -424,7 +440,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // Only where there is a conversation to resume. For codex there is
         // not, and asking anyway would either fail the launch or resume
         // somebody else's session.
-        resume: Boolean(row.agentSessionId),
+        resume: (() => {
+          if (!row.agentSessionId) return false;
+          if (!RESUMES_BY_DIRECTORY.has(row.agentId)) return true;
+          const key = `${row.itemId}\u0000${row.agentId}`;
+          if (directoryResumeTaken.has(key)) return false;
+          directoryResumeTaken.add(key);
+          return true;
+        })(),
         recordId: row.id,
       };
     });

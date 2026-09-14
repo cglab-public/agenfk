@@ -453,3 +453,60 @@ describe('in a browser, where there are no terminals', () => {
     expect(api.listTerminalSessions).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Two terminals of the SAME agent on one card.
+ *
+ * claude resumes by directory (`--continue`), and a directory holds one most
+ * recent conversation, not two. Restoring both tabs with resume would attach
+ * two processes to a single transcript: tab 1 would not be resumed at all, it
+ * would be showing tab 2's history.
+ *
+ * The state is reachable and supported — the + button opens another terminal
+ * on the current card — so the restore has to decide rather than assume one
+ * terminal per card.
+ */
+describe('restoring two terminals of the same agent on one card', () => {
+  const twoClaude = [
+    {
+      id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      itemTitle: 'Something in agenfk', openedAt: '2026-09-14T01:00:00.000Z',
+    },
+    {
+      id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      agentSessionId: 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+      itemTitle: 'Something in agenfk', openedAt: '2026-09-14T02:00:00.000Z',
+    },
+  ];
+
+  it('resumes only one of them', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(twoClaude as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+    const resuming = spawnCalls.filter(c => c.resume === true);
+    expect(resuming, 'both tabs asked to resume the one conversation').toHaveLength(1);
+  });
+
+  it('still puts both tabs back', async () => {
+    // The second tab is worth having — it just starts a new conversation
+    // rather than pretending to be the one the first tab holds.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(twoClaude as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+  });
+
+  it('leaves agents that resume BY ID alone', async () => {
+    // pi resumes with an explicit --session-id, so two pi tabs on one card
+    // resume two different conversations and neither needs to give way.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(
+      twoClaude.map(r => ({ ...r, agentId: 'pi' })) as never,
+    );
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+    expect(spawnCalls.filter(c => c.resume === true)).toHaveLength(2);
+  });
+});
