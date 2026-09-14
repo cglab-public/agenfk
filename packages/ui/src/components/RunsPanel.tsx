@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { stripAnsi } from '../utils';
+import { appendEvent } from '../runEvents';
 
 export interface AgentRun {
   id: string;
@@ -248,10 +249,13 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
   // with every open tab.
   useSocketEvent('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
     if (b.itemId !== itemId) return;
-    queryClient.setQueryData<RunEvent[]>(['run-events', b.runId], (old) => {
-      const prev = Array.isArray(old) ? old : [];
-      return prev.some(e => e.seq === b.event.seq) ? prev : [...prev, b.event].sort((a, z) => a.seq - z.seq);
-    });
+    // Constant-time on the ordinary path. This used to scan, copy and re-sort
+    // an already-sorted array on every event — work proportional to the SQUARE
+    // of the session's length. See runEvents.ts for why the slow path stays.
+    queryClient.setQueryData<RunEvent[]>(
+      ['run-events', b.runId],
+      old => appendEvent(old, b.event) as RunEvent[],
+    );
     queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
   });
   useSocketEvent('run:updated', (b: { itemId: string }) => {

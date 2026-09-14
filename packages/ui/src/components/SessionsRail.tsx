@@ -21,6 +21,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
+import { subscribeToFrames, SPINNER_FRAMES } from '../sharedTick';
 
 export type SessionState = 'running' | 'blocked' | 'failed' | 'idle';
 
@@ -130,15 +131,23 @@ const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, running: 2,
  * terminal. Braille dots because they are a single character, so the row does
  * not reflow between states.
  */
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 
 function Spinner(): React.ReactElement {
   const [frame, setFrame] = React.useState(0);
-  React.useEffect(() => {
-    // 80ms is the conventional cadence; slower reads as stuttering.
-    const id = setInterval(() => setFrame(f => (f + 1) % SPINNER_FRAMES.length), 80);
-    return () => clearInterval(id);
-  }, []);
+  /*
+   * One clock for every spinner, not one each.
+   *
+   * This used to own a `setInterval`, so a board with thirty running sessions
+   * ran thirty timers and 375 React renders a second, continuously — which
+   * `liveAgents.ts` had already argued against in its own header, two files
+   * away. The shared tick is the same lifecycle that module uses: it exists
+   * only while something is watching.
+   *
+   * It also makes the spinners turn in step with each other, which separate
+   * timers could not: they drifted apart within seconds.
+   */
+  React.useEffect(() => subscribeToFrames(setFrame), []);
   return (
     <span
       data-testid="session-spinner"
