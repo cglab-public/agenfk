@@ -1921,98 +1921,6 @@ program
 // ── agenfk backup ────────────────────────────────────────────────────────────
 
 program
-  .command('worktree')
-  .argument('<action>', 'prune')
-  .option('-y, --yes', 'Remove without asking. Only what a dry run would have listed.')
-  .description('Show which finished cards still hold a worktree, and remove the ones you confirm')
-  .action(async (action: string, options: { yes?: boolean }) => {
-    if (action !== 'prune') {
-      console.log(chalk.yellow(`Unknown action '${action}'. The only one is: prune`));
-      process.exit(1);
-    }
-
-    /*
-     * Deliberately a command rather than a rule.
-     *
-     * Removing a worktree when its card reaches the final step is the obvious
-     * policy and the wrong one: people go back to a directory after closing a
-     * card, and deleting a working tree is not something undo recovers. So
-     * this lists what it WOULD remove and removes only what the person
-     * confirms — which still answers the real complaint, because what has
-     * already accumulated can finally be cleared.
-     */
-    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
-    const projFile = findProjectJsonPath(process.cwd());
-    if (!projFile) {
-      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
-      process.exit(1);
-      return;
-    }
-    let projectId: string | null = null;
-    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
-    if (!projectId) {
-      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
-      process.exit(1);
-      return;
-    }
-    const { data: items } = await axios.get(`${API_URL}/items`, {
-      params: projectId ? { projectId } : undefined,
-    });
-    const { data: flow } = await axios
-      .get(`${API_URL}/projects/${projectId}/flow`)
-      .catch(() => ({ data: null }));
-
-    // "Finished" is whatever this project's flow says it is. Hardcoding DONE
-    // would offer nothing on a custom flow.
-    const finalSteps: string[] = flow?.steps?.length
-      ? [flow.steps[flow.steps.length - 1].name]
-      : ['DONE'];
-
-    const candidates = prunableWorktrees(items ?? [], {
-      finalSteps,
-      isDirty: (dir: string) => {
-        // Throws if the directory is gone or is not a repository, and the
-        // caller treats a throw as "do not touch" — a failed check read as
-        // clean is how a tool deletes work nobody pushed.
-        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
-        return out.trim().length > 0;
-      },
-    });
-
-    if (candidates.length === 0) {
-      console.log(chalk.green('Nothing to prune: no finished card is holding a clean worktree.'));
-      return;
-    }
-
-    console.log(chalk.blue(`\n${candidates.length} worktree(s) could be removed:\n`));
-    for (const c of candidates) {
-      console.log(`  ${chalk.bold(c.title)}`);
-      console.log(chalk.gray(`    ${c.path}`));
-      console.log(chalk.gray(`    ${c.reason}`));
-    }
-
-    if (!options.yes) {
-      // The listing IS the default. Someone running this to see what is there
-      // must not have anything deleted by it.
-      console.log(chalk.yellow('\nNothing was removed. Re-run with --yes to remove these.'));
-      return;
-    }
-
-    let removed = 0;
-    for (const c of candidates) {
-      try {
-        // Through git, not rm: it also clears the .git/worktrees registration,
-        // and leaving those behind is half the slowdown this is meant to fix.
-        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
-        removed += 1;
-      } catch (e: any) {
-        console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
-      }
-    }
-    console.log(chalk.green(`\nRemoved ${removed} of ${candidates.length}.`));
-  });
-
-program
   .command('backup')
   .description('Create a manual backup of the database to ~/.agenfk/backup/')
   .action(async () => {
@@ -3583,6 +3491,92 @@ branchCmd
 const worktreeCmd = program
   .command('worktree')
   .description('Manage per-item git worktrees, so several agents can work at once');
+
+worktreeCmd
+  .command('prune')
+  .option('-y, --yes', 'Remove without asking. Only what a dry run would have listed.')
+  .description('Show which finished cards still hold a worktree, and remove the ones you confirm')
+  .action(async (options: { yes?: boolean }) => {
+    /*
+     * Deliberately a command rather than a rule.
+     *
+     * Removing a worktree when its card reaches the final step is the obvious
+     * policy and the wrong one: people go back to a directory after closing a
+     * card, and deleting a working tree is not something undo recovers. So
+     * this lists what it WOULD remove and removes only what the person
+     * confirms — which still answers the real complaint, because what has
+     * already accumulated can finally be cleared.
+     */
+    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    const { data: items } = await axios.get(`${API_URL}/items`, {
+      params: projectId ? { projectId } : undefined,
+    });
+    const { data: flow } = await axios
+      .get(`${API_URL}/projects/${projectId}/flow`)
+      .catch(() => ({ data: null }));
+
+    // "Finished" is whatever this project's flow says it is. Hardcoding DONE
+    // would offer nothing on a custom flow.
+    const finalSteps: string[] = flow?.steps?.length
+      ? [flow.steps[flow.steps.length - 1].name]
+      : ['DONE'];
+
+    const candidates = prunableWorktrees(items ?? [], {
+      finalSteps,
+      isDirty: (dir: string) => {
+        // Throws if the directory is gone or is not a repository, and the
+        // caller treats a throw as "do not touch" — a failed check read as
+        // clean is how a tool deletes work nobody pushed.
+        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+        return out.trim().length > 0;
+      },
+    });
+
+    if (candidates.length === 0) {
+      console.log(chalk.green('Nothing to prune: no finished card is holding a clean worktree.'));
+      return;
+    }
+
+    console.log(chalk.blue(`\n${candidates.length} worktree(s) could be removed:\n`));
+    for (const c of candidates) {
+      console.log(`  ${chalk.bold(c.title)}`);
+      console.log(chalk.gray(`    ${c.path}`));
+      console.log(chalk.gray(`    ${c.reason}`));
+    }
+
+    if (!options.yes) {
+      // The listing IS the default. Someone running this to see what is there
+      // must not have anything deleted by it.
+      console.log(chalk.yellow('\nNothing was removed. Re-run with --yes to remove these.'));
+      return;
+    }
+
+    let removed = 0;
+    for (const c of candidates) {
+      try {
+        // Through git, not rm: it also clears the .git/worktrees registration,
+        // and leaving those behind is half the slowdown this is meant to fix.
+        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
+        removed += 1;
+      } catch (e: any) {
+        console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
+      }
+    }
+    console.log(chalk.green(`\nRemoved ${removed} of ${candidates.length}.`));
+  });
 
 worktreeCmd
   .command('create <itemId>')
