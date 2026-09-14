@@ -14,6 +14,9 @@ import { createHmac, timingSafeEqual } from 'crypto';
  * matches, so a child-hub invite can never mint an installation key and vice
  * versa. Both kinds share the `used_invites` nonce table for single use.
  */
+/** Both invite kinds expire 14 days after issue. */
+export const INVITE_TTL_MS = 14 * 86400_000;
+
 export type InviteKind = 'installation' | 'child-hub';
 
 export interface InvitePayload {

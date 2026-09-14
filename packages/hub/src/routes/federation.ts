@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
-import { signInviteToken, verifyInviteToken } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { semverOrNull } from '../util/semver.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 
@@ -13,16 +14,7 @@ import { publicHubUrl } from '../util/publicUrl.js';
 // (next to the installation invite) while the child-facing API lives under
 // /v1 like every other machine-to-machine route.
 
-const INVITE_TTL_MS = 14 * 86400_000; // 14 days, same as the installation invite
 const MAX_NAME_LEN = 120;
-// Strict semver allowlist, identical in spirit to the X-Agenfk-Version header
-// check in routes/events.ts: the value is shown in the admin UI, so anything
-// malformed is ignored rather than stored.
-const SEMVER_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-
-function semverOrNull(v: unknown): string | null {
-  return typeof v === 'string' && SEMVER_RE.test(v.trim()) ? v.trim() : null;
-}
 
 /** Admin-facing: mint a child-hub invite. Mounted under /hub/federation. */
 export function federationInviteRouter(ctx: HubServerContext): Router {

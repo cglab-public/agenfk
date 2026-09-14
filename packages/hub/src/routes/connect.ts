@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { signInviteToken, verifyInviteToken } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, INVITE_TTL_MS } from '../auth/inviteToken.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
@@ -16,7 +16,6 @@ import { rateLimit } from '../util/rateLimit.js';
 
 const DEVICE_CODE_TTL_S = 600;        // 10 minutes
 const DEVICE_POLL_INTERVAL_S = 2;
-const INVITE_TTL_MS = 14 * 86400_000; // 14 days
 
 // /device/start is unauthenticated; without limits anyone can inflate the
 // device_codes table unbounded (and expired rows were never pruned). Cap the

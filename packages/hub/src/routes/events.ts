@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { SEMVER_TAG_RE } from '../util/semver.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
@@ -151,11 +152,6 @@ export function eventsRouter(ctx: HubServerContext): Router {
     });
   });
 
-  // Strict semver allowlist for the X-Agenfk-Version batch header. Same shape
-  // as the CLI/admin-route allowlist — the value will eventually be displayed
-  // in the admin UI and used to drive downgrade-detection logic, so we never
-  // accept anything malformed.
-  const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
   // Hard ceiling on events processed in a single /v1/events transaction.
   const MAX_EVENTS_PER_BATCH = 500;
