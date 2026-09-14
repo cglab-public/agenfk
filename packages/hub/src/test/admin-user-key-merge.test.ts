@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
@@ -27,10 +28,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('user_key merge admin API', () => {
   let app: any;

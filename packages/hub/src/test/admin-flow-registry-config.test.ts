@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { drainApp } from './helpers/drainApp';
 import { openSqliteDb } from '../db/sqlite';
@@ -22,10 +23,6 @@ const SECRET = 'a'.repeat(64);
 const PUBLIC_REPO = 'cglab-public/agenfk-flows';
 const ORG_REPO = 'acme-corp/agenfk-flows';
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 /** Two community flows, as the public registry serves them. */
 const COMMUNITY_FLOWS = [

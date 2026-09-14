@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
@@ -29,10 +30,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 async function seedInstallation(db: any, orgId: string, installationId: string, occurredAt = '2026-05-01T10:00:00Z') {
   await db.run(
