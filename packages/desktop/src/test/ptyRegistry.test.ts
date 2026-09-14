@@ -427,3 +427,64 @@ describe('a limit on concurrent sessions', () => {
     ).resolves.toBeTruthy();
   });
 });
+
+/**
+ * The last link in the auto-approve chain (CGLAB-180).
+ *
+ * Every other hop already had a test — the dialog, the strict `=== true`
+ * coercion in the IPC layer, the flag construction in agents.ts. This one did
+ * not: nothing asserted that what `resolveAgentCommand` built actually reached
+ * the spawner's argv.
+ *
+ * It matters more than an average missing link because this flag turns off the
+ * agent's own permission prompts. And the epic has already produced the exact
+ * failure this guards against: `supportsAutoApprove` shipped dead, with
+ * fixtures on both sides of the seam agreeing with each other and with nobody
+ * else. A chain whose every piece is tested in isolation can still be broken in
+ * the middle.
+ */
+describe('auto-approve reaching the process', () => {
+  const spawnWith = async (agentId: string, autoApprove: boolean) => {
+    spawned = [];
+    await registry.spawn({ itemId: 'i1', agentId, windowId: 1, cols: 80, rows: 24, autoApprove } as never);
+    return spawned[0];
+  };
+
+  it('puts the flag in the argv when it was asked for', async () => {
+    const { args } = await spawnWith('claude-code', true);
+    expect(args).toContain('--dangerously-skip-permissions');
+  });
+
+  it('leaves it out when it was not', async () => {
+    // The direction that actually protects someone: a default that leaks the
+    // flag in would disable prompts for every user who never opened Settings.
+    const { args } = await spawnWith('claude-code', false);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('leaves it out when nothing was said at all', async () => {
+    spawned = [];
+    await registry.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].args).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('carries every argument for an agent that needs more than one', async () => {
+    // codex is the case that breaks any implementation assuming a single
+    // flag: three settings, two of them as `-c key=value` pairs, and dropping
+    // any one of them leaves the agent still prompting while the UI says it
+    // will not.
+    const { args } = await spawnWith('codex', true);
+    expect(args).toEqual(expect.arrayContaining([
+      '-c', 'approval_policy=never',
+      '-c', 'sandbox_mode=danger-full-access',
+      '--dangerously-bypass-hook-trust',
+    ]));
+  });
+
+  it('does not invent a flag for an agent that has none', async () => {
+    // `shell` is the fallback and is not an agent. Asking for auto-approve on
+    // it must not produce argv it cannot parse.
+    const { args } = await spawnWith('shell', true);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+  });
+});
