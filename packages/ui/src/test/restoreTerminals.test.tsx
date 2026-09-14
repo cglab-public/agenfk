@@ -310,3 +310,59 @@ describe('naming the tabs', () => {
     expect(await screen.findAllByText('Something in agenfk')).not.toHaveLength(0);
   });
 });
+
+/**
+ * Whether the rail can tell that OUR OWN terminals are working.
+ *
+ * An adversarial review found it could not. Liveness was fed only by `run:event`
+ * from the socket, which comes from the Claude Code hook — and a terminal
+ * opened here creates a PTY and no run at all. So a desktop terminal was
+ * permanently "idle": a thin grey ring while the agent worked for an hour.
+ *
+ * Worse than the wrong dot: the rail renders STOP only for running or waiting,
+ * so the single state our own terminals could reach was the one with no
+ * controls. There was no way to stop a session from the rail at all.
+ *
+ * The signal used here is the terminal's own output. It is the honest one
+ * available without inventing a protocol: bytes arriving means the agent is
+ * doing something.
+ */
+describe('the rail and our own terminals', () => {
+  it('shows a terminal as running once its agent produces output', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    let emit: ((e: { sessionId: string; data: string }) => void) | null = null;
+    const host = (window as unknown as Record<string, any>).agenfkDesktop;
+    host.terminal.onData = (cb: (e: { sessionId: string; data: string }) => void) => {
+      emit = cb;
+      return () => {};
+    };
+    renderShell();
+    await openTerminal();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+
+    await waitFor(() => expect(emit).not.toBeNull());
+    emit!({ sessionId: 'pty-1', data: 'thinking...' });
+
+    await waitFor(() => {
+      const dot = document.querySelector('[data-testid="session-dot"]');
+      expect(dot?.getAttribute('data-state')).toBe('running');
+    });
+  });
+
+  it('offers a way to stop it, which idle rows do not have', async () => {
+    // The consequence that made the wrong dot more than cosmetic.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    let emit: ((e: { sessionId: string; data: string }) => void) | null = null;
+    const host = (window as unknown as Record<string, any>).agenfkDesktop;
+    host.terminal.onData = (cb: (e: { sessionId: string; data: string }) => void) => {
+      emit = cb;
+      return () => {};
+    };
+    renderShell();
+    await openTerminal();
+    await waitFor(() => expect(emit).not.toBeNull());
+    emit!({ sessionId: 'pty-1', data: 'working' });
+
+    expect(await screen.findByRole('button', { name: /^stop /i })).toBeInTheDocument();
+  });
+});

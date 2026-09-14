@@ -558,6 +558,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onSelect={setActiveSession}
                 onClose={closeSession}
                 onSpawned={rememberSession}
+                // Our own terminals have no AgentRun and therefore no run
+                // events, so their output is what tells the rail they are
+                // working. Without it they read as idle forever — and the rail
+                // only offers STOP for running or waiting, so the one state
+                // they could reach was the one with no controls.
+                onOutput={itemId => { live.touch(itemId); }}
                 onNew={() => {
                   const current = sessions.find(s => s.id === activeSession);
                   if (current) {

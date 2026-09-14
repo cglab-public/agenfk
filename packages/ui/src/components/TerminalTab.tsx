@@ -65,6 +65,8 @@ export interface TerminalTabProps {
    * terminal and writes records is two jobs in one place.
    */
   readonly onSpawned?: (sessionId: string, agentSessionId: string | undefined) => void;
+  /** A pane reporting that its terminal is producing output. */
+  readonly onOutput?: (itemId: string) => void;
 }
 
 export function TerminalTab({
@@ -74,6 +76,7 @@ export function TerminalTab({
   onClose,
   onNew,
   onSpawned,
+  onOutput,
 }: TerminalTabProps): React.ReactElement {
   if (sessions.length === 0) {
     return (
@@ -191,6 +194,7 @@ export function TerminalTab({
             agentSessionId={session.agentSessionId}
             resume={session.resume}
             onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
+            onOutput={() => onOutput?.(session.itemId)}
           />
         </div>
       ))}

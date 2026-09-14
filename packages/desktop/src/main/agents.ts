@@ -115,11 +115,35 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
     label: 'Claude Code',
     command: { file: 'claude', args: [] },
     autoApproveArgs: ['--dangerously-skip-permissions'],
-    // Verified with `claude --help` on a real machine, not copied from a
-    // reference implementation.
+    /*
+     * Create by id, resume by DIRECTORY. Both halves verified by running the
+     * real CLI, not by reading its help:
+     *
+     *   claude --session-id <new>       creates it
+     *   claude --session-id <existing>  "Session ID is already in use"
+     *   claude --resume <never-created> "No conversation found with session ID"
+     *   claude --continue               "the most recent conversation in the
+     *                                    current directory" — and it does not
+     *                                    see another directory's.
+     *
+     * `--resume <id>` was the obvious choice and it failed in the user's hands
+     * with exactly that "No conversation found" error, because claude only
+     * PERSISTS a conversation once there has been an exchange. We record the id
+     * at spawn time, so a terminal opened and closed without the agent saying
+     * anything leaves an id that never became a conversation — and resume then
+     * refuses to start at all, which is worse than starting fresh.
+     *
+     * `--continue` cannot fail that way, and it is not a compromise here: this
+     * app gives every card its OWN worktree, so "the most recent conversation
+     * in the current directory" IS that card's conversation.
+     *
+     * The id is still minted and passed on a fresh spawn — it names the
+     * conversation, and codex-style id-based resume may need it later — but
+     * nothing depends on it coming back.
+     */
     session: {
       fresh: id => ['--session-id', id],
-      resume: id => ['--resume', id],
+      resume: () => ['--continue'],
     },
   },
   {
@@ -174,6 +198,18 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
      * to pi as a prompt. It was written that way here by pattern-matching
      * claude's flags instead of reading pi's, and the test passed because it
      * asserted the same wrong assumption back.
+     */
+    /*
+     * The SAME flag for both modes, which is pi's actual semantics and is
+     * verified by running it: `--session-id <existing>` recalls what the first
+     * spawn was told, where claude refuses the same call outright.
+     *
+     *   --session-id <id>   Use exact project session ID, CREATING IT IF MISSING
+     *
+     * NOT `--resume`. pi's `--resume, -r` is "Select a session to resume" and
+     * takes NO argument — it opens an interactive picker, so `--resume <uuid>`
+     * showed the user a picker and handed pi the uuid as a prompt. That is what
+     * "pi always opens an empty session" was.
      */
     session: {
       fresh: id => ['--session-id', id],

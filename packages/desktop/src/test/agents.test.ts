@@ -253,10 +253,27 @@ describe('resuming a conversation', () => {
     expect(cmd.args[cmd.args.indexOf('--session-id') + 1]).toBe(UUID);
   });
 
-  it('resumes claude by that same id', () => {
+  it('resumes claude by DIRECTORY, because resuming by id can fail', () => {
+    // Verified against the real CLI: `--resume <id>` answers "No conversation
+    // found with session ID" when the id was never persisted, and claude only
+    // persists a conversation once there has been an exchange. Since the id is
+    // recorded at spawn time, a terminal opened and closed without the agent
+    // saying anything produced exactly that failure — and refusing to start is
+    // worse than starting fresh.
+    //
+    // `--continue` is "the most recent conversation in the current directory",
+    // and every card here has its own worktree, so that IS this card's
+    // conversation.
     const cmd = resolveAgentCommand('claude-code', { agentSessionId: UUID, resume: true });
-    expect(cmd.args).toContain('--resume');
-    expect(cmd.args[cmd.args.indexOf('--resume') + 1]).toBe(UUID);
+    expect(cmd.args).toEqual(['--continue']);
+    expect(cmd.args).not.toContain('--resume');
+  });
+
+  it('never passes claude an id it would reject', () => {
+    // `claude --session-id <existing>` is an error: "Session ID is already in
+    // use". So the create flag must appear on a FRESH spawn only.
+    expect(resolveAgentCommand('claude-code', { agentSessionId: UUID, resume: true }).args)
+      .not.toContain('--session-id');
   });
 
   it('resumes pi with the same flag it was created with', () => {
@@ -330,7 +347,9 @@ describe('resuming a conversation', () => {
     const cmd = resolveAgentCommand('claude-code', {
       agentSessionId: UUID, resume: true, autoApprove: true,
     });
-    expect(cmd.args).toContain('--resume');
+    // `--continue` for claude, not `--resume` — see the directory-scoped
+    // resume above.
+    expect(cmd.args).toContain('--continue');
     expect(cmd.args).toContain('--dangerously-skip-permissions');
   });
 });

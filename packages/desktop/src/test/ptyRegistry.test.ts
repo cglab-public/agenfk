@@ -359,7 +359,11 @@ describe('conversation ids', () => {
       agentSessionId: UUID, resume: true,
     });
     expect(result.agentSessionId).toBe(UUID);
-    expect(spawned[0].args).toEqual(['--resume', UUID]);
+    // claude resumes by DIRECTORY (`--continue`), because resuming by id fails
+    // outright when the conversation was never persisted. The id is still
+    // carried through — it is what the row remembers — but the argv does not
+    // depend on it. See agents.ts.
+    expect(spawned[0].args).toEqual(['--continue']);
   });
 
   it('still returns a pty handle, which is a different thing entirely', async () => {

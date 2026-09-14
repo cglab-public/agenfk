@@ -59,6 +59,14 @@ export interface TerminalPaneProps {
    * once the spawn answers. Absent for agents that cannot be told their own id.
    */
   readonly onSpawned?: (agentSessionId: string | undefined) => void;
+  /**
+   * The terminal produced output.
+   *
+   * Throttled, and reported as a bare fact rather than the bytes: the shell
+   * only needs to know that something happened, and passing the content would
+   * put terminal output through a component that has no business reading it.
+   */
+  readonly onOutput?: () => void;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -66,6 +74,9 @@ export interface TerminalPaneProps {
 
 const defaultBridge = (): TerminalBridge | null =>
   (window as unknown as { agenfkDesktop?: { terminal?: TerminalBridge } }).agenfkDesktop?.terminal ?? null;
+
+/** At most one liveness report per this many ms, however fast output arrives. */
+const OUTPUT_REPORT_MS = 2000;
 
 export function TerminalPane({
   itemId,
@@ -75,6 +86,7 @@ export function TerminalPane({
   agentSessionId,
   resume,
   onSpawned,
+  onOutput,
   createTerminal,
   createFitAddon,
   bridge,
@@ -86,6 +98,8 @@ export function TerminalPane({
   // Everything the cleanup needs, held in refs rather than state: the teardown
   // must run with whatever exists at that moment, and a state update would be
   // a render that never happens on an unmounting component.
+  // Last time output was reported upward, for the throttle above.
+  const lastReport = React.useRef(0);
   const sessionRef = React.useRef<string | null>(null);
   const termRef = React.useRef<Terminal | null>(null);
 
@@ -120,6 +134,19 @@ export function TerminalPane({
       // keeps one card's output out of every other card's tab.
       if (sessionId !== sessionRef.current) return;
       term.write(data);
+      // Bytes arriving means the agent is doing something, and it is the only
+      // honest liveness signal available for a terminal opened here: these
+      // create a PTY and no AgentRun, so no run events, so the rail had no way
+      // to know they were working and showed them idle forever.
+      //
+      // Throttled hard. Output arrives in many small chunks, and every report
+      // wakes the shell to recompute the rail — the cost the rail's own
+      // one-timer design exists to avoid.
+      const now = Date.now();
+      if (now - lastReport.current > OUTPUT_REPORT_MS) {
+        lastReport.current = now;
+        onOutput?.();
+      }
     }));
 
     cleanups.push(api.onExit(({ sessionId, exitCode: code }) => {
