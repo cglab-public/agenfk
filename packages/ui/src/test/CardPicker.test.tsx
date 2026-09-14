@@ -50,6 +50,14 @@ describe('the order cards are offered in', () => {
       expect(new Set(out.map(i => i.id)).size).toBe(3);
     }
   });
+
+  it('does not swallow a repeated id, which would make it a dedupe', () => {
+    // Not reachable from the server, but the function is two complementary
+    // filters and the name above promised more than it checked: with unique
+    // input, "did not duplicate" says nothing about what happens to a repeat.
+    const dupes = [card('i1', 'One'), card('i1', 'Also one'), card('i2', 'Two')];
+    expect(orderForPicker(dupes, 'i1').map(i => i.title)).toEqual(['One', 'Also one', 'Two']);
+  });
 });
 
 describe('the picker', () => {
@@ -83,11 +91,38 @@ describe('the picker', () => {
     expect(screen.getByText(/no work in flight/i)).toBeTruthy();
   });
 
-  it('closes on Escape, so it is not a trap without a pointer', () => {
+  it('takes focus when it opens, so Escape can reach it', () => {
+    /*
+     * The half this test used to miss. Firing keydown AT the dialog proves the
+     * handler runs; it says nothing about whether a key press ever arrives
+     * there. React dispatches along the fiber tree from the event target, and
+     * a dialog that never takes focus is one the keyboard never reaches — the
+     * handler was unreachable in the app while this test was green.
+     */
+    render(<CardPicker items={THREE} currentItemId="i1" onPick={vi.fn()} onClose={vi.fn()} />);
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+  });
+
+  it('closes on Escape pressed wherever focus actually is', () => {
     const onClose = vi.fn();
     render(<CardPicker items={THREE} currentItemId="i1" onPick={vi.fn()} onClose={onClose} />);
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('says which project a card belongs to', () => {
+    // The list is cross-project and the rows showed only a title, so two cards
+    // with the same name in two repos were the same row — and picking one
+    // re-points the board.
+    render(
+      <CardPicker
+        items={[card('i1', 'Fix flaky test')]}
+        projectNames={new Map([['p1', 'horizon-lab']])}
+        onPick={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTitle('Fix flaky test').textContent).toMatch(/horizon-lab/);
   });
 
   it('shows the step each card is sitting in', () => {

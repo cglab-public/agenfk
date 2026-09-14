@@ -242,6 +242,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     queryKey: ['active-items'],
     queryFn: api.listActiveItems,
   });
+  /*
+   * Project id to name, for the picker's rows.
+   *
+   * Same key the sidebar's own projects query uses, so it is the same cache
+   * entry and the same request. The list of cards is cross-project — the route
+   * takes no project filter — and the sidebar only gets away with bare titles
+   * because it groups by project.
+   */
+  const { data: allProjects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
+  const projectNames = React.useMemo(
+    () => new Map((allProjects as Project[]).map(p => [p.id, p.name])),
+    [allProjects],
+  );
   // Same query key the settings screen uses, so a change there is reflected
   // here without a reload. Auto-approve is desktop-owned, not on the server.
   const { data: desktopPrefs } = useQuery({ queryKey: ['desktop-prefs'], queryFn: readPrefsFromBridge });
@@ -1134,13 +1147,40 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {pickingCard && (
         <CardPicker
           items={activeWork}
+          projectNames={projectNames}
           currentItemId={sessions.find(s => s.id === activeSession)?.itemId}
           onClose={() => setPickingCard(false)}
           onPick={item => {
             setPickingCard(false);
-            // Straight into the dialog that already exists, unchanged, for the
-            // card just chosen.
-            requestTerminal(item);
+            /*
+             * A NEW terminal, always — including on the card the strip is
+             * already showing.
+             *
+             * Routing this through `requestTerminal` was wrong, and review
+             * caught it: that function's job is "take me to my work", so it
+             * switches to an existing terminal instead of opening one. From
+             * the `+` that made the picker's FIRST row — the current card,
+             * hoisted to the top and labelled — a click that closed the dialog
+             * and changed nothing on screen. The dead control this card exists
+             * to fix, one layer deeper.
+             *
+             * It also removed the only route to a second agent on one card,
+             * which the surrounding code is built for: tabs are labelled
+             * "<agent> <n>" precisely so two on one card are distinguishable,
+             * and MAX_SESSIONS_PER_WINDOW is 30.
+             *
+             * The existing-terminal guard is not lost — it lives where it
+             * belongs, on clicking a card in the sidebar or on the board,
+             * which means "take me to it" rather than "give me another".
+             */
+            setActiveProjectId(item.projectId);
+            markProjectWorked(item.projectId);
+            setPending({
+              itemId: item.id,
+              title: item.title,
+              agentId: item.agentId,
+              branchName: (item as { branchName?: string | null }).branchName ?? null,
+            });
           }}
         />
       )}
