@@ -122,6 +122,81 @@ describe('Admin → Child hubs', () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/child-hubs/ch-1/detach'));
   });
 
+  it('says the list could not be loaded instead of claiming the hub has no children', async () => {
+    // The dangerous failure: a 500 or an expired session leaves `data`
+    // undefined, and the isParent branch would then invite the admin to enrol
+    // a child into a parent hub whose roster they simply could not see.
+    get.mockRejectedValue({ response: { data: { error: 'boom' } } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter><AdminChildHubs /></MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not load child hubs/i);
+    expect(screen.queryByText(/this hub has no child hubs/i)).toBeNull();
+  });
+
+  it('surfaces a failed detach instead of looking like the click did nothing', async () => {
+    renderPage();
+    await screen.findByText('acme-emea');
+    post.mockRejectedValue({ response: { data: { error: 'hub unreachable' } } });
+    fireEvent.click(screen.getByRole('button', { name: /detach acme-emea/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /yes, detach/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/hub unreachable/i);
+  });
+
+  it('surfaces a failed rename', async () => {
+    renderPage();
+    await screen.findByText('acme-emea');
+    put.mockRejectedValue({ response: { data: { error: 'name taken' } } });
+    fireEvent.click(screen.getByRole('button', { name: /rename acme-emea/i }));
+    fireEvent.change(screen.getByRole('textbox', { name: /new name/i }), { target: { value: 'emea' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/name taken/i);
+  });
+
+  it('refetches the roster after a rename and after a detach', async () => {
+    renderPage();
+    await screen.findByText('acme-emea');
+    const afterLoad = get.mock.calls.length;
+    put.mockResolvedValue({ data: { id: 'ch-1', name: 'emea' } });
+    fireEvent.click(screen.getByRole('button', { name: /rename acme-emea/i }));
+    fireEvent.change(screen.getByRole('textbox', { name: /new name/i }), { target: { value: 'emea' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(afterLoad));
+
+    const afterRename = get.mock.calls.length;
+    post.mockResolvedValue({ data: { id: 'ch-1', detached: true, revokedKeys: 1 } });
+    fireEvent.click(screen.getByRole('button', { name: /detach acme-emea/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /yes, detach/i }));
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(afterRename));
+  });
+
+  it('renders a detached hub as detached: no detach action, no stale marker, and who did it', async () => {
+    renderPage({
+      isParent: true,
+      childHubs: [{
+        id: 'ch-9', name: 'acme-gone', hubVersion: '1.1.18',
+        firstSeen: '2026-09-01T10:00:00.000Z', lastSeen: '2026-09-01T10:00:00.000Z',
+        live: false, detached: true, detachedAt: '2026-09-10T10:00:00.000Z',
+        detachedByEmail: 'admin@acme.com',
+      }],
+    });
+    const row = (await screen.findAllByRole('row')).find(r => r.textContent?.includes('acme-gone'))!;
+    expect(within(row).getByText(/detached by admin@acme\.com/i)).toBeInTheDocument();
+    // "not checking in" on a hub you deliberately cut off is noise, not signal
+    expect(within(row).queryByText(/not checking in/i)).toBeNull();
+    expect(within(row).queryByRole('button', { name: /detach/i })).toBeNull();
+    expect(within(row).getByRole('button', { name: /rename/i })).toBeInTheDocument();
+  });
+
+  it('distinguishes "every child was detached" from "never had a child"', async () => {
+    renderPage({ isParent: true, childHubs: [] });
+    expect(await screen.findByText(/every child hub of this one has been detached/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this hub has no child hubs/i)).toBeNull();
+  });
+
   it('asks the server for detached hubs only when the toggle is on', async () => {
     renderPage();
     await screen.findByText('acme-emea');

@@ -31,6 +31,7 @@ export interface ChildHubDbRow {
   first_seen?: string | Date | null;
   last_seen?: string | Date | null;
   detached_at?: string | Date | null;
+  detached_by_email?: string | null;
 }
 
 export interface ChildHubDto {
@@ -42,6 +43,7 @@ export interface ChildHubDto {
   live: boolean;
   detached: boolean;
   detachedAt: string | null;
+  detachedByEmail: string | null;
 }
 
 /** ISO-8601 for a value that may already be a string, a Date, or absent. */
@@ -65,5 +67,6 @@ export function toChildHubDto(row: ChildHubDbRow, now: number = Date.now()): Chi
       && new Date(lastSeen).getTime() >= now - CHILD_HUB_LIVE_WINDOW_HOURS * 3600_000,
     detached: !!detachedAt,
     detachedAt,
+    detachedByEmail: row.detached_by_email ?? null,
   };
 }

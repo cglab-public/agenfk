@@ -15,7 +15,7 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
-import { toChildHubDto, validChildHubName, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
+import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import {
@@ -2168,8 +2168,8 @@ export function adminRouter(ctx: HubServerContext): Router {
   // credential revocable through the product rather than through psql.
 
   async function findChildHub(orgId: string, id: string) {
-    return ctx.db.get<{ id: string; name: string; detached_at: string | null }>(
-      'SELECT id, name, detached_at FROM child_hubs WHERE id = ? AND org_id = ?',
+    return ctx.db.get<{ id: string; name: string; detached_at: string | Date | null; detached_by_email: string | null }>(
+      'SELECT id, name, detached_at, detached_by_email FROM child_hubs WHERE id = ? AND org_id = ?',
       [id, orgId],
     );
   }
@@ -2213,7 +2213,11 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
-      await ctx.db.run('UPDATE child_hubs SET name = ? WHERE id = ? AND org_id = ?', [name, req.params.id, orgId]);
+      const upd = await ctx.db.run('UPDATE child_hubs SET name = ? WHERE id = ? AND org_id = ?', [name, req.params.id, orgId]);
+      // The row can be deleted between the lookup and the write; reporting a
+      // rename that did not happen would have the tab show the old name back
+      // on the next refresh with no explanation.
+      if (upd.changes === 0) { res.status(404).json({ error: 'Unknown child hub' }); return; }
       res.json({ id: req.params.id, name });
     } catch (err) { next(err); }
   });
@@ -2221,20 +2225,31 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.post('/child-hubs/:id/detach', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      const existing = await findChildHub(orgId, req.params.id);
-      if (!existing) { res.status(404).json({ error: 'Unknown child hub' }); return; }
+      if (!(await findChildHub(orgId, req.params.id))) {
+        res.status(404).json({ error: 'Unknown child hub' });
+        return;
+      }
+
+      let actorEmail: string | null = null;
+      if (req.session?.userId) {
+        const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+        actorEmail = u?.email ?? null;
+      }
 
       let revokedKeys = 0;
       // One transaction: marking the hub detached but failing to revoke its
       // keys would leave a credential alive that the board says is gone.
       await ctx.db.transaction(async () => {
-        // Idempotent — re-detaching must not move the original timestamp.
-        if (!existing.detached_at) {
-          await ctx.db.run(
-            'UPDATE child_hubs SET detached_at = ? WHERE id = ? AND org_id = ?',
-            [new Date().toISOString(), req.params.id, orgId],
-          );
-        }
+        // `detached_at IS NULL` in the statement itself, not a prior read —
+        // two admins clicking Detach at the same moment would both observe a
+        // null and both write, and the later write would move the recorded
+        // time. The predicate makes the database the arbiter.
+        await ctx.db.run(
+          `UPDATE child_hubs
+              SET detached_at = ?, detached_by_user_id = ?, detached_by_email = ?
+            WHERE id = ? AND org_id = ? AND detached_at IS NULL`,
+          [new Date().toISOString(), req.session!.userId ?? null, actorEmail, req.params.id, orgId],
+        );
         const revoked = await ctx.db.run(
           `UPDATE federation_keys SET revoked_at = ?
             WHERE org_id = ? AND child_hub_id = ? AND revoked_at IS NULL`,
@@ -2247,7 +2262,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       res.json({
         id: req.params.id,
         detached: true,
-        detachedAt: fresh?.detached_at ? new Date(fresh.detached_at).toISOString() : null,
+        detachedAt: isoOrNull(fresh?.detached_at ?? null),
+        detachedByEmail: fresh?.detached_by_email ?? null,
         revokedKeys,
       });
     } catch (err) { next(err); }

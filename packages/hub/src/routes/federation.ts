@@ -8,7 +8,6 @@ import { issueFederationKey, requireFederationKey } from '../auth/federationKey.
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.js';
-export { CHILD_HUB_LIVE_WINDOW_HOURS } from '../util/childHubRow.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
 // admin-issued invite of kind 'child-hub', then heartbeats and polls for

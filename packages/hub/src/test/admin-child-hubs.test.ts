@@ -163,6 +163,34 @@ describe('admin: child hubs', () => {
       expect((await supertest(app).put(`/v1/admin/child-hubs/${a.childHubId}`).send({ name: 'x' })).status).toBe(401);
       expect((await supertest(app).put(`/v1/admin/child-hubs/${a.childHubId}`).set('Cookie', viewerCookie).send({ name: 'x' })).status).toBe(403);
     });
+
+    it('404s rather than claiming success when the row vanished mid-request', async () => {
+      // The lookup and the write are two statements; a delete in between used
+      // to yield a 200 for a rename that never happened, and the tab would show
+      // the old name back on the next refresh with no explanation.
+      const a = await enroll('alpha');
+      const realRun = ctx.db.run.bind(ctx.db);
+      ctx.db.run = async (sql: string, params?: unknown[]) => {
+        if (/UPDATE child_hubs SET name/i.test(sql)) return { changes: 0 } as any;
+        return realRun(sql, params);
+      };
+      const r = await supertest(app).put(`/v1/admin/child-hubs/${a.childHubId}`).set('Cookie', adminCookie).send({ name: 'ghost' });
+      ctx.db.run = realRun;
+      expect(r.status).toBe(404);
+    });
+
+    it('cannot rename a child hub belonging to another org', async () => {
+      const mine = await enroll('alpha');
+      await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('other','other')");
+      await ctx.db.run(
+        "INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen) VALUES ('x','other','not-yours', ?, ?)",
+        [new Date().toISOString(), new Date().toISOString()],
+      );
+      // mine renames, so the 404 below is about the org, not the route
+      expect((await supertest(app).put(`/v1/admin/child-hubs/${mine.childHubId}`).set('Cookie', adminCookie).send({ name: 'ok' })).status).toBe(200);
+      expect((await supertest(app).put('/v1/admin/child-hubs/x').set('Cookie', adminCookie).send({ name: 'stolen' })).status).toBe(404);
+      expect((await ctx.db.get("SELECT name FROM child_hubs WHERE id = 'x'")).name).toBe('not-yours');
+    });
   });
 
   describe('POST /v1/admin/child-hubs/:id/detach', () => {
@@ -188,12 +216,27 @@ describe('admin: child hubs', () => {
     it('is idempotent and keeps the original detached_at', async () => {
       const a = await enroll('alpha');
       const first = await supertest(app).post(`/v1/admin/child-hubs/${a.childHubId}/detach`).set('Cookie', adminCookie).send({});
-      const at = (await ctx.db.get('SELECT detached_at FROM child_hubs WHERE id = ?', [a.childHubId])).detached_at;
+      expect(first.body.detached).toBe(true);
+      // Move the stored timestamp somewhere no clock can produce. Comparing two
+      // live `new Date()` values let a re-detach that DOES reset the column pass
+      // whenever both calls landed in the same millisecond.
+      const MARKER = '2020-01-01T00:00:00.000Z';
+      await ctx.db.run('UPDATE child_hubs SET detached_at = ? WHERE id = ?', [MARKER, a.childHubId]);
       const second = await supertest(app).post(`/v1/admin/child-hubs/${a.childHubId}/detach`).set('Cookie', adminCookie).send({});
       expect(second.status).toBe(200);
       expect(second.body.revokedKeys).toBe(0);
-      expect((await ctx.db.get('SELECT detached_at FROM child_hubs WHERE id = ?', [a.childHubId])).detached_at).toBe(at);
-      expect(first.body.detached).toBe(true);
+      const after = await ctx.db.get('SELECT detached_at FROM child_hubs WHERE id = ?', [a.childHubId]);
+      expect(new Date(after.detached_at).toISOString()).toBe(MARKER);
+      expect(second.body.detachedAt).toBe(MARKER);
+    });
+
+    it('records who detached the hub', async () => {
+      const a = await enroll('alpha');
+      const r = await supertest(app).post(`/v1/admin/child-hubs/${a.childHubId}/detach`).set('Cookie', adminCookie).send({});
+      expect(r.body.detachedByEmail).toBe('admin@x');
+      const row = await ctx.db.get('SELECT detached_by_email, detached_by_user_id FROM child_hubs WHERE id = ?', [a.childHubId]);
+      expect(row.detached_by_email).toBe('admin@x');
+      expect(row.detached_by_user_id).toBeTruthy();
     });
 
     it('404s an unknown id and one belonging to another org', async () => {

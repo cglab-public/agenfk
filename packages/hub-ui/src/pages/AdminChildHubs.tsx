@@ -9,10 +9,11 @@
  * credential is revoked, so a child hub comes back only by enrolling again
  * with a fresh invite.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Network, Clock, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
+import { fmtDateTime } from '../dates';
 
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
 
@@ -25,6 +26,7 @@ export interface ChildHubRow {
   live: boolean;
   detached: boolean;
   detachedAt: string | null;
+  detachedByEmail?: string | null;
 }
 
 interface ListResponse {
@@ -38,7 +40,71 @@ interface Invite {
   expiresAt: string;
 }
 
-const fmt = (iso: string | null) => (iso ? new Date(iso).toISOString().replace('T', ' ').slice(0, 16) : '—');
+// Locale-converted and NaN-guarded, like every other admin table — a bespoke
+// UTC formatter here would have admins in other zones misjudging staleness.
+const fmt = (iso: string | null) => (iso ? fmtDateTime(iso) : '—');
+
+const errText = (e: unknown) => (e as any)?.response?.data?.error ?? (e as any)?.message ?? 'Request failed';
+
+/**
+ * Detach confirmation. A real dialog rather than a panel appended below the
+ * table: this revokes a credential, and on a long roster a panel off the bottom
+ * of the page reads as "nothing happened" — which invites a second click at the
+ * one control where a double-fire is least welcome. Focus moves in, Escape and
+ * the backdrop cancel, and focus returns to whatever opened it.
+ */
+function DetachDialog(props: {
+  name: string; pending: boolean; error: string | null;
+  onConfirm: () => void; onCancel: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<Element | null>(null);
+
+  useEffect(() => {
+    openerRef.current = document.activeElement;
+    confirmRef.current?.focus();
+    return () => { (openerRef.current as HTMLElement | null)?.focus?.(); };
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={e => { if (e.target === e.currentTarget) props.onCancel(); }}
+      onKeyDown={e => { if (e.key === 'Escape') props.onCancel(); }}
+    >
+      <div role="dialog" aria-modal="true" aria-label={`Detach ${props.name}`} className={`${cardCls} max-w-md`}>
+        <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+          <AlertTriangle className="w-4 h-4 text-amber-500" /> Detach “{props.name}”?
+        </h3>
+        <p className="mt-2 text-xs text-ink-tertiary">
+          This revokes its credential immediately and stops all dispatch to it. Nothing it already
+          sent is deleted. It can only rejoin with a new join token.
+        </p>
+        {props.error && (
+          <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">{props.error}</p>
+        )}
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            ref={confirmRef}
+            type="button"
+            onClick={props.onConfirm}
+            disabled={props.pending}
+            className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-chip disabled:opacity-50"
+          >
+            Yes, detach
+          </button>
+          <button
+            type="button"
+            onClick={props.onCancel}
+            className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-chip"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function AdminChildHubs() {
   const qc = useQueryClient();
@@ -73,6 +139,7 @@ export function AdminChildHubs() {
 
   const data = list.data;
   const rows = data?.childHubs ?? [];
+  const listError = list.isError ? errText(list.error) : null;
 
   return (
     <div className="space-y-5">
@@ -96,10 +163,14 @@ export function AdminChildHubs() {
           </button>
         </div>
 
+        {mint.isError && (
+          <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-400">{errText(mint.error)}</p>
+        )}
+
         {invite && (
           <div className="mt-4 rounded-xl border border-border-brand bg-mint/20 dark:bg-brand/10 p-3">
             <p className="text-xs text-ink-tertiary">
-              Shown once. On the child hub, join with this token — it expires {fmt(invite.expiresAt)}.
+              Hand this to the child hub — it expires {fmt(invite.expiresAt)} and can be redeemed once.
             </p>
             <code className="mt-2 block break-all font-mono text-[11px] text-ink">{invite.parentUrl}</code>
             <code className="mt-1 block break-all font-mono text-[11px] text-ink">{invite.inviteToken}</code>
@@ -123,6 +194,13 @@ export function AdminChildHubs() {
 
         {list.isLoading ? (
           <p className="mt-4 text-xs text-ink-tertiary">Loading…</p>
+        ) : listError ? (
+          // Before the isParent branch on purpose: a failed request leaves
+          // `data` undefined, and falling through would tell the admin of a
+          // real parent hub that it has no children.
+          <p role="alert" className="mt-4 text-sm text-red-600 dark:text-red-400">
+            Could not load child hubs: {listError}
+          </p>
         ) : !data?.isParent ? (
           <p className="mt-4 text-sm text-ink-tertiary">
             This hub has no child hubs. Generate a join token above to add one.
@@ -146,7 +224,11 @@ export function AdminChildHubs() {
                 <tr key={c.id} className="border-t border-border-soft">
                   <td className="px-2 py-2.5 font-medium text-ink">
                     {c.name}
-                    {c.detached && <span className="ml-2 text-[11px] text-ink-tertiary">detached</span>}
+                    {c.detached && (
+                      <span className="ml-2 text-[11px] text-ink-tertiary">
+                        detached{c.detachedByEmail ? ` by ${c.detachedByEmail}` : ''}
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-2.5 font-mono text-xs text-ink-tertiary">{c.hubVersion ?? '—'}</td>
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
@@ -160,6 +242,7 @@ export function AdminChildHubs() {
                   <td className="px-2 py-2.5 text-right">
                     <button
                       type="button"
+                      aria-label={`Rename ${c.name}`}
                       onClick={() => { setRenaming(c); setNewName(c.name); }}
                       className="rounded-lg border border-border-soft px-2 py-1 text-xs text-ink hover:bg-chip"
                     >
@@ -168,6 +251,7 @@ export function AdminChildHubs() {
                     {!c.detached && (
                       <button
                         type="button"
+                        aria-label={`Detach ${c.name}`}
                         onClick={() => setDetaching(c)}
                         className="ml-2 rounded-lg border border-border-soft px-2 py-1 text-xs text-red-600 dark:text-red-400 hover:bg-chip"
                       >
@@ -208,37 +292,22 @@ export function AdminChildHubs() {
               Cancel
             </button>
           </div>
+          {rename.isError && (
+            <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">{errText(rename.error)}</p>
+          )}
         </section>
       )}
 
       {detaching && (
-        <section className={cardCls}>
-          <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
-            <AlertTriangle className="w-4 h-4 text-amber-500" /> Detach “{detaching.name}”?
-          </h3>
-          <p className="mt-2 text-xs text-ink-tertiary">
-            This revokes its credential immediately and stops all dispatch to it. Nothing it already
-            sent is deleted. It can only rejoin with a new join token.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => detach.mutate(detaching.id)}
-              disabled={detach.isPending}
-              className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-chip disabled:opacity-50"
-            >
-              Yes, detach
-            </button>
-            <button
-              type="button"
-              onClick={() => setDetaching(null)}
-              className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-chip"
-            >
-              Cancel
-            </button>
-          </div>
-        </section>
+        <DetachDialog
+          name={detaching.name}
+          pending={detach.isPending}
+          error={detach.isError ? errText(detach.error) : null}
+          onConfirm={() => detach.mutate(detaching.id)}
+          onCancel={() => setDetaching(null)}
+        />
       )}
+
     </div>
   );
 }

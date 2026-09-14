@@ -131,7 +131,9 @@ const SCHEMA_SQLITE = `
     hub_version TEXT,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    detached_at TEXT
+    detached_at TEXT,
+    detached_by_user_id TEXT,
+    detached_by_email TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 

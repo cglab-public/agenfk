@@ -50,6 +50,11 @@ describe('toChildHubDto', () => {
     expect(isoOrNull(undefined)).toBeNull();
   });
 
+  it('carries the detaching actor through, and nulls it when absent', () => {
+    expect(toChildHubDto({ id: 'c', name: 'n', detached_at: iso, detached_by_email: 'admin@x' }, NOW).detachedByEmail).toBe('admin@x');
+    expect(toChildHubDto({ id: 'c', name: 'n', detached_at: iso }, NOW).detachedByEmail).toBeNull();
+  });
+
   it('passes the version through and nulls a missing one', () => {
     expect(toChildHubDto({ id: 'c', name: 'n', hub_version: '1.1.19' }, NOW).hubVersion).toBe('1.1.19');
     expect(toChildHubDto({ id: 'c', name: 'n' }, NOW).hubVersion).toBeNull();
