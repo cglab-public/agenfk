@@ -402,8 +402,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * next unrelated render.
    */
   const liveItems: ReadonlySet<string> = React.useMemo(
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    () => new Set(live.liveIds()),
+    () => {
+      // Read, so `liveTick` is a genuine dependency rather than one the linter
+      // is told to ignore — the same trick `sessionRows` below already uses.
+      // The disable comment this replaces sat on the callback, while the rule
+      // reports on the dependency array, so it suppressed nothing at all.
+      void liveTick;
+      return new Set(live.liveIds());
+    },
     [live, liveTick],
   );
 
@@ -595,28 +601,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const closing = sessionsRef.current.find(s => s.id === id);
     if (closing?.recordId) void api.forgetTerminalSession(closing.recordId).catch(() => {});
     /*
-     * Two setters, neither reaching into the other's updater.
+     * Removes the session. Which tab becomes active is NOT decided here.
      *
-     * `setActiveSession` used to be called from INSIDE the `setSessions`
-     * updater. It happened to be harmless — StrictMode invokes the updater
-     * twice, and the second pass saw `cur !== id` and returned `cur`
-     * unchanged — but that is a property nobody wrote down and the next edit
-     * would break without a word. The same impurity in `rememberSession`
-     * would have written a duplicate record, and in `closeSession` the cost is
-     * paid by the person whose terminal is involved.
+     * `setActiveSession` used to be called from INSIDE this updater, which is
+     * impure — React invokes updaters twice in development and may replay the
+     * queue. My first fix moved that choice out but read the list from the
+     * ref, and review caught what that cost: the ref is assigned during render,
+     * so two closes in one batch both saw the SAME pre-batch list. The second
+     * one computed its "last remaining" from a list that still contained the
+     * session the first had just removed, and left `activeSession` pointing at
+     * a tab that no longer exists — tabs on screen with nothing under them,
+     * the exact outcome this is supposed to prevent. The original impure
+     * version did not have that bug, because both halves read one `prev`.
      *
-     * The sessions updater stays in its `prev` form, which is what keeps it
-     * correct if two closes ever land in one batch. The next ACTIVE tab is
-     * chosen from the ref, because choosing it needs the list and an updater
-     * is the wrong place to go looking.
+     * So the choice moves to an effect over the COMMITTED list, below. One
+     * source, read after the dust settles, however many closes landed together.
      */
-    const next = sessionsRef.current.filter(s => s.id !== id);
     setSessions(prev => prev.filter(s => s.id !== id));
-    // Fall to the LAST remaining tab — not an adjacent one, despite what
-    // "neighbour" would suggest. Either is defensible; what is not is leaving
-    // the panel blank with tabs still showing, which reads as a crash.
-    setActiveSession(cur => (cur === id ? (next.at(-1)?.id ?? null) : cur));
   }, []);
+  /**
+   * Keep the selected tab pointing at a tab that exists.
+   *
+   * Reconciliation rather than a decision made at close time, and that is what
+   * makes it correct under batching: it reads the list React actually
+   * committed, so N closes in one tick produce one answer computed from the
+   * result of all of them.
+   *
+   * Falls to the LAST remaining tab — not an adjacent one, despite what
+   * "neighbour" would suggest. Either is defensible; what is not is leaving
+   * the panel blank with tabs still showing, which reads as a crash.
+   */
+  React.useEffect(() => {
+    if (activeSession === null) return;
+    if (sessions.some(s => s.id === activeSession)) return;
+    setActiveSession(sessions.at(-1)?.id ?? null);
+  }, [sessions, activeSession]);
+
   // stopSession is declared above closeSession and needs to reach it; a ref
   // avoids reordering two callbacks that each read state the other does not.
   closeSessionRef.current = closeSession;
@@ -1429,12 +1449,28 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                             happening, nothing is drawn: the absence is the
                             answer, and the step label on the right already
                             says where the card is sitting. */}
+                        {/* The SLOT is always there; only the dot inside it
+                            comes and goes. Rendering nothing removed 6px of
+                            dot and 6px of gap, which left a ragged left edge
+                            in any list mixing live and quiet cards — and made
+                            the title jump sideways and re-truncate on its own
+                            when the dot appeared on an event or went out on
+                            the TTL, with no user action behind it. */}
+                        <span
+                          data-testid={liveItems.has(item.id) ? 'live-dot' : undefined}
+                          className={clsx(
+                            'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
+                            liveItems.has(item.id)
+                              ? 'animate-pulse bg-emerald-500 motion-reduce:animate-none'
+                              : 'invisible',
+                          )}
+                        />
                         {liveItems.has(item.id) && (
-                          <span
-                            data-testid="live-dot"
-                            title="An agent is working on this now"
-                            className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none"
-                          />
+                          // Said in words for anyone not looking at colour: a
+                          // 6px dot with a `title` is a mouse-only fact, and
+                          // the title on a non-focusable span never reaches
+                          // assistive tech at all.
+                          <span className="sr-only">An agent is working on this now</span>
                         )}
                         <span className="truncate text-ink-secondary">{item.title}</span>
                         {/* The step is the thing that says where it is stuck. */}

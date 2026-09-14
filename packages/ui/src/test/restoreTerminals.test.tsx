@@ -12,7 +12,7 @@
  * So every test here is about whether the right conversation comes back, or
  * whether the app is honest when it cannot.
  */
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { AppShell } from '../components/AppShell';
@@ -653,6 +653,42 @@ describe('the tab that takes over when one is closed', () => {
     await waitFor(() => expect(openTabs().length).toBe(1));
     closeTab(0);
     await waitFor(() => expect(openTabs().length).toBe(0));
+    // The strip goes away with the last tab. Asserting only that no tabs
+    // render would have been vacuous — with zero sessions nothing renders
+    // whatever `activeSession` holds.
+    expect(document.querySelector('[role="tablist"][aria-label="Open terminals"]')).toBeNull();
+  });
+
+  it('lands somewhere real when two tabs close in the same batch', async () => {
+    /*
+     * THE case, and the one my first fix got wrong.
+     *
+     * Both closes inside one `act` means React batches them. The version that
+     * read the session list from a ref saw the SAME pre-batch list twice — the
+     * ref is assigned during render, and no render happens between them — so
+     * the second close computed its "last remaining" from a list still
+     * containing the session the first had just removed, and left the
+     * selection pointing at a tab that no longer exists.
+     *
+     * Two separate clicks would not catch it: discrete events flush
+     * synchronously, so the ref is refreshed in between. The bug needs one
+     * batch, which is what any close-all loop or socket-driven close would
+     * produce.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(threeRestored as never);
+    renderStrict();
+    await waitFor(() => expect(openTabs().length).toBe(3));
+
+    fireEvent.click(openTabs()[2]);
+    await waitFor(() => expect(openTabs()[2]).toHaveAttribute('aria-selected', 'true'));
+
+    act(() => { closeTab(2); closeTab(1); });
+    await waitFor(() => expect(openTabs().length).toBe(1));
+
+    const selected = openTabs().filter(t => t.getAttribute('aria-selected') === 'true');
+    expect(selected, 'the selected tab is one that no longer exists').toHaveLength(1);
+    expect(selected[0]).toBe(openTabs()[0]);
   });
 });
 

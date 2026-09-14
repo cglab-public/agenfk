@@ -16,6 +16,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '../components/AppShell';
 import { SocketProvider } from '../SocketContext';
+import { LIVE_TTL_MS } from '../liveAgents';
 import { api } from '../api';
 import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { readPinned } from '../sidebarPrefs';
@@ -1218,7 +1219,9 @@ describe('the working dot in the sidebar', () => {
 
   it('draws nothing when no agent is working', async () => {
     // "If nothing is happening, do not draw anything" — the absence is the
-    // answer, not a gap where a dot should be.
+    // answer. Kept alongside the wrong-card test below even though that one
+    // has more discriminating power, because this is the literal ask and the
+    // one a future change is most likely to undo by accident.
     vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
     renderShell();
     await openTheFolder();
@@ -1258,15 +1261,53 @@ describe('the working dot in the sidebar', () => {
     expect(row.textContent).toMatch(/IN_PROGRESS/);
   });
 
-  it('does not pulse for someone who asked for less motion', async () => {
-    // An indefinite animation in the corner of the eye is exactly what that
-    // preference exists to turn off.
+  it('says it in words too, not only in colour', async () => {
+    /*
+     * Replaces an assertion that checked the element carried the literal class
+     * string 'motion-reduce:animate-none'. That is a Tailwind spelling test: no
+     * CSS is applied in jsdom, so it passed whether or not the variant worked,
+     * and it would have failed on a cosmetic rename. The reduced-motion class
+     * is still there — it is simply not something a unit test can observe.
+     *
+     * What IS worth asserting is that the state reaches someone not looking at
+     * a 6px green dot. A `title` on a non-focusable span never reaches
+     * assistive tech at all.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    const row = await screen.findByTitle('Some work');
+    expect(row.textContent).not.toMatch(/an agent is working/i);
+
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(() => expect(row.textContent).toMatch(/an agent is working/i));
+  });
+
+  it('goes out on its own when the agent stops', async () => {
+    /*
+     * The half of the feature that had no coverage at all, and the reason
+     * recency beats AgentRun.status: a wedged agent stops glowing without
+     * anyone closing a run.
+     *
+     * Driven past the TTL plus the sweep interval, because expiry is swept on
+     * a timer rather than computed on read — so the dot can linger for up to
+     * one sweep, which is inherent and worth pinning rather than hiding.
+     */
     vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
     renderShell();
     await openTheFolder();
     await screen.findByTitle('Some work');
-    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
-    const dot = await screen.findByTestId('live-dot');
-    expect(dot.className).toContain('motion-reduce:animate-none');
+    // Installed BEFORE the event, because the sweep interval is created by
+    // `touch()` — fake timers installed afterwards cannot drive a timer that
+    // was already scheduled with the real ones.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+      await waitFor(() => expect(screen.getByTestId('live-dot')).toBeTruthy());
+      await act(async () => { vi.advanceTimersByTime(LIVE_TTL_MS + 10_000); });
+      await waitFor(() => expect(screen.queryByTestId('live-dot')).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
