@@ -19,6 +19,7 @@ import { activityFromScreen, SCREEN_RULES, TAIL_LINES, type ScreenActivity } fro
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import { TERMINAL_OPTIONS } from '../terminalOptions';
 
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
@@ -174,7 +175,7 @@ export function TerminalPane({
     const cleanups: Array<() => void> = [];
 
     const term = (createTerminal ?? (() =>
-      new XTerm({ convertEol: true, fontSize: 12, cursorBlink: true })))();
+      new XTerm(TERMINAL_OPTIONS)))();
     termRef.current = term;
 
     const fit = (createFitAddon ?? (() => new FitAddon() as FitLike))();

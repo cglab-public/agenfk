@@ -26,6 +26,7 @@ import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
 import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
+import { makeEmit } from './windowEmit.js';
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -405,13 +406,10 @@ async function boot(): Promise<void> {
           new Promise<null>(resolve => setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS)),
         ]),
         tmux: { available: tmuxStatus.available },
-        emit: (windowId, channel, payload) => {
-          // To that window only. Broadcasting would put one card's shell
-          // output into every open window.
-          BrowserWindow.getAllWindows()
-            .find(w => w.webContents.id === windowId)
-            ?.webContents.send(channel, payload);
-        },
+        // To that window only, and never to a destroyed one. See windowEmit.ts
+        // for why the guard matters more than it looks: this runs inside a
+        // pty's data callback.
+        emit: makeEmit(() => BrowserWindow.getAllWindows()),
       });
       // userData, not the AgEnFK database: the database is shared with the
       // CLI and the server, and these preferences exist precisely to be out of
