@@ -103,12 +103,19 @@ describe('parent hub: a child asking to be released', () => {
     expect((await supertest(app).post('/v1/federation/release-request').set('Authorization', `Bearer ${a.token}`).send({})).status).toBe(401);
   });
 
-  it('a rejected request is simply a request that stays open — nothing is auto-detached', async () => {
+  it('an unanswered request stays open — asking never detaches the hub by itself', async () => {
     const a = await enroll('alpha');
-    await supertest(app).post('/v1/federation/release-request').set('Authorization', `Bearer ${a.token}`).send({});
-    // asking does not detach anything by itself
-    expect((await supertest(app).post('/v1/federation/ping').set('Authorization', `Bearer ${a.token}`).send({})).status).toBe(200);
-    const row = await ctx.db.get('SELECT detached_at FROM child_hubs WHERE id = ?', [a.childHubId]);
+    const req = await supertest(app).post('/v1/federation/release-request')
+      .set('Authorization', `Bearer ${a.token}`).send({});
+    // The request must have LANDED, or "still attached afterwards" is true of
+    // a route that does not exist.
+    expect(req.status).toBe(200);
+    const row = await ctx.db.get('SELECT detached_at, release_requested_at FROM child_hubs WHERE id = ?', [a.childHubId]);
+    expect(row.release_requested_at).toBeTruthy();
     expect(row.detached_at).toBeNull();
+    expect((await supertest(app).post('/v1/federation/ping').set('Authorization', `Bearer ${a.token}`).send({})).status).toBe(200);
+    // and the roster still lists it as live, just flagged
+    const list = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', adminCookie);
+    expect(list.body.childHubs[0]).toMatchObject({ detached: false, releaseRequested: true });
   });
 });
