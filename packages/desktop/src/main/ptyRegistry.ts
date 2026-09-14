@@ -151,6 +151,30 @@ const UNKNOWN_SESSION = 'Unknown session.';
 export class PtyRegistry {
   private readonly sessions = new Map<string, Session>();
 
+  /*
+   * How many times sessions have been reaped, so a spawn can tell whether the
+   * world it was started in still exists.
+   *
+   * There are two awaits between entering `spawn` and creating the pty —
+   * resolving the worktree, which can run `git worktree add` and take seconds,
+   * and recovering the login PATH, which has an eight second deadline. Every
+   * reaper walks the session map as it is at that instant, so anything in
+   * flight registers itself afterwards, into a window that is gone. What that
+   * leaves is not a stray record: it is a real agent holding a real worktree,
+   * with no tab, no window and no route to kill it.
+   *
+   * TWO counters, and the global one is not redundant. `killAll` has to
+   * invalidate a spawn for a window the registry has never heard of, and the
+   * only thing it can see is the session map — which an in-flight spawn is by
+   * definition not in yet. A per-window counter alone misses exactly that.
+   */
+  private globalGeneration = 0;
+  private readonly windowGeneration = new Map<number, number>();
+
+  private generationOf(windowId: number): number {
+    return this.globalGeneration + (this.windowGeneration.get(windowId) ?? 0);
+  }
+
   constructor(private readonly deps: PtyRegistryDeps) {}
 
   /**
@@ -161,6 +185,13 @@ export class PtyRegistry {
    * an XSS in the renderer bundle cannot choose what runs or where.
    */
   async spawn(req: SpawnRequest): Promise<SpawnResult> {
+    /*
+     * Captured BEFORE the first await. Everything below has to be able to ask
+     * "is the world I was started in still here?", and the answer is only
+     * meaningful against the moment the caller asked.
+     */
+    const generation = this.generationOf(req.windowId);
+
     // Checked BEFORE anything is created, so a refusal leaves nothing behind.
     if (this.countForWindow(req.windowId) >= MAX_SESSIONS_PER_WINDOW) {
       throw new Error(
@@ -231,6 +262,17 @@ export class PtyRegistry {
      * addressing a process that does not exist.
      */
     const launch = (launchArgs: readonly string[], resuming: boolean): void => {
+      /*
+       * The window was reaped while we were resolving. Do not spawn.
+       *
+       * Checked here rather than after, and that is the point: registering the
+       * process and killing it a moment later would still have run an agent
+       * loose in the worktree for as long as it took to notice. The renderer
+       * has had the mirror of this guard all along — a spawn that resolves
+       * after its pane unmounted is explicitly killed — and the asymmetry was
+       * the bug.
+       */
+      if (this.generationOf(req.windowId) !== generation) return;
       const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
       /*
        * Backpressure, per session.
@@ -308,7 +350,15 @@ export class PtyRegistry {
         // before the branch, because the relaunch below replaces the map entry
         // and would otherwise strand this one's grace-period timer.
         flow.dispose();
-        if (resuming && exitCode !== 0 && diedOnTheSpot) {
+        /*
+         * Still registered? A relaunch replaces a session UNDER THE SAME ID,
+         * so if something removed that id first — the user pressed STOP, or a
+         * reaper walked past — then re-inserting it puts a process back into a
+         * map both reapers have already finished iterating. It would outlive
+         * the window, and on quit it would outlive the app.
+         */
+        const stillOurs = this.sessions.get(sessionId)?.pty === pty;
+        if (stillOurs && resuming && exitCode !== 0 && diedOnTheSpot) {
           // Said out loud. Silently swapping a resumed session for a fresh one
           // would leave the user believing they still have the context.
           this.deps.emit(req.windowId, 'pty:data', {
@@ -381,6 +431,9 @@ export class PtyRegistry {
 
   /** A window closed. Its shells must not outlive it. */
   killAllForWindow(windowId: number): void {
+    // Before the loop. A spawn that resolves during it must find the new
+    // number, not the one it captured.
+    this.windowGeneration.set(windowId, (this.windowGeneration.get(windowId) ?? 0) + 1);
     for (const [id, session] of [...this.sessions]) {
       if (session.windowId !== windowId) continue;
       session.flow.dispose();
@@ -391,6 +444,7 @@ export class PtyRegistry {
 
   /** The app is quitting. */
   killAll(): void {
+    this.globalGeneration += 1;
     for (const [id, session] of [...this.sessions]) {
       session.flow.dispose();
       session.pty.kill();

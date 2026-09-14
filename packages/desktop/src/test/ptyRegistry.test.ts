@@ -726,3 +726,150 @@ describe('backpressure on a live session', () => {
     expect(() => registry.ack('no-such-session', 1, 100)).not.toThrow();
   });
 });
+
+/**
+ * A spawn that lands after its window is gone (CGLAB b17d2737).
+ *
+ * There are two awaits between entering `spawn()` and creating the pty:
+ * resolving the worktree — which can run `git worktree add`, taking seconds —
+ * and recovering the login PATH, which has an eight second deadline. Every
+ * reaper walks the session map AS IT IS AT THAT INSTANT, so anything still in
+ * flight registers itself afterwards, into a window that no longer exists.
+ *
+ * What that leaves behind is not a stray record. It is a real agent CLI
+ * holding a real git worktree, with no tab, no window, and no route to kill
+ * it — the same "two agents in one worktree editing the same files" failure
+ * the reload path already documents having fixed for sessions it could see.
+ *
+ * The renderer has had this guard all along: a spawn that resolves after the
+ * pane unmounted is explicitly killed. The asymmetry was the bug.
+ */
+describe('a spawn in flight when the window is reaped', () => {
+  /** Holds `resolveCwd` open so a reaper can run while a spawn is mid-await. */
+  const slowRegistry = () => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const registry = new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd: async () => {
+        await held;
+        return { cwd: '/tmp/wt/i1', branchName: 'feat/x' };
+      },
+      emit: (windowId, channel, payload) => { emitted.push({ windowId, channel, payload }); },
+    });
+    return { registry, release };
+  };
+
+  it('never creates the process when that window was closed meanwhile', async () => {
+    const { registry, release } = slowRegistry();
+    const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+
+    // The window closes while the worktree is still being cut.
+    registry.killAllForWindow(1);
+    release();
+    await inFlight.catch(() => undefined);
+
+    // Nothing was spawned at all, which is the only outcome that leaves no
+    // agent behind. Registering it and killing it afterwards would still have
+    // run the agent in the worktree for as long as it took to notice.
+    expect(spawned).toHaveLength(0);
+  });
+
+  it('never creates it when the app was quitting', async () => {
+    /*
+     * killAll has to invalidate a spawn for a window it has never heard of.
+     * The session map is the only thing it can see, and an in-flight spawn is
+     * by definition not in it yet — so a per-window counter alone would miss
+     * exactly this case.
+     */
+    const { registry, release } = slowRegistry();
+    const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 7, cols: 80, rows: 24 });
+    registry.killAll();
+    release();
+    await inFlight.catch(() => undefined);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it('leaves no session behind for anyone to find', async () => {
+    const { registry, release } = slowRegistry();
+    const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    registry.killAllForWindow(1);
+    release();
+    await inFlight.catch(() => undefined);
+    expect(registry.countForWindow(1)).toBe(0);
+  });
+
+  it('still spawns when a DIFFERENT window was the one that closed', async () => {
+    // The guard must be about this window, not about any reap anywhere. Two
+    // windows are ordinary, and closing one must not cancel the other's work.
+    const { registry, release } = slowRegistry();
+    const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    registry.killAllForWindow(2);
+    release();
+    await inFlight;
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('still spawns on the ordinary path, where nothing was reaped', async () => {
+    // The guard must not be so eager that it breaks opening a terminal.
+    const { registry, release } = slowRegistry();
+    const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    release();
+    await inFlight;
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('allows a new terminal after the window has been reaped once', async () => {
+    /*
+     * The generation must gate the spawns it overlapped, not the window
+     * forever. A reload reaps and then immediately restores, so if a bump were
+     * permanent the restored tabs would silently never open.
+     */
+    const { registry, release } = slowRegistry();
+    registry.killAllForWindow(1);
+    const after = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    release();
+    await after;
+    expect(spawned).toHaveLength(1);
+  });
+});
+
+/**
+ * And the mirror image: a relaunch that lands after the session was killed.
+ *
+ * A resume that dies inside RESUME_FAILURE_MS is replaced by a fresh session
+ * under the same id. If the user closed the window or quit inside that window,
+ * both reapers have already walked a SNAPSHOT of the map — so a pty inserted
+ * during the loop is never visited, and the replacement outlives the app.
+ */
+describe('the resume-failure relaunch', () => {
+  it('does not resurrect a session that was killed first', async () => {
+    const id = await (async () => {
+      const r = await registry.spawn({
+        itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+        agentSessionId: '11111111-2222-3333-4444-555555555555', resume: true,
+      });
+      return r.sessionId;
+    })();
+    const before = spawned.length;
+
+    registry.kill(id, 1);
+    // The dying resume's exit arrives after the kill, which is the whole race.
+    spawned[before - 1].pty.emitExit?.(1);
+
+    expect(spawned).toHaveLength(before);
+  });
+
+  it('still replaces a resume that simply failed', async () => {
+    // The guard is about a session that was deliberately ended, not about
+    // giving up on the courtesy. A plain failed resume must still start fresh.
+    const r = await registry.spawn({
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+      agentSessionId: '11111111-2222-3333-4444-555555555555', resume: true,
+    });
+    expect(r.sessionId).toBeTruthy();
+    const before = spawned.length;
+    spawned[before - 1].pty.emitExit?.(1);
+    expect(spawned).toHaveLength(before + 1);
+  });
+});
