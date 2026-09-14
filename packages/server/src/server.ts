@@ -2947,6 +2947,26 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
+
+    /*
+     * A status change through this route is a route INTO WORK, and it had no
+     * worktree hook at all — only the validate paths did.
+     *
+     * The consequence was not subtle: turning autoWorktree on in a project
+     * whose items had already left TODO meant those items might never get one.
+     * The setting reads as enabled and does nothing, and the agent edits the
+     * main checkout believing it has its own tree.
+     *
+     * Only when the status actually MOVED and the new step is real work: TODO
+     * is not work, and cutting a tree for it would put one on every card the
+     * moment a project turns the setting on. shouldAutoWorktree still decides
+     * who qualifies, so EPICs and children are refused here exactly as they
+     * are everywhere else.
+     */
+    if (status !== undefined && updated.status !== currentItem.status && updated.status !== Status.TODO) {
+      await ensureWorktreeForItem(updated);
+    }
+
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [API_UPDATE] Item ${updated.id} status: ${updated.status}. Broadcasting refresh...`);
     io.emit('items_updated');
@@ -3243,6 +3263,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
         const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
+        // Sibling propagation moves the item into a working step exactly like
+        // a verify does. It is the same transition; only the reason differs.
+        await ensureWorktreeForItem(updated);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: 'Sibling propagation' });
