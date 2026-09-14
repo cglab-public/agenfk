@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1046,6 +1046,51 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
  * UUID shape, because both end up in the argv of a spawned process.
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The state of a session's worktree (CGLAB-173).
+ *
+ * Thin on purpose. The CLI already knows how to do this (`agenfk branch
+ * status`); what was missing was a way for the desktop to ASK. So the route
+ * resolves the worktree, runs one git command and hands the bytes to core's
+ * parser — the parsing is where the hard cases live and it is unit-tested
+ * without a repository.
+ *
+ * execFile with an ARGUMENT ARRAY, never a shell string. Branch names and
+ * paths come from user data, and one `exec` with an interpolated value is the
+ * difference between a status panel and a shell.
+ *
+ * `--porcelain=v1 -z` because the human-readable output is localised and
+ * changes between versions, and because a filename may contain a newline —
+ * with newline-separated output one file reads as two.
+ */
+app.get("/items/:id/git-status", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  const cwd = item.worktreePath;
+  if (!cwd || !fs.existsSync(cwd)) {
+    // Never the server's own cwd: that would report the state of whatever
+    // repository the server happens to be running in — confidently, and about
+    // the wrong tree.
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+
+  try {
+    const out = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
+      cwd,
+      encoding: 'utf8',
+      // A hung git must not hold the request open: the server is
+      // single-threaded and this runs on its event loop.
+      timeout: 10_000,
+    });
+    res.json(parseGitStatus(out));
+  } catch (e: any) {
+    // An empty status would read as a clean tree, which is a lie about a
+    // directory that is not a repository at all.
+    res.status(409).json({ error: `Could not read the worktree: ${e?.message ?? 'git failed'}` });
+  }
+}));
 
 app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
   const projectId = typeof req.query?.projectId === 'string' ? req.query.projectId : undefined;
