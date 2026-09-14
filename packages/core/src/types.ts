@@ -207,7 +207,17 @@ export type RunEventKind = 'dispatch' | 'think' | 'tool' | 'result' | 'diff' | '
 export interface RunEvent {
   id: string;
   runId: string;
-  seq: number;                  // monotonic order within the run
+  /**
+   * Monotonic order within the run, ASSIGNED BY THE STORE when absent.
+   *
+   * Optional because that is the truth: the hook and the CLI both omit it, and
+   * the store assigns the position atomically inside the insert. Declaring it
+   * required did not make it present - it only stopped the compiler asking,
+   * which is how an entire live transcript came to collapse into one event
+   * (BUG 510df783). A caller that knows the real order, like the pi tailer,
+   * may still supply one and it wins.
+   */
+  seq?: number;
   ts: string;                   // ISO
   lane: RunActor;
   kind: RunEventKind;

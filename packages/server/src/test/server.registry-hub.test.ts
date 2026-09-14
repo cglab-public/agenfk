@@ -38,6 +38,9 @@ const agent = () => request(__server);
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   execFileSync: vi.fn(),
+  // Needed since the worktree status read went async: promisify(execFile)
+  // runs at import time and throws on undefined. Nothing here calls it.
+  execFile: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));

@@ -35,6 +35,7 @@ export const VERIFY_TOKEN = (() => {
 import { exec, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import { readGitStatus } from './gitStatus.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -1077,14 +1078,19 @@ app.get("/items/:id/git-status", asyncHandler(async (req: any, res: any) => {
   }
 
   try {
-    const out = execFileSync('git', ['status', '--porcelain=v1', '-z'], {
-      cwd,
-      encoding: 'utf8',
-      // A hung git must not hold the request open: the server is
-      // single-threaded and this runs on its event loop.
-      timeout: 10_000,
-    });
-    res.json(parseGitStatus(out));
+    /*
+     * ASYNC, and the comment this replaces is why. It said "the server is
+     * single-threaded and this runs on its event loop" and then ran
+     * `execFileSync` anyway — so each call held the entire server still for
+     * its duration. The panel refetches every four seconds and is always
+     * shown: around nine hundred forks an hour, during each of which there is
+     * no REST and no Socket.io, including the `resolveWorktree` calls that
+     * opening a terminal depends on.
+     *
+     * See gitStatus.ts; the exec is injectable there so the non-blocking
+     * property is something a test can actually observe.
+     */
+    res.json(await readGitStatus(cwd));
   } catch (e: any) {
     // An empty status would read as a clean tree, which is a lie about a
     // directory that is not a repository at all.

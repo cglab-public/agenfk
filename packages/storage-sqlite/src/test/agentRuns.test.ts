@@ -74,7 +74,7 @@ describe('concurrent run events', () => {
           lane: 'main', kind: 'tool', text: `event ${n}`,
         } as never)),
     );
-    const seqs = (await storage.listRunEvents(run.id)).map((e: { seq: number }) => e.seq);
+    const seqs = (await storage.listRunEvents(run.id)).map(e => e.seq);
     expect(new Set(seqs).size).toBe(seqs.length);
   });
 

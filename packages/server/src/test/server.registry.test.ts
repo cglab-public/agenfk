@@ -14,6 +14,10 @@ const { mockExecSync, mockExecFileSync } = vi.hoisted(() => ({ mockExecSync: vi.
 vi.mock('child_process', () => ({
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  // Needed since the worktree status read went async: `promisify(execFile)`
+  // runs at import time, and promisify throws on undefined. Nothing in these
+  // tests calls it; it only has to exist.
+  execFile: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
