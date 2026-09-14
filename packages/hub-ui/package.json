@@ -20,8 +20,8 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.17.2",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.3",
     "remark-gfm": "^4.0.1",
@@ -29,8 +29,8 @@
     "vite": "^7.3.1"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.5.4",
     "postcss": "^8.5.6",
     "typescript": "~5.9.3"
