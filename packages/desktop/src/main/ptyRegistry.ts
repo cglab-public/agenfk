@@ -272,7 +272,18 @@ export class PtyRegistry {
        * after its pane unmounted is explicitly killed — and the asymmetry was
        * the bug.
        */
-      if (this.generationOf(req.windowId) !== generation) return;
+      if (this.generationOf(req.windowId) !== generation) {
+        /*
+         * Thrown, not returned quietly. Returning left the caller holding a
+         * session id that addresses nothing: a tab that paints no output, no
+         * error and no exit banner, while every keystroke and every resize
+         * rejected unhandled against `own()`. A silent dead tab is better than
+         * the orphan it replaces and worse than saying so — and this method
+         * already refuses out loud five lines above, when the window is at its
+         * session cap.
+         */
+        throw new Error('This window was closed while the terminal was opening.');
+      }
       const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
       /*
        * Backpressure, per session.
@@ -424,21 +435,45 @@ export class PtyRegistry {
 
   kill(sessionId: string, windowId: number): void {
     const session = this.own(sessionId, windowId);
+    /*
+     * Dropped from the map BEFORE the signal, and the order is the fix.
+     *
+     * A pty may deliver its exit synchronously from inside `kill()` — nothing
+     * in `PtySpawner`, which is a public injected interface, promises
+     * otherwise. Killing first meant that at the moment `onExit` ran the map
+     * still held this session, so a dying resume passed the "still ours" check,
+     * relaunched, and registered a SECOND pty under the same id — which the
+     * delete below then removed, leaving a live agent with no map entry and no
+     * route to reach it. Measured on a fake with a synchronous exit: two
+     * processes, one alive, zero sessions.
+     *
+     * Deleting first makes that check false by construction, rather than
+     * relying on the timing of somebody else's callback.
+     */
+    this.sessions.delete(sessionId);
     session.flow.dispose();
     session.pty.kill();
-    this.sessions.delete(sessionId);
   }
 
   /** A window closed. Its shells must not outlive it. */
   killAllForWindow(windowId: number): void {
-    // Before the loop. A spawn that resolves during it must find the new
-    // number, not the one it captured.
+    /*
+     * Before the loop, and NOT for the reason it first appears.
+     *
+     * An awaiting `spawn` cannot resume inside this loop — the loop is wholly
+     * synchronous. What the placement actually guards is a pty that delivers
+     * its exit synchronously from `kill()` below and relaunches from inside
+     * this very iteration. Between that and the delete-before-kill ordering in
+     * `kill`, the relaunch is refused twice over.
+     */
     this.windowGeneration.set(windowId, (this.windowGeneration.get(windowId) ?? 0) + 1);
     for (const [id, session] of [...this.sessions]) {
       if (session.windowId !== windowId) continue;
+      // Delete first, for the reason `kill` gives: a synchronous exit must not
+      // find its own session still registered.
+      this.sessions.delete(id);
       session.flow.dispose();
       session.pty.kill();
-      this.sessions.delete(id);
     }
   }
 
@@ -446,9 +481,9 @@ export class PtyRegistry {
   killAll(): void {
     this.globalGeneration += 1;
     for (const [id, session] of [...this.sessions]) {
+      this.sessions.delete(id);
       session.flow.dispose();
       session.pty.kill();
-      this.sessions.delete(id);
     }
   }
 

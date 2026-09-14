@@ -790,12 +790,22 @@ describe('a spawn in flight when the window is reaped', () => {
     expect(spawned).toHaveLength(0);
   });
 
-  it('leaves no session behind for anyone to find', async () => {
+  it('says so, instead of handing back a handle to nothing', async () => {
+    /*
+     * Replaces a weaker assertion that only checked the session count, which
+     * a mutant moving the guard AFTER the spawn passed — it killed the pty
+     * instead of never creating it, so the count was zero either way.
+     *
+     * What matters to the caller is different: returning quietly left a tab
+     * holding a session id that addresses nothing, painting no output, no
+     * error and no exit banner, while every keystroke rejected unhandled. The
+     * refusal has to be audible.
+     */
     const { registry, release } = slowRegistry();
     const inFlight = registry.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
     registry.killAllForWindow(1);
     release();
-    await inFlight.catch(() => undefined);
+    await expect(inFlight).rejects.toThrow(/closed/i);
     expect(registry.countForWindow(1)).toBe(0);
   });
 
@@ -860,16 +870,112 @@ describe('the resume-failure relaunch', () => {
     expect(spawned).toHaveLength(before);
   });
 
-  it('still replaces a resume that simply failed', async () => {
-    // The guard is about a session that was deliberately ended, not about
-    // giving up on the courtesy. A plain failed resume must still start fresh.
-    const r = await registry.spawn({
-      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
-      agentSessionId: '11111111-2222-3333-4444-555555555555', resume: true,
+  it('does not cancel an unrelated spawn when ONE session is killed', async () => {
+    /*
+     * The deliberate non-decision, which had no test at all: `kill` bumps
+     * nothing. Adding a bump there would look tidy and would cancel every
+     * spawn that happened to be in flight in the same window — a person
+     * closing one tab would silently stop another from ever opening.
+     *
+     * Replaces a test that duplicated an existing, stronger one in "a resume
+     * that finds nothing to continue", which already asserts the replacement
+     * plus its argv plus the absence of an exit event.
+     */
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let first = true;
+    const reg = new PtyRegistry({
+      spawn: spawner as never,
+      // Only the SECOND spawn waits, so the first can be opened and killed
+      // while the second is still mid-await.
+      resolveCwd: async () => {
+        if (!first) await held;
+        first = false;
+        return { cwd: '/tmp/wt/i1', branchName: 'feat/x' };
+      },
+      emit: () => {},
     });
-    expect(r.sessionId).toBeTruthy();
-    const before = spawned.length;
-    spawned[before - 1].pty.emitExit?.(1);
-    expect(spawned).toHaveLength(before + 1);
+    const live = await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    const inFlight = reg.spawn({ itemId: 'i2', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+
+    reg.kill(live.sessionId, 1);
+    release();
+    await expect(inFlight).resolves.toBeTruthy();
+    expect(reg.countForWindow(1)).toBe(1);
+  });
+});
+
+
+/**
+ * A pty that exits from inside its own kill (review follow-up).
+ *
+ * Nothing in `PtySpawner` — a public, injected interface — promises that exit
+ * is delivered asynchronously. The shipped node-pty does, which is why none of
+ * this is reachable on a real machine today; but the registry's correctness
+ * should not rest on an invariant nobody wrote down, and the failure it allows
+ * is the exact one this whole card is about.
+ *
+ * Every reaper now drops the session from the map BEFORE signalling, so a
+ * synchronous exit can never find its own session still registered.
+ */
+describe('a pty that exits synchronously from kill', () => {
+  /** Spawner whose `kill` fires `onExit` immediately, like a fake can. */
+  const syncExitSpawner = () => vi.fn((file: string, args: readonly string[], opts: { cwd: string; cols: number; rows: number }) => {
+    let dataCb: (d: string) => void = () => {};
+    let exitCb: (e: { exitCode: number }) => void = () => {};
+    const pty: FakePty = {
+      pid: 2000 + spawned.length,
+      written: [], resizes: [], killed: false, pauses: 0, resumes: 0,
+      onData: cb => { dataCb = cb; },
+      onExit: cb => { exitCb = cb; },
+      write: d => { pty.written.push(d); },
+      resize: (c, r) => { pty.resizes.push([c, r]); },
+      pause: () => { pty.pauses += 1; },
+      resume: () => { pty.resumes += 1; },
+      // The whole point: the callback runs before kill() returns.
+      kill: () => { pty.killed = true; exitCb({ exitCode: 1 }); },
+    };
+    pty.emitData = d => dataCb(d);
+    pty.emitExit = code => exitCb({ exitCode: code });
+    spawned.push({ file, args, cwd: opts.cwd, pty });
+    return pty;
+  });
+
+  const syncRegistry = () => new PtyRegistry({
+    spawn: syncExitSpawner() as never,
+    resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+    emit: () => {},
+  });
+
+  const resuming = (reg: PtyRegistry) => reg.spawn({
+    itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+    agentSessionId: '11111111-2222-3333-4444-555555555555', resume: true,
+  });
+
+  it('leaves no live process behind when STOP is pressed', async () => {
+    /*
+     * The measured failure: two processes, one alive, zero map entries. The
+     * dying resume relaunched from inside `kill`, registering a second pty
+     * under the same id — which `kill`'s own delete then removed, leaving an
+     * agent nobody can see or stop.
+     */
+    const reg = syncRegistry();
+    const { sessionId } = await resuming(reg);
+    reg.kill(sessionId, 1);
+    expect(spawned.filter(s => !s.pty.killed)).toHaveLength(0);
+  });
+
+  it('leaves none behind when the window closes', async () => {
+    const reg = syncRegistry();
+    await resuming(reg);
+    reg.killAllForWindow(1);
+    expect(spawned.filter(s => !s.pty.killed)).toHaveLength(0);
+  });
+
+  it('leaves none behind when the app quits', async () => {
+    const reg = syncRegistry();
+    await resuming(reg);
+    reg.killAll();
+    expect(spawned.filter(s => !s.pty.killed)).toHaveLength(0);
   });
 });
