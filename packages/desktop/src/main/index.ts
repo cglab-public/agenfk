@@ -20,6 +20,7 @@ import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { httpPost } from './httpPost.js';
 import { captureLoginPath } from './ptyEnv.js';
+import { adoptFailureChoice, BROWSER_UI_URL } from './adoptFailure.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath } from './detectAgents.js';
 
@@ -214,13 +215,25 @@ async function boot(): Promise<void> {
 
     if (!await servesUiBundle(server.port)) {
       // Adopting was still the right call — forking a second server onto the
-      // same database would be worse than this message. Say exactly what is
-      // wrong and exactly how to fix it.
-      fail('AgEnFK Desktop cannot show the board', server.adopted
-        ? `An AgEnFK server is already running at ${server.url}, but it is not serving the app ` +
-          `(it was started for the browser flow, which serves the UI separately).\n\n` +
-          `Stop it with \`agenfk down\` and reopen AgEnFK Desktop, which will run its own server.`
-        : `The server started but is not serving the UI bundle. Run \`npm run build\` at the repo root.`);
+      // same database would be worse than this. What changed is what we OFFER:
+      // telling a graphical app's user to run a terminal command was the only
+      // way out, and someone who installed just the desktop may not have the
+      // CLI on their PATH at all. Their board is already open in a browser, so
+      // that is one click away instead. See main/adoptFailure.ts.
+      const choice = adoptFailureChoice(server);
+      console.error(`[DESKTOP] ${choice.detail}`);
+      const { response } = await dialog.showMessageBox({
+        type: 'warning',
+        title: choice.title,
+        message: choice.title,
+        detail: choice.detail,
+        buttons: choice.buttons,
+        defaultId: choice.defaultId,
+        cancelId: choice.buttons.length - 1,
+      });
+      if (choice.buttons[response] === 'Open in browser') {
+        await shell.openExternal(BROWSER_UI_URL);
+      }
       tearingDown = true;
       app.quit();
       return;
