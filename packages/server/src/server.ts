@@ -3519,6 +3519,23 @@ export async function noteWorktreeFailure(itemId: string, error: unknown): Promi
   }
 }
 
+/**
+ * `refs/remotes/origin/<branch>` when the repository has it, otherwise nothing.
+ *
+ * Cheap and total: a repo with no origin, no such branch, or no git at all
+ * answers "no start point", which is the behaviour that existed before.
+ */
+function remoteRefFor(repoRoot: string, branchName: string): string | undefined {
+  const ref = `refs/remotes/origin/${branchName}`;
+  try {
+    execFileSync('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', ref],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    return ref;
+  } catch {
+    return undefined;
+  }
+}
+
 async function ensureWorktreeForItem(item: any): Promise<void> {
   if (!shouldAutoWorktree(item)) return;
   const project: any = await storage.getProject(item.projectId);
@@ -3530,6 +3547,16 @@ async function ensureWorktreeForItem(item: any): Promise<void> {
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName,
+      /*
+       * If origin already has this branch, start there rather than at local
+       * HEAD. Raised by review against the PR import: a card whose branch
+       * exists on the remote but not locally got a directory named after that
+       * branch holding local main instead — so this route would quietly undo
+       * the import's own care a status change later. The rule is general
+       * enough to belong here rather than only on that one path: a branch name
+       * the remote already knows means the remote's commits.
+       */
+      startPoint: remoteRefFor(project.projectRoot, branchName),
     });
     await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
   } catch (e: any) {
@@ -4483,14 +4510,43 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
     return res.status(404).json({ error: `Could not read PR #${prNumber} from ${config.owner}/${config.repo}: ${e?.message ?? String(e)}` });
   }
 
+  /*
+   * A parse that succeeded is not a PR. `gh` answering with an object missing
+   * the fields asked for used to flow straight through: a titleless card, an
+   * externalId of the string "undefined", a prNumber of NaN — and, worst,
+   * `isCrossRepository` undefined, which is falsy, so the fork guard silently
+   * disengaged and a fork PR got a fetch that could never work.
+   */
+  if (!pr || typeof pr !== 'object'
+      || typeof pr.title !== 'string'
+      || !isValidPrNumber(pr.number)
+      || typeof pr.url !== 'string'
+      || typeof pr.headRefName !== 'string'
+      || typeof pr.isCrossRepository !== 'boolean') {
+    return res.status(502).json({ error: `GitHub returned a pull request this cannot read: ${JSON.stringify(pr).slice(0, 200)}` });
+  }
+
+  /*
+   * Only cards that are actually ON the board.
+   *
+   * `listItems` applies no status filter, and `DELETE /items/:id` does not
+   * delete — it TRASHES, and the update is a spread-merge, so branchName
+   * survives. Without this, importing a PR, deleting its card and importing
+   * again answered "reused" pointing at the trashed card: nothing on the
+   * board, no worktree, and no way to ever import that PR again.
+   */
+  const onTheBoard = (i: any) => i.status !== 'TRASHED' && i.status !== Status.ARCHIVED;
   const existing = await storage.listItems({ projectId: project.id, limit: 1_000_000 });
-  const plan = planPrImport(pr, (existing as any[]).map(i => ({ id: i.id, title: i.title, branchName: i.branchName })));
+  const plan = planPrImport(pr, (existing as any[]).filter(onTheBoard).map(i => ({ id: i.id, title: i.title, branchName: i.branchName })));
 
   // Reuse, never duplicate. Git allows one worktree per branch, so a second
   // card on the same branch is a failure scheduled for later rather than a
   // duplicate to tidy up.
   if (plan.action === 'reuse') {
     const item = await storage.getItem(plan.itemId);
+    // Gone between the read and now. Better a plain 404 than `{item: null}`
+    // with a 200, which the CLI reads as success and then dereferences.
+    if (!item) return res.status(404).json({ error: `Card ${plan.itemId} is no longer there.` });
     return res.status(200).json({ item, reused: true, reason: plan.reason });
   }
 
@@ -4503,7 +4559,14 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
     status: Status.TODO,
     parentId: undefined,
     implementationPlan: "",
-    branchName: plan.branchName,
+    /*
+     * A fork's head branch is a name in SOMEBODY ELSE'S repository, and it is
+     * usually `patch-1` — GitHub names every web-UI edit that. Storing it here
+     * put two unrelated contributors' PRs on the same branch name, so the
+     * second import matched the first one's card and never got a card at all.
+     * Nothing local can check that branch out, so it is not recorded.
+     */
+    branchName: plan.worktree.attempt ? plan.branchName : undefined,
     externalId: plan.externalId,
     externalUrl: plan.externalUrl,
     prUrl: plan.externalUrl,
@@ -4527,18 +4590,24 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
    * when the response is long gone.
    */
   const noteOnCard = async (text: string) => {
-    const fresh: any = await storage.getItem(created.id);
-    await storage.updateItem(created.id, {
-      comments: [...(fresh?.comments ?? []), {
-        id: uuidv4(), author: 'agenfk', timestamp: new Date(), content: text,
-      }],
-    } as any).catch(() => {});
+    // The WHOLE body, not just the write. The failure path calls this from
+    // inside a catch; a rejection from the READ escaped that catch, hit the
+    // async handler and answered 500 — losing both the explanation and the
+    // fact that a card had been created.
+    try {
+      const fresh: any = await storage.getItem(created.id);
+      await storage.updateItem(created.id, {
+        comments: [...(fresh?.comments ?? []), {
+          id: uuidv4(), author: 'agenfk', timestamp: new Date(), content: text,
+        }],
+      } as any);
+    } catch { /* a note is a nicety; failing to leave one must not fail the import */ }
   };
 
   if (!plan.worktree.attempt) {
     await noteOnCard(plan.worktree.reason);
     io.emit('items_updated');
-    return res.status(201).json({ item: await storage.getItem(created.id), worktree: null, worktreeSkipped: plan.worktree.reason });
+    return res.status(201).json({ item: await storage.getItem(created.id) ?? created, worktree: null, worktreeSkipped: plan.worktree.reason });
   }
 
   try {
@@ -4554,6 +4623,11 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName: plan.branchName,
+      // FROM THE FETCHED REF. Without this the branch is cut from local HEAD:
+      // a directory named after the PR, containing none of its commits, which
+      // an agent then works in and pushes. Found in review, reproduced against
+      // the test's own fixture.
+      startPoint: `refs/remotes/origin/${plan.branchName}`,
     });
     const withWorktree = await storage.updateItem(created.id, { worktreePath: result.path } as any);
     io.emit('items_updated');
@@ -4564,7 +4638,7 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
     io.emit('items_updated');
     // 201: the card WAS created, which is what the caller asked for. A 4xx here
     // would say nothing happened, and something did.
-    res.status(201).json({ item: await storage.getItem(created.id), worktree: null, worktreeError: why });
+    res.status(201).json({ item: await storage.getItem(created.id) ?? created, worktree: null, worktreeError: why });
   }
 }));
 

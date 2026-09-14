@@ -63,7 +63,16 @@ const makeRepoWithOrigin = (): { repo: string; origin: string } => {
   git(dir, 'push', '-q', 'origin', 'feat/from-pr');
   git(dir, 'checkout', '-q', 'main');
   git(dir, 'branch', '-qD', 'feat/from-pr');
-  git(dir, 'remote', 'prune', 'origin');
+  /*
+   * The tracking ref goes too, and this line is the whole fixture.
+   *
+   * The first version used `git remote prune origin`, which only drops refs
+   * for branches GONE from the remote — feat/from-pr is still there, so it did
+   * nothing, refs/remotes/origin/feat/from-pr survived, and the route's fetch
+   * was a no-op in every test. Deleting the fetch line entirely would have
+   * kept the suite green. Found in review.
+   */
+  git(dir, 'update-ref', '-d', 'refs/remotes/origin/feat/from-pr');
   return { repo: dir, origin: originDir };
 };
 
@@ -75,8 +84,11 @@ const installFakeGh = (): string => {
     '#!/bin/sh',
     'if [ "$1" = "auth" ]; then exit 0; fi',
     'if [ -n "$AGENFK_TEST_PR_FAIL" ]; then echo "no pull requests found" >&2; exit 1; fi',
-    // Echoed verbatim so a test can assert on the argv the route built.
-    'echo "$@" > "$AGENFK_TEST_GH_ARGV"',
+    // ONE ARGUMENT PER LINE. `echo "$@"` joins them with spaces, so
+    // `gh "pr view 42" -R acme/app` printed exactly what the correct form
+    // printed — the assertion that cites the shell-injection bug could not
+    // tell them apart. Found in review.
+    'printf "%s\\n" "$@" > "$AGENFK_TEST_GH_ARGV"',
     'printf %s "$AGENFK_TEST_PR_JSON"',
   ].join('\n'));
   fs.chmodSync(gh, 0o755);
@@ -137,6 +149,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  /*
+   * The worktree goes too, and unconditionally.
+   *
+   * Removing it inline at the end of a test only runs when the test PASSES —
+   * so a failing run left a directory behind, and leftover worktrees are how
+   * a suite starts failing for reasons that belong to an earlier run. This
+   * epic already has a card open on rotating failures; not adding to it.
+   */
+  const worktreeRoot = path.join(os.homedir(), '.agenfk', 'worktrees', path.basename(repo));
+  fs.rmSync(worktreeRoot, { recursive: true, force: true });
   fs.rmSync(repo, { recursive: true, force: true });
   fs.rmSync(origin, { recursive: true, force: true });
 });
@@ -152,13 +174,25 @@ describe('POST /projects/:id/tasks-from-pr', () => {
     expect(res.body.item.prNumber).toBe(42);
   });
 
-  it('fetches the remote branch and cuts a worktree on it', async () => {
-    // The difference from tasks-from-branch that justifies a separate route:
-    // the branch is not here yet.
+  it("cuts the worktree on the PR's commits, not on local main", async () => {
+    /*
+     * THE test for this route, and the first version of it was worthless: it
+     * asserted that a directory existed and nothing about what was in it, so
+     * it passed while the worktree held local main under the PR's branch name.
+     *
+     * That is worse than failing. The card looks ready, the directory is named
+     * after the PR, an agent works in it and pushes — and the push either
+     * bounces or overwrites the contributor's branch.
+     *
+     * `f.txt` exists only on the PR's branch, so its presence is the whole
+     * claim: these are the PR's commits.
+     */
     const res = await post({ prNumber: 42 });
     expect(res.status).toBe(201);
-    expect(res.body.worktree?.path).toBeTruthy();
-    expect(fs.existsSync(res.body.worktree.path)).toBe(true);
+    expect(res.body.worktree?.path, res.body.worktreeError ?? '').toBeTruthy();
+    expect(fs.existsSync(path.join(res.body.worktree.path, 'f.txt')),
+      'the worktree does not contain the PR\'s file — it was branched from local HEAD').toBe(true);
+    expect(git(res.body.worktree.path, 'log', '-1', '--format=%s').trim()).toBe('work');
     fs.rmSync(res.body.worktree.path, { recursive: true, force: true });
   });
 
@@ -166,8 +200,9 @@ describe('POST /projects/:id/tasks-from-pr', () => {
     // It reaches a shellout. The issue importer carries a comment naming the
     // bug this was (4c939916).
     await post({ prNumber: 42 });
-    const argv = fs.readFileSync(process.env.AGENFK_TEST_GH_ARGV!, 'utf8');
-    expect(argv).toContain('pr view 42 -R acme/app');
+    // Line by line, so a single joined argument cannot masquerade as four.
+    const argv = fs.readFileSync(process.env.AGENFK_TEST_GH_ARGV!, 'utf8').split('\n');
+    expect(argv.slice(0, 5)).toEqual(['pr', 'view', '42', '-R', 'acme/app']);
   });
 
   it('does not bring the PR conversation along', async () => {

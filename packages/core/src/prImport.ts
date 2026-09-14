@@ -75,8 +75,14 @@ export type PrImportPlan =
  * as its own argv entry.
  */
 export function isValidPrNumber(value: unknown): boolean {
-  const n = Number(value);
-  return Number.isInteger(n) && n > 0;
+  // Type first, because `Number(true)` is 1: `{prNumber: true}` imported PR #1.
+  // Strings are allowed because a URL path gives the number as one, but only
+  // strings that are entirely digits — `Number('1e21')` is an integer and
+  // stringifies back as "1e+21", which is not a pull request.
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0;
+  if (typeof value !== 'string') return false;
+  return /^[0-9]+$/.test(value.trim()) && Number(value.trim()) > 0
+    && Number.isSafeInteger(Number(value.trim()));
 }
 
 /**

@@ -29,6 +29,21 @@ export interface CreateWorktreeOptions {
   /** Directory that holds all worktrees (e.g. ~/.agenfk/worktrees). */
   root: string;
   branchName: string;
+  /**
+   * Where a NEW branch starts from, when there is no local branch of that name.
+   *
+   * Ignored when the branch already exists locally — that checkout is the
+   * user's own work and must not be re-pointed at something else.
+   *
+   * This exists because of a defect found in review: importing a pull request
+   * fetched `refs/remotes/origin/<branch>` and then got a worktree with none of
+   * the PR's commits in it. `branchExists` only looks at `refs/heads/`, so a
+   * freshly fetched branch took the `-b` arm with no start point, and `-b` with
+   * no commit-ish branches from local HEAD. The directory was named after the
+   * PR and contained the local main — which is worse than failing, because an
+   * agent then works in it and pushes.
+   */
+  startPoint?: string;
 }
 
 export interface CreatedWorktree extends WorktreeInfo {
@@ -147,7 +162,7 @@ export function listWorktrees(repoRoot: string): WorktreeInfo[] {
  * existing branch is checked out rather than re-created.
  */
 export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
-  const { repoRoot, root, branchName } = opts;
+  const { repoRoot, root, branchName, startPoint } = opts;
   assertGitRepo(repoRoot);
 
   const target = canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName));
@@ -176,9 +191,14 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
 
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
+  // `-b` with no commit-ish branches from whatever HEAD happens to be. When
+  // the caller knows where the branch should start — a fetched remote ref —
+  // say so, or the directory is named after work it does not contain.
   const args = branchExists(repoRoot, branchName)
     ? ['worktree', 'add', target, branchName]
-    : ['worktree', 'add', '-b', branchName, target];
+    : startPoint
+      ? ['worktree', 'add', '-b', branchName, target, startPoint]
+      : ['worktree', 'add', '-b', branchName, target];
 
   try {
     git(repoRoot, args);

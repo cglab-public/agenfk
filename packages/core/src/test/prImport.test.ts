@@ -150,7 +150,10 @@ describe('what it refuses to hand to git', () => {
     // The number is interpolated into a `gh` shellout. The issue importer
     // carries a comment naming the bug this was (4c939916); the lesson is not
     // that issues need it, it is that anything reaching argv does.
-    for (const bad of ['1; rm -rf /', '-1', '0', '1.5', '', null, undefined, {}, 'abc', NaN]) {
+    // `true` and `1e21` are the two that got through the first version:
+    // `Number(true)` is 1, so `{prNumber: true}` imported PR #1, and
+    // `Number('1e21')` is an integer that stringifies back as "1e+21".
+    for (const bad of ['1; rm -rf /', '-1', '0', '1.5', '', null, undefined, {}, 'abc', NaN, true, false, '1e21', 1e21, [42]]) {
       expect(isValidPrNumber(bad), `should refuse ${JSON.stringify(bad)}`).toBe(false);
     }
   });
