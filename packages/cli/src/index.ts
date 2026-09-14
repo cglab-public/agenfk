@@ -3741,6 +3741,53 @@ const prCmd = program
   .description('Manage pull requests for AgEnFK items (requires GitHub CLI)');
 
 prCmd
+  .command('import <prNumber>')
+  .description('Open a card from an existing pull request, bringing its title, body and branch')
+  .action(async (prNumber: string) => {
+    /*
+     * The card CGLAB-177 asked for. The server holds every decision — reuse
+     * rather than duplicate, body without the conversation, no fetch for a
+     * fork — so this is the thin part: find the project, POST, report.
+     *
+     * It exists at all because `tasks-from-branch` shipped as a route with no
+     * caller in either the CLI or the UI, which means the composition it built
+     * cannot be reached by anyone. A second unreachable endpoint would have
+     * been the same mistake twice.
+     */
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    try {
+      const { data } = await axios.post(`${API_URL}/projects/${projectId}/tasks-from-pr`, { prNumber });
+      if (data.reused) {
+        // Not an error, and not silent either: the person asked for a card and
+        // is getting one they already had, which they need to be told.
+        console.log(chalk.yellow(`Reused ${data.item.id} — ${data.reason}`));
+        return;
+      }
+      console.log(chalk.green(`Created ${data.item.id}  ${data.item.title}`));
+      if (data.worktree?.path) console.log(chalk.dim(`  worktree: ${data.worktree.path}`));
+      // The card exists either way; what is missing is said plainly rather
+      // than left for the person to discover when they go looking for it.
+      if (data.worktreeSkipped) console.log(chalk.yellow(`  no worktree: ${data.worktreeSkipped}`));
+      if (data.worktreeError) console.log(chalk.yellow(`  no worktree: ${data.worktreeError}`));
+    } catch (e: any) {
+      console.error(chalk.red(e?.response?.data?.error ?? e?.message ?? String(e)));
+      process.exit(1);
+    }
+  });
+
+prCmd
   .command('create <itemId>')
   .description('Create a pull request for the item\'s branch, store the PR URL/number, and auto-register sizing (emits pr.opened)')
   .option('--title <title>', 'PR title (defaults to item title)')

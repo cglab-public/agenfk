@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -4435,6 +4435,138 @@ app.post("/github/import", async (req: any, res: any) => {
     res.status(500).json({ error: err.message || String(err) });
   }
 });
+
+/**
+ * A card from an existing Pull Request (CGLAB-177).
+ *
+ * Sibling of `POST /projects/:id/tasks-from-branch`, and the differences
+ * between them are the whole content of this route. That one starts from a
+ * branch the user names; this one starts from a PR that already exists, which
+ * brings three problems it does not have: the branch is REMOTE, the PR may come
+ * from a fork, and a card for that branch may already be on the board.
+ *
+ * The decisions are in `planPrImport` in core, tested without a network or a
+ * GitHub credential. What is left here is the part that genuinely needs the
+ * outside world: asking `gh`, fetching the ref, making the worktree.
+ */
+app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  const { prNumber, type, agentId } = req.body ?? {};
+  // Validated before it can reach argv. The issue importer carries a comment
+  // naming the bug this was (4c939916); the lesson is not that issues need it,
+  // it is that anything reaching a shellout does.
+  if (!isValidPrNumber(prNumber)) {
+    return res.status(400).json({ error: "prNumber must be a positive integer" });
+  }
+  if (agentId !== undefined && !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    return res.status(400).json({ error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}` });
+  }
+
+  const config = loadGitHubConfig(project.id);
+  if (!config) return res.status(400).json({ error: "GitHub not configured for this project. Run `agenfk github setup`." });
+  if (!verifyGhCli()) return res.status(400).json({ error: "GitHub CLI not authenticated. Run `gh auth login`." });
+
+  let pr: any;
+  try {
+    const out = execFileSync(
+      'gh',
+      ['pr', 'view', String(Number(prNumber)), '-R', `${config.owner}/${config.repo}`,
+       '--json', 'number,title,body,url,headRefName,state,isCrossRepository'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    pr = JSON.parse(out);
+  } catch (e: any) {
+    // A PR that is not there, or no access to the repo. Both are the user's to
+    // fix and neither is a server fault.
+    return res.status(404).json({ error: `Could not read PR #${prNumber} from ${config.owner}/${config.repo}: ${e?.message ?? String(e)}` });
+  }
+
+  const existing = await storage.listItems({ projectId: project.id, limit: 1_000_000 });
+  const plan = planPrImport(pr, (existing as any[]).map(i => ({ id: i.id, title: i.title, branchName: i.branchName })));
+
+  // Reuse, never duplicate. Git allows one worktree per branch, so a second
+  // card on the same branch is a failure scheduled for later rather than a
+  // duplicate to tidy up.
+  if (plan.action === 'reuse') {
+    const item = await storage.getItem(plan.itemId);
+    return res.status(200).json({ item, reused: true, reason: plan.reason });
+  }
+
+  const created: any = await storage.createItem({
+    id: uuidv4(),
+    projectId: project.id,
+    type: (typeof type === 'string' && ['STORY', 'TASK', 'BUG'].includes(type) ? type : 'TASK') as ItemType,
+    title: plan.title,
+    description: plan.description,
+    status: Status.TODO,
+    parentId: undefined,
+    implementationPlan: "",
+    branchName: plan.branchName,
+    externalId: plan.externalId,
+    externalUrl: plan.externalUrl,
+    prUrl: plan.externalUrl,
+    prNumber: Number(pr.number),
+    ...(agentId ? { agentId } : {}),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as any);
+
+  /**
+   * The worktree, and what happens when it cannot be made.
+   *
+   * Deliberately NOT the rollback `tasks-from-branch` does. There the item
+   * exists only to hold a worktree; here it represents a PR that exists whether
+   * or not this machine can reach the remote, and deleting the user's card
+   * because a fetch failed would be the tool arguing with them.
+   *
+   * What must not happen is SILENCE — a card that looks ready and has no
+   * worktree is the failure the rollback over there exists to prevent. So the
+   * reason is both returned and written onto the card, where it will still be
+   * when the response is long gone.
+   */
+  const noteOnCard = async (text: string) => {
+    const fresh: any = await storage.getItem(created.id);
+    await storage.updateItem(created.id, {
+      comments: [...(fresh?.comments ?? []), {
+        id: uuidv4(), author: 'agenfk', timestamp: new Date(), content: text,
+      }],
+    } as any).catch(() => {});
+  };
+
+  if (!plan.worktree.attempt) {
+    await noteOnCard(plan.worktree.reason);
+    io.emit('items_updated');
+    return res.status(201).json({ item: await storage.getItem(created.id), worktree: null, worktreeSkipped: plan.worktree.reason });
+  }
+
+  try {
+    if (!project.projectRoot) {
+      throw new Error('Project has no projectRoot. Set it before creating a worktree.');
+    }
+    // The branch is remote, so it has to be here before a worktree can sit on
+    // it. `--` and an argv array, because the ref came off an API rather than
+    // out of thin air and that is exactly where "it is ours" stops holding.
+    execFileSync('git', ['-C', project.projectRoot, 'fetch', 'origin', '--', `${plan.branchName}:refs/remotes/origin/${plan.branchName}`],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName: plan.branchName,
+    });
+    const withWorktree = await storage.updateItem(created.id, { worktreePath: result.path } as any);
+    io.emit('items_updated');
+    res.status(201).json({ item: withWorktree, worktree: result });
+  } catch (e: any) {
+    const why = `Card created, but the worktree was not: ${e?.message ?? String(e)}. The branch may have been deleted when the PR was merged.`;
+    await noteOnCard(why);
+    io.emit('items_updated');
+    // 201: the card WAS created, which is what the caller asked for. A 4xx here
+    // would say nothing happened, and something did.
+    res.status(201).json({ item: await storage.getItem(created.id), worktree: null, worktreeError: why });
+  }
+}));
 
 // ── Release Check ─────────────────────────────────────────────────────────────
 
