@@ -31,6 +31,9 @@ export interface TerminalBridge {
   kill(sessionId: string): Promise<boolean>;
   onData(cb: (e: { sessionId: string; data: string }) => void): () => void;
   onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
+  /** The agent published its own state via the terminal title. Optional: an
+   *  older preload does not have it, and the pane must still work. */
+  onActivity?(cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void): () => void;
 }
 
 interface FitLike extends ITerminalAddon {
@@ -76,6 +79,14 @@ export interface TerminalPaneProps {
    * on was recency of OUTPUT, and the exit message is itself output.
    */
   readonly onExited?: (exitCode: number) => void;
+  /**
+   * The agent said what it is doing.
+   *
+   * Reported upward rather than kept here for the same reason `onExited` is:
+   * the sessions rail needs it, and the pane is the only place the stream
+   * arrives.
+   */
+  readonly onActivity?: (activity: 'working' | 'idle') => void;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -97,6 +108,7 @@ export function TerminalPane({
   onSpawned,
   onOutput,
   onExited,
+  onActivity,
   createTerminal,
   createFitAddon,
   bridge,
@@ -157,6 +169,15 @@ export function TerminalPane({
       }
       term.write(data);
     }));
+
+    // Optional on the bridge: an older preload has no such channel, and a
+    // missing signal must degrade to "no opinion", never to a crash.
+    if (api.onActivity) {
+      cleanups.push(api.onActivity(({ sessionId, activity }) => {
+        if (sessionId !== sessionRef.current) return;
+        onActivity?.(activity);
+      }));
+    }
 
     cleanups.push(api.onExit(({ sessionId, exitCode: code }) => {
       if (sessionId !== sessionRef.current) return;

@@ -52,6 +52,16 @@ export interface TerminalSession {
    * itemId would have been the wrong fix.
    */
   readonly exited?: boolean;
+  /**
+   * What the agent itself says it is doing, when it says anything.
+   *
+   * Undefined means NO OPINION, not idle. Two of our four agents publish
+   * nothing on the terminal title — pi and gemini — and treating their silence
+   * as rest would read as "asleep" for half the fleet. Where this is undefined
+   * the rail falls back to output recency, which is wrong in the other
+   * direction but at least is the behaviour that existed before.
+   */
+  readonly activity?: 'working' | 'idle';
   /** Carried so the remembered row can be scoped to a project on restore. */
   readonly projectId?: string;
   /**
@@ -94,6 +104,8 @@ export interface TerminalTabProps {
   /** A session's process ended. Carried by SESSION, never by card: two agents
    *  can share a card, and one exiting says nothing about the other. */
   readonly onExited?: (sessionId: string) => void;
+  /** The agent published its state. By SESSION: two agents can share a card. */
+  readonly onActivity?: (sessionId: string, activity: 'working' | 'idle') => void;
   /**
    * Editors installed on this machine, if any.
    *
@@ -128,6 +140,7 @@ export function TerminalTab({
   onSpawned,
   onOutput,
   onExited,
+  onActivity,
   editors,
   onOpenInEditor,
   showWorktree,
@@ -270,6 +283,7 @@ export function TerminalTab({
             onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
             onOutput={() => onOutput?.(session.itemId)}
             onExited={() => onExited?.(session.id)}
+            onActivity={a => onActivity?.(session.id, a)}
           />
         </div>
       ))}

@@ -485,7 +485,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
          * is output — so without this the row stayed green for the full TTL
          * after the session died, which is what was reported.
          */
-        state: open.exited ? 'idle' : live.isLive(open.itemId) ? 'running' : 'idle',
+        /*
+         * What the AGENT says, when it says anything (BUG 192).
+         *
+         * Claude Code and Codex publish a spinner in the terminal title while
+         * they work, so for them this is the agent's own word rather than our
+         * inference. `live.isLive` stays as the fallback for pi and gemini,
+         * which publish nothing — it is wrong in the familiar direction, a
+         * repainting footer reading as work, but it is what existed before and
+         * replacing it needs the screen-text path, not a guess.
+         *
+         * A dead process still wins over both: that is a fact, not a claim.
+         */
+        state: open.exited
+          ? 'idle'
+          : open.activity === 'working'
+            ? 'running'
+            : open.activity === 'idle'
+              ? 'idle'
+              : live.isLive(open.itemId) ? 'running' : 'idle',
         // The run's start time when this terminal IS that run, never a fresh
         // stamp: this memo recomputes whenever any card lights up, and stamping
         // here reset every terminal's elapsed time to "0s" on an unrelated
@@ -1076,6 +1094,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 // only offers STOP for running or waiting, so the one state
                 // they could reach was the one with no controls.
                 onOutput={itemId => { live.touch(itemId); }}
+                onActivity={(sessionId, activity) => {
+                  // Recorded on the SESSION, like the exit: two agents can
+                  // share a card, and one working says nothing about the other.
+                  setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, activity } : s)));
+                }}
                 onExited={sessionId => {
                   // Recorded on the SESSION. Clearing liveness by card would
                   // darken a second agent still working in the same worktree.

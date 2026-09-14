@@ -49,12 +49,14 @@ vi.mock('socket.io-client', () => ({
 let spawnCalls: Array<Record<string, unknown>>;
 let exitHandlers: Array<(e: { sessionId: string; exitCode: number }) => void> = [];
 let dataHandlers: Array<(e: { sessionId: string; data: string }) => void> = [];
+let activityHandlers: Array<(e: { sessionId: string; activity: 'working' | 'idle' }) => void> = [];
 let killCalls: string[];
 
 const setBridge = () => {
   spawnCalls = [];
   exitHandlers = [];
   dataHandlers = [];
+  activityHandlers = [];
   killCalls = [];
   Object.defineProperty(window, 'agenfkDesktop', {
     value: {
@@ -85,6 +87,10 @@ const setBridge = () => {
         // a no-op unsubscribe and never call anything, so no test could make a
         // session end — which is why "a session that exited still counts as
         // running" shipped.
+        onActivity: (cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void) => {
+          activityHandlers.push(cb);
+          return () => { activityHandlers = activityHandlers.filter(h => h !== cb); };
+        },
         onExit: (cb: (e: { sessionId: string; exitCode: number }) => void) => {
           exitHandlers.push(cb);
           return () => { exitHandlers = exitHandlers.filter(h => h !== cb); };
@@ -945,5 +951,78 @@ describe('restoring a session that lived in tmux', () => {
     await waitFor(() => expect(spawnCalls.length).toBe(1));
     expect(spawnCalls[0].persist).toBe(false);
     expect(spawnCalls[0].autoApprove).toBe(false);
+  });
+});
+
+
+/**
+ * The rail follows what the agent says, not what the terminal draws (CGLAB-192).
+ *
+ * Claude Code and Codex publish a spinner in the terminal TITLE while they
+ * work. Output recency stays only as the fallback for agents that publish
+ * nothing — and it is exactly the signal that kept a card green forever,
+ * because a TUI repaints its own footer.
+ */
+describe('a session that says what it is doing', () => {
+  const one = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+  }];
+  const runningCount = () =>
+    document.querySelectorAll('[data-testid="session-dot"][data-state="running"]').length;
+
+  const open = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(one as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+  };
+
+  it('goes idle when the agent says idle, even while output keeps arriving', async () => {
+    /*
+     * THE case. A repainting footer is output, so the old rule held the card
+     * green for the whole liveness window no matter what the agent was doing.
+     * Here output keeps flowing and the state still goes to idle, because the
+     * agent said so.
+     */
+    await open();
+    act(() => { activityHandlers.forEach(h => h({ sessionId: 'pty-1', activity: 'working' })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
+
+    act(() => { activityHandlers.forEach(h => h({ sessionId: 'pty-1', activity: 'idle' })); });
+    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'repaint\r\n' })); });
+    await waitFor(() => expect(runningCount()).toBe(0));
+  });
+
+  it('goes running on the agent word alone, with no output at all', async () => {
+    await open();
+    act(() => { activityHandlers.forEach(h => h({ sessionId: 'pty-1', activity: 'working' })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
+  });
+
+  it('still falls back to output for an agent that publishes nothing', async () => {
+    // pi and gemini set no title. Their silence must not read as rest — the
+    // old behaviour is wrong in the familiar direction, but it is not a lie in
+    // the new one.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue([{
+      id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'pi',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+    }] as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'working\r\n' })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
+  });
+
+  it('lets a dead process win over anything the agent last said', async () => {
+    // The agent's last word was "working"; then it exited. A fact beats a claim.
+    await open();
+    act(() => { activityHandlers.forEach(h => h({ sessionId: 'pty-1', activity: 'working' })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
+
+    act(() => { exitHandlers.forEach(h => h({ sessionId: 'pty-1', exitCode: 0 })); });
+    await waitFor(() => expect(runningCount()).toBe(0));
   });
 });

@@ -17,6 +17,7 @@
  */
 import { randomUUID } from 'crypto';
 import { resolveAgentCommand, canDictateSessionId } from './agents.js';
+import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 
@@ -220,10 +221,34 @@ export class PtyRegistry {
       this.sessions.set(sessionId, { pty, windowId: req.windowId });
       const startedAt = Date.now();
 
+      /*
+       * Reads the agent's own status out of the stream (BUG 192).
+       *
+       * A TAP, beside the forward and never instead of it: the bytes still
+       * reach the terminal untouched, and this only watches them go past.
+       *
+       * Claude Code and Codex publish a spinner in the terminal TITLE while
+       * they work. That is the agent declaring its state, where the old signal
+       * — any output at all — only ever said "the terminal is drawn", which a
+       * TUI repainting its footer makes permanently true.
+       */
+      const titles = new TitleReader();
+      let activity = 'unknown';
+
       pty.onData(data => {
         // Only to the owner. Broadcasting would put one card's shell output —
         // including whatever the agent prints — into every open window.
         this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+
+        const title = titles.push(data);
+        if (title === null) return;
+        const next = activityFromTitle(req.agentId, title);
+        // `unknown` never overwrites a state we had: an agent that stops
+        // publishing has not told us it stopped working. And only on CHANGE,
+        // or a repainting footer floods this channel exactly like the old one.
+        if (next === 'unknown' || next === activity) return;
+        activity = next;
+        this.deps.emit(req.windowId, 'pty:activity', { sessionId, activity: next });
       });
 
       pty.onExit(({ exitCode }) => {
