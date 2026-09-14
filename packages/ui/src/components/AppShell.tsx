@@ -76,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId } = useActiveProject();
+  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -108,6 +108,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
     setActiveProjectId(item.projectId);
+    // An ACTION, not navigation: this launches an agent CLI in that project's
+    // worktree, which is the strongest "I am working here" signal the app has.
+    // Removing the old stamp-on-every-glance left nothing writing the rank at
+    // all, so the sidebar's ordering quietly degraded to updatedAt.
+    markProjectWorked(item.projectId);
     // Already open? Go to it. Opening a second terminal on the same card is
     // possible (the + in the tab bar), but it is not what clicking the card
     // means — that is "take me to my work", and spawning a duplicate agent in
@@ -183,10 +188,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // by new data, so without it the dots would only ever turn off when
     // something else happened to re-render.
     void liveTick;
-    const byItem = new Map<string, SessionRow>();
+    /*
+     * Keyed by card AND agent, not by card alone.
+     *
+     * Keying by the card made every row a claim about whichever session
+     * happened to be written last: two terminals on one card collapsed into
+     * one row that carried the second's identity while clicking it activated
+     * the first and STOP killed the second. A hook-recorded run and a terminal
+     * with different agents on one card became a single row naming only the
+     * terminal's, so a second agent running in the same worktree was invisible
+     * in the one component whose job is to list every agent you have running.
+     */
+    const byAgent = new Map<string, SessionRow>();
+    const key = (itemId: string, agentId: string) => `${itemId}\u0000${agentId}`;
 
     for (const run of runs as Array<Record<string, string>>) {
-      byItem.set(run.itemId, {
+      byAgent.set(key(run.itemId, run.harness ?? 'claude-code'), {
         runId: run.id,
         itemId: run.itemId,
         title: run.itemId.slice(0, 8),
@@ -204,7 +221,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
 
     for (const open of sessions) {
-      byItem.set(open.itemId, {
+      byAgent.set(key(open.itemId, open.agentId), {
         runId: open.id,
         itemId: open.itemId,
         title: open.title,
@@ -213,12 +230,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // "Claude Code" while itself showing "claude-code".
         agentLabel: agentLabel(open.agentId),
         state: live.isLive(open.itemId) ? 'running' : 'idle',
-        startedAt: byItem.get(open.itemId)?.startedAt ?? new Date().toISOString(),
+        // The run's start time when this terminal IS that run, never a fresh
+        // stamp: this memo recomputes whenever any card lights up, and stamping
+        // here reset every terminal's elapsed time to "0s" on an unrelated
+        // card's event. `openedAt` is the terminal's own truth.
+        startedAt: byAgent.get(key(open.itemId, open.agentId))?.startedAt ?? open.openedAt,
         hasTerminal: true,
       });
     }
 
-    return [...byItem.values()];
+    return [...byAgent.values()];
   }, [runs, sessions, live, liveTick]);
 
   const openSession = React.useCallback((row: SessionRow): void => {
@@ -226,7 +247,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // "take me to it" — an earlier version sent rows with no PTY to the
     // read-only Runs view, which is technically defensible and wrong in use:
     // you clicked a running agent and landed on a log.
-    const open = sessions.find(s => s.itemId === row.itemId);
+    // Matched on the AGENT too: with two terminals on one card, matching by
+    // card alone activated whichever was first regardless of which row was
+    // clicked.
+    const open = sessions.find(s => s.itemId === row.itemId && s.agentId === row.agentId);
     if (open) {
       setActiveSession(open.id);
       setTerminalOpened(true);
@@ -241,7 +265,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [sessions]);
 
   const stopSession = React.useCallback((runId: string): void => {
-    const open = sessions.find(s => s.id === runId || s.itemId === runId);
+    // By session id ONLY. The `|| s.itemId === runId` fallback could stop a
+    // terminal whose itemId happened to equal another row's runId, and it did
+    // nothing at all for a hook-recorded run — whose runId is an AgentRun uuid
+    // that matches no session. Rows we cannot stop no longer offer STOP; see
+    // SessionsRail.
+    const open = sessions.find(s => s.id === runId);
     if (open) closeSessionRef.current(open.id);
   }, [sessions]);
 
@@ -345,6 +374,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         autoApprove: false,
         persist: false,
         agentSessionId: row.agentSessionId,
+        openedAt: row.openedAt,
         // Only where there is a conversation to resume. For codex there is
         // not, and asking anyway would either fail the launch or resume
         // somebody else's session.
@@ -656,6 +686,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               agentId,
               autoApprove,
               persist,
+              openedAt: new Date().toISOString(),
               branchName: pending.branchName,
             }]);
             setActiveSession(id);

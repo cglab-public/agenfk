@@ -16,7 +16,7 @@ import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { readLastUsed } from '../sidebarPrefs';
 
 function Probe() {
-  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem } = useActiveProject();
+  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked } = useActiveProject();
   return (
     <div>
       <span data-testid="active">{activeProjectId ?? 'none'}</span>
@@ -29,6 +29,8 @@ function Probe() {
       <span data-testid="new-item">{newItemRequest ?? 'none'}</span>
       <button onClick={() => requestNewItem('p2')}>new in p2</button>
       <button onClick={() => requestNewItem('p2')}>new in p2 again</button>
+      <button onClick={() => markProjectWorked('p2')}>work in p2</button>
+      <button onClick={() => markProjectWorked('')}>work in nothing</button>
     </div>
   );
 }
@@ -230,5 +232,35 @@ describe('what counts as USING a project', () => {
     act(() => { fireEvent.click(screen.getByText('pick p3')); });
     expect(readLastUsed()['p3']).toBeUndefined();
     expect(readLastUsed()['p2']).toBe(worked);
+  });
+});
+
+/**
+ * The other half of the fix, which was missing.
+ *
+ * Removing the over-stamping (every glance promoted a project) left nothing
+ * writing the rank at all: `markProjectWorked` had no production caller, so the
+ * only surviving writer was the sidebar's hover-`+`. A user who creates and
+ * advances cards on the board and never touches that button would never write
+ * a single entry, and the ordering silently degrades to `updatedAt` — which is
+ * the "indistinguishable from Created at" failure the mechanism exists to fix.
+ *
+ * These pin the three actions the docblock promises.
+ */
+describe('the actions that DO count as working', () => {
+  it('stamps when a terminal is opened on a card', () => {
+    // The strongest "I am working here" signal the app has: it launches an
+    // agent CLI in that project's worktree.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('work in p2')); });
+    expect(readLastUsed()['p2']).toBeDefined();
+  });
+
+  it('does not stamp for an empty project id', () => {
+    // Guards the call site rather than the storage: an undefined id would
+    // otherwise take one of the fifty slots forever.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('work in nothing')); });
+    expect(Object.keys(readLastUsed())).not.toContain('');
   });
 });

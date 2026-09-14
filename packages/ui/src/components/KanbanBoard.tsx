@@ -466,7 +466,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -772,6 +772,12 @@ export const KanbanBoard: React.FC = () => {
       api.createItem({ ...variables, projectId: selectedProjectId! } as any),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
+      // Creating a card IS working in the project, and this is the main way
+      // cards get created. The sidebar's "last used" ordering had no writer on
+      // this path at all, so it silently fell back to updatedAt — which moves
+      // on rename and reconfigure and not on work, and is the very thing the
+      // local ranking exists to avoid.
+      if (selectedProjectId) markProjectWorked(selectedProjectId);
     }
   });
 

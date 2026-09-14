@@ -270,3 +270,47 @@ describe('resizing', () => {
     expect(disconnects).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Telling the shell that this terminal is alive.
+ *
+ * Liveness used to be fed only by `run:event` from the socket, which comes
+ * from the Claude Code hook — and a terminal opened here creates a PTY and no
+ * run at all. So the sessions rail showed our own terminals as idle forever,
+ * and because it renders STOP only for running or waiting, the single state
+ * they could reach was the one with no controls.
+ *
+ * Output is the honest signal available without inventing a protocol: bytes
+ * arriving means the agent is doing something.
+ */
+describe('reporting that output arrived', () => {
+  it('tells the shell when data arrives for this session', async () => {
+    const onOutput = vi.fn();
+    renderPane({ onOutput });
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'sess-1', data: 'thinking' });
+    expect(onOutput).toHaveBeenCalled();
+  });
+
+  it('ignores output belonging to another session', async () => {
+    // Every pane listens on one channel, so without the filter one card's
+    // output would light up every other card in the rail.
+    const onOutput = vi.fn();
+    renderPane({ onOutput });
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    dataSubscribers[0]({ sessionId: 'someone-else', data: 'thinking' });
+    expect(onOutput).not.toHaveBeenCalled();
+  });
+
+  it('reports at most once in a burst', async () => {
+    // Output arrives in many small chunks and every report wakes the shell to
+    // recompute the rail — the cost the rail's single-timer design exists to
+    // avoid.
+    const onOutput = vi.fn();
+    renderPane({ onOutput });
+    await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
+    for (let i = 0; i < 20; i += 1) dataSubscribers[0]({ sessionId: 'sess-1', data: `chunk ${i}` });
+    expect(onOutput).toHaveBeenCalledTimes(1);
+  });
+});

@@ -193,7 +193,11 @@ export function SessionsRail({ rows, onOpen, onStop }: SessionsRailProps): React
               </span>
             </button>
 
-            {(row.state === 'running' || row.state === 'waiting') && (
+            {/* Only where there is something of ours to stop. A row recorded
+                by the hook has a transcript and no PTY here, so its STOP did
+                nothing at all — silently, which reads as the app ignoring you.
+                Offering no button is the honest version. */}
+            {row.hasTerminal && (row.state === 'running' || row.state === 'waiting') && (
               <button
                 onClick={event => {
                   // Without this the click also reaches the row behind, so

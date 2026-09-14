@@ -133,20 +133,19 @@ export function TerminalPane({
       // Every open terminal listens on this one channel, so the filter is what
       // keeps one card's output out of every other card's tab.
       if (sessionId !== sessionRef.current) return;
-      term.write(data);
-      // Bytes arriving means the agent is doing something, and it is the only
-      // honest liveness signal available for a terminal opened here: these
-      // create a PTY and no AgentRun, so no run events, so the rail had no way
-      // to know they were working and showed them idle forever.
+      // Reported BEFORE drawing. The fact being reported is that bytes
+      // arrived, which is true whether or not this renderer can paint them —
+      // and a write that throws must not also swallow the liveness signal.
       //
-      // Throttled hard. Output arrives in many small chunks, and every report
-      // wakes the shell to recompute the rail — the cost the rail's own
+      // Throttled hard: output arrives in many small chunks, and every report
+      // wakes the shell to recompute the rail, which is the cost the rail's
       // one-timer design exists to avoid.
       const now = Date.now();
       if (now - lastReport.current > OUTPUT_REPORT_MS) {
         lastReport.current = now;
         onOutput?.();
       }
+      term.write(data);
     }));
 
     cleanups.push(api.onExit(({ sessionId, exitCode: code }) => {

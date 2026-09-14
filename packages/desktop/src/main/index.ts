@@ -10,6 +10,8 @@
  */
 import { app, BrowserWindow, dialog, shell, utilityProcess, type UtilityProcess } from 'electron';
 import * as path from 'path';
+import * as os from 'os';
+import { readFileSync } from 'fs';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
@@ -20,7 +22,7 @@ import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { httpPost } from './httpPost.js';
 import { captureLoginPath } from './ptyEnv.js';
-import { adoptFailureChoice, BROWSER_UI_URL } from './adoptFailure.js';
+import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath } from './detectAgents.js';
 
@@ -220,7 +222,24 @@ async function boot(): Promise<void> {
       // way out, and someone who installed just the desktop may not have the
       // CLI on their PATH at all. Their board is already open in a browser, so
       // that is one click away instead. See main/adoptFailure.ts.
-      const choice = adoptFailureChoice(server);
+      // Resolved and PROBED, not assumed: the UI port moves, and an adopted
+      // API server does not imply a browser session exists at all.
+      const browserUi = await resolveBrowserUi({
+        readUiLog: () => {
+          try {
+            return readFileSync(path.join(os.homedir(), '.agenfk-system', '.agenfk', 'ui.log'), 'utf8');
+          } catch { return null; }
+        },
+        reachable: async url => {
+          // httpGet takes a PORT, not a URL: the probe answers "is something
+          // serving there", which is the question — an adopted API server does
+          // not imply a browser session exists at all.
+          const port = Number(new URL(url).port);
+          if (!Number.isInteger(port) || port <= 0) return false;
+          try { return Boolean(await httpGet(port, '/')); } catch { return false; }
+        },
+      });
+      const choice = adoptFailureChoice({ ...server, browserUi });
       console.error(`[DESKTOP] ${choice.detail}`);
       const { response } = await dialog.showMessageBox({
         type: 'warning',
@@ -231,8 +250,10 @@ async function boot(): Promise<void> {
         defaultId: choice.defaultId,
         cancelId: choice.buttons.length - 1,
       });
-      if (choice.buttons[response] === 'Open in browser') {
-        await shell.openExternal(BROWSER_UI_URL);
+      // By ACTION, not by label. Comparing the chosen button's text meant a
+      // reworded button would silently become a quit.
+      if (choice.actions[response] === 'open-browser' && browserUi) {
+        await openExternally(browserUi);
       }
       tearingDown = true;
       app.quit();

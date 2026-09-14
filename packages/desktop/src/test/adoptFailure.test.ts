@@ -20,30 +20,64 @@
  * their work is right there.
  */
 import { describe, it, expect } from 'vitest';
-import { adoptFailureChoice, BROWSER_UI_URL } from '../main/adoptFailure';
+import { adoptFailureChoice, resolveBrowserUi, DEFAULT_BROWSER_UI_URL } from '../main/adoptFailure';
 
 describe('when the adopted server does not serve the app', () => {
   it('offers to open the session that IS running, not just an instruction', () => {
-    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000' });
+    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000', browserUi: 'http://localhost:5173' });
     expect(choice.buttons).toContain('Open in browser');
     // The terminal command stays available for anyone who wants the desktop
     // app rather than the browser — it is no longer the only way out.
     expect(choice.detail).toMatch(/agenfk down/);
   });
 
-  it('points at the UI that the browser flow actually starts', () => {
-    expect(BROWSER_UI_URL).toMatch(/5173/);
+  it('names the port the browser session actually bound, not the usual one', async () => {
+    // vite does not set strictPort, so it moves to 5174 when 5173 is taken,
+    // and VITE_PORT overrides it outright. The running UI records the URL it
+    // bound in .agenfk/ui.log, which is the same source `agenfk ui` reads.
+    const url = await resolveBrowserUi({
+      readUiLog: () => '  ➜  Local:   http://localhost:5174/',
+      reachable: async () => true,
+    });
+    expect(url).toBe('http://localhost:5174');
+  });
+
+  it('falls back to the usual port when there is no log to read', async () => {
+    expect(await resolveBrowserUi({ readUiLog: () => null, reachable: async () => true }))
+      .toBe(DEFAULT_BROWSER_UI_URL);
+  });
+
+  it('offers nothing when the port does not answer', async () => {
+    // The failure that made this worse than the message it replaced: an API
+    // server can be adopted while no browser session exists at all, and the
+    // user would have clicked the DEFAULT button into a connection error.
+    expect(await resolveBrowserUi({ readUiLog: () => null, reachable: async () => false }))
+      .toBeNull();
   });
 
   it('defaults to opening the browser rather than to quitting', () => {
     // The default is what a hurried user takes. Quitting leaves them with
     // nothing; the browser leaves them with their board.
-    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000' });
-    expect(choice.buttons[choice.defaultId]).toBe('Open in browser');
+    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000', browserUi: 'http://localhost:5173' });
+    expect(choice.actions[choice.defaultId]).toBe('open-browser');
+  });
+
+  it('says what each button MEANS, so rewording one cannot turn it into a quit', () => {
+    // The caller compared the chosen label against the literal 'Open in
+    // browser'. Renaming the button here would have silently made it quit:
+    // the user clicks open, the app closes.
+    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000', browserUi: 'http://localhost:5173' });
+    expect(choice.actions).toHaveLength(choice.buttons.length);
+  });
+
+  it('does not offer a browser session that is not answering', () => {
+    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000', browserUi: null });
+    expect(choice.actions).not.toContain('open-browser');
+    expect(choice.detail).toMatch(/agenfk down/);
   });
 
   it('says plainly that the two cannot share the port', () => {
-    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000' });
+    const choice = adoptFailureChoice({ adopted: true, url: 'http://127.0.0.1:3000', browserUi: 'http://localhost:5173' });
     expect(choice.detail).toMatch(/already running/i);
   });
 });

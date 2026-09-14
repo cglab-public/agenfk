@@ -38,6 +38,14 @@ export interface TerminalSession {
   readonly persist: boolean;
   /** Carried so the remembered row can be scoped to a project on restore. */
   readonly projectId?: string;
+  /**
+   * When this terminal was opened.
+   *
+   * Its own truth, not something derived at render: the rail's memo recomputes
+   * whenever any card lights up, and stamping the time there reset every
+   * terminal's elapsed display to "0s" on an unrelated card's event.
+   */
+  readonly openedAt: string;
   /** The conversation this tab holds, when the agent can be told one. */
   readonly agentSessionId?: string;
   /** True only for a tab being PUT BACK, never for one the user just opened. */

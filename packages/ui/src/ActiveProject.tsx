@@ -62,23 +62,19 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   const [newItemRequest, setNewItemRequest] = useState<string | null>(null);
   const nonce = useRef(0);
 
-  // Mirrors the state so the callback can tell a real switch from a repeat
-  // without depending on it. `project_switched` fires on every agent write and
-  // calls this unconditionally, so without the comparison an agent touching a
-  // project would reorder the user's sidebar — the opposite of what "last used
-  // by you" means — and rewrite up to 50 storage entries each time.
-  const currentIdRef = useRef<string | null>(activeProjectId);
-
+  /**
+   * Navigation only. Deliberately does NOT record the project as used.
+   *
+   * It used to, and that made "last used" mean "last looked at": clicking
+   * through three projects to see what was in them reordered all three under
+   * the cursor. Worse, `project_switched` fires on every agent write, so an
+   * agent touching a project reordered the user's sidebar.
+   *
+   * What counts as working is in `markProjectWorked`, and the callers that
+   * have earned it are the ones that start something: creating a card, opening
+   * a terminal on one.
+   */
   const setActiveProjectId = useCallback((id: string | null) => {
-    const changed = id !== currentIdRef.current;
-    currentIdRef.current = id;
-    setState(id);
-    // Deliberately NOT stamped here. Opening a project is navigation, and
-    // stamping it made "last used" mean "last looked at": clicking through
-    // three projects to see what was in them reordered all three under the
-    // cursor, and the ordering stopped saying where the user actually works.
-    // The stamp belongs on ACTIONS — see markProjectWorked below.
-    void changed;
     try {
       if (id) localStorage.setItem(STORAGE_KEY, id);
       else localStorage.removeItem(STORAGE_KEY);
@@ -86,6 +82,7 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
       // Private mode or a full quota — losing the memory of which project was
       // open is a papercut, not a reason to fail the switch.
     }
+    setState(id);
   }, []);
 
   /**

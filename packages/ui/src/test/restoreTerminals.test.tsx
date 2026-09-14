@@ -327,42 +327,158 @@ describe('naming the tabs', () => {
  * available without inventing a protocol: bytes arriving means the agent is
  * doing something.
  */
-describe('the rail and our own terminals', () => {
-  it('shows a terminal as running once its agent produces output', async () => {
+describe('naming the tabs', () => {
+  const stored = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    itemTitle: 'Something in agenfk',
+    openedAt: new Date().toISOString(),
+  }];
+
+  it('never shows a raw item id where a card name belongs', async () => {
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    let emit: ((e: { sessionId: string; data: string }) => void) | null = null;
-    const host = (window as unknown as Record<string, any>).agenfkDesktop;
-    host.terminal.onData = (cb: (e: { sessionId: string; data: string }) => void) => {
-      emit = cb;
-      return () => {};
-    };
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
     renderShell();
-    await openTerminal();
     await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
-
-    await waitFor(() => expect(emit).not.toBeNull());
-    emit!({ sessionId: 'pty-1', data: 'thinking...' });
-
-    await waitFor(() => {
-      const dot = document.querySelector('[data-testid="session-dot"]');
-      expect(dot?.getAttribute('data-state')).toBe('running');
-    });
+    // The uuid must appear nowhere on screen. It is an internal key.
+    expect(document.body.textContent).not.toContain('aaaaaaaa-bbbb-cccc-dddd');
   });
 
-  it('offers a way to stop it, which idle rows do not have', async () => {
-    // The consequence that made the wrong dot more than cosmetic.
+  it('titles each tab by its agent and position, not by the card', async () => {
+    // Tabs in a set are usually on the SAME card, so the card name repeats and
+    // tells the user nothing about which tab is which.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    let emit: ((e: { sessionId: string; data: string }) => void) | null = null;
-    const host = (window as unknown as Record<string, any>).agenfkDesktop;
-    host.terminal.onData = (cb: (e: { sessionId: string; data: string }) => void) => {
-      emit = cb;
-      return () => {};
-    };
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
     renderShell();
-    await openTerminal();
-    await waitFor(() => expect(emit).not.toBeNull());
-    emit!({ sessionId: 'pty-1', data: 'working' });
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    // Restoring puts the terminals back WITHOUT switching to them: reopening
+    // the app should not yank the user off the board. So the strip has to be
+    // looked at, not waited for.
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findByRole('tab', { name: /Claude Code 1/ })).toBeInTheDocument();
+  });
 
-    expect(await screen.findByRole('button', { name: /^stop /i })).toBeInTheDocument();
+  it('still says which card, in the header', async () => {
+    // The card's name is said ONCE, where it applies to everything below it.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findAllByText('Something in agenfk')).not.toHaveLength(0);
+  });
+});
+
+/**
+ * Whether the rail can tell that OUR OWN terminals are working.
+ *
+ * An adversarial review found it could not. Liveness was fed only by `run:event`
+ * from the socket, which comes from the Claude Code hook — and a terminal
+ * opened here creates a PTY and no run at all. So a desktop terminal was
+ * permanently "idle": a thin grey ring while the agent worked for an hour.
+ *
+ * Worse than the wrong dot: the rail renders STOP only for running or waiting,
+ * so the single state our own terminals could reach was the one with no
+ * controls. There was no way to stop a session from the rail at all.
+ *
+ * The signal used here is the terminal's own output. It is the honest one
+ * available without inventing a protocol: bytes arriving means the agent is
+ * doing something.
+ */
+describe('naming the tabs', () => {
+  const stored = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    itemTitle: 'Something in agenfk',
+    openedAt: new Date().toISOString(),
+  }];
+
+  it('never shows a raw item id where a card name belongs', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    // The uuid must appear nowhere on screen. It is an internal key.
+    expect(document.body.textContent).not.toContain('aaaaaaaa-bbbb-cccc-dddd');
+  });
+
+  it('titles each tab by its agent and position, not by the card', async () => {
+    // Tabs in a set are usually on the SAME card, so the card name repeats and
+    // tells the user nothing about which tab is which.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    // Restoring puts the terminals back WITHOUT switching to them: reopening
+    // the app should not yank the user off the board. So the strip has to be
+    // looked at, not waited for.
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findByRole('tab', { name: /Claude Code 1/ })).toBeInTheDocument();
+  });
+
+  it('still says which card, in the header', async () => {
+    // The card's name is said ONCE, where it applies to everything below it.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findAllByText('Something in agenfk')).not.toHaveLength(0);
+  });
+});
+
+/**
+ * Whether the rail can tell that OUR OWN terminals are working.
+ *
+ * An adversarial review found it could not. Liveness was fed only by `run:event`
+ * from the socket, which comes from the Claude Code hook — and a terminal
+ * opened here creates a PTY and no run at all. So a desktop terminal was
+ * permanently "idle": a thin grey ring while the agent worked for an hour.
+ *
+ * Worse than the wrong dot: the rail renders STOP only for running or waiting,
+ * so the single state our own terminals could reach was the one with no
+ * controls. There was no way to stop a session from the rail at all.
+ *
+ * The signal used here is the terminal's own output. It is the honest one
+ * available without inventing a protocol: bytes arriving means the agent is
+ * doing something.
+ */
+describe('two agents on one card', () => {
+  /*
+   * Constructed from a RESTORE rather than by driving the + button: the claim
+   * is about the merge, and reaching the same state through two dialogs made
+   * the test about the dialogs.
+   */
+  const twoRestored = [
+    {
+      id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+    },
+    {
+      id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'codex',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+    },
+  ];
+
+  it('lists both, instead of one swallowing the other', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(twoRestored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+    const labels = (await screen.findAllByTestId('session-title')).length;
+    expect(labels, 'the rail collapsed two agents into one row').toBe(2);
+  });
+
+  it('names each row by its own agent', async () => {
+    // The merged row used to carry whichever session was written last, so the
+    // rail named one agent while clicking it reached the other.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(twoRestored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+    const rail = document.querySelector('[data-testid="sessions-section"]')!;
+    expect(rail.textContent).toMatch(/Claude Code/);
+    expect(rail.textContent).toMatch(/Codex/);
   });
 });
