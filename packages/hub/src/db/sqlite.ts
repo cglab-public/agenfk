@@ -147,6 +147,20 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_federation_keys_child ON federation_keys(child_hub_id);
 
+  -- Child-side federation outbox (CGLAB-181). Rows queued for the parent hub
+  -- while this hub is a child. Durable on purpose: a parent outage must cost
+  -- delivery latency, never data, and the child keeps serving throughout.
+  CREATE TABLE IF NOT EXISTS federation_outbox (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    seq INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_outbox_due ON federation_outbox(next_attempt_at, seq);
+
   CREATE TABLE IF NOT EXISTS auth_config (
     org_id TEXT PRIMARY KEY,
     password_enabled INTEGER NOT NULL DEFAULT 1,

@@ -151,6 +151,41 @@ describe('federationSync: outbox', () => {
     expect(t.calls.delivered.map((r: any) => r.payload.n)).toEqual([1, 2, 3, 4]);
   });
 
+  it('drops rows the parent refuses outright instead of retrying them forever', async () => {
+    // A 400 means these bytes will never be accepted. Left in place they would
+    // be re-sent every five minutes for good, and everything queued behind
+    // them would go with them.
+    await writeParentBinding(db, SECRET, binding);
+    await enqueueOutbox(db, 'event', { bad: true });
+    const t = transport({ deliver: async () => { throw Object.assign(new Error('malformed'), { response: { status: 400 } }); } });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    expect(out.ok).toBe(false);
+    expect(out.dropped).toBe(1);
+    expect(await outboxDepth(db)).toBe(0);
+  });
+
+  it('retries rather than drops on 408, 425 and 429', async () => {
+    for (const status of [408, 425, 429]) {
+      const fresh = await openDb(':memory:');
+      await writeParentBinding(fresh, SECRET, binding);
+      await enqueueOutbox(fresh, 'event', { a: 1 });
+      const t = transport({ deliver: async () => { throw Object.assign(new Error('later'), { response: { status } }); } });
+      const out = await federationTick({ db: fresh, secretKey: SECRET, transport: t as any });
+      expect(out.dropped).toBeUndefined();
+      expect(await outboxDepth(fresh)).toBe(1);
+      await fresh.close();
+    }
+  });
+
+  it('a 5xx retries, since the parent may simply be having a bad day', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    await enqueueOutbox(db, 'event', { a: 1 });
+    const t = transport({ deliver: async () => { throw Object.assign(new Error('bang'), { response: { status: 503 } }); } });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    expect(out.dropped).toBeUndefined();
+    expect(await outboxDepth(db)).toBe(1);
+  });
+
   it('caps a single tick so a long outage cannot produce an unbounded request', async () => {
     await writeParentBinding(db, SECRET, binding);
     for (let i = 0; i < 600; i++) await enqueueOutbox(db, 'event', { i });
@@ -184,7 +219,9 @@ describe('federationSync: backoff', () => {
   it('grows exponentially from the tick interval and is capped', () => {
     expect(backoffMsFor(0)).toBe(FEDERATION_TICK_MS);
     expect(backoffMsFor(1)).toBe(FEDERATION_TICK_MS * 2);
-    expect(backoffMsFor(3)).toBe(FEDERATION_TICK_MS * 8);
+    expect(backoffMsFor(2)).toBe(FEDERATION_TICK_MS * 4);
+    // 2^3 would be 8 minutes, so the cap is what answers here
+    expect(backoffMsFor(3)).toBe(MAX_FEDERATION_BACKOFF_MS);
     expect(backoffMsFor(99)).toBe(MAX_FEDERATION_BACKOFF_MS);
     expect(backoffMsFor(99)).toBeLessThanOrEqual(MAX_FEDERATION_BACKOFF_MS);
   });
