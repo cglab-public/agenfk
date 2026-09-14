@@ -60,5 +60,31 @@ export function testHomeEnv() {
  * weaken a real login path.
  */
 export function testEnv() {
-  return { ...testHomeEnv(), AGENFK_HUB_BCRYPT_ROUNDS: '4' };
+  return {
+    ...testHomeEnv(),
+    AGENFK_HUB_BCRYPT_ROUNDS: '4',
+    /*
+     * Cleared, not inherited (BUG 6b3e7a98).
+     *
+     * `server.ts` mounts the static UI at MODULE level when this is set, so a
+     * suite that inherits it gets a different Express app than the one the
+     * tests were written against — `GET /` answers a page instead of the API's
+     * JSON, and assertions about API-only behaviour fail.
+     *
+     * It is inherited exactly when the suite is run BY the framework: `agenfk
+     * verify` spawns the command from the server, and the server was itself
+     * launched by the desktop app, which sets this to the bundle inside the
+     * .app. So the suite passed from a shell and failed from the tool — and
+     * which assertions broke depended on which files were in the run, which
+     * reads as "a different test every time".
+     *
+     * The eleven hypotheses this bug went through all looked for state shared
+     * BETWEEN tests. There is none. The shared state was the environment the
+     * tests were launched from.
+     *
+     * An empty string is falsy, so the module-level mount stays off. The one
+     * suite that needs the UI mounted calls `mountStaticUI` itself.
+     */
+    AGENFK_SERVE_UI: '',
+  };
 }
