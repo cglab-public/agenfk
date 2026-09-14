@@ -1647,7 +1647,12 @@ app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Invalid lane '${lane}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
   }
   // Caller may supply a deterministic seq (watcher re-parse dedup); else append.
-  const nextSeq = Number.isInteger(seq) ? seq : (await storage.listRunEvents(run.id)).length;
+  // Undefined when the caller did not give one, so the STORAGE assigns it
+  // inside the insert where it is atomic. Computing it here was a read, an
+  // await and then a write: two events in flight got the same number and the
+  // second was dropped silently against UNIQUE(run_id, seq), while the API
+  // answered 201 and the UI showed an event that vanished on refresh.
+  const nextSeq = Number.isInteger(seq) ? seq : undefined;
   const event = {
     id: uuidv4(),
     runId: run.id,

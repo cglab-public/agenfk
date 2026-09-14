@@ -729,6 +729,53 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   async appendRunEvent(event: RunEvent): Promise<void> {
+    /*
+     * The position is assigned INSIDE the insert when the caller did not give
+     * one, and that is the whole fix.
+     *
+     * It used to be computed in the route as `(await listRunEvents(id)).length`
+     * — a read, an await, then a write. Two events in flight computed the SAME
+     * number, and the insert is `INSERT OR IGNORE` against
+     * `UNIQUE(run_id, seq)`, so the second was dropped SILENTLY: the API
+     * answered 201 and emitted run:event, and the UI showed an event that
+     * vanished on the next refresh.
+     *
+     * It survived because the pi tailer is a serialized loop that never
+     * produced two at once. The Claude Code hook makes concurrency ordinary.
+     *
+     * Zero-based, matching what `.length` produced before, so existing rows
+     * and existing readers are unaffected.
+     *
+     * A SELECT-based insert is atomic within the statement, so no two writers
+     * can read the same maximum. It also replaces an O(n) read of every event
+     * on the run with a single indexed aggregate.
+     */
+    if (event.seq === undefined || event.seq === null) {
+      this.database.prepare(
+        `INSERT OR IGNORE INTO run_events
+          (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
+         SELECT ?, ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?, ?, ?, ?, ?
+           FROM run_events WHERE run_id = ?`
+      ).run(
+        event.id,
+        event.runId,
+        event.ts,
+        event.lane,
+        event.kind,
+        event.tool ?? null,
+        event.text ?? null,
+        // Already a string by the time it reaches storage: the route
+        // serialises it. Stringifying again double-encoded it, so a reader
+        // doing JSON.parse got back a string instead of the object.
+        event.payload ?? null,
+        event.tokens ?? null,
+        event.runId,
+      );
+      return;
+    }
+
+    // An explicit position wins. The pi tailer knows the real order from the
+    // transcript, and that order is better than arrival order.
     this.database.prepare(
       `INSERT OR IGNORE INTO run_events
         (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
@@ -742,10 +789,11 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.kind,
       event.tool ?? null,
       event.text ?? null,
-      event.payload ?? null,
+      event.payload ? JSON.stringify(event.payload) : null,
       event.tokens ?? null,
     );
   }
+
 
   async listRunEvents(runId: string): Promise<RunEvent[]> {
     const rows = this.database.prepare(
