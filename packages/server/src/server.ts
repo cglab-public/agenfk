@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1089,6 +1089,65 @@ app.get("/items/:id/git-status", asyncHandler(async (req: any, res: any) => {
     // An empty status would read as a clean tree, which is a lie about a
     // directory that is not a repository at all.
     res.status(409).json({ error: `Could not read the worktree: ${e?.message ?? 'git failed'}` });
+  }
+}));
+
+/**
+ * List a directory inside a session's worktree (CGLAB-175).
+ *
+ * The containment is the feature. This server listens on loopback with no
+ * authentication and its CORS allowlist trusts any localhost origin, so an
+ * endpoint that lists an arbitrary directory is filesystem read access for
+ * any page open in the user's browser.
+ *
+ * Checked against the RESOLVED path — realpath — not by looking for `..` in
+ * the string. A lexical check is defeated by a symlink, which git worktrees
+ * and node_modules are full of, and by an absolute path, which contains no
+ * `..` at all. Both the root and the candidate are resolved, because a
+ * worktree can itself sit behind a symlink (/tmp is one on macOS) and
+ * comparing a resolved path against an unresolved root refuses everything.
+ */
+app.get("/items/:id/files", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+
+  let root: string;
+  let target: string;
+  try {
+    root = fs.realpathSync(item.worktreePath);
+    const asked = typeof req.query?.path === 'string' && req.query.path ? req.query.path : root;
+    // Resolved relative to the ROOT, never to the server's cwd.
+    target = fs.realpathSync(path.resolve(root, asked));
+  } catch {
+    // A path that cannot be resolved does not exist, and saying which of
+    // "missing" or "forbidden" it was would answer questions about the
+    // filesystem outside the worktree.
+    return res.status(403).json({ error: "Not a readable path inside this worktree." });
+  }
+
+  if (!isInsideRoot(root, target)) {
+    return res.status(403).json({ error: "Refusing to read outside the worktree." });
+  }
+
+  try {
+    const entries = fs.readdirSync(target, { withFileTypes: true })
+      // .git is machinery, not the user's work, and listing it invites
+      // walking into it.
+      .filter(e => e.name !== '.git')
+      .map(e => ({
+        name: e.name,
+        // A symlink is reported as what it IS, not as what it points at: a
+        // caller that treats it as a directory would ask to descend, and that
+        // request is refused by the check above rather than silently followed.
+        kind: e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'symlink' : 'file',
+      }))
+      .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
+    res.json({ path: path.relative(root, target), entries });
+  } catch (e: any) {
+    res.status(409).json({ error: `Could not read that directory: ${e?.message ?? 'failed'}` });
   }
 }));
 

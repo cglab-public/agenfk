@@ -9,14 +9,14 @@
  * be trustworthy — a panel that shows a clean tree when the tree is not clean
  * is worse than no panel, because it is the one thing you would have checked.
  */
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorktreePanel } from '../components/WorktreePanel';
 import { api } from '../api';
 
-vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
+vi.mock('../api', () => ({ api: { getGitStatus: vi.fn(), listWorktreeFiles: vi.fn() } }));
 
 // Call history does not reset on its own, and one test here asserts that the
 // api was NOT called — which passes or fails on whatever ran before it.
@@ -92,5 +92,60 @@ describe('what it refuses to imply', () => {
     renderPanel(null);
     await new Promise(r => setTimeout(r, 20));
     expect(api.getGitStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Browsing the worktree's files (CGLAB-175).
+ *
+ * The same panel, a second view: what the agent CHANGED and what is actually
+ * in there are different questions, and the second one is how you find the
+ * file you want to open.
+ */
+describe('the file tree', () => {
+  const listing = (entries: Array<{ name: string; kind: string }>) =>
+    vi.mocked(api.listWorktreeFiles).mockResolvedValue({ path: '', entries } as never);
+
+  it('shows what is in the worktree', async () => {
+    vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
+    listing([{ name: 'src', kind: 'directory' }, { name: 'README.md', kind: 'file' }]);
+    renderPanel();
+    fireEvent.click(await screen.findByRole('tab', { name: /files/i }));
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+  });
+
+  it('renders the order it was given, because ordering is decided once', async () => {
+    // Directories-first is the SERVER's job and is asserted there. Sorting
+    // again here would be a second opinion about the same question, and the
+    // two would drift.
+    vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
+    listing([{ name: 'zz-dir', kind: 'directory' }, { name: 'a.ts', kind: 'file' }]);
+    renderPanel();
+    fireEvent.click(await screen.findByRole('tab', { name: /files/i }));
+    await screen.findByText('a.ts');
+    const rows = [...document.querySelectorAll('[data-testid="file-entry"]')].map(n => n.textContent);
+    expect(rows[0]).toContain('zz-dir');
+  });
+
+  it('descends into a directory by NAME, never by a path it was handed', async () => {
+    // The renderer composes a path only from names the server gave it, and the
+    // server anchors every read to the worktree by resolved path. A panel that
+    // let the user type a path would be the filesystem browser the endpoint
+    // exists to not be.
+    vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
+    listing([{ name: 'src', kind: 'directory' }]);
+    renderPanel();
+    fireEvent.click(await screen.findByRole('tab', { name: /files/i }));
+    fireEvent.click(await screen.findByText('src'));
+    await waitFor(() =>
+      expect(api.listWorktreeFiles).toHaveBeenCalledWith('i1', 'src'));
+  });
+
+  it('says when it could not read the tree, rather than showing it empty', async () => {
+    vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
+    vi.mocked(api.listWorktreeFiles).mockRejectedValue(new Error('no worktree'));
+    renderPanel();
+    fireEvent.click(await screen.findByRole('tab', { name: /files/i }));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 });

@@ -7,3 +7,4 @@ export * from "./projectHygiene.js";
 export * from "./semver.js";
 export * from "./sizing.js";
 export * from "./gitStatus.js";
+export * from "./pathContainment.js";

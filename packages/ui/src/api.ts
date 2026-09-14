@@ -165,6 +165,29 @@ export const api = {
   },
 
   /**
+   * What is in a session's worktree, one directory at a time.
+   *
+   * `dirPath` is composed only from names the server handed back, never typed:
+   * the endpoint anchors every read to the worktree by RESOLVED path, and a UI
+   * that let a path be entered would be the filesystem browser that anchoring
+   * exists to prevent.
+   */
+  listWorktreeFiles: async (itemId: string, dirPath?: string): Promise<{
+    path: string;
+    entries: Array<{ name: string; kind: 'file' | 'directory' | 'symlink' }>;
+  }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/files`, {
+        params: dirPath ? { path: dirPath } : undefined,
+      });
+      return data;
+    } catch (e) {
+      console.error(`API Error listing worktree files for ${itemId}:`, e);
+      throw e;
+    }
+  },
+
+  /**
    * Terminals to put back, and the conversations they held.
    *
    * The server filters out sessions whose card is gone or trashed, so what
