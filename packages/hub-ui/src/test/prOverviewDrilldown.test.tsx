@@ -106,16 +106,41 @@ const openModal = async () => {
   return screen.findByRole('dialog');
 };
 
+// The page builds its heatmap axis from the REAL clock —
+// `fromIsoForRange(new Date(), range)` with a 30d default — while this file's
+// fixture pins its PRs to fixed dates in August 2026. Left on the wall clock
+// the two drift apart: once "today" moved more than 30 days past the fixture,
+// 2026-08-13 fell outside the window, the drillable cell stopped rendering and
+// every test here failed — on every commit, which is what made it look like a
+// regression rather than a stale fixture. Pin the clock inside the fixture's
+// period so the axis is deterministic. (CGLAB-186.)
+const FIXTURE_NOW = new Date('2026-08-22T12:00:00.000Z');
+
 beforeEach(() => {
+  // shouldAdvanceTime keeps timer-driven work (react-query, RTL's findBy*
+  // polling) running instead of deadlocking on a frozen clock.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXTURE_NOW);
   get.mockReset();
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   get.mockReset();
 });
 
 describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
+  it('renders a heatmap column for the fixture day, whatever the real date is', async () => {
+    // Pins CGLAB-186 directly: without a fixed clock this is the assertion
+    // that rots, and it fails for an obvious reason instead of every
+    // drill-down test failing with "unable to find role=button".
+    renderPage();
+    expect(await screen.findByRole('button', {
+      name: '2 PRs by alice@acme.com on 2026-08-13 — open list',
+    })).toBeInTheDocument();
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);
