@@ -11,6 +11,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { touchProjectUsed } from './sidebarPrefs';
+import type { AgEnFKItem } from './types';
 
 const STORAGE_KEY = 'agenfk_project_id';
 
@@ -38,6 +39,22 @@ interface ActiveProjectValue {
   newItemRequest: string | null;
   /** Start a new card in a project, from outside the board. */
   requestNewItem: (projectId: string) => void;
+  /**
+   * A request to open a terminal ON a card, from the board (CGLAB-176).
+   *
+   * The reverse direction of `newItemRequest`: that one carries a request from
+   * the shell INTO the board, this one carries one from the board OUT to the
+   * shell, which owns the sessions. Nonced for the same reason — close the
+   * terminal, click the card's button again, and a plain value would compare
+   * equal and nothing would happen.
+   *
+   * Carries the ITEM rather than its id because the shell needs the title and
+   * the agent to put up the open dialog, and the board already has both. An id
+   * would make the shell look up a card the board is holding.
+   */
+  terminalRequest: { item: AgEnFKItem; nonce: number } | null;
+  /** Open a terminal on a card, from the board. */
+  requestTerminalFor: (item: AgEnFKItem) => void;
 }
 
 const ActiveProjectContext = createContext<ActiveProjectValue | null>(null);
@@ -60,6 +77,7 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // launch would yank the board to wherever you happened to click last time.
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [newItemRequest, setNewItemRequest] = useState<string | null>(null);
+  const [terminalRequest, setTerminalRequest] = useState<{ item: AgEnFKItem; nonce: number } | null>(null);
   const nonce = useRef(0);
 
   /**
@@ -115,11 +133,25 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
     setNewItemRequest(`${projectId}#${nonce.current}`);
   }, [setActiveProjectId]);
 
+  /**
+   * Ask the shell for a terminal on a card.
+   *
+   * Deliberately does NOT stamp the project as worked here, even though opening
+   * a terminal is the strongest "working here" signal the app has. The shell's
+   * `requestTerminal` already stamps it, and this route ends there — stamping
+   * in both places would be the double-counting `setActiveProjectId` was fixed
+   * for, just moved one level up.
+   */
+  const requestTerminalFor = useCallback((item: AgEnFKItem) => {
+    nonce.current += 1;
+    setTerminalRequest({ item, nonce: nonce.current });
+  }, []);
+
   // Memoised because KanbanBoard is a very large consumer: a fresh object each
   // render would re-render the whole board on any parent update.
   const value = useMemo(
-    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked }),
-    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked],
+    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor }),
+    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor],
   );
 
   return (

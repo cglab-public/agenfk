@@ -1284,3 +1284,53 @@ describe('KanbanBoard', () => {
     });
   });
 });
+
+/**
+ * Opening a terminal from a card (CGLAB-176).
+ *
+ * The button is desktop-only, and that is not a limitation of the feature — it
+ * is where its consumer lives. `App.tsx` mounts `AppShell`, the only thing that
+ * reads the terminal request, behind `isDesktop()`. In a browser the click
+ * would bump a nonce nobody reads: no dialog, no error, no explanation.
+ *
+ * Caught in review, not by the first round of tests, and the reason is worth
+ * recording: the shell test mounts `AppShell` directly, and the provider test
+ * asserts only that the context field changed. Neither could see that nothing
+ * downstream was listening in the shipped tree.
+ */
+describe('the terminal button on a card', () => {
+  const asDesktop = (on: boolean) => {
+    if (on) {
+      Object.defineProperty(window, 'agenfkDesktop', {
+        value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+        configurable: true, writable: true,
+      });
+    } else {
+      delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+    }
+  };
+  afterEach(() => asDesktop(false));
+
+  const boardWithOneCard = async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type: 'TASK', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+  };
+
+  it('is offered on the desktop, where something is listening', async () => {
+    asDesktop(true);
+    await boardWithOneCard();
+    expect(screen.getByRole('button', { name: /open a terminal on Wire the thing/i })).toBeTruthy();
+  });
+
+  it('is not offered in a browser, where the click would do nothing', async () => {
+    asDesktop(false);
+    await boardWithOneCard();
+    expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
+  });
+});

@@ -46,6 +46,7 @@ import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
+import { moveTab } from '../tabReorder';
 
 type TabId = 'kanban' | 'terminal' | 'runs' | 'settings';
 
@@ -112,6 +113,19 @@ function readRunsDock(): RunsDock {
  * All three are "written by a different version", which is the ordinary case
  * for anything kept in localStorage across upgrades.
  */
+/**
+ * The tabs actually on screen, in order.
+ *
+ * Docked below, Runs is not a tab — so the stored order and the rendered bar
+ * disagree, and anything that counts or steps through tabs has to use THIS one.
+ * Two places got that wrong at once: the move-left button stepped to a hidden
+ * neighbour and did nothing visible, and the screen-reader announcement
+ * described a bar with a tab in it that nobody could see.
+ */
+function visibleOrder(order: readonly TabId[], dock: RunsDock): TabId[] {
+  return order.filter(id => !(id === 'runs' && dock === 'bottom'));
+}
+
 function readTabOrder(): TabId[] {
   const known = TABS.map(t => t.id);
   let stored: unknown;
@@ -146,28 +160,68 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (dock === 'bottom') setActive(cur => (cur === 'runs' ? 'kanban' : cur));
   }, []);
   const orderedTabs = React.useMemo(
-    () => tabOrder
-      .map(id => TABS.find(t => t.id === id)!)
-      .filter(Boolean)
-      // Docked below, it is not a tab. Two places to reach one view is how the
-      // rail and the terminal came to disagree earlier in this epic.
-      .filter(tab => !(tab.id === 'runs' && runsDock === 'bottom')),
+    // Docked below, Runs is not a tab. Two places to reach one view is how the
+    // rail and the terminal came to disagree earlier in this epic — and the
+    // same filter has to be the one `placeTab` counts with, or the bar and the
+    // announcement describe different things.
+    () => visibleOrder(tabOrder, runsDock).map(id => TABS.find(t => t.id === id)!).filter(Boolean),
     [tabOrder, runsDock],
   );
-  const moveTabLeft = React.useCallback((id: TabId) => {
-    setTabOrder(prev => {
-      const at = prev.indexOf(id);
-      if (at <= 0) return prev;
-      const next = [...prev];
-      [next[at - 1], next[at]] = [next[at], next[at - 1]];
-      try { localStorage.setItem(TABS_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
-      return next;
-    });
-  }, []);
+  /**
+   * The tab under the pointer during a drag, for the drop line.
+   *
+   * Local to the bar and never persisted: it is where the pointer IS, not a
+   * preference. `dragging` is kept as state rather than read back out of the
+   * DataTransfer because `dragover` is not allowed to read it — the drag data
+   * store is in protected mode until the drop.
+   */
+  const [dragTab, setDragTab] = React.useState<TabId | null>(null);
+  const [dragOverTab, setDragOverTab] = React.useState<TabId | null>(null);
+  /**
+   * What a screen reader is told after a move.
+   *
+   * Dragging is silent for anyone not watching the pointer, and this feature
+   * only earns its place as an ADDITION to the arrow button — so the outcome
+   * has to be announced rather than merely rendered.
+   */
+  const [tabMoveAnnouncement, setTabMoveAnnouncement] = React.useState('');
+  /**
+   * Put `id` where `target` currently is, and remember it.
+   *
+   * The single writer for BOTH reorder affordances. The arrow button had its
+   * own splice and dragging would have added a second one — two versions of one
+   * rule that agree right up until somebody edits one of them, which is the
+   * failure this epic kept producing.
+   */
+  const placeTab = React.useCallback((id: TabId, target: TabId) => {
+    // Read from state and write once, rather than computing inside the updater.
+    // The updater runs twice under StrictMode, and announcing a move from
+    // inside one would announce it twice and set state during another
+    // component's render.
+    const next = moveTab(tabOrder, id, target);
+    setTabOrder(next);
+    try { localStorage.setItem(TABS_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
+    const label = TABS.find(t => t.id === id)?.label ?? id;
+    /*
+     * Counted over the VISIBLE bar, not over the stored order.
+     *
+     * They differ whenever Runs is docked below: the stored order still has
+     * three ids and the bar shows two. Announcing "position 2 of 3" to a
+     * screen reader while a sighted user sees two tabs describes a bar that is
+     * not on screen — which is worse than announcing nothing, because it is
+     * the only description that user gets.
+     *
+     * The POSITION and not "moved left", because after a drag across the bar
+     * the direction is not the useful part. 1-based, which is how it is read
+     * aloud.
+     */
+    const shown = visibleOrder(next, runsDock);
+    setTabMoveAnnouncement(`${label} moved to position ${shown.indexOf(id) + 1} of ${shown.length}`);
+  }, [tabOrder, runsDock]);
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem } = useActiveProject();
+  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -231,6 +285,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       branchName: (item as { branchName?: string | null }).branchName ?? null,
     });
   }, [setActiveProjectId, sessions]);
+
+  /**
+   * The board asked for a terminal on a card.
+   *
+   * Through a ref, and the NONCE is the only dependency. `requestTerminal`
+   * closes over `sessions`, so depending on it directly would re-run this every
+   * time any session starts or stops — reopening the agent dialog for a card
+   * the user already dealt with, with no click behind it.
+   */
+  const handledTerminalRequest = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (!terminalRequest) return;
+    // The guard, not the dependency array, is what makes this fire once.
+    // `requestTerminal` closes over `sessions`, so it is a new function every
+    // time any session starts or stops — leaving it in the deps without this
+    // would reopen the agent dialog for a card the user already dealt with,
+    // with no click behind it.
+    if (handledTerminalRequest.current === terminalRequest.nonce) return;
+    handledTerminalRequest.current = terminalRequest.nonce;
+    requestTerminal(terminalRequest.item);
+  }, [terminalRequest, requestTerminal]);
 
   /**
    * What the Sessions rail shows.
@@ -684,9 +759,61 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           >
             {orderedTabs.map((tab, index) => (
-              <div key={tab.id} className="group relative flex items-end">
-              <button
+              <div
                 key={tab.id}
+                className={clsx(
+                  'group relative flex items-end',
+                  /*
+                   * Where it would land. A line rather than a filled box: the
+                   * question during a drag is which SLOT the tab is taking,
+                   * and a highlighted tab reads as "this one is selected".
+                   *
+                   * The SIDE follows the direction, and getting that wrong is
+                   * not cosmetic. A tab dragged rightward lands AFTER the
+                   * target, so a line on the target's left edge promises a gap
+                   * the tab will not land in — a drop that looks like it
+                   * missed by one, on exactly the case that is already the
+                   * least obvious.
+                   */
+                  dragOverTab === tab.id && dragTab !== tab.id && (
+                    orderedTabs.findIndex(t => t.id === dragTab) < index
+                      ? 'after:absolute after:inset-y-1 after:-right-0.5 after:w-0.5 after:rounded after:bg-accent-text'
+                      : 'before:absolute before:inset-y-1 before:-left-0.5 before:w-0.5 before:rounded before:bg-accent-text'
+                  ),
+                  dragTab === tab.id && 'opacity-50',
+                )}
+                // Dragging the TAB, not the window. Without this the macOS
+                // title-bar drag region above wins and the whole window moves.
+                data-app-region="no-drag"
+                draggable
+                onDragStart={e => {
+                  setDragTab(tab.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                  // Some browsers refuse to start a drag with an empty data
+                  // store. The id is not read back on drop — `dragTab` is —
+                  // because the store is unreadable until then anyway.
+                  try { e.dataTransfer.setData('text/plain', tab.id); } catch { /* not fatal to the drag */ }
+                }}
+                onDragEnd={() => { setDragTab(null); setDragOverTab(null); }}
+                onDragOver={e => {
+                  // Only for a tab of ours. Without the guard the bar accepts a
+                  // file or a text selection dropped on it and moves nothing,
+                  // which looks like the drop was understood.
+                  if (!dragTab) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDragOverTab(tab.id);
+                }}
+                onDragLeave={() => setDragOverTab(cur => (cur === tab.id ? null : cur))}
+                onDrop={e => {
+                  e.preventDefault();
+                  const moved = dragTab;
+                  setDragTab(null);
+                  setDragOverTab(null);
+                  if (moved && moved !== tab.id) placeTab(moved, tab.id);
+                }}
+              >
+              <button
                 role="tab"
                 id={`tab-${tab.id}`}
                 aria-selected={active === tab.id}
@@ -721,7 +848,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   data-app-region="no-drag"
                   aria-label={`Move ${tab.label} left`}
                   title={`Move ${tab.label} left`}
-                  onClick={() => moveTabLeft(tab.id)}
+                  // The neighbour ON SCREEN, taken from the list being
+                  // rendered. Re-deriving it from the stored order stepped to
+                  // a tab that is not shown when Runs is docked below: the bar
+                  // did not move, and the live region still said it had.
+                  onClick={() => placeTab(tab.id, orderedTabs[index - 1].id)}
                   className="absolute -left-1 bottom-1.5 rounded px-0.5 font-mono text-[9px] text-ink-tertiary opacity-0 transition-opacity hover:text-ink focus:opacity-100 group-hover:opacity-100"
                 >
                   ‹
@@ -746,6 +877,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Runs ↓
               </button>
             )}
+          </div>
+
+          {/* Outside the tablist: a live region inside it would be a child of
+              role="tablist", where only tabs belong. Polite, because a reorder
+              is never urgent enough to cut off what is being read. */}
+          <div role="status" aria-live="polite" className="sr-only">
+            {tabMoveAnnouncement}
           </div>
 
           {/* The panels and the Runs strip share this column. The board stays

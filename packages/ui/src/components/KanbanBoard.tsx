@@ -10,7 +10,7 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput, GitBranch
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal
 } from 'lucide-react';
 import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
@@ -122,13 +122,15 @@ interface KanbanCardProps {
   onArchive: (id: string) => void;
   onMoveToProject: (id: string, targetProjectId: string) => void;
   onCopyId: (id: string) => void;
+  /** Open a terminal on this card. The board's only route to the shell's sessions. */
+  onOpenTerminal: (item: AgEnFKItem) => void;
   disableLayoutAnimation?: boolean;
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, projects, highlightedId, dragId, dropTargetId, dropPosition,
   copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
-  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, disableLayoutAnimation
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, onOpenTerminal, disableLayoutAnimation
 }) => {
   const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
   const moveMenuRef = React.useRef<HTMLDivElement>(null);
@@ -323,6 +325,26 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               )}
             </div>
           )}
+          {/* The board's route to the card's agent. Until this existed the only
+              way to open a terminal was the sidebar's session rail, which lists
+              cards that ALREADY have one — so the first terminal on a card had
+              no path from the board at all, which is where the work is.
+
+              Desktop only, and not as a limitation: App.tsx mounts AppShell —
+              the ONLY consumer of the terminal request — behind the same
+              check, so in a browser this button would set state nobody reads.
+              A control that silently does nothing is worse than its absence,
+              and the pin-project button above already draws this exact line. */}
+          {isDesktop() && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenTerminal(item); }}
+            aria-label={`Open a terminal on ${item.title}`}
+            title="Open a terminal on this card"
+            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+          >
+            <SquareTerminal size={11} />
+          </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
             <Archive size={11} />
           </button>
@@ -466,7 +488,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -1832,6 +1854,7 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                           />
                         ))}
@@ -1903,6 +1926,7 @@ export const KanbanBoard: React.FC = () => {
                         /* v8 ignore stop */
                         projects={projects}
                         onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                        onOpenTerminal={requestTerminalFor}
                         onCopyId={handleCopyId}
                         disableLayoutAnimation={easterEggsEnabled}
                       />
@@ -1954,6 +1978,7 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
@@ -1996,6 +2021,7 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
@@ -2054,6 +2080,7 @@ export const KanbanBoard: React.FC = () => {
                           onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
                           projects={projects}
                           onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                          onOpenTerminal={requestTerminalFor}
                           onCopyId={handleCopyId}
                           disableLayoutAnimation={easterEggsEnabled}
                         />

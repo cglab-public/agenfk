@@ -25,7 +25,7 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { AppShell } from '../components/AppShell';
-import { ActiveProjectProvider } from '../ActiveProject';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { SocketProvider } from '../SocketContext';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { api } from '../api';
@@ -232,5 +232,209 @@ describe('docking the Runs view', () => {
     renderShell();
     const control = await screen.findByRole('button', { name: /dock runs below/i });
     expect(control.tagName).toBe('BUTTON');
+  });
+});
+
+/**
+ * Dragging a tab somewhere else (CGLAB-176).
+ *
+ * An ADDITION to the move-left button, never a replacement. The button works
+ * from the keyboard and needs no pointer; a drag is better with a mouse and
+ * impossible without one, so swapping one for the other would trade an
+ * accessible affordance for an inaccessible one. Both tests below exist to
+ * hold that line: the button still works, and the drag announces its outcome
+ * to anyone who cannot see the bar move.
+ *
+ * jsdom has no drag implementation, so these fire the events the handlers
+ * listen for. That is enough, because the decision under test is which slot
+ * the tab lands in — not how the browser paints it on the way there.
+ */
+const dragTabOnto = (from: HTMLElement, to: HTMLElement) => {
+  const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn() };
+  fireEvent.dragStart(from.parentElement!, { dataTransfer });
+  fireEvent.dragOver(to.parentElement!, { dataTransfer });
+  fireEvent.drop(to.parentElement!, { dataTransfer });
+};
+
+describe('dragging a tab', () => {
+  it('lands it in the slot it was dropped on, moving right', async () => {
+    renderShell();
+    let tabs = await shellTabs();
+    dragTabOnto(tabs[0], tabs[2]);
+    tabs = await shellTabs();
+    expect(tabs.map(t => t.textContent)).toEqual(['Terminal', 'Runs', 'Kanban']);
+  });
+
+  it('lands it in the slot it was dropped on, moving left', async () => {
+    renderShell();
+    let tabs = await shellTabs();
+    dragTabOnto(tabs[2], tabs[0]);
+    tabs = await shellTabs();
+    expect(tabs.map(t => t.textContent)).toEqual(['Runs', 'Kanban', 'Terminal']);
+  });
+
+  it('keeps the selection on the tab, not on the position', async () => {
+    // Same rule the button already obeys. Dragging the view you are looking at
+    // must not switch you to a different one.
+    renderShell();
+    let tabs = await shellTabs();
+    fireEvent.click(tabs[0]);
+    dragTabOnto(tabs[0], tabs[2]);
+    tabs = await shellTabs();
+    expect(tabs[2]).toHaveTextContent(/kanban/i);
+    expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('remembers the new order for next launch', async () => {
+    renderShell();
+    const tabs = await shellTabs();
+    dragTabOnto(tabs[0], tabs[2]);
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem('agenfk_shell_tabs')!)).toEqual(['terminal', 'runs', 'kanban']));
+  });
+
+  it('dropping a tab on itself changes nothing', async () => {
+    renderShell();
+    let tabs = await shellTabs();
+    dragTabOnto(tabs[1], tabs[1]);
+    tabs = await shellTabs();
+    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal', 'Runs']);
+  });
+
+  it('says where the tab ended up, for a reader that cannot see the bar', async () => {
+    // The reason a drag-only affordance would not have been acceptable. The
+    // position is announced rather than the direction: after a drag across the
+    // bar, "moved left" is not the useful part.
+    renderShell();
+    const tabs = await shellTabs();
+    dragTabOnto(tabs[0], tabs[2]);
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/Kanban moved to position 3 of 3/i));
+  });
+
+  it("announces the button's move too, so both affordances speak", async () => {
+    renderShell();
+    const tabs = await shellTabs();
+    fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/Terminal moved to position 1 of 3/i));
+  });
+
+  it('ignores a drop that did not start on a tab', async () => {
+    // A file or a text selection dropped on the bar. Without the guard the bar
+    // accepts it and moves nothing, which looks like the drop was understood.
+    renderShell();
+    let tabs = await shellTabs();
+    const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn() };
+    fireEvent.dragOver(tabs[2].parentElement!, { dataTransfer });
+    fireEvent.drop(tabs[2].parentElement!, { dataTransfer });
+    tabs = await shellTabs();
+    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal', 'Runs']);
+  });
+});
+
+/**
+ * Opening a terminal from the board (CGLAB-176).
+ *
+ * The gap this closes: `requestTerminal` had exactly one caller, the sidebar's
+ * session rail — which lists cards that ALREADY have a terminal. So the FIRST
+ * terminal on a card had no route from the board, which is where the work is.
+ *
+ * The card asked for a card to open as its own top-level TAB, and that is
+ * deliberately not what was built. The Terminal view already holds N sessions
+ * in its own inner tabs; promoting one to the outer bar would put the same
+ * state in two places, which is the exact defect that had the session rail and
+ * the terminal disagreeing earlier in this epic. What the user wants from
+ * "open from the card" is to GET to that card's agent, so this is navigation.
+ */
+function BoardWithTerminalButton() {
+  const { requestTerminalFor } = useActiveProject();
+  return (
+    <button onClick={() => requestTerminalFor({ id: 'i9', title: 'Wire the thing', projectId: 'p1' } as never)}>
+      open terminal on card
+    </button>
+  );
+}
+
+const renderShellWithBoardButton = () => render(
+  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <ActiveProjectProvider>
+      <SocketProvider>
+        <AppShell><BoardWithTerminalButton /></AppShell>
+      </SocketProvider>
+    </ActiveProjectProvider>
+  </QueryClientProvider>,
+);
+
+describe('a card asking for a terminal', () => {
+  it('puts up the open dialog, named after the card', async () => {
+    renderShellWithBoardButton();
+    fireEvent.click(await screen.findByText('open terminal on card'));
+    expect(await screen.findByRole('dialog', { name: /open a terminal on Wire the thing/i })).toBeTruthy();
+  });
+
+  it('opens nothing until the card asks', async () => {
+    // The latch that keeps an agent CLI from being launched by a render.
+    renderShellWithBoardButton();
+    await screen.findByText('open terminal on card');
+    expect(screen.queryByRole('dialog', { name: /open a terminal/i })).toBeNull();
+  });
+
+  it('asks again after the dialog was dismissed', async () => {
+    // What the nonce buys. Without it the second click carries a value equal to
+    // the first, the shell sees no change, and the button works exactly once.
+    renderShellWithBoardButton();
+    fireEvent.click(await screen.findByText('open terminal on card'));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: /open a terminal/i }))
+      .getByRole('button', { name: /close/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /open a terminal/i })).toBeNull());
+    fireEvent.click(screen.getByText('open terminal on card'));
+    expect(await screen.findByRole('dialog', { name: /open a terminal on Wire the thing/i })).toBeTruthy();
+  });
+});
+
+/**
+ * The stored order and the bar on screen are not the same list.
+ *
+ * Docked below, Runs is not a tab — so `tabOrder` has three ids and the bar
+ * shows two. Two separate defects came out of counting with the wrong one, and
+ * both were found in review rather than by these tests, which is why they are
+ * here now.
+ */
+describe('reordering while Runs is docked below', () => {
+  const dockRunsBelow = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /dock runs below/i }));
+    await waitFor(async () => expect(await shellTabs()).toHaveLength(2));
+  };
+
+  it('counts the announcement over the tabs that are actually shown', async () => {
+    // "position 2 of 3" spoken over a two-tab bar describes a bar that is not
+    // on screen — and for a screen-reader user that description is the only
+    // one they get.
+    renderShell();
+    await dockRunsBelow();
+    const tabs = await shellTabs();
+    fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/Terminal moved to position 1 of 2/i));
+  });
+
+  it('moves the tab to the neighbour on screen, not to a hidden one', async () => {
+    // Reachable in three clicks: drag Runs left, dock it below, then use the
+    // arrow on Terminal. Stepping through the STORED order landed Terminal
+    // next to hidden Runs — the bar did not change, and the live region still
+    // reported a move.
+    renderShell();
+    let tabs = await shellTabs();
+    dragTabOnto(tabs[2], tabs[1]);
+    await waitFor(async () =>
+      expect((await shellTabs()).map(t => t.textContent)).toEqual(['Kanban', 'Runs', 'Terminal']));
+    await dockRunsBelow();
+
+    tabs = await shellTabs();
+    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal']);
+    fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
+    await waitFor(async () =>
+      expect((await shellTabs()).map(t => t.textContent)).toEqual(['Terminal', 'Kanban']));
   });
 });

@@ -16,7 +16,7 @@ import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { readLastUsed } from '../sidebarPrefs';
 
 function Probe() {
-  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked } = useActiveProject();
+  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor } = useActiveProject();
   return (
     <div>
       <span data-testid="active">{activeProjectId ?? 'none'}</span>
@@ -31,6 +31,15 @@ function Probe() {
       <button onClick={() => requestNewItem('p2')}>new in p2 again</button>
       <button onClick={() => markProjectWorked('p2')}>work in p2</button>
       <button onClick={() => markProjectWorked('')}>work in nothing</button>
+      <span data-testid="terminal-req">
+        {terminalRequest ? `${terminalRequest.item.id}#${terminalRequest.nonce}` : 'none'}
+      </span>
+      <button onClick={() => requestTerminalFor({ id: 'i9', title: 'Work', projectId: 'p2' } as never)}>
+        terminal on i9
+      </button>
+      <button onClick={() => requestTerminalFor({ id: 'i9', title: 'Work', projectId: 'p2' } as never)}>
+        terminal on i9 again
+      </button>
     </div>
   );
 }
@@ -262,5 +271,47 @@ describe('the actions that DO count as working', () => {
     renderProbe();
     act(() => { fireEvent.click(screen.getByText('work in nothing')); });
     expect(Object.keys(readLastUsed())).not.toContain('');
+  });
+});
+
+/**
+ * The board asking the shell for a terminal (CGLAB-176).
+ *
+ * The mirror image of `newItemRequest`, which carries a request from the shell
+ * INTO the board. Sessions live in the shell, the card lives in the board, and
+ * this is the one channel between them.
+ */
+describe('requesting a terminal on a card', () => {
+  it('has no request before anything asks', () => {
+    renderProbe();
+    expect(screen.getByTestId('terminal-req').textContent).toBe('none');
+  });
+
+  it('carries the card the button belongs to', () => {
+    renderProbe();
+    fireEvent.click(screen.getByText('terminal on i9'));
+    expect(screen.getByTestId('terminal-req').textContent).toContain('i9#');
+  });
+
+  it('counts as a NEW request the second time, on the same card', () => {
+    // The case the nonce exists for, and the one a plain id gets wrong: open a
+    // terminal, close it, click the same card's button again. Without the
+    // nonce the value compares equal to the last one and the shell, which only
+    // acts on a change, does nothing at all — a button that works once.
+    renderProbe();
+    fireEvent.click(screen.getByText('terminal on i9'));
+    const first = screen.getByTestId('terminal-req').textContent;
+    fireEvent.click(screen.getByText('terminal on i9 again'));
+    expect(screen.getByTestId('terminal-req').textContent).not.toBe(first);
+  });
+
+  it('does not record the project as worked', () => {
+    // Deliberate. The shell's `requestTerminal` stamps it, and this route ends
+    // there — stamping in both places would double-count the same open, which
+    // is what "last used" was fixed for in the first place.
+    localStorage.clear();
+    renderProbe();
+    fireEvent.click(screen.getByText('terminal on i9'));
+    expect(readLastUsed()['p2']).toBeUndefined();
   });
 });

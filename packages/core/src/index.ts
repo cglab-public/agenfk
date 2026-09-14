@@ -9,3 +9,4 @@ export * from "./sizing.js";
 export * from "./gitStatus.js";
 export * from "./pathContainment.js";
 export * from "./worktreePrune.js";
+export * from "./prImport.js";
