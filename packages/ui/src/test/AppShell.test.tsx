@@ -32,8 +32,8 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
-    getSettings: vi.fn(async () => ({ tmuxByDefault: false })),
-    updateSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    getSettings: vi.fn(async () => ({ tmuxByDefault: false, autoApproveByDefault: false })),
+    updateSettings: vi.fn(async () => ({ tmuxByDefault: false, autoApproveByDefault: false })),
     listRuns: vi.fn(async () => []),
   },
 }));
@@ -541,52 +541,43 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     expect(dialog.getAttribute('aria-label')).toMatch(/something in agenfk/i);
   });
 
-  it('opens the switch already on when the setting stored that default', async () => {
-    // The read side, checked THROUGH the shell rather than by handing the
-    // dialog a prop in isolation. Three times in this epic a value was produced
-    // in one place and consumed in another, each tested against its own
-    // fixture and agreeing with nobody; a stored setting nothing reads is the
-    // same defect wearing a database column.
+  it('carries the stored settings into the spawn, not a fresh default', async () => {
+    // The dialog used to ask both of these and now asks neither — they are
+    // preferences, answered the same way every time. That makes THIS the only
+    // place the answer can be checked: what actually reaches the main process.
+    //
+    // Checked through the shell rather than by handing a component a prop.
+    // Three times in this epic a value was produced in one place and consumed
+    // in another, each tested against its own fixture and agreeing with
+    // nobody; a stored setting nothing reads is that bug wearing a column.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: true } as never);
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [
-          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
-        ],
-        sessionPersistence: async () => ({ available: true }),
-      },
-    };
+    vi.mocked(api.getSettings).mockResolvedValue({
+      tmuxByDefault: true, autoApproveByDefault: true,
+    } as never);
+    setBridge('darwin');
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Something in agenfk'));
-    const toggle = await screen.findByRole('switch', { name: /keep running/i });
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create/i }));
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    expect(ptyCalls.requests[0]).toMatchObject({ persist: true, autoApprove: true });
   });
 
-  it('leaves the stored default alone when the switch is moved for one terminal', async () => {
-    // The dialog's switch is a per-session override, not a preference. Writing
-    // it back would mean opening one terminal differently quietly changes how
-    // every future terminal opens.
+  it('spawns with the rails ON when nobody has changed the settings', async () => {
+    // The default that matters most. An install nobody has configured must
+    // start agents with their permission prompts intact, and terminals that
+    // behave the way they always did.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: false } as never);
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [
-          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
-        ],
-        sessionPersistence: async () => ({ available: true }),
-      },
-    };
+    vi.mocked(api.getSettings).mockResolvedValue({
+      tmuxByDefault: false, autoApproveByDefault: false,
+    } as never);
+    setBridge('darwin');
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Something in agenfk'));
-    fireEvent.click(await screen.findByRole('switch', { name: /keep running/i }));
-    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: /^create/i }));
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    expect(ptyCalls.requests[0]).toMatchObject({ persist: false, autoApprove: false });
   });
 
   it('switches to the project the card belongs to before opening it', async () => {

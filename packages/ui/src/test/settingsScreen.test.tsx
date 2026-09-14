@@ -153,14 +153,21 @@ describe('what it offers', () => {
       expect(api.updateSettings).toHaveBeenCalledWith({ tmuxByDefault: true }));
   });
 
-  it('does not offer an auto-approve default', async () => {
-    // Deliberate. Disabling an agent's permission prompts is a decision per
-    // run: a stored default that is ON means a terminal opens with no rails on
-    // a day the user never asked for that.
+  it('offers auto-approve, and says what it lets happen', async () => {
+    // It lived in the terminal dialog as a per-run decision until the user
+    // asked for the dialog to stop asking. Moving it here has a price: a
+    // terminal can now open with the rails off on a day nobody thought about
+    // it. The description is where that price gets paid, so it has to describe
+    // the CONSEQUENCE, not the feature.
     renderShell();
     await openSettings();
-    await screen.findByText(/enable tmux/i);
-    expect(screen.queryByText(/auto-approve/i)).not.toBeInTheDocument();
+    fireEvent.click(within(
+      await screen.findByRole('navigation', { name: /settings sections/i }),
+    ).getByRole('button', { name: /agents/i }));
+    const row = (await screen.findByText(/auto-approve/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    expect(within(row).getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    expect(row).toHaveTextContent(/without asking|permission/i);
   });
 
   it('has no empty sections', async () => {
@@ -189,5 +196,118 @@ describe('when the setting cannot be saved', () => {
     const toggle = within(row).getByRole('switch');
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+  });
+});
+
+/**
+ * The shape of the screen.
+ *
+ * A section rail on the left and content on the right, because that is what
+ * settings screens look like and because the alternative — one long scroll —
+ * stops working the moment there is more than one group.
+ *
+ * The rail is held to the same rule as the screen itself: it lists sections
+ * that exist. A nav entry leading to an empty pane is a worse lie than a
+ * missing entry, because the user pays the click to find out.
+ */
+describe('the shape of it', () => {
+  it('puts a section rail beside the content, not above it', async () => {
+    renderShell();
+    await openSettings();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    expect(rail).toBeInTheDocument();
+  });
+
+  it('marks which section you are looking at', async () => {
+    // Without this the rail is decoration: two entries and no way to tell
+    // which one produced what is on screen.
+    renderShell();
+    await openSettings();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    const current = within(rail).getByRole('button', { current: 'page' });
+    expect(current).toHaveTextContent(/general/i);
+  });
+
+  it('lists only sections that have something in them', async () => {
+    // Same rule as the panel. Copying a reference app's section list produces
+    // entries that lead nowhere, and the user pays a click to discover it.
+    //
+    // Checked by VISITING each entry rather than counting: one section renders
+    // at a time, so a count comparison would pass on any rail with one entry
+    // and tell us nothing about the rest.
+    renderShell();
+    await openSettings();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    const labels = within(rail).getAllByRole('button').map(b => b.textContent);
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) {
+      fireEvent.click(within(rail).getByRole('button', { name: label! }));
+      const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+      const rows = panel.querySelectorAll('[data-testid="setting-row"]');
+      expect(rows.length, `section "${label}" has no settings in it`).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps the rail beside a narrow pane rather than letting the page scroll sideways', async () => {
+    // A settings pane that pushes the window into horizontal scroll is the
+    // classic two-column failure.
+    renderShell();
+    await openSettings();
+    const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+    expect(panel.className).not.toMatch(/overflow-x-auto|overflow-x-scroll/);
+    expect(panel.querySelector('[data-testid="settings-body"]')?.className)
+      .toMatch(/min-w-0/);
+  });
+});
+
+/**
+ * Saying when a setting cannot actually take effect here.
+ *
+ * The switch stores a preference; whether tmux exists is a fact about this
+ * machine. Turning the setting on where tmux is not installed stores awish
+ * that silently does nothing — and the user finds out by quitting the app and
+ * losing an agent. That is the exact failure the warning exists to prevent, and
+ * it is worth more than the switch itself.
+ */
+describe('when tmux is not installed', () => {
+  const withPersistence = (p: { available: boolean; hint?: string; warning?: string }) => {
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: { listAgents: async () => [], sessionPersistence: async () => p },
+    };
+  };
+
+  it('says so on the row, with the command that fixes it', async () => {
+    withPersistence({ available: false, hint: 'brew install tmux' });
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    await waitFor(() => expect(row).toHaveTextContent(/brew install tmux/));
+  });
+
+  it('still lets the preference be stored, because it is a preference', async () => {
+    // Not disabled. The machine cannot honour it today; the choice is still the
+    // user's and still travels to a machine that can.
+    withPersistence({ available: false, hint: 'brew install tmux' });
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    const toggle = within(row).getByRole('switch');
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ tmuxByDefault: true }));
+  });
+
+  it('says nothing extra when tmux IS available', async () => {
+    // A warning that is always on screen stops being read.
+    withPersistence({ available: true });
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    expect(row).not.toHaveTextContent(/brew|not installed/i);
   });
 });

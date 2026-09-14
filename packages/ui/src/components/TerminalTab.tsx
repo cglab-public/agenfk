@@ -25,6 +25,16 @@ export interface TerminalSession {
   readonly title: string;
   readonly agentId: string;
   readonly autoApprove: boolean;
+  /**
+   * Whether this session runs inside tmux.
+   *
+   * Listed here for the same reason as autoApprove: this type is the contract
+   * between the shell and the pane, and a field the shell sets but this type
+   * omits is silently dropped on the way through. That is precisely how it was
+   * lost the first time — the shell computed it, the pane never received it,
+   * and the setting looked wired end to end while doing nothing.
+   */
+  readonly persist: boolean;
   /** The branch this card's worktree is on. */
   readonly branchName?: string | null;
   /** Shown as the breadcrumb root, so you know which repo you are in. */
@@ -146,6 +156,7 @@ export function TerminalTab({
             itemId={session.itemId}
             agentId={session.agentId}
             autoApprove={session.autoApprove}
+            persist={session.persist}
           />
         </div>
       ))}

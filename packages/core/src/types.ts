@@ -83,11 +83,27 @@ export interface AppSettings {
    * a Mac is not erased by opening the app on Windows.
    */
   tmuxByDefault: boolean;
+  /**
+   * Start agents with their own permission prompts disabled.
+   *
+   * Off by default, and the only setting here that can cost the user something
+   * irreversible: an agent running with no prompts can edit, delete and push
+   * without stopping to ask. It became a stored preference at the user's
+   * request, having previously been a per-run decision made in the dialog that
+   * opens a terminal.
+   *
+   * The tradeoff that move accepts, recorded because it is easy to forget once
+   * the switch is on: a terminal can now open with the rails off on a day the
+   * user never thought about it. The setting's description says so, since the
+   * switch itself cannot.
+   */
+  autoApproveByDefault: boolean;
 }
 
 /** What an unwritten settings store answers. Also the upgrade contract. */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   tmuxByDefault: false,
+  autoApproveByDefault: false,
 };
 
 export interface IngestionState {

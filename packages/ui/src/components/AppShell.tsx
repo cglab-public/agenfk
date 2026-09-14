@@ -35,7 +35,7 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
-import { listAgentsFromBridge, sessionPersistenceFromBridge } from './agentBridge';
+import { listAgentsFromBridge } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
 import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
@@ -415,7 +415,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             aria-label="Settings"
             tabIndex={0}
             hidden={active !== 'settings'}
-            className="min-h-0 flex-1 overflow-auto scrollbar-slim"
+            /* overflow-hidden, not auto: the settings body scrolls itself so
+               the section rail stays put. Two nested scrollers would give the
+               user two scrollbars and move the rail out of reach. */
+            className="min-h-0 flex-1 overflow-hidden"
           >
             {settingsOpened && <SettingsPanel />}
           </div>
@@ -508,10 +511,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           cardTitle={pending.title}
           defaultAgentId={pending.agentId}
           listAgents={listAgentsFromBridge}
-          sessionPersistence={sessionPersistenceFromBridge}
-          defaultPersist={appSettings?.tmuxByDefault === true}
           onClose={() => setPending(null)}
-          onCreate={async ({ agentId, autoApprove, persist }) => {
+          onCreate={async ({ agentId }) => {
+            // Both read from Settings rather than asked here. They are
+            // preferences, answered the same way every time, and a dialog in
+            // the path of a frequent action should only ask what actually
+            // varies — which agent.
+            const autoApprove = appSettings?.autoApproveByDefault === true;
+            const persist = appSettings?.tmuxByDefault === true;
             // Latch and switch BEFORE clearing `pending`, so the panel exists
             // by the time the dialog goes away — otherwise the user watches an
             // empty tab for a frame while the pane mounts.

@@ -65,28 +65,15 @@ describe('what it opens with', () => {
     expect(dialog.getAttribute('aria-label') || dialog.getAttribute('aria-labelledby')).toBeTruthy();
   });
 
-  it('starts with auto-approve off', async () => {
-    // The safe default, every time. This is not a preference to remember.
-    renderDialog();
-    const toggle = await screen.findByRole('switch', { name: /skip permissions/i });
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-  });
 });
 
 describe('creating', () => {
-  it('passes the chosen agent and the toggle state', async () => {
+  it('passes the chosen agent', async () => {
     const { onCreate } = renderDialog();
-    fireEvent.click(await screen.findByRole('switch', { name: /skip permissions/i }));
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: true, persist: false }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code' }));
   });
 
-  it('defaults to not skipping permissions when the toggle is untouched', async () => {
-    const { onCreate } = renderDialog();
-    await screen.findByRole('switch', { name: /skip permissions/i });
-    fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: false, persist: false }));
-  });
 
   it('creates on the keyboard shortcut', async () => {
     const { onCreate } = renderDialog();
@@ -101,7 +88,9 @@ describe('creating', () => {
     let release: () => void = () => {};
     const onCreate = vi.fn(() => new Promise<void>(res => { release = res; }));
     renderDialog({ onCreate });
-    await screen.findByRole('switch', { name: /skip permissions/i });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
 
     // Captured once: after the first press the button relabels to "Opening…",
     // so looking it up again by name would miss the very element under test.
@@ -118,7 +107,9 @@ describe('creating', () => {
   it('says it is working rather than looking unresponsive', async () => {
     const onCreate = vi.fn(() => new Promise<void>(() => {}));
     renderDialog({ onCreate });
-    await screen.findByRole('switch', { name: /skip permissions/i });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
     fireEvent.click(createButton());
     expect(await screen.findByRole('button', { name: /opening/i })).toBeDefined();
   });
@@ -128,7 +119,9 @@ describe('creating', () => {
     // Closing on failure would throw that away.
     const onCreate = vi.fn(async () => { throw new Error('project has no project root'); });
     const { onClose } = renderDialog({ onCreate });
-    await screen.findByRole('switch', { name: /skip permissions/i });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
     fireEvent.click(createButton());
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(/project root/i));
     expect(onClose).not.toHaveBeenCalled();
@@ -138,7 +131,9 @@ describe('creating', () => {
     let fail = true;
     const onCreate = vi.fn(async () => { if (fail) throw new Error('nope'); });
     renderDialog({ onCreate });
-    await screen.findByRole('switch', { name: /skip permissions/i });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
 
     fireEvent.click(createButton());
     await screen.findByRole('alert');
@@ -146,36 +141,6 @@ describe('creating', () => {
     fail = false;
     fireEvent.click(createButton());
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(2));
-  });
-});
-
-describe('the auto-approve toggle', () => {
-  it('is unavailable for an agent that cannot honour it', async () => {
-    // Offering a control that quietly does nothing is worse than not offering
-    // it: the user believes the agent is running unattended when it is not.
-    renderDialog();
-    fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
-    await waitFor(() =>
-      expect(screen.getByRole('switch', { name: /skip permissions/i }).getAttribute('aria-disabled')).toBe('true'));
-  });
-
-  it('says why it is unavailable', async () => {
-    renderDialog();
-    fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
-    expect(await screen.findByText(/does not support/i)).toBeDefined();
-  });
-
-  it('turns itself off when switching to an agent that cannot honour it', async () => {
-    // Otherwise the toggle reads "on" while the flag is silently dropped —
-    // the user thinks the rails are off and they are not.
-    const { onCreate } = renderDialog();
-    fireEvent.click(await screen.findByRole('switch', { name: /skip permissions/i }));
-    fireEvent.click(screen.getByRole('button', { name: /claude code/i }));
-    fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
-    fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'gemini', autoApprove: false, persist: false }));
   });
 });
 
@@ -190,7 +155,9 @@ describe('dismissing', () => {
     // The main process would be left holding a session nobody asked to keep.
     const onCreate = vi.fn(() => new Promise<void>(() => {}));
     const { onClose } = renderDialog({ onCreate });
-    await screen.findByRole('switch', { name: /skip permissions/i });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
     fireEvent.click(createButton());
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();

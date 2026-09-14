@@ -4,6 +4,18 @@ import { API_URL } from './apiUrl';
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
+/**
+ * The settings payload, declared once.
+ *
+ * Written out here rather than inline on each method because this epic has
+ * repeatedly produced a value in one place and consumed it in another with the
+ * shape restated by hand — and the restatements drifted every time.
+ */
+export interface AppSettingsDto {
+  tmuxByDefault: boolean;
+  autoApproveByDefault: boolean;
+}
+
 export const api = {
   listProjects: async () => {
     try {
@@ -121,7 +133,7 @@ export const api = {
    * with the documented defaults rather than a 404, so callers never have to
    * invent their own idea of what off means.
    */
-  getSettings: async (): Promise<{ tmuxByDefault: boolean }> => {
+  getSettings: async (): Promise<AppSettingsDto> => {
     try {
       const { data } = await axios.get(`${API_URL}/settings`);
       return data;
@@ -136,7 +148,7 @@ export const api = {
    * Returns the whole settled state, so a caller never has to re-read to find
    * out what it now has.
    */
-  updateSettings: async (patch: { tmuxByDefault?: boolean }): Promise<{ tmuxByDefault: boolean }> => {
+  updateSettings: async (patch: Partial<AppSettingsDto>): Promise<AppSettingsDto> => {
     try {
       const { data } = await axios.put(`${API_URL}/settings`, patch);
       return data;
