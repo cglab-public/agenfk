@@ -16,7 +16,7 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand } from './agents.js';
+import { resolveAgentCommand, canDictateSessionId } from './agents.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 
@@ -61,6 +61,12 @@ export interface PtyRegistryDeps {
   readonly tmux?: { readonly available: boolean };
 }
 
+/** What a spawn gives back: a live process, and the conversation it holds. */
+export interface SpawnResult {
+  readonly sessionId: string;
+  readonly agentSessionId?: string;
+}
+
 export interface SpawnRequest {
   readonly itemId: string;
   readonly agentId: string;
@@ -78,6 +84,16 @@ export interface SpawnRequest {
    * discover, and sessions that predate the feature kept working without it.
    */
   readonly persist?: boolean;
+  /**
+   * The conversation to resume, when resuming.
+   *
+   * Omitted on a fresh spawn: the registry MINTS one here, because this is
+   * where the validation lives and where argv is assembled. Generating it in
+   * the renderer would move an untrusted value one step closer to a process
+   * argument for no benefit at all.
+   */
+  readonly agentSessionId?: string;
+  readonly resume?: boolean;
 }
 
 interface Session {
@@ -105,8 +121,19 @@ export class PtyRegistry {
    * from the closed set in agents.ts and the directory from the resolver — so
    * an XSS in the renderer bundle cannot choose what runs or where.
    */
-  async spawn(req: SpawnRequest): Promise<string> {
-    const command = resolveAgentCommand(req.agentId, { autoApprove: req.autoApprove === true });
+  async spawn(req: SpawnRequest): Promise<SpawnResult> {
+    // Minted here, not in the renderer: this is where the UUID is validated and
+    // where argv is assembled. Only for agents that can actually be told their
+    // own id — returning one we never handed over would be a lie the caller
+    // stores and later tries to resume with.
+    const agentSessionId = req.agentSessionId
+      ?? (canDictateSessionId(req.agentId) ? randomUUID() : undefined);
+
+    const command = resolveAgentCommand(req.agentId, {
+      autoApprove: req.autoApprove === true,
+      agentSessionId,
+      resume: req.resume === true,
+    });
     // Resolve BEFORE spawning: a failure here must leave no half-registered
     // session behind, or later write/kill calls report an ownership problem
     // when the real problem was that the worktree could not be made.
@@ -120,7 +147,10 @@ export class PtyRegistry {
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
       ? ['-c', buildTmuxShellCommand(
-          tmuxSessionName(req.itemId, req.agentId),
+          // The decision is part of the session's identity: a session created
+          // with prompts disabled must not be silently reattached to after the
+          // user turns that back off. See tmuxSessionName.
+          tmuxSessionName(req.itemId, req.agentId, { autoApprove: req.autoApprove === true }),
           req.agentId,
           // The agent is nested a level deeper now; losing this here would
           // silently re-enable prompts the user turned off.
@@ -157,7 +187,13 @@ export class PtyRegistry {
       this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
     });
 
-    return sessionId;
+    // Two ids, and they are not the same kind of thing. `sessionId` addresses
+    // a live process for write/resize/kill and dies with it; `agentSessionId`
+    // addresses a CONVERSATION and is the only reason a restored terminal is
+    // worth anything. Returned together so no caller has to guess which one a
+    // bare "sessionId" meant — sending a pty handle to `--resume` would
+    // silently start a fresh conversation.
+    return { sessionId, agentSessionId };
   }
 
   private own(sessionId: string, windowId: number): Session {

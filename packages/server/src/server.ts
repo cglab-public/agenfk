@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1032,6 +1032,88 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
  * database is already one per installation, which makes a table here global
  * across projects and reachable identically by the CLI, the UI and MCP.
  */
+/**
+ * Terminals the user had open, so they can come back with their conversations.
+ *
+ * The agent's own conversation id is stored alongside, and it is the reason
+ * this is worth anything: without it "restore" puts empty shells on screen
+ * that look like the sessions the user left and are not.
+ *
+ * Unauthenticated like the rest of the board's routes, and that is defensible
+ * here in a way it was not for auto-approve: nothing recorded through these
+ * routes changes what a process is allowed to do. The agent id is checked
+ * against the closed launchable set, and the conversation id against a strict
+ * UUID shape, because both end up in the argv of a spawned process.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
+  const projectId = typeof req.query?.projectId === 'string' ? req.query.projectId : undefined;
+  const sessions = await storage.listTerminalSessions(projectId);
+  // Filtered here rather than cascaded on delete. `DELETE /items/:id` does not
+  // delete — it TRASHES — so a delete-time cascade simply never ran, and a
+  // trashed card can come back. Checking availability at read time covers
+  // every route by which a card can stop being available, including ones that
+  // do not exist yet, and it is the moment that actually matters: the caller
+  // is about to try to open these.
+  const alive = await Promise.all(sessions.map(async s => {
+    const item = await storage.getItem(s.itemId);
+    // TRASHED, not absent: deleting a card sets its status rather than removing
+    // the row, so checking existence alone would keep offering terminals for
+    // cards the user threw away. The row stays, so restoring the card from the
+    // trash brings its terminals back with it.
+    return item && item.status !== Status.TRASHED ? s : null;
+  }));
+  res.json(alive.filter(Boolean));
+}));
+
+app.post("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
+  const { itemId, projectId, agentId, agentSessionId } = req.body ?? {};
+  if (typeof itemId !== 'string' || !itemId) {
+    return res.status(400).json({ error: "itemId (string) required" });
+  }
+  if (typeof agentId !== 'string' || !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    // The launchable set is a closed list and a security boundary. A row naming
+    // something outside it either fails at restore or becomes a way to
+    // influence what gets spawned.
+    return res.status(400).json({
+      error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}`,
+    });
+  }
+  if (agentSessionId !== undefined && agentSessionId !== null) {
+    // Refused, never escaped or coerced — the same posture tmuxSessionName
+    // takes with a session name, and for the same reason: this string is
+    // handed to a process as an argument.
+    if (typeof agentSessionId !== 'string' || !UUID_RE.test(agentSessionId)) {
+      return res.status(400).json({ error: "agentSessionId must be a UUID" });
+    }
+  }
+  const item = await storage.getItem(itemId);
+  if (!item) {
+    // Caught here rather than at restore, which would fail at the least
+    // helpful moment there is: app startup.
+    return res.status(404).json({ error: "Item not found" });
+  }
+  const session = await storage.recordTerminalSession({
+    id: crypto.randomUUID(),
+    itemId,
+    projectId: typeof projectId === 'string' ? projectId : item.projectId,
+    agentId,
+    agentSessionId: typeof agentSessionId === 'string' ? agentSessionId : undefined,
+    openedAt: new Date().toISOString(),
+  });
+  io.emit('items_updated');
+  res.status(201).json(session);
+}));
+
+app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => {
+  // Closing a tab is the user saying they are done with it. Restoring it on
+  // the next launch would be the app arguing.
+  await storage.forgetTerminalSession(req.params.id);
+  io.emit('items_updated');
+  res.status(204).end();
+}));
+
 app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   // Always 200 with the defaults. A fresh install has nothing stored, and a
   // 404 would push every caller into inventing its own idea of the default.
@@ -4308,7 +4390,7 @@ export function resolveUiDir(explicit?: string | null): string | null {
 export const API_PATH_PREFIXES = [
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/socket.io',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io',
 ];
 
 /**

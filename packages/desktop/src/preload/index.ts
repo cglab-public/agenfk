@@ -38,7 +38,19 @@ export interface AgenfkTerminalApi {
     autoApprove?: boolean;
     /** Keep the agent alive after the app quits, by running it inside tmux. */
     persist?: boolean;
-  }): Promise<string>;
+    /** The conversation to resume. Omit on a fresh terminal; main mints one. */
+    agentSessionId?: string;
+    resume?: boolean;
+  }): Promise<{
+    /** Addresses the live process, for write/resize/kill. Dies with it. */
+    sessionId: string;
+    /**
+     * Addresses the CONVERSATION, and is what makes a restored terminal worth
+     * anything. Absent for agents that cannot be told their own id (codex).
+     * Store it; it is the only way back.
+     */
+    agentSessionId?: string;
+  }>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;

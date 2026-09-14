@@ -58,8 +58,16 @@ const makeSpawner = () =>
     return pty;
   });
 
+/**
+ * Opens a session and hands back the PTY handle.
+ *
+ * spawn() returns BOTH ids now — the pty handle and the agent's conversation
+ * id — because they are different things and a bare "sessionId" was ambiguous
+ * enough to send a pty handle to `--resume`. These tests are about process
+ * ownership, so they want the handle.
+ */
 const open = async (registry: PtyRegistry, windowId: number, itemId = 'i1') =>
-  registry.spawn({ itemId, agentId: 'shell', windowId, cols: 80, rows: 24 });
+  (await registry.spawn({ itemId, agentId: 'shell', windowId, cols: 80, rows: 24 })).sessionId;
 
 let registry: PtyRegistry;
 let spawner: ReturnType<typeof makeSpawner>;
@@ -308,5 +316,60 @@ describe('talking back to the renderer', () => {
     spawned[0].pty.emitExit!(3);
     const exit = emitted.find(e => e.channel === 'pty:exit');
     expect(exit?.payload).toEqual({ sessionId: id, exitCode: 3 });
+  });
+});
+
+/**
+ * Conversations that survive the app.
+ *
+ * The registry is where the id is MINTED, because it is where the validation
+ * lives and where argv is assembled. Generating it in the renderer would put
+ * an untrusted value one step closer to a process argument for no benefit.
+ */
+const makeRegistry = () => new PtyRegistry({
+  spawn: spawner as never,
+  resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+  emit: () => {},
+});
+
+describe('conversation ids', () => {
+  const UUID = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+
+  it('mints one for an agent that can be told its id, and reports it back', async () => {
+    // Reported back because the caller has to STORE it. An id the app forgets
+    // is an id that cannot resume anything.
+    const reg = makeRegistry();
+    const result = await reg.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(result.agentSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(spawned[0].args).toContain('--session-id');
+  });
+
+  it('mints nothing for an agent that cannot be told its id', async () => {
+    // codex. Returning an id we never gave it would be a lie the caller then
+    // stores and later tries to resume with.
+    const reg = makeRegistry();
+    const result = await reg.spawn({ itemId: 'i1', agentId: 'codex', windowId: 1, cols: 80, rows: 24 });
+    expect(result.agentSessionId).toBeUndefined();
+  });
+
+  it('resumes with the id it is given rather than minting a new one', async () => {
+    const reg = makeRegistry();
+    const result = await reg.spawn({
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+      agentSessionId: UUID, resume: true,
+    });
+    expect(result.agentSessionId).toBe(UUID);
+    expect(spawned[0].args).toEqual(['--resume', UUID]);
+  });
+
+  it('still returns a pty handle, which is a different thing entirely', async () => {
+    // Two ids, no relation: this one addresses a live process for write/resize
+    // /kill and dies with it; the other addresses a conversation and is the
+    // only reason a restored terminal is worth anything. Conflating them would
+    // send a pty handle to `--resume` and silently start a fresh conversation.
+    const reg = makeRegistry();
+    const result = await reg.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    expect(result.sessionId).toBeTruthy();
+    expect(result.sessionId).not.toBe(result.agentSessionId);
   });
 });

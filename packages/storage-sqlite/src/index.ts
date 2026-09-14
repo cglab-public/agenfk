@@ -439,6 +439,11 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async deleteItem(id: string): Promise<boolean> {
     const result = this.database.prepare('DELETE FROM items WHERE id = ?').run(id) as { changes: number };
+    // The card's remembered terminals go with it. Left behind, they would make
+    // the desktop try to resolve a worktree for a card that no longer exists —
+    // at app startup, which is the least helpful moment for it to fail, and on
+    // every launch from then on.
+    this.database.prepare('DELETE FROM terminal_sessions WHERE item_id = ?').run(id);
     return result.changes > 0;
   }
 

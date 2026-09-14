@@ -31,6 +31,19 @@ import * as path from 'path';
 import { app, initStorage } from '../server';
 
 const TEST_DB = path.resolve('./terminal-sessions-test-db.sqlite');
+
+/**
+ * Every assertion is scoped to the project the test created.
+ *
+ * The table is not truncated between tests — `initStorage()` reopens the
+ * database, it does not empty it — so an unscoped read sees rows from every
+ * test that ran before. Asserting on the global list made the outcome depend
+ * on execution order, which is how a test reports a failure that belongs to a
+ * different test.
+ */
+const open = (projectId: string) =>
+  request(app).get(`/terminal-sessions?projectId=${projectId}`);
+
 const UUID_A = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const UUID_B = '9c858901-8a57-4791-81fe-4c455b099bc9';
 
@@ -53,7 +66,7 @@ describe('terminal sessions', () => {
   });
 
   it('has nothing to restore on a fresh install', async () => {
-    const res = await request(app).get('/terminal-sessions');
+    const res = await open(projectId);
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
@@ -64,9 +77,9 @@ describe('terminal sessions', () => {
     expect(res.status).toBe(201);
     expect(res.body.id).toBeTruthy();
 
-    const open = await request(app).get('/terminal-sessions');
-    expect(open.body).toHaveLength(1);
-    expect(open.body[0]).toMatchObject({
+    const listed = await open(projectId);
+    expect(listed.body).toHaveLength(1);
+    expect(listed.body[0]).toMatchObject({
       itemId, agentId: 'claude-code', agentSessionId: UUID_A,
     });
   });
@@ -77,7 +90,7 @@ describe('terminal sessions', () => {
     const created = await request(app).post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
     await request(app).delete(`/terminal-sessions/${created.body.id}`);
-    expect((await request(app).get('/terminal-sessions')).body).toEqual([]);
+    expect((await open(projectId)).body).toEqual([]);
   });
 
   it('keeps one that was still open when the app died', async () => {
@@ -87,7 +100,7 @@ describe('terminal sessions', () => {
     await request(app).post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'pi', agentSessionId: UUID_B });
     await initStorage();
-    const after = await request(app).get('/terminal-sessions');
+    const after = await open(projectId);
     expect(after.body).toHaveLength(1);
     expect(after.body[0].agentSessionId).toBe(UUID_B);
   });
@@ -98,9 +111,9 @@ describe('terminal sessions', () => {
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
     await request(app).post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'pi', agentSessionId: UUID_B });
-    const open = await request(app).get('/terminal-sessions');
-    expect(open.body).toHaveLength(2);
-    expect(open.body.map((s: { agentId: string }) => s.agentId).sort()).toEqual(['claude-code', 'pi']);
+    const listed = await open(projectId);
+    expect(listed.body).toHaveLength(2);
+    expect(listed.body.map((s: { agentId: string }) => s.agentId).sort()).toEqual(['claude-code', 'pi']);
   });
 
   it('can be narrowed to one project', async () => {
@@ -136,8 +149,8 @@ describe('the conversation id', () => {
     const res = await request(app).post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'codex' });
     expect(res.status).toBe(201);
-    const open = await request(app).get('/terminal-sessions');
-    expect(open.body[0].agentSessionId ?? null).toBeNull();
+    const listed = await open(projectId);
+    expect(listed.body[0].agentSessionId ?? null).toBeNull();
   });
 
   it('is refused when it is not a uuid', async () => {
@@ -195,9 +208,15 @@ describe('what it refuses to record', () => {
 });
 
 describe('cleaning up', () => {
-  it('drops the sessions of a deleted item rather than orphaning them', async () => {
-    // Otherwise restore trips over a card that no longer exists, on every
-    // launch, forever.
+  it('does not offer the sessions of a card that is gone', async () => {
+    // Filtered on READ, not cascaded on delete, and that is the finding rather
+    // than a shortcut: `DELETE /items/:id` does not delete, it TRASHES
+    // (AUTO_TRASH), so a delete-time cascade never ran. Checking at read time
+    // covers every route by which a card can stop being available, including
+    // ones that do not exist yet.
+    //
+    // Otherwise restore trips over a card that is not there, at app startup,
+    // on every launch from then on.
     await initStorage();
     const p = await request(app).post('/projects').send({ name: 'terms' });
     const i = await request(app).post('/items')
@@ -205,6 +224,6 @@ describe('cleaning up', () => {
     await request(app).post('/terminal-sessions')
       .send({ itemId: i.body.id, projectId: p.body.id, agentId: 'claude-code' });
     await request(app).delete(`/items/${i.body.id}`);
-    expect((await request(app).get('/terminal-sessions')).body).toEqual([]);
+    expect((await open(p.body.id)).body).toEqual([]);
   });
 });
