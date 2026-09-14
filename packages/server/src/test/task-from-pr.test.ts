@@ -22,6 +22,21 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 10 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./task-from-pr-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -109,7 +124,7 @@ const setPr = (over: Record<string, unknown> = {}) => {
 };
 
 const post = (body: Record<string, unknown>) =>
-  request(app).post(`/projects/${projectId}/tasks-from-pr`).send(body);
+  agent().post(`/projects/${projectId}/tasks-from-pr`).send(body);
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
@@ -134,10 +149,10 @@ beforeEach(async () => {
   const made = makeRepoWithOrigin();
   repo = made.repo; origin = made.origin;
 
-  const p = await internal(request(app).post('/projects')).send({ name: 'from-pr' });
+  const p = await internal(agent().post('/projects')).send({ name: 'from-pr' });
   projectId = p.body.id;
-  const seed = await request(app).post('/items').send({ title: 'seed', type: 'TASK', projectId });
-  await internal(request(app).post(`/items/${seed.body.id}/validate`))
+  const seed = await agent().post('/items').send({ title: 'seed', type: 'TASK', projectId });
+  await internal(agent().post(`/items/${seed.body.id}/validate`))
     .send({ cwd: repo, evidence: 'set the project root' });
 
   // `loadGitHubConfig` reads this. HOME is pinned to a sandbox by the root
@@ -233,9 +248,9 @@ describe('a branch that already has a card', () => {
     // Two calls, because `POST /items` does not take a branch — only `PUT`
     // does. The first version of this test sent it on the create and passed
     // nothing but its own assumption.
-    const made = await request(app).post('/items')
+    const made = await agent().post('/items')
       .send({ title: 'Started early', type: 'TASK', projectId });
-    await request(app).put(`/items/${made.body.id}`).send({ branchName: 'feat/from-pr' });
+    await agent().put(`/items/${made.body.id}`).send({ branchName: 'feat/from-pr' });
     const res = await post({ prNumber: 42 });
     expect(res.status).toBe(200);
     expect(res.body.item.id).toBe(made.body.id);
@@ -262,7 +277,7 @@ describe('when the worktree cannot be made', () => {
     git(repo, 'remote', 'set-url', 'origin', path.join(os.tmpdir(), 'agenfk-no-such-remote'));
     const res = await post({ prNumber: 42 });
     expect(res.body.worktreeError).toBeTruthy();
-    const item = await request(app).get(`/items/${res.body.item.id}`);
+    const item = await agent().get(`/items/${res.body.item.id}`);
     expect(JSON.stringify(item.body.comments ?? [])).toContain('worktree was not');
   });
 
@@ -292,16 +307,16 @@ describe('what it refuses', () => {
   });
 
   it('a project that does not exist', async () => {
-    const res = await request(app).post('/projects/no-such-project/tasks-from-pr').send({ prNumber: 42 });
+    const res = await agent().post('/projects/no-such-project/tasks-from-pr').send({ prNumber: 42 });
     expect(res.status).toBe(404);
   });
 
   it('a PR gh cannot read, without leaving a card behind', async () => {
     process.env.AGENFK_TEST_PR_FAIL = '1';
-    const before = await request(app).get(`/items?projectId=${projectId}`);
+    const before = await agent().get(`/items?projectId=${projectId}`);
     const res = await post({ prNumber: 999 });
     expect(res.status).toBe(404);
-    const after = await request(app).get(`/items?projectId=${projectId}`);
+    const after = await agent().get(`/items?projectId=${projectId}`);
     expect(after.body.length).toBe(before.body.length);
   });
 

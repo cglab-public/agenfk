@@ -21,6 +21,21 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 10 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./item-files-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -57,13 +72,13 @@ describe('GET /items/:id/files', () => {
     execFileSync('git', ['add', '-A'], { cwd: repo });
     execFileSync('git', ['commit', '-qm', 'first'], { cwd: repo });
 
-    const p = await internal(request(app).post('/projects')).send({ name: 'files' });
-    const item = await request(app).post('/items')
+    const p = await internal(agent().post('/projects')).send({ name: 'files' });
+    const item = await agent().post('/items')
       .send({ title: 'Has files', type: 'TASK', projectId: p.body.id });
     itemId = item.body.id;
-    await internal(request(app).post(`/items/${itemId}/validate`))
+    await internal(agent().post(`/items/${itemId}/validate`))
       .send({ cwd: repo, evidence: 'set the root for this test' });
-    const made = await internal(request(app).post(`/items/${itemId}/worktree`))
+    const made = await internal(agent().post(`/items/${itemId}/worktree`))
       .send({ repoRoot: repo, branchName: 'feat/files' });
     // Loudly, not conditionally. Letting the setup fail silently would make
     // every assertion below pass by never running — which is the shape of a
@@ -75,14 +90,14 @@ describe('GET /items/:id/files', () => {
   });
 
   it('lists the top of the worktree', async () => {
-    const res = await request(app).get(`/items/${itemId}/files`);
+    const res = await agent().get(`/items/${itemId}/files`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.entries.map((e: { name: string }) => e.name)).toContain('README.md');
   });
 
   it('refuses a path outside the worktree, given as an absolute path', async () => {
     // The most direct attack, and the one a `..` check does not even see.
-    const res = await request(app)
+    const res = await agent()
       .get(`/items/${itemId}/files`)
       .query({ path: outside });
     expect([403, 409]).toContain(res.status);
@@ -90,7 +105,7 @@ describe('GET /items/:id/files', () => {
   });
 
   it('refuses a traversal', async () => {
-    const res = await request(app)
+    const res = await agent()
       .get(`/items/${itemId}/files`)
       .query({ path: '../../etc' });
     expect([403, 409]).toContain(res.status);
@@ -102,7 +117,7 @@ describe('GET /items/:id/files', () => {
     // of symlinks, so this is ordinary rather than contrived.
     const link = path.join(worktree, 'escape');
     fs.symlinkSync(outside, link);
-    const res = await request(app).get(`/items/${itemId}/files`).query({ path: link });
+    const res = await agent().get(`/items/${itemId}/files`).query({ path: link });
     expect([403, 409]).toContain(res.status);
     expect(JSON.stringify(res.body)).not.toContain('secret.txt');
   });
@@ -112,13 +127,13 @@ describe('GET /items/:id/files', () => {
     // second opinion about the same question, and the two would drift.
     fs.mkdirSync(path.join(worktree, 'zz-dir'), { recursive: true });
     fs.writeFileSync(path.join(worktree, 'a.ts'), 'x\n');
-    const res = await request(app).get(`/items/${itemId}/files`);
+    const res = await agent().get(`/items/${itemId}/files`);
     expect(res.status).toBe(200);
     const kinds = res.body.entries.map((e: { kind: string }) => e.kind);
     expect(kinds.indexOf('directory')).toBeLessThan(kinds.lastIndexOf('file'));
   });
 
   it('404s for an item that does not exist', async () => {
-    expect((await request(app).get('/items/nope/files')).status).toBe(404);
+    expect((await agent().get('/items/nope/files')).status).toBe(404);
   });
 });

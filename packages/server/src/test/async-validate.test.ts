@@ -39,6 +39,21 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 // Import AFTER the env var is set so storage lands in the test DB.
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 22 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 afterAll(() => {
   for (const suffix of ['', '-shm', '-wal']) {
     const f = `${TEST_DB}${suffix}`;
@@ -50,7 +65,7 @@ afterAll(() => {
 async function waitForRun(runId: string, timeoutMs = 15000) {
   const start = Date.now();
   for (;;) {
-    const res = await request(app).get(`/items/validate-runs/${runId}`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    const res = await agent().get(`/items/validate-runs/${runId}`).set('x-agenfk-internal', VERIFY_TOKEN!);
     if (res.status !== 200) return res;
     if (res.body.status !== 'running') return res;
     if (Date.now() - start > timeoutMs) return res;
@@ -77,18 +92,18 @@ async function waitForRun(runId: string, timeoutMs = 15000) {
  * silently in their own way.
  */
 async function itemOnFinalStep(name: string, verifyCommand: string) {
-  const project = await request(app).post('/projects').send({ name });
+  const project = await agent().post('/projects').send({ name });
   expect(project.status, `could not create project ${name}: ${JSON.stringify(project.body)}`).toBe(201);
 
-  const cmd = await request(app).put(`/projects/${project.body.id}/verify-command`)
+  const cmd = await agent().put(`/projects/${project.body.id}/verify-command`)
     .set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
   expect(cmd.status, `could not set the verify command: ${JSON.stringify(cmd.body)}`).toBe(200);
 
-  const created = await request(app).post('/items')
+  const created = await agent().post('/items')
     .send({ type: 'TASK', title: `${name}-item`, projectId: project.body.id });
   expect(created.status, `could not create the item: ${JSON.stringify(created.body)}`).toBe(201);
 
-  const moved = await request(app).post('/items/bulk')
+  const moved = await agent().post('/items/bulk')
     .set('x-agenfk-internal', VERIFY_TOKEN!)
     .send({ items: [{ id: created.body.id, updates: { status: 'TEST' } }] });
   expect(moved.status, `could not move the item to TEST: ${JSON.stringify(moved.body)}`).toBe(200);
@@ -96,7 +111,7 @@ async function itemOnFinalStep(name: string, verifyCommand: string) {
   // The state the test actually depends on, read back rather than assumed: a
   // validate only goes asynchronous when there is a command to run AND the item
   // is on the step that runs it.
-  const readBack = await request(app).get(`/items/${created.body.id}`);
+  const readBack = await agent().get(`/items/${created.body.id}`);
   expect(readBack.body.status, 'the item is not on the step a command runs on').toBe('TEST');
   return created.body;
 }
@@ -109,7 +124,7 @@ describe('POST /items/:id/validate — async runs', () => {
     const item = await itemOnFinalStep('AV1', 'sleep 2 && echo slow-ok');
 
     const t0 = Date.now();
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
@@ -120,7 +135,7 @@ describe('POST /items/:id/validate — async runs', () => {
     expect(Date.now() - t0).toBeLessThan(1900);
 
     // While the command sleeps, the run reports running and the item is unchanged.
-    const mid = await request(app).get(`/items/validate-runs/${res.body.runId}`).set('x-agenfk-internal', VERIFY_TOKEN);
+    const mid = await agent().get(`/items/validate-runs/${res.body.runId}`).set('x-agenfk-internal', VERIFY_TOKEN);
     expect(mid.status).toBe(200);
     expect(['running', 'passed']).toContain(mid.body.status);
 
@@ -132,13 +147,13 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV1b', 'sleep 2 && echo guard-ok');
 
-    const first = await request(app)
+    const first = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
     expect(first.status).toBe(202);
 
-    const sync = await request(app)
+    const sync = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({}); // no async flag — old client
@@ -152,7 +167,7 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV2', 'echo async-pass-output');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true, evidence: 'async pass test' });
@@ -163,7 +178,7 @@ describe('POST /items/:id/validate — async runs', () => {
     expect(done.body.output).toContain('async-pass-output');
     expect(done.body.itemStatus).toBe('DONE');
 
-    const after = (await request(app).get(`/items/${item.id}`)).body;
+    const after = (await agent().get(`/items/${item.id}`)).body;
     expect(after.status).toBe('DONE');
     const validationComments = (after.comments || []).filter((c: any) => c.author === 'ValidateTool');
     expect(validationComments.length).toBeGreaterThan(0);
@@ -173,7 +188,7 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV3', 'echo async-fail-output && exit 3');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
@@ -183,7 +198,7 @@ describe('POST /items/:id/validate — async runs', () => {
     expect(done.body.status).toBe('failed');
     expect(done.body.output).toContain('async-fail-output');
 
-    const after = (await request(app).get(`/items/${item.id}`)).body;
+    const after = (await agent().get(`/items/${item.id}`)).body;
     expect(after.status).not.toBe('DONE');
     expect(after.status).not.toBe('TEST'); // rolled back off the final step
   });
@@ -192,13 +207,13 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV4', 'sleep 2 && echo done');
 
-    const first = await request(app)
+    const first = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
     expect(first.status).toBe(202);
 
-    const second = await request(app)
+    const second = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
@@ -210,11 +225,11 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('stays synchronous when no command would run (intermediate step, async flag ignored)', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'AV5' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'AV5-item', projectId: p.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    const p = (await agent().post('/projects').send({ name: 'AV5' })).body;
+    const item = (await agent().post('/items').send({ type: 'TASK', title: 'AV5-item', projectId: p.id })).body;
+    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true });
@@ -226,7 +241,7 @@ describe('POST /items/:id/validate — async runs', () => {
 
   it('returns 404 for an unknown runId', async () => {
     if (!VERIFY_TOKEN) return;
-    const res = await request(app)
+    const res = await agent()
       .get('/items/validate-runs/00000000-0000-0000-0000-000000000000')
       .set('x-agenfk-internal', VERIFY_TOKEN);
     expect(res.status).toBe(404);
@@ -236,7 +251,7 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV6', 'echo sync-still-works');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({});

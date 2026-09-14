@@ -16,6 +16,23 @@ vi.hoisted(() => {
 import { app, initStorage } from '../server';
 import { connectMcpClient, type ConnectedMcpClient } from './helpers/mcpClient';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` makes supertest start an ephemeral server and tear it down for
+ * EVERY call — this file makes 62 of them. That churn produced
+ * `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/`, a transport failure that
+ * hands the test an empty body: `res.body.id` is then undefined, the next call
+ * goes to `/items/undefined`, and one flaky socket surfaces as `expected 404 to
+ * be 400` in whichever test happened to be running. Different test every run,
+ * green when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
@@ -91,10 +108,10 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('POST /prs registers a new PR with declared sizing', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'P' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: item.id,
       prNumber: 100,
       repo: 'foo/bar',
@@ -113,15 +130,15 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   });
 
   it('POST /prs is idempotent on (repo, prNumber) — re-call refreshes sizing', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'P' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    await request(app).post('/prs').send({
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 200, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
-    const second = await request(app).post('/prs').send({
+    const second = await agent().post('/prs').send({
       itemId: item.id, prNumber: 200, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 5, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
@@ -131,15 +148,15 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   });
 
   it('PUT /prs/:repo/:number updates sizing', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    await request(app).post('/prs').send({
+    const project = (await agent().post('/projects').send({ name: 'P' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 300, repo: 'foo/bar',
       sizing: { epic: 0, story: 1, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
 
-    const res = await request(app).put('/prs/foo%2Fbar/300').send({
+    const res = await agent().put('/prs/foo%2Fbar/300').send({
       sizing: { epic: 0, story: 1, task: 4, bug: 1 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
@@ -149,7 +166,7 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   });
 
   it('PUT /prs/:repo/:number returns 404 when PR not registered', async () => {
-    const res = await request(app).put('/prs/foo%2Fbar/999').send({
+    const res = await agent().put('/prs/foo%2Fbar/999').send({
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
@@ -157,19 +174,19 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   });
 
   it('POST /prs validates required fields', async () => {
-    const res = await request(app).post('/prs').send({ prNumber: 1 });
+    const res = await agent().post('/prs').send({ prNumber: 1 });
     expect(res.status).toBe(400);
   });
 
   it('POST /prs computes shadow sizing from the item tree', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const epic = (await request(app).post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
-    const story = (await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S', parentId: epic.id })).body;
-    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T1', parentId: story.id });
-    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T2', parentId: story.id });
-    await request(app).post('/items').send({ projectId: project.id, type: 'BUG', title: 'B', parentId: story.id, severity: 'LOW' });
+    const project = (await agent().post('/projects').send({ name: 'P' })).body;
+    const epic = (await agent().post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
+    const story = (await agent().post('/items').send({ projectId: project.id, type: 'STORY', title: 'S', parentId: epic.id })).body;
+    await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T1', parentId: story.id });
+    await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T2', parentId: story.id });
+    await agent().post('/items').send({ projectId: project.id, type: 'BUG', title: 'B', parentId: story.id, severity: 'LOW' });
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: epic.id, prNumber: 400, repo: 'foo/bar',
       sizing: { epic: 1, story: 1, task: 99, bug: 99 }, // deliberately wrong
       model: 'claude-opus-4-8', harness: 'claude-code',
@@ -182,14 +199,14 @@ describe('REST: POST /prs and PUT /prs/:repo/:number', () => {
   it('POST /prs emits a leafStory count (stories with no subtasks) in the pr.opened payload', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PLS' })).body;
-    const epic = (await request(app).post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
+    const project = (await agent().post('/projects').send({ name: 'PLS' })).body;
+    const epic = (await agent().post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
     // s1 is a container (has a task); s2 is a LEAF story (no children).
-    const s1 = (await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S1', parentId: epic.id })).body;
-    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T', parentId: s1.id });
-    await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S2 (leaf)', parentId: epic.id });
+    const s1 = (await agent().post('/items').send({ projectId: project.id, type: 'STORY', title: 'S1', parentId: epic.id })).body;
+    await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T', parentId: s1.id });
+    await agent().post('/items').send({ projectId: project.id, type: 'STORY', title: 'S2 (leaf)', parentId: epic.id });
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: epic.id, prNumber: 800, repo: 'foo/leaf',
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
@@ -216,10 +233,10 @@ describe('agent-declared model + harness on PR events', () => {
   it('POST /prs includes model + harness in the pr.opened payload', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PMH' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'PMH' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: item.id, prNumber: 601, repo: 'org/mh',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
@@ -235,15 +252,15 @@ describe('agent-declared model + harness on PR events', () => {
   it('PUT /prs includes model + harness in the pr.updated payload', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PMH2' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    await request(app).post('/prs').send({
+    const project = (await agent().post('/projects').send({ name: 'PMH2' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 602, repo: 'org/mh2',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
 
-    const res = await request(app).put('/prs/org%2Fmh2/602').send({
+    const res = await agent().put('/prs/org%2Fmh2/602').send({
       sizing: { epic: 0, story: 0, task: 2, bug: 0 },
       model: 'glm-5.2', harness: 'pi',
     });
@@ -258,25 +275,25 @@ describe('agent-declared model + harness on PR events', () => {
   it('POST /prs rejects (400) when model or harness is omitted', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PMH3' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'PMH3' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
     const base = { itemId: item.id, prNumber: 603, repo: 'org/mh3', sizing: { epic: 0, story: 0, task: 1, bug: 0 } };
 
-    expect((await request(app).post('/prs').send(base)).status).toBe(400); // both missing
-    expect((await request(app).post('/prs').send({ ...base, model: 'glm-5.2' })).status).toBe(400); // harness missing
-    expect((await request(app).post('/prs').send({ ...base, harness: 'pi' })).status).toBe(400); // model missing
+    expect((await agent().post('/prs').send(base)).status).toBe(400); // both missing
+    expect((await agent().post('/prs').send({ ...base, model: 'glm-5.2' })).status).toBe(400); // harness missing
+    expect((await agent().post('/prs').send({ ...base, harness: 'pi' })).status).toBe(400); // model missing
   });
 
   it('PUT /prs rejects (400) when model or harness is omitted', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PMH4' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    await request(app).post('/prs').send({
+    const project = (await agent().post('/projects').send({ name: 'PMH4' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 604, repo: 'org/mh4',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 }, model: 'glm-5.2', harness: 'pi',
     });
-    const res = await request(app).put('/prs/org%2Fmh4/604').send({ sizing: { epic: 0, story: 0, task: 2, bug: 0 } });
+    const res = await agent().put('/prs/org%2Fmh4/604').send({ sizing: { epic: 0, story: 0, task: 2, bug: 0 } });
     expect(res.status).toBe(400);
   });
 
@@ -286,13 +303,13 @@ describe('agent-declared model + harness on PR events', () => {
   it('POST /prs derives sizing from the item tree when sizing is omitted', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PAUTO' })).body;
-    const epic = (await request(app).post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
-    const story = (await request(app).post('/items').send({ projectId: project.id, type: 'STORY', title: 'S', parentId: epic.id })).body;
-    await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T1', parentId: story.id });
-    await request(app).post('/items').send({ projectId: project.id, type: 'BUG', title: 'B', parentId: story.id, severity: 'LOW' });
+    const project = (await agent().post('/projects').send({ name: 'PAUTO' })).body;
+    const epic = (await agent().post('/items').send({ projectId: project.id, type: 'EPIC', title: 'E' })).body;
+    const story = (await agent().post('/items').send({ projectId: project.id, type: 'STORY', title: 'S', parentId: epic.id })).body;
+    await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T1', parentId: story.id });
+    await agent().post('/items').send({ projectId: project.id, type: 'BUG', title: 'B', parentId: story.id, severity: 'LOW' });
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: epic.id, prNumber: 700, repo: 'org/auto',
       model: 'glm-5.2', harness: 'pi', // no sizing
     });
@@ -311,18 +328,18 @@ describe('agent-declared model + harness on PR events', () => {
   it('POST /prs emits pr.opened only on first registration; re-register emits pr.updated (no double-open)', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PDEDUP' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'PDEDUP' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
     // First POST → pr.opened
-    await request(app).post('/prs').send({
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 710, repo: 'org/dedup', model: 'glm-5.2', harness: 'pi',
     });
     const opened = await waitForOutboxPayload((p: any) => p.type === 'pr.opened' && p.payload?.prNumber === 710);
     expect(opened).toBeDefined();
 
     // Second POST for the same (repo, prNumber) → pr.updated, NOT a second pr.opened
-    await request(app).post('/prs').send({
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 710, repo: 'org/dedup',
       sizing: { epic: 0, story: 0, task: 2, bug: 0 }, model: 'glm-5.2', harness: 'pi',
     });
@@ -339,10 +356,10 @@ describe('agent-declared model + harness on PR events', () => {
   it('POST /prs still rejects (400) when model/harness omitted even on the derive path', async () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     await initStorage();
-    const project = (await request(app).post('/projects').send({ name: 'PAUTO2' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'PAUTO2' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
     // sizing omitted AND model/harness omitted → still 400
-    const res = await request(app).post('/prs').send({ itemId: item.id, prNumber: 701, repo: 'org/auto2' });
+    const res = await agent().post('/prs').send({ itemId: item.id, prNumber: 701, repo: 'org/auto2' });
     expect(res.status).toBe(400);
   });
 });
@@ -358,10 +375,10 @@ describe('POST /prs emits a hub event into the outbox', () => {
   });
 
   it('inserts a pr.opened event into hub_outbox on POST /prs', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'P' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: item.id, prNumber: 501, repo: 'org/repo',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
@@ -375,15 +392,15 @@ describe('POST /prs emits a hub event into the outbox', () => {
   });
 
   it('inserts a pr.updated event into hub_outbox on PUT /prs/:repo/:number', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P2' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
-    await request(app).post('/prs').send({
+    const project = (await agent().post('/projects').send({ name: 'P2' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    await agent().post('/prs').send({
       itemId: item.id, prNumber: 502, repo: 'org/repo2',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });
 
-    const res = await request(app).put('/prs/org%2Frepo2/502').send({
+    const res = await agent().put('/prs/org%2Frepo2/502').send({
       sizing: { epic: 0, story: 0, task: 3, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',
     });

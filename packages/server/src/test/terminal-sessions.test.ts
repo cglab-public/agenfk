@@ -30,6 +30,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 29 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./terminal-sessions-test-db.sqlite');
 
 /**
@@ -42,7 +57,7 @@ const TEST_DB = path.resolve('./terminal-sessions-test-db.sqlite');
  * different test.
  */
 const open = (projectId: string) =>
-  request(app).get(`/terminal-sessions?projectId=${projectId}`);
+  agent().get(`/terminal-sessions?projectId=${projectId}`);
 
 const UUID_A = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const UUID_B = '9c858901-8a57-4791-81fe-4c455b099bc9';
@@ -59,9 +74,9 @@ describe('terminal sessions', () => {
   afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
   beforeEach(async () => {
     await initStorage();
-    const p = await request(app).post('/projects').send({ name: 'terms' });
+    const p = await agent().post('/projects').send({ name: 'terms' });
     projectId = p.body.id;
-    const i = await request(app).post('/items').send({ title: 'Work', type: 'TASK', projectId });
+    const i = await agent().post('/items').send({ title: 'Work', type: 'TASK', projectId });
     itemId = i.body.id;
   });
 
@@ -72,7 +87,7 @@ describe('terminal sessions', () => {
   });
 
   it('remembers a terminal that was opened', async () => {
-    const res = await request(app).post('/terminal-sessions')
+    const res = await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
     expect(res.status).toBe(201);
     expect(res.body.id).toBeTruthy();
@@ -87,9 +102,9 @@ describe('terminal sessions', () => {
   it('forgets one the user closed', async () => {
     // Closing a tab is the user saying they are done with it. Restoring it on
     // the next launch would be the app arguing.
-    const created = await request(app).post('/terminal-sessions')
+    const created = await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
-    await request(app).delete(`/terminal-sessions/${created.body.id}`);
+    await agent().delete(`/terminal-sessions/${created.body.id}`);
     expect((await open(projectId)).body).toEqual([]);
   });
 
@@ -97,7 +112,7 @@ describe('terminal sessions', () => {
     // The case this whole feature exists for. A killed process runs no
     // shutdown code, so "still open" is the state the row is left in, and it
     // must survive a restart intact.
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'pi', agentSessionId: UUID_B });
     await initStorage();
     const after = await open(projectId);
@@ -107,9 +122,9 @@ describe('terminal sessions', () => {
 
   it('keeps several terminals on the same card apart', async () => {
     // Two agents on one card is the normal case here, not an edge one.
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'pi', agentSessionId: UUID_B });
     const listed = await open(projectId);
     expect(listed.body).toHaveLength(2);
@@ -117,15 +132,15 @@ describe('terminal sessions', () => {
   });
 
   it('can be narrowed to one project', async () => {
-    const other = await request(app).post('/projects').send({ name: 'other' });
-    const otherItem = await request(app).post('/items')
+    const other = await agent().post('/projects').send({ name: 'other' });
+    const otherItem = await agent().post('/items')
       .send({ title: 'Elsewhere', type: 'TASK', projectId: other.body.id });
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: UUID_A });
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId: otherItem.body.id, projectId: other.body.id, agentId: 'pi', agentSessionId: UUID_B });
 
-    const scoped = await request(app).get(`/terminal-sessions?projectId=${projectId}`);
+    const scoped = await agent().get(`/terminal-sessions?projectId=${projectId}`);
     expect(scoped.body).toHaveLength(1);
     expect(scoped.body[0].itemId).toBe(itemId);
   });
@@ -136,9 +151,9 @@ describe('the conversation id', () => {
   let itemId: string;
   beforeEach(async () => {
     await initStorage();
-    const p = await request(app).post('/projects').send({ name: 'terms' });
+    const p = await agent().post('/projects').send({ name: 'terms' });
     projectId = p.body.id;
-    const i = await request(app).post('/items').send({ title: 'Work', type: 'TASK', projectId });
+    const i = await agent().post('/items').send({ title: 'Work', type: 'TASK', projectId });
     itemId = i.body.id;
   });
 
@@ -146,7 +161,7 @@ describe('the conversation id', () => {
     // codex has no flag for it. The terminal is still worth remembering — the
     // tab comes back — but the conversation cannot, and null is how that is
     // said.
-    const res = await request(app).post('/terminal-sessions')
+    const res = await agent().post('/terminal-sessions')
       .send({ itemId, projectId, agentId: 'codex' });
     expect(res.status).toBe(201);
     const listed = await open(projectId);
@@ -159,7 +174,7 @@ describe('the conversation id', () => {
     // where "it is ours, it is fine" stops being a safe assumption, and the
     // posture here matches tmuxSessionName: refuse, never escape.
     for (const bad of ['; rm -rf /', '--resume', '../../etc/passwd', 'not-a-uuid', '']) {
-      const res = await request(app).post('/terminal-sessions')
+      const res = await agent().post('/terminal-sessions')
         .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: bad });
       expect(res.status, `should have refused ${JSON.stringify(bad)}`).toBe(400);
     }
@@ -167,7 +182,7 @@ describe('the conversation id', () => {
 
   it('is refused when it is not a string at all', async () => {
     for (const bad of [42, true, {}, ['a']]) {
-      const res = await request(app).post('/terminal-sessions')
+      const res = await agent().post('/terminal-sessions')
         .send({ itemId, projectId, agentId: 'claude-code', agentSessionId: bad });
       expect(res.status).toBe(400);
     }
@@ -178,14 +193,14 @@ describe('what it refuses to record', () => {
   let projectId: string;
   beforeEach(async () => {
     await initStorage();
-    const p = await request(app).post('/projects').send({ name: 'terms' });
+    const p = await agent().post('/projects').send({ name: 'terms' });
     projectId = p.body.id;
   });
 
   it('a session for an item that does not exist', async () => {
     // Restoring would try to resolve a worktree for a card that is gone, and
     // fail at the least helpful moment: app startup.
-    const res = await request(app).post('/terminal-sessions')
+    const res = await agent().post('/terminal-sessions')
       .send({ itemId: 'no-such-item', projectId, agentId: 'claude-code' });
     expect(res.status).toBe(404);
   });
@@ -194,15 +209,15 @@ describe('what it refuses to record', () => {
     // The set of agents is a closed list and a security boundary. A row naming
     // something outside it either fails at restore or, worse, becomes a way to
     // influence what gets spawned.
-    const i = await request(app).post('/items').send({ title: 'W', type: 'TASK', projectId });
-    const res = await request(app).post('/terminal-sessions')
+    const i = await agent().post('/items').send({ title: 'W', type: 'TASK', projectId });
+    const res = await agent().post('/terminal-sessions')
       .send({ itemId: i.body.id, projectId, agentId: 'rm -rf /' });
     expect(res.status).toBe(400);
   });
 
   it('a missing agent id', async () => {
-    const i = await request(app).post('/items').send({ title: 'W', type: 'TASK', projectId });
-    const res = await request(app).post('/terminal-sessions').send({ itemId: i.body.id, projectId });
+    const i = await agent().post('/items').send({ title: 'W', type: 'TASK', projectId });
+    const res = await agent().post('/terminal-sessions').send({ itemId: i.body.id, projectId });
     expect(res.status).toBe(400);
   });
 });
@@ -218,12 +233,12 @@ describe('cleaning up', () => {
     // Otherwise restore trips over a card that is not there, at app startup,
     // on every launch from then on.
     await initStorage();
-    const p = await request(app).post('/projects').send({ name: 'terms' });
-    const i = await request(app).post('/items')
+    const p = await agent().post('/projects').send({ name: 'terms' });
+    const i = await agent().post('/items')
       .send({ title: 'Doomed', type: 'TASK', projectId: p.body.id });
-    await request(app).post('/terminal-sessions')
+    await agent().post('/terminal-sessions')
       .send({ itemId: i.body.id, projectId: p.body.id, agentId: 'claude-code' });
-    await request(app).delete(`/items/${i.body.id}`);
+    await agent().delete(`/items/${i.body.id}`);
     expect((await open(p.body.id)).body).toEqual([]);
   });
 });

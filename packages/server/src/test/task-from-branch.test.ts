@@ -19,6 +19,21 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 11 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./task-from-branch-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -51,16 +66,16 @@ describe('POST /projects/:id/tasks-from-branch', () => {
   beforeEach(async () => {
     await initStorage();
     repo = makeRepo();
-    const p = await internal(request(app).post('/projects')).send({ name: 'from-branch' });
+    const p = await internal(agent().post('/projects')).send({ name: 'from-branch' });
     projectId = p.body.id;
-    const seed = await request(app).post('/items')
+    const seed = await agent().post('/items')
       .send({ title: 'seed', type: 'TASK', projectId });
-    await internal(request(app).post(`/items/${seed.body.id}/validate`))
+    await internal(agent().post(`/items/${seed.body.id}/validate`))
       .send({ cwd: repo, evidence: 'set the project root' });
   });
 
   it('creates the item, the branch and the worktree in one call', async () => {
-    const res = await internal(request(app).post(`/projects/${projectId}/tasks-from-branch`))
+    const res = await internal(agent().post(`/projects/${projectId}/tasks-from-branch`))
       .send({ title: 'Fix the login redirect', branchName: 'fix/login-redirect', agentId: 'claude-code' });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.item.branchName).toBe('fix/login-redirect');
@@ -71,13 +86,13 @@ describe('POST /projects/:id/tasks-from-branch', () => {
   it('records the agent on the item, so the terminal opens with it', async () => {
     // The card asks for the agent to be chosen up front. Recording it here is
     // what makes that choice mean something later.
-    const res = await internal(request(app).post(`/projects/${projectId}/tasks-from-branch`))
+    const res = await internal(agent().post(`/projects/${projectId}/tasks-from-branch`))
       .send({ title: 'With pi', branchName: 'feat/with-pi', agentId: 'pi' });
     expect(res.body.item.agentId).toBe('pi');
   });
 
   it('derives a branch name when none is given', async () => {
-    const res = await internal(request(app).post(`/projects/${projectId}/tasks-from-branch`))
+    const res = await internal(agent().post(`/projects/${projectId}/tasks-from-branch`))
       .send({ title: 'Some new thing', agentId: 'claude-code' });
     expect(res.body.item.branchName).toMatch(/some-new-thing/);
   });
@@ -85,13 +100,13 @@ describe('POST /projects/:id/tasks-from-branch', () => {
   it('refuses an agent outside the launchable set', async () => {
     // The set is a security boundary; recording something outside it would
     // either fail at spawn or become a way to influence what runs.
-    const res = await internal(request(app).post(`/projects/${projectId}/tasks-from-branch`))
+    const res = await internal(agent().post(`/projects/${projectId}/tasks-from-branch`))
       .send({ title: 'Bad agent', agentId: 'rm -rf /' });
     expect(res.status).toBe(400);
   });
 
   it('requires a title', async () => {
-    const res = await internal(request(app).post(`/projects/${projectId}/tasks-from-branch`))
+    const res = await internal(agent().post(`/projects/${projectId}/tasks-from-branch`))
       .send({ agentId: 'claude-code' });
     expect(res.status).toBe(400);
   });
@@ -100,11 +115,11 @@ describe('POST /projects/:id/tasks-from-branch', () => {
     // The failure a composition usually gets wrong. A card with a branch name
     // and no worktree looks finished and is not, and the user has no way to
     // tell which of the four steps did not happen.
-    const other = await internal(request(app).post('/projects')).send({ name: 'no-root' });
-    const res = await internal(request(app).post(`/projects/${other.body.id}/tasks-from-branch`))
+    const other = await internal(agent().post('/projects')).send({ name: 'no-root' });
+    const res = await internal(agent().post(`/projects/${other.body.id}/tasks-from-branch`))
       .send({ title: 'Cannot work', branchName: 'feat/nope', agentId: 'claude-code' });
     expect(res.status).toBeGreaterThanOrEqual(400);
-    const items = await request(app).get(`/items?projectId=${other.body.id}`);
+    const items = await agent().get(`/items?projectId=${other.body.id}`);
     expect(items.body.filter((i: { title: string }) => i.title === 'Cannot work')).toHaveLength(0);
   });
 });

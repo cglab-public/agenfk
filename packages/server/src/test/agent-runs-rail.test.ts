@@ -21,6 +21,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 21 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./agent-runs-rail-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -39,12 +54,12 @@ describe('GET /agent-runs', () => {
 
   beforeEach(async () => {
     await initStorage();
-    const a = await internal(request(app).post('/projects')).send({ name: 'alpha' });
-    const b = await internal(request(app).post('/projects')).send({ name: 'beta' });
+    const a = await internal(agent().post('/projects')).send({ name: 'alpha' });
+    const b = await internal(agent().post('/projects')).send({ name: 'beta' });
     projectA = a.body.id;
     projectB = b.body.id;
-    const ia = await internal(request(app).post('/items')).send({ type: 'TASK', title: 'in alpha', projectId: projectA });
-    const ib = await internal(request(app).post('/items')).send({ type: 'TASK', title: 'in beta', projectId: projectB });
+    const ia = await internal(agent().post('/items')).send({ type: 'TASK', title: 'in alpha', projectId: projectA });
+    const ib = await internal(agent().post('/items')).send({ type: 'TASK', title: 'in beta', projectId: projectB });
     itemA = ia.body.id;
     itemB = ib.body.id;
   });
@@ -55,12 +70,12 @@ describe('GET /agent-runs', () => {
    * other status goes through the PATCH, like it does in production.
    */
   const makeRun = async (itemId: string, projectId: string, endAs?: 'done' | 'failed') => {
-    const res = await internal(request(app).post('/agent-runs')).send({
+    const res = await internal(agent().post('/agent-runs')).send({
       itemId, projectId, step: 'IN_PROGRESS', actor: 'worker',
       harness: 'claude-code', model: 'claude-opus-5',
     });
     if (endAs) {
-      await internal(request(app).patch(`/agent-runs/${res.body.id}`)).send({ status: endAs });
+      await internal(agent().patch(`/agent-runs/${res.body.id}`)).send({ status: endAs });
     }
     return res;
   };
@@ -71,7 +86,7 @@ describe('GET /agent-runs', () => {
     await makeRun(itemA, projectA);
     await makeRun(itemB, projectB);
 
-    const res = await request(app).get('/agent-runs').query({ limit: 200 });
+    const res = await agent().get('/agent-runs').query({ limit: 200 });
     expect(res.status).toBe(200);
     const projects = res.body.map((r: { projectId: string }) => r.projectId);
     expect(projects).toEqual(expect.arrayContaining([projectA, projectB]));
@@ -81,7 +96,7 @@ describe('GET /agent-runs', () => {
     await makeRun(itemA, projectA);
     await makeRun(itemB, projectB);
 
-    const res = await request(app).get('/agent-runs').query({ projectId: projectA });
+    const res = await agent().get('/agent-runs').query({ projectId: projectA });
     expect(res.body.every((r: { projectId: string }) => r.projectId === projectA)).toBe(true);
     expect(res.body.length).toBeGreaterThan(0);
   });
@@ -92,7 +107,7 @@ describe('GET /agent-runs', () => {
 
     // Scoped to this test's own projects: the database persists across tests
     // in this file, so an unscoped query would count every earlier run.
-    const res = await request(app).get('/agent-runs').query({ status: 'failed', projectId: projectB });
+    const res = await agent().get('/agent-runs').query({ status: 'failed', projectId: projectB });
     expect(res.body).toHaveLength(1);
     expect(res.body[0].status).toBe('failed');
   });
@@ -100,7 +115,7 @@ describe('GET /agent-runs', () => {
   it('refuses a status that is not a run status', async () => {
     // The value reaches a storage query. Passing it through unchecked is how a
     // filter becomes an injection point.
-    const res = await request(app).get('/agent-runs').query({ status: 'DROP TABLE' });
+    const res = await agent().get('/agent-runs').query({ status: 'DROP TABLE' });
     expect(res.status).toBe(400);
   });
 
@@ -109,7 +124,7 @@ describe('GET /agent-runs', () => {
     // drives the elapsed clock. All of it is already stored — the rail should
     // not have to make a second request per row.
     await makeRun(itemA, projectA);
-    const [run] = (await request(app).get('/agent-runs').query({ projectId: projectA })).body;
+    const [run] = (await agent().get('/agent-runs').query({ projectId: projectA })).body;
     for (const field of ['id', 'itemId', 'projectId', 'step', 'harness', 'model', 'status', 'startedAt']) {
       expect(run[field], `a session row cannot render without ${field}`).toBeDefined();
     }
@@ -119,18 +134,18 @@ describe('GET /agent-runs', () => {
     // A machine that has been running agents for months would otherwise send
     // its whole history to render a sidebar.
     for (let i = 0; i < 30; i += 1) await makeRun(itemA, projectA);
-    const res = await request(app).get('/agent-runs').query({ limit: 5, projectId: projectA });
+    const res = await agent().get('/agent-runs').query({ limit: 5, projectId: projectA });
     expect(res.body).toHaveLength(5);
   });
 
   it('applies a default bound when none is asked for', async () => {
     for (let i = 0; i < 30; i += 1) await makeRun(itemA, projectA);
-    const res = await request(app).get('/agent-runs');
+    const res = await agent().get('/agent-runs');
     expect(res.body.length).toBeLessThanOrEqual(25);
   });
 
   it('refuses an absurd limit rather than honouring it', async () => {
-    const res = await request(app).get('/agent-runs').query({ limit: 100000 });
+    const res = await agent().get('/agent-runs').query({ limit: 100000 });
     expect(res.status).toBe(400);
   });
 
@@ -138,8 +153,8 @@ describe('GET /agent-runs', () => {
     // Scoped to a project created for this test, because the file shares one
     // database — an unscoped assertion here would be testing the leftovers of
     // whichever test happened to run before it.
-    const fresh = await internal(request(app).post('/projects')).send({ name: 'untouched' });
-    const res = await request(app).get('/agent-runs').query({ projectId: fresh.body.id });
+    const fresh = await internal(agent().post('/projects')).send({ name: 'untouched' });
+    const res = await agent().get('/agent-runs').query({ projectId: fresh.body.id });
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
@@ -150,7 +165,7 @@ describe('GET /agent-runs', () => {
     // filter would report every run this machine ever started. The client
     // decides liveness from the recency of run:event.
     await makeRun(itemA, projectA);
-    const res = await request(app).get('/agent-runs').query({ status: 'running', projectId: projectA });
+    const res = await agent().get('/agent-runs').query({ status: 'running', projectId: projectA });
     expect(res.body).toHaveLength(1);
     // It reports what it stored, with no liveness field invented on top.
     expect(res.body[0]).not.toHaveProperty('live');
@@ -173,20 +188,20 @@ describe('GET /agent-runs', () => {
  */
 describe('which runs the rail gets', () => {
   it('returns the NEWEST runs when there are more than the limit', async () => {
-    const p = await request(app).post('/projects').send({ name: 'ordering' });
-    const i = await request(app).post('/items')
+    const p = await agent().post('/projects').send({ name: 'ordering' });
+    const i = await agent().post('/items')
       .send({ title: 'Work', type: 'TASK', projectId: p.body.id });
 
     // More than the default page, created oldest-first.
     for (let n = 0; n < 30; n += 1) {
-      const created = await request(app).post('/agent-runs').send({
+      const created = await agent().post('/agent-runs').send({
         itemId: i.body.id, projectId: p.body.id, step: 'IN_PROGRESS',
         actor: 'worker', harness: 'claude-code', model: `m-${n}`,
       });
       if (n === 0) expect(created.status, JSON.stringify(created.body)).toBe(201);
     }
 
-    const res = await request(app).get('/agent-runs?limit=5');
+    const res = await agent().get('/agent-runs?limit=5');
     expect(res.body).toHaveLength(5);
     // Identified by `model`, which round-trips plainly. The point is WHICH
     // five come back, not how many — asserting the count is what let the

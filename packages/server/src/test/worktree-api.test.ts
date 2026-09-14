@@ -14,6 +14,21 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 46 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./worktree-api-test-db.sqlite');
 
 let repo: string;
@@ -55,17 +70,17 @@ beforeEach(async () => {
   git(repo, 'add', '.');
   git(repo, 'commit', '-m', 'initial');
 
-  const project = await request(app).post('/projects').send({ name: `wt-${Date.now()}` });
+  const project = await agent().post('/projects').send({ name: `wt-${Date.now()}` });
   projectId = project.body.id;
   // projectRoot is deliberately NOT settable over REST — it is the cwd for
   // shell execution, and mass assignment there would be RCE (bug e60e20aa).
   // The server sets it from a resolved root during validate; do the same here.
   await storage.updateProject(projectId, { projectRoot: repo } as never);
-  await request(app).put(`/projects/${projectId}`).send({ autoWorktree: true });
+  await agent().put(`/projects/${projectId}`).send({ autoWorktree: true });
 });
 
 const makeItem = async (title = 'Add login') => {
-  const res = await request(app).post('/items').send({ type: 'TASK', title, projectId });
+  const res = await agent().post('/items').send({ type: 'TASK', title, projectId });
   expect(res.status).toBe(201);
   return res.body;
 };
@@ -73,21 +88,21 @@ const makeItem = async (title = 'Add login') => {
 describe('POST /items/:id/worktree', () => {
   it('creates a worktree for the item and records where it is', async () => {
     const item = await makeItem();
-    const res = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const res = await agent().post(`/items/${item.id}/worktree`).send({ root });
 
     expect(res.status).toBe(201);
     expect(fs.existsSync(res.body.path)).toBe(true);
     expect(fs.existsSync(path.join(res.body.path, 'README.md'))).toBe(true);
 
-    const stored = await request(app).get(`/items/${item.id}`);
+    const stored = await agent().get(`/items/${item.id}`);
     expect(stored.body.worktreePath).toBe(res.body.path);
     expect(stored.body.branchName).toBeTruthy();
   });
 
   it('is idempotent — a second call returns the same worktree', async () => {
     const item = await makeItem();
-    const first = await request(app).post(`/items/${item.id}/worktree`).send({ root });
-    const second = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const first = await agent().post(`/items/${item.id}/worktree`).send({ root });
+    const second = await agent().post(`/items/${item.id}/worktree`).send({ root });
 
     expect(second.status).toBe(200);
     expect(second.body.path).toBe(first.body.path);
@@ -97,8 +112,8 @@ describe('POST /items/:id/worktree', () => {
   it('gives two items of one project two separate worktrees', async () => {
     const a = await makeItem('First task');
     const b = await makeItem('Second task');
-    const wa = await request(app).post(`/items/${a.id}/worktree`).send({ root });
-    const wb = await request(app).post(`/items/${b.id}/worktree`).send({ root });
+    const wa = await agent().post(`/items/${a.id}/worktree`).send({ root });
+    const wb = await agent().post(`/items/${b.id}/worktree`).send({ root });
 
     expect(wa.body.path).not.toBe(wb.body.path);
     fs.writeFileSync(path.join(wa.body.path, 'only-a.txt'), 'a');
@@ -106,7 +121,7 @@ describe('POST /items/:id/worktree', () => {
   });
 
   it('404s for an item that does not exist', async () => {
-    const res = await request(app).post('/items/no-such-item/worktree').send({ root });
+    const res = await agent().post('/items/no-such-item/worktree').send({ root });
     expect(res.status).toBe(404);
   });
 
@@ -115,7 +130,7 @@ describe('POST /items/:id/worktree', () => {
     // repo checkout anywhere the server user can write — on a route any local
     // process can reach.
     const item = await makeItem();
-    const res = await request(app).post(`/items/${item.id}/worktree`)
+    const res = await agent().post(`/items/${item.id}/worktree`)
       .send({ root: path.join(os.tmpdir(), 'somewhere-else') });
     expect(res.status).toBe(400);
     expect(String(res.body.error)).toMatch(/must be inside/i);
@@ -123,30 +138,30 @@ describe('POST /items/:id/worktree', () => {
 
   it('refuses a root that escapes the base with ..', async () => {
     const item = await makeItem();
-    const res = await request(app).post(`/items/${item.id}/worktree`)
+    const res = await agent().post(`/items/${item.id}/worktree`)
       .send({ root: path.join(defaultWorktreeRoot(), '..', '..', 'escaped') });
     expect(res.status).toBe(400);
   });
 
   it('refuses when the project has no projectRoot, instead of guessing one', async () => {
     // Guessing would run git somewhere the user never pointed us at.
-    const bare = await request(app).post('/projects').send({ name: `bare-${Date.now()}` });
-    const item = (await request(app).post('/items')
+    const bare = await agent().post('/projects').send({ name: `bare-${Date.now()}` });
+    const item = (await agent().post('/items')
       .send({ type: 'TASK', title: 'Orphan', projectId: bare.body.id })).body;
 
-    const res = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const res = await agent().post(`/items/${item.id}/worktree`).send({ root });
     expect(res.status).toBe(400);
     expect(String(res.body.error)).toMatch(/projectRoot/i);
   });
 
   it('reports a clear error when projectRoot is not a git repository', async () => {
     const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wtapi-norepo-'));
-    const p = await request(app).post('/projects').send({ name: `norepo-${Date.now()}` });
+    const p = await agent().post('/projects').send({ name: `norepo-${Date.now()}` });
     await storage.updateProject(p.body.id, { projectRoot: notARepo } as never);
-    const item = (await request(app).post('/items')
+    const item = (await agent().post('/items')
       .send({ type: 'TASK', title: 'No repo', projectId: p.body.id })).body;
 
-    const res = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const res = await agent().post(`/items/${item.id}/worktree`).send({ root });
     expect(res.status).toBe(400);
     expect(String(res.body.error)).toMatch(/not a git repository/i);
   });
@@ -155,15 +170,15 @@ describe('POST /items/:id/worktree', () => {
 describe('GET /items/:id/worktree', () => {
   it('reports nothing before one exists', async () => {
     const item = await makeItem();
-    const res = await request(app).get(`/items/${item.id}/worktree`);
+    const res = await agent().get(`/items/${item.id}/worktree`);
     expect(res.status).toBe(200);
     expect(res.body.path).toBeNull();
   });
 
   it('reports the worktree once created', async () => {
     const item = await makeItem();
-    const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
-    const res = await request(app).get(`/items/${item.id}/worktree`);
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
+    const res = await agent().get(`/items/${item.id}/worktree`);
     expect(res.body.path).toBe(created.body.path);
     expect(res.body.exists).toBe(true);
   });
@@ -172,10 +187,10 @@ describe('GET /items/:id/worktree', () => {
     // The path stays recorded; `exists: false` is how a caller knows to
     // recreate rather than assume it can cd there.
     const item = await makeItem();
-    const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
     fs.rmSync(created.body.path, { recursive: true, force: true });
 
-    const res = await request(app).get(`/items/${item.id}/worktree`);
+    const res = await agent().get(`/items/${item.id}/worktree`);
     expect(res.body.path).toBe(created.body.path);
     expect(res.body.exists).toBe(false);
   });
@@ -184,27 +199,27 @@ describe('GET /items/:id/worktree', () => {
 describe('DELETE /items/:id/worktree', () => {
   it('removes the directory and forgets the path', async () => {
     const item = await makeItem();
-    const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
 
-    const res = await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    const res = await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
     expect(res.status).toBe(200);
     expect(fs.existsSync(created.body.path)).toBe(false);
-    expect((await request(app).get(`/items/${item.id}`)).body.worktreePath).toBeFalsy();
+    expect((await agent().get(`/items/${item.id}`)).body.worktreePath).toBeFalsy();
   });
 
   it('never destroys committed work — the branch survives', async () => {
     // This is the guarantee that makes removal safe to automate. Deleting a
     // worktree must cost you a checkout, never a commit.
     const item = await makeItem();
-    const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
     fs.writeFileSync(path.join(created.body.path, 'work.txt'), 'work');
     git(created.body.path, 'add', '.');
     git(created.body.path, 'commit', '-m', 'agent work');
     const sha = git(created.body.path, 'rev-parse', 'HEAD').trim();
 
-    await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
 
-    const branch = (await request(app).get(`/items/${item.id}`)).body.branchName;
+    const branch = (await agent().get(`/items/${item.id}`)).body.branchName;
     expect(branch).toBeTruthy();
 
     // `git rev-parse <sha>` echoes ANY 40-hex string back without consulting
@@ -219,41 +234,41 @@ describe('DELETE /items/:id/worktree', () => {
 
   it('removes a worktree with uncommitted changes rather than refusing forever', async () => {
     const item = await makeItem();
-    const created = await request(app).post(`/items/${item.id}/worktree`).send({ root });
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
     fs.writeFileSync(path.join(created.body.path, 'dirty.txt'), 'uncommitted');
 
-    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
+    expect((await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
     expect(fs.existsSync(created.body.path)).toBe(false);
   });
 
   it('is idempotent — deleting twice is not an error', async () => {
     const item = await makeItem();
-    await request(app).post(`/items/${item.id}/worktree`).send({ root });
-    await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
-    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
+    await agent().post(`/items/${item.id}/worktree`).send({ root });
+    await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    expect((await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
   });
 
   it('is a no-op for an item that never had one', async () => {
     const item = await makeItem();
-    expect((await request(app).delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
+    expect((await agent().delete(`/items/${item.id}/worktree`).set('x-agenfk-internal', VERIFY_TOKEN!)).status).toBe(200);
   });
 });
 
 describe('auto-worktree on entering a working step', () => {
   /** Advance an item one step, the way `agenfk verify` does. */
   const advance = (itemId: string) =>
-    request(app)
+    agent()
       .post(`/items/${itemId}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN!)
       .send({ evidence: 'starting work' });
 
   it('gives the item a worktree when it leaves TODO', async () => {
     const item = await makeItem('Auto one');
-    expect((await request(app).get(`/items/${item.id}/worktree`)).body.path).toBeNull();
+    expect((await agent().get(`/items/${item.id}/worktree`)).body.path).toBeNull();
 
     await advance(item.id);
 
-    const wt = (await request(app).get(`/items/${item.id}/worktree`)).body;
+    const wt = (await agent().get(`/items/${item.id}/worktree`)).body;
     expect(wt.path).toBeTruthy();
     expect(wt.exists).toBe(true);
   });
@@ -261,37 +276,37 @@ describe('auto-worktree on entering a working step', () => {
   it('does nothing when the project has not opted in', async () => {
     // autoWorktree is off by default: creating directories on someone's disk
     // because they advanced a card is not a reasonable default.
-    await request(app).put(`/projects/${projectId}`).send({ autoWorktree: false });
+    await agent().put(`/projects/${projectId}`).send({ autoWorktree: false });
     const item = await makeItem('No auto');
 
     await advance(item.id);
 
-    expect((await request(app).get(`/items/${item.id}/worktree`)).body.path).toBeNull();
+    expect((await agent().get(`/items/${item.id}/worktree`)).body.path).toBeNull();
   });
 
   it('reuses the worktree on later steps instead of making another', async () => {
     const item = await makeItem('Auto two');
     await advance(item.id);
-    const first = (await request(app).get(`/items/${item.id}/worktree`)).body.path;
+    const first = (await agent().get(`/items/${item.id}/worktree`)).body.path;
 
     await advance(item.id);
 
-    expect((await request(app).get(`/items/${item.id}/worktree`)).body.path).toBe(first);
+    expect((await agent().get(`/items/${item.id}/worktree`)).body.path).toBe(first);
   });
 
   it('still advances the item when the worktree cannot be created', async () => {
     // A broken git setup must not block the workflow. The transition is the
     // user's intent; the worktree is a convenience on top of it.
-    const p = await request(app).post('/projects').send({ name: `broken-${Date.now()}` });
+    const p = await agent().post('/projects').send({ name: `broken-${Date.now()}` });
     await storage.updateProject(p.body.id, { projectRoot: '/nonexistent/path' } as never);
-    await request(app).put(`/projects/${p.body.id}`).send({ autoWorktree: true });
-    const item = (await request(app).post('/items')
+    await agent().put(`/projects/${p.body.id}`).send({ autoWorktree: true });
+    const item = (await agent().post('/items')
       .send({ type: 'TASK', title: 'Broken repo', projectId: p.body.id })).body;
 
     const res = await advance(item.id);
 
     expect(res.status).toBe(200);
-    expect((await request(app).get(`/items/${item.id}`)).body.status).not.toBe('TODO');
+    expect((await agent().get(`/items/${item.id}`)).body.status).not.toBe('TODO');
   });
 });
 

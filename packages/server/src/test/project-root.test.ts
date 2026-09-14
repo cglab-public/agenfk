@@ -24,6 +24,21 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 8 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./project-root-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -42,18 +57,18 @@ afterAll(() => {
 });
 beforeEach(async () => {
   await initStorage();
-  const p = await internal(request(app).post('/projects')).send({ name: 'roots' });
+  const p = await internal(agent().post('/projects')).send({ name: 'roots' });
   projectId = p.body.id;
 });
 
 const setRoot = (projectRoot: unknown) =>
-  internal(request(app).put(`/projects/${projectId}/project-root`)).send({ projectRoot });
+  internal(agent().put(`/projects/${projectId}/project-root`)).send({ projectRoot });
 
 describe('setting a project root', () => {
   it('records a real directory', async () => {
     const res = await setRoot(repo);
     expect(res.status).toBe(200);
-    const after = await request(app).get(`/projects`);
+    const after = await agent().get(`/projects`);
     expect(after.body.find((p: { id: string }) => p.id === projectId).projectRoot).toBe(repo);
   });
 
@@ -61,16 +76,16 @@ describe('setting a project root', () => {
     // It is a CWD: where `git add -A && git commit` runs and where worktrees
     // are cut from. An unauthenticated caller setting it is mass assignment
     // with execution consequences — the reason PUT /projects/:id refuses it.
-    const res = await request(app).put(`/projects/${projectId}/project-root`).send({ projectRoot: repo });
+    const res = await agent().put(`/projects/${projectId}/project-root`).send({ projectRoot: repo });
     expect(res.status).toBe(401);
   });
 
   it('is still refused by the open project route', async () => {
     // Belt and braces: this endpoint must not have made the field writable
     // somewhere it was deliberately kept out of.
-    await internal(request(app).put(`/projects/${projectId}/project-root`)).send({ projectRoot: repo });
-    await request(app).put(`/projects/${projectId}`).send({ name: 'roots', projectRoot: '/tmp' });
-    const after = await request(app).get('/projects');
+    await internal(agent().put(`/projects/${projectId}/project-root`)).send({ projectRoot: repo });
+    await agent().put(`/projects/${projectId}`).send({ name: 'roots', projectRoot: '/tmp' });
+    const after = await agent().get('/projects');
     expect(after.body.find((p: { id: string }) => p.id === projectId).projectRoot).toBe(repo);
   });
 });
@@ -119,7 +134,7 @@ describe('what it refuses to record', () => {
   });
 
   it('a project that does not exist', async () => {
-    const res = await internal(request(app).put('/projects/no-such-project/project-root'))
+    const res = await internal(agent().put('/projects/no-such-project/project-root'))
       .send({ projectRoot: repo });
     expect(res.status).toBe(404);
   });
