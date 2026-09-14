@@ -34,13 +34,15 @@ let mainWindow: BrowserWindow | null = null;
  */
 let ptyRegistry: PtyRegistry | null = null;
 /**
- * The PATH an interactive login shell would have.
+ * The PATH an interactive login shell would have, most recently captured.
  *
- * Captured ONCE at boot and shared by agent detection and every spawn. Probing
- * with one PATH and launching with another is how a picker that says
- * "Installed" produces ENOENT — which is CGLAB-177's bug one layer down. Null
- * until the capture returns, or if it failed; every consumer treats that as
- * "use the inherited PATH".
+ * Shared by agent detection and every spawn. Probing with one PATH and
+ * launching with another is how a picker that says "Installed" produces
+ * ENOENT — which is CGLAB-177's bug one layer down.
+ *
+ * Kept for logging and for anything that wants the value without waiting;
+ * both real consumers go through the accessor below, which can wait for a
+ * capture still in flight. Null means no successful capture yet.
  */
 let loginPath: string | null = null;
 /**
@@ -320,11 +322,49 @@ async function boot(): Promise<void> {
        * and detection is handed the same one. Otherwise a terminal opened in
        * the first second would get a degraded PATH.
        */
-      const loginPathReady = captureLoginPath().then(p => { loginPath = p; return p; });
-      setAgentDetectionDeps({
-        which: whichOnPath,
-        loginPath: () => loginPathReady,
-      });
+      let capturedAt = 0;
+      const capture = (): Promise<string | null> => {
+        capturedAt = Date.now();
+        return captureLoginPath().then(p => { loginPath = p; return p; });
+      };
+      let loginPathReady = capture();
+
+      /**
+       * The captured PATH, re-capturing when the memo is no longer trustworthy.
+       *
+       * A single memoised promise was the first version and review caught what
+       * it cost: the memo stopped being a boot optimisation and became a
+       * session-long pin. Two things broke.
+       *
+       * A capture that FAILED — `captureLoginPath` answers null on any
+       * execFile failure, including the 5s timeout from an rc file that reads
+       * stdin — was remembered as the answer for the whole session. Detection
+       * could never recover, so the picker reported everything missing and
+       * nothing the user did would change it.
+       *
+       * And `agents:refresh` exists so that installing a CLI updates the
+       * picker without a restart. If the install also added a directory to the
+       * user's rc files, only a fresh capture can see it; pinned to boot, the
+       * refresh could not.
+       *
+       * So the memo covers the BURST it was made for — the detection and any
+       * terminal opened while the app is still starting — and anything later
+       * asks again. Every re-capture is a login shell, which is what the whole
+       * card is about, so the window is short and the staleness rule explicit
+       * rather than accidental.
+       */
+      const LOGIN_PATH_MEMO_MS = 30_000;
+      // Comfortably past captureLoginPath's own 5s timeout; this is a backstop,
+      // not a second policy.
+      const LOGIN_PATH_DEADLINE_MS = 8_000;
+      const currentLoginPath = async (): Promise<string | null> => {
+        const value = await loginPathReady;
+        if (value !== null && Date.now() - capturedAt < LOGIN_PATH_MEMO_MS) return value;
+        loginPathReady = capture();
+        return loginPathReady;
+      };
+
+      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath });
       tmuxStatus = await detectTmux({ platform: process.platform, which: whichOnPath });
       if (!tmuxStatus.available) {
         console.log(`[DESKTOP] Terminal sessions will NOT survive quitting: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
@@ -335,8 +375,20 @@ async function boot(): Promise<void> {
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
-        // The captured value once it is there, the promise until then.
-        loginPath: () => loginPath ?? loginPathReady,
+        /*
+         * Waits for the capture rather than proceeding without it, which is
+         * what lets the window paint first. Raced against a deadline so the
+         * failure mode stays what it always was: a terminal with a degraded
+         * PATH, never a terminal that refuses to open. `captureLoginPath` has
+         * its own 5s timeout, so this only matters if that one is ever
+         * survived — but "the spawn hangs forever" is a different category of
+         * failure from "the spawn has the wrong PATH", and not one to inherit
+         * silently.
+         */
+        loginPath: () => Promise.race([
+          currentLoginPath(),
+          new Promise<null>(resolve => setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS)),
+        ]),
         tmux: { available: tmuxStatus.available },
         emit: (windowId, channel, payload) => {
           // To that window only. Broadcasting would put one card's shell

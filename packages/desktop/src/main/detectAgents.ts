@@ -64,12 +64,19 @@ let inFlight: Promise<DetectedAgent[]> | null = null;
  * The comment in index.ts claimed detection and spawning shared one capture;
  * half of it was true.
  */
-let defaultDeps: DetectDeps = {
+/**
+ * What detection uses when nobody has installed anything — a plain probe and a
+ * login shell of its own. Exported so a test that swaps the deps can put the
+ * real ones back rather than leaving the module pointing at a fixture.
+ */
+export const REAL_DETECTION_DEPS: DetectDeps = {
   // Both indirected: these constants are declared further down, and naming
   // them eagerly here is a temporal-dead-zone error.
   which: (file, pathOverride) => whichOnPath(file, pathOverride),
   loginPath: () => loginShellPath(),
 };
+
+let defaultDeps: DetectDeps = REAL_DETECTION_DEPS;
 
 export function setAgentDetectionDeps(deps: DetectDeps): void {
   defaultDeps = deps;
@@ -142,7 +149,6 @@ export async function detectAgents(deps: DetectDeps = defaultDeps): Promise<Dete
 }
 
 async function detectOnce(deps: DetectDeps): Promise<DetectedAgent[]> {
-
   const probe = async (id: string, pathOverride?: string): Promise<boolean> => {
     if (ALWAYS_AVAILABLE.has(id)) return true;
     try {

@@ -43,13 +43,6 @@ export interface PtyRegistryDeps {
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
   /**
-   * The PATH recovered from a login shell, if one was obtained at boot.
-   *
-   * This is the same PATH agent detection probes with, and handing it to the
-   * spawn is the point: detecting against one PATH and launching against
-   * another is how a picker that says "Installed" produces ENOENT.
-   */
-  /**
    * The PATH a login shell would have.
    *
    * May answer with a PROMISE, and that is what lets the app paint before the

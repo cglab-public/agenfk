@@ -502,10 +502,25 @@ describe('auto-approve reaching the process', () => {
  * capture exists to prevent, just moved into the first second after launch.
  */
 describe('the login PATH arriving late', () => {
-  it('waits for it rather than spawning with a degraded PATH', async () => {
+  let spy: ReturnType<typeof makeSpawner>;
+  const envOf = (call: number) =>
+    (spy.mock.calls[call]?.[2] as unknown as { env: NodeJS.ProcessEnv }).env;
+
+  it('hands the child the PATH that arrived, not a degraded one', async () => {
+    /*
+     * The assertion that actually matters, and the first version of this test
+     * did not make it: it checked only that a spawn eventually happened, which
+     * an implementation that awaited the promise and then threw the value away
+     * would also satisfy.
+     *
+     * "It spawned nothing yet" was no better — `spawn` awaits `resolveCwd`
+     * before it ever reaches the PATH, and that await already costs a tick, so
+     * a single microtask cannot tell "holding for the PATH" apart from "still
+     * resolving the worktree".
+     */
     let release: (v: string) => void = () => {};
     const arriving = new Promise<string>(res => { release = res; });
-    const spy = makeSpawner();
+    spy = makeSpawner();
     const late = new PtyRegistry({
       spawn: spy as never,
       resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
@@ -515,28 +530,31 @@ describe('the login PATH arriving late', () => {
 
     spawned = [];
     const opening = late.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
-    // Still nothing: the spawn is holding for the PATH rather than proceeding
-    // without it.
-    await Promise.resolve();
-    expect(spawned).toHaveLength(0);
+    release('/opt/homebrew/bin:/usr/bin');
+    await opening;
+    expect(envOf(0).PATH).toContain('/opt/homebrew/bin');
+  });
+
+  it('does not spawn while the PATH is still on its way', async () => {
+    // Given enough turns for resolveCwd to settle several times over, so the
+    // only thing that can still be holding the spawn is the PATH.
+    let release: (v: string) => void = () => {};
+    const arriving = new Promise<string>(res => { release = res; });
+    spy = makeSpawner();
+    const late = new PtyRegistry({
+      spawn: spy as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      loginPath: () => arriving,
+      emit: () => {},
+    });
+
+    spawned = [];
+    const opening = late.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(spawned, 'spawned before the login PATH was known').toHaveLength(0);
 
     release('/opt/homebrew/bin:/usr/bin');
     await opening;
-    expect(spawned).toHaveLength(1);
-  });
-
-  it('still works when the callback answers immediately', async () => {
-    // The steady state, once the capture has landed. Both shapes have to work
-    // from the same call site.
-    const spy = makeSpawner();
-    const ready = new PtyRegistry({
-      spawn: spy as never,
-      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
-      loginPath: () => '/opt/homebrew/bin:/usr/bin',
-      emit: () => {},
-    });
-    spawned = [];
-    await ready.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
     expect(spawned).toHaveLength(1);
   });
 });

@@ -18,8 +18,8 @@
  * primitive — and then an execution one. Only ids already in agents.ts are ever
  * looked up.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { detectAgents, __resetAgentDetectionCache, setAgentDetectionDeps } from '../main/detectAgents';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { detectAgents, __resetAgentDetectionCache, setAgentDetectionDeps, REAL_DETECTION_DEPS } from '../main/detectAgents';
 import { AGENT_IDS, resolveAgentCommand } from '../main/agents';
 
 /** A `which`-alike: resolves to a path for names the test says exist. */
@@ -239,7 +239,13 @@ describe('the guard against recursive capture', () => {
  * agent on it, which is the whole reason the capture exists.
  */
 describe('how often the login PATH is captured', () => {
-  beforeEach(() => __resetAgentDetectionCache());
+  /*
+   * `setAgentDetectionDeps` mutates module state, so it is put back. Without
+   * this the file ends with the defaults pointing at the last fixture — fine
+   * while every other test passes explicit deps, and a trap the moment one
+   * does not, or the moment the suite runs shuffled.
+   */
+  afterEach(() => setAgentDetectionDeps(REAL_DETECTION_DEPS));
 
   /**
    * A machine as the packaged app sees it: nothing on the inherited PATH, the
@@ -257,7 +263,10 @@ describe('how often the login PATH is captured', () => {
     };
   };
 
-  it('asks once, however many callers there are', async () => {
+  it('uses the deps the main process installed instead of its own default', async () => {
+    // What this one really guards. The sequential case alone proved nothing
+    // about the promise cache — the old RESULT cache produced the same count
+    // here, because this detection succeeds and successes were cached.
     const { calls, deps } = launchdLikeDeps();
     setAgentDetectionDeps(deps);
     await detectAgents();
@@ -268,8 +277,10 @@ describe('how often the login PATH is captured', () => {
   it('asks once when two callers arrive at the same time', async () => {
     // The window the result-cache left open: both see an empty cache, both run
     // a full detection, and that is two login shells. Caching the PROMISE is
-    // what closes it. Reachable at boot, where the main process warms
-    // detection while the renderer's first `agents:list` is already on its way.
+    // what closes it. Reachable through StrictMode's double mount of the agent
+    // picker, and through an `agents:list` overlapping an `agents:refresh` —
+    // NOT, as an earlier version of this comment claimed, through the main
+    // process warming detection at boot. Nothing warms it.
     const { calls, deps } = launchdLikeDeps();
     setAgentDetectionDeps(deps);
     await Promise.all([detectAgents(), detectAgents(), detectAgents()]);
