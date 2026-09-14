@@ -7,6 +7,8 @@ import { createHubApp } from '../server';
 import { openPgMemDb } from '../db/postgres';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
+import { writeParentBinding } from '../services/federation/parentBinding';
+import { enqueueOutbox, outboxDepth, federationTick } from '../services/federation/federationSync';
 import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
@@ -121,6 +123,49 @@ describe('PG parity: child-hub administration (CGLAB-181)', () => {
       .set('Cookie', cookie).send({});
     expect(again.body.revokedKeys).toBe(0);
     expect(again.body.detachedAt).toBe(det.body.detachedAt);
+
+    await db.close();
+  });
+});
+
+describe('PG parity: child-side federation outbox (CGLAB-181)', () => {
+  it('queues, orders, retries and drains on Postgres', async () => {
+    const db = await openPgMemDb();
+    const SEC = 'a'.repeat(64);
+    await writeParentBinding(db, SEC, {
+      parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1',
+    });
+
+    // BIGSERIAL rather than MAX(seq)+1 is the whole point: two connections in
+    // the pool would otherwise read the same maximum and collide.
+    for (const n of [1, 2, 3]) expect(await enqueueOutbox(db, 'event', { n })).toBe(true);
+    expect(await outboxDepth(db)).toBe(3);
+
+    const seen: any[] = [];
+    const failing = {
+      ping: async () => ({ ok: true }),
+      directives: async () => null,
+      deliver: async () => { throw Object.assign(new Error('nope'), { response: { status: 503 } }); },
+    };
+    const retried = await federationTick({ db, secretKey: SEC, transport: failing as any });
+    expect(retried.ok).toBe(false);
+    expect(await outboxDepth(db)).toBe(3);
+    // ISO string into TIMESTAMPTZ, then compared with <= on the way back out
+    const row = await db.get<any>('SELECT attempts, next_attempt_at FROM federation_outbox ORDER BY seq ASC');
+    expect(Number(row.attempts)).toBe(1);
+
+    const notYet = await federationTick({ db, secretKey: SEC, transport: { ...failing, deliver: async (r: any[]) => { seen.push(...r); return {}; } } as any });
+    expect(notYet.delivered).toBe(0);
+    expect(seen).toHaveLength(0);
+
+    await db.run("UPDATE federation_outbox SET next_attempt_at = '2000-01-01T00:00:00.000Z'");
+    const drained = await federationTick({
+      db, secretKey: SEC,
+      transport: { ...failing, deliver: async (r: any[]) => { seen.push(...r); return {}; } } as any,
+    });
+    expect(drained.delivered).toBe(3);
+    expect(seen.map((r: any) => r.payload.n)).toEqual([1, 2, 3]);
+    expect(await outboxDepth(db)).toBe(0);
 
     await db.close();
   });

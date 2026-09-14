@@ -10,7 +10,7 @@ import type { HubDb } from '../db/types';
 import { writeParentBinding, readParentBinding } from '../services/federation/parentBinding';
 import {
   federationTick, enqueueOutbox, outboxDepth, backoffMsFor,
-  MAX_FEDERATION_BACKOFF_MS, FEDERATION_TICK_MS,
+  MAX_FEDERATION_BACKOFF_MS, FEDERATION_TICK_MS, MAX_ROW_REJECTIONS, MAX_OUTBOX_ROWS,
 } from '../services/federation/federationSync';
 
 const SECRET = 'a'.repeat(64);
@@ -151,17 +151,106 @@ describe('federationSync: outbox', () => {
     expect(t.calls.delivered.map((r: any) => r.payload.n)).toEqual([1, 2, 3, 4]);
   });
 
-  it('drops rows the parent refuses outright instead of retrying them forever', async () => {
-    // A 400 means these bytes will never be accepted. Left in place they would
-    // be re-sent every five minutes for good, and everything queued behind
-    // them would go with them.
+  it('discards a refused row only after repeated individual refusals', async () => {
+    // A 400 means these bytes will never be accepted, but discarding on the
+    // first refusal lets a parent that answers 400 to everything empty the
+    // queue in one tick. Three refusals of the row ON ITS OWN is the bar.
     await writeParentBinding(db, SECRET, binding);
     await enqueueOutbox(db, 'event', { bad: true });
-    const t = transport({ deliver: async () => { throw Object.assign(new Error('malformed'), { response: { status: 400 } }); } });
-    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
-    expect(out.ok).toBe(false);
-    expect(out.dropped).toBe(1);
+    const reject = () => transport({ deliver: async () => { throw Object.assign(new Error('malformed'), { response: { status: 400 } }); } });
+
+    for (let i = 0; i < MAX_ROW_REJECTIONS - 1; i++) {
+      const out = await federationTick({ db, secretKey: SECRET, transport: reject() as any });
+      expect(out.dropped).toBeFalsy();
+      expect(await outboxDepth(db)).toBe(1);
+      await db.run("UPDATE federation_outbox SET next_attempt_at = '2000-01-01T00:00:00.000Z'");
+    }
+    const final = await federationTick({ db, secretKey: SECRET, transport: reject() as any });
+    expect(final.dropped).toBe(1);
     expect(await outboxDepth(db)).toBe(0);
+  });
+
+  it('isolates the refused row instead of taking the whole batch with it', async () => {
+    // The batch used to be deleted wholesale, so one bad row destroyed up to
+    // 499 good ones.
+    await writeParentBinding(db, SECRET, binding);
+    for (const n of [1, 2, 3, 4, 5, 6]) await enqueueOutbox(db, 'event', { n });
+    const t = transport({
+      deliver: async (rows: any[]) => {
+        if (rows.some((r: any) => r.payload.n === 4)) throw Object.assign(new Error('bad'), { response: { status: 400 } });
+        return { accepted: rows.length };
+      },
+    });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    // the five innocent rows went through; the sixth is still queued, counted
+    expect(out.delivered).toBe(5);
+    expect(await outboxDepth(db)).toBe(1);
+    const left = await db.get<any>('SELECT payload, rejections FROM federation_outbox');
+    expect(JSON.parse(left.payload).n).toBe(4);
+    expect(Number(left.rejections)).toBe(1);
+  });
+
+  it('a 401 on delivery revokes the binding rather than discarding the outbox', async () => {
+    // Falling through to the discard path here deleted a child's queued data
+    // against a parent that had already detached it.
+    await writeParentBinding(db, SECRET, binding);
+    await enqueueOutbox(db, 'event', { a: 1 });
+    const t = transport({ deliver: async () => { throw Object.assign(new Error('gone'), { response: { status: 401 } }); } });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    expect(out.revoked).toBe(true);
+    expect(out.dropped).toBeFalsy();
+    expect(await outboxDepth(db)).toBe(1);
+    expect((await readParentBinding(db, SECRET))!.state).toBe('revoked');
+  });
+
+  it('a 403 is treated as revocation too', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    const t = transport({ ping: async () => { throw Object.assign(new Error('forbidden'), { response: { status: 403 } }); } });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    expect(out.revoked).toBe(true);
+    expect((await readParentBinding(db, SECRET))!.state).toBe('revoked');
+  });
+
+  it('a 401 while polling directives revokes rather than failing silently', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    const t = transport({ directives: async () => { throw Object.assign(new Error('gone'), { response: { status: 401 } }); } });
+    const out = await federationTick({ db, secretKey: SECRET, transport: t as any });
+    expect(out.revoked).toBe(true);
+    expect((await readParentBinding(db, SECRET))!.state).toBe('revoked');
+  });
+
+  it('stops queueing once the binding is revoked, so the table cannot grow forever', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    await federationTick({
+      db, secretKey: SECRET,
+      transport: transport({ ping: async () => { throw Object.assign(new Error('gone'), { response: { status: 401 } }); } }) as any,
+    });
+    expect(await enqueueOutbox(db, 'event', { a: 1 })).toBe(false);
+    expect(await outboxDepth(db)).toBe(0);
+  });
+
+  it('never throws out of the request path on a payload it cannot serialise', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    const circular: any = {}; circular.self = circular;
+    await expect(enqueueOutbox(db, 'event', circular)).resolves.toBe(false);
+    await expect(enqueueOutbox(db, 'event', { big: 1n } as any)).resolves.toBe(false);
+    await expect(enqueueOutbox(db, 'event', undefined)).resolves.toBe(false);
+    expect(await outboxDepth(db)).toBe(0);
+    // and a good payload still queues, so the guard is not refusing everything
+    expect(await enqueueOutbox(db, 'event', { fine: true })).toBe(true);
+  });
+
+  it('schedules the first retry one tick out, not two', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    await enqueueOutbox(db, 'event', { a: 1 });
+    const before = Date.now();
+    await federationTick({ db, secretKey: SECRET, transport: transport({ deliver: async () => { throw new Error('502'); } }) as any });
+    const row = await db.get<any>('SELECT attempts, next_attempt_at FROM federation_outbox');
+    expect(Number(row.attempts)).toBe(1);
+    const waited = new Date(row.next_attempt_at).getTime() - before;
+    // backoffMsFor(0), not backoffMsFor(1)
+    expect(waited).toBeGreaterThanOrEqual(FEDERATION_TICK_MS - 1000);
+    expect(waited).toBeLessThan(FEDERATION_TICK_MS * 2);
   });
 
   it('retries rather than drops on 408, 425 and 429', async () => {

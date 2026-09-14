@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../db';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, markBindingRevoked,
-  PARENT_BINDING_KEY,
+  PARENT_BINDING_KEY, assertHttpUrl,
 } from '../services/federation/parentBinding';
 
 const SECRET = 'a'.repeat(64);
@@ -88,5 +88,32 @@ describe('parentBinding', () => {
     await expect(writeParentBinding(db, SECRET, { ...binding, parentUrl: 'file:///etc/passwd' })).rejects.toThrow(/http/i);
     expect(await readParentBinding(db, SECRET)).toBeNull();
     await db.close();
+  });
+});
+
+describe('assertHttpUrl', () => {
+  it('normalises the stored URL so requests do not end up with a double slash', () => {
+    // The worker builds `${parentUrl}/v1/federation/ping`, so a trailing slash
+    // would produce //v1/federation/ping.
+    expect(assertHttpUrl('https://parent.example.com/')).toBe('https://parent.example.com');
+    expect(assertHttpUrl('https://parent.example.com')).toBe('https://parent.example.com');
+    expect(assertHttpUrl('https://parent.example.com/hub/')).toBe('https://parent.example.com/hub');
+    expect(assertHttpUrl('https://parent.example.com:8443/')).toBe('https://parent.example.com:8443');
+  });
+
+  it('drops a query string and fragment rather than carrying them into every call', () => {
+    expect(assertHttpUrl('https://parent.example.com/?x=1#frag')).toBe('https://parent.example.com');
+  });
+
+  it('accepts http as well as https, for a LAN parent', () => {
+    expect(assertHttpUrl('http://hub.internal:4000')).toBe('http://hub.internal:4000');
+  });
+
+  it('refuses anything that is not http(s), and anything unparseable', () => {
+    for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'ftp://x/y', 'data:text/html,x']) {
+      expect(() => assertHttpUrl(bad)).toThrow(/http/i);
+    }
+    expect(() => assertHttpUrl('not a url')).toThrow(/valid/i);
+    expect(() => assertHttpUrl('')).toThrow(/valid/i);
   });
 });

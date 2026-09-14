@@ -63,9 +63,14 @@ export async function writeParentBinding(
     enrolledAt: input.enrolledAt ?? new Date().toISOString(),
     state: input.state ?? 'active',
   };
-  // One row, replaced — a hub has exactly one parent.
-  await db.run('DELETE FROM system_state WHERE key = ?', [PARENT_BINDING_KEY]);
-  await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [PARENT_BINDING_KEY, JSON.stringify(stored)]);
+  // One row, replaced, in one transaction. Delete-then-insert unguarded left a
+  // window in which a concurrent reader saw NO binding — which would downgrade
+  // a revoked hub to "never enrolled" and lose the explanation the revoked
+  // state exists to carry.
+  await db.transaction(async () => {
+    await db.run('DELETE FROM system_state WHERE key = ?', [PARENT_BINDING_KEY]);
+    await db.run('INSERT INTO system_state (key, value) VALUES (?, ?)', [PARENT_BINDING_KEY, JSON.stringify(stored)]);
+  });
 }
 
 export async function readParentBinding(db: DB, secretKey: string): Promise<ParentBinding | null> {

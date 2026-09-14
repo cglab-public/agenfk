@@ -149,13 +149,14 @@ const SCHEMA_PG = `
   -- while this hub is a child. Durable on purpose: a parent outage must cost
   -- delivery latency, never data, and the child keeps serving throughout.
   CREATE TABLE IF NOT EXISTS federation_outbox (
-    id TEXT PRIMARY KEY,
+    seq BIGSERIAL PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at TIMESTAMPTZ NOT NULL,
-    seq BIGINT NOT NULL
+    rejections INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_federation_outbox_due ON federation_outbox(next_attempt_at, seq);
 

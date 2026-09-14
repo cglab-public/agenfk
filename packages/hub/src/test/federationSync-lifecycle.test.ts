@@ -20,6 +20,18 @@ const idleTransport = (impl: Partial<any> = {}) => ({
 });
 
 describe('startFederationSync', () => {
+  it('never holds the process open', async () => {
+    // A background sync must not be the reason a hub refuses to exit.
+    const timers: any[] = [];
+    const realSet = global.setInterval;
+    (global as any).setInterval = ((...a: any[]) => { const t = (realSet as any)(...a); timers.push(t); return t; }) as any;
+    const stop = startFederationSync({ db, secretKey: SECRET, transport: idleTransport() as any });
+    (global as any).setInterval = realSet;
+    expect(timers).toHaveLength(1);
+    expect(timers[0].hasRef()).toBe(false);
+    stop();
+  });
+
   it('stops ticking once stopped', async () => {
     await writeParentBinding(db, SECRET, binding);
     let pings = 0;
@@ -88,8 +100,12 @@ describe('the hub app owns its workers', () => {
     await writeParentBinding(leaky.ctx.db, SECRET, binding);
     await leaky.ctx.db.close();
     await vi.advanceTimersByTimeAsync(FEDERATION_TICK_MS * 2);
-    const leakyWarnings = warn.mock.calls.length;
-    expect(leakyWarnings).toBeGreaterThan(0);
+    // Count only OUR warnings: createHubApp also warns when hub-ui/dist is
+    // absent, which made this pass without federation ticking at all and made
+    // the clean case below fail on a tree that had not built the SPA.
+    const fedWarnings = (spy: typeof warn) =>
+      spy.mock.calls.filter(c => String(c[0] ?? '').includes('[FEDERATION]')).length;
+    expect(fedWarnings(warn)).toBeGreaterThan(0);
     leaky.ctx.stopWorkers!();
 
     warn.mockClear();
@@ -101,8 +117,24 @@ describe('the hub app owns its workers', () => {
     clean.ctx.stopWorkers!();
     await clean.ctx.db.close();
     await vi.advanceTimersByTimeAsync(FEDERATION_TICK_MS * 2);
-    expect(warn).not.toHaveBeenCalled();
+    expect(fedWarnings(warn)).toBe(0);
 
     warn.mockRestore();
+  });
+
+  it('stops the rollup timer too, not just the federation worker', async () => {
+    // "workers", plural. A handle that stopped only one of them still passed
+    // the test above, because the rollup timer logs via console.error on a
+    // five-minute cadence the test never reached.
+    const { createHubApp } = await import('../server');
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const app = await createHubApp({
+      dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org',
+    });
+    app.ctx.stopWorkers!();
+    await app.ctx.db.close();
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    expect(err.mock.calls.filter(c => String(c[0] ?? '').includes('[ROLLUP]'))).toHaveLength(0);
+    err.mockRestore();
   });
 });
