@@ -317,7 +317,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         agentSessionId,
       })
         .then(row => {
-          setSessions(cur => cur.map(s => (s.id === sessionId ? { ...s, recordId: row.id, agentSessionId } : s)));
+          // The tab may already be gone: the user can close it while the POST
+          // is in flight. Forgetting it here is the only chance — nothing else
+          // ever learns the row exists, and it would come back on every launch
+          // with an agent spawned into that worktree.
+          if (!sessionsRef.current.some(s => s.id === sessionId)) {
+            void api.forgetTerminalSession(row.id).catch(() => {});
+            return;
+          }
+          /*
+           * Only the ROW id goes back into session state.
+           *
+           * Writing `agentSessionId` here too killed every fresh terminal it
+           * touched: it is a prop of TerminalPane and sits in that pane's
+           * effect dependencies, so going undefined -> uuid tore the terminal
+           * down and spawned a second agent — which minted a DIFFERENT
+           * conversation id, because a fresh spawn does not carry one. The row
+           * then remembered a conversation that had been killed before it
+           * existed, and restoring pi opened that empty session.
+           *
+           * Claude was spared only by accident: `--continue` ignores the
+           * recorded id and finds the surviving conversation by directory.
+           *
+           * `onSpawned` is excluded from those deps for exactly this hazard,
+           * with a comment saying so. This was the same channel coming back
+           * down as an input, and did not get the same treatment.
+           */
+          setSessions(cur => cur.map(s => (s.id === sessionId ? { ...s, recordId: row.id } : s)));
         })
         .catch(() => { /* the terminal is open and working; this is bookkeeping */ });
     },
@@ -362,6 +388,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: rememberedSessions } = useQuery({
     queryKey: ['terminal-sessions'],
     queryFn: () => api.listTerminalSessions(),
+    // Only where terminals can actually run. The board is served to a browser
+    // too, and without this it restored every remembered tab as a panel saying
+    // terminals are desktop-only — and closing them to tidy up DELETED the
+    // rows the desktop app was relying on.
+    enabled: Boolean(desktopInfo()),
     // A restore, not a live view. Refetching would re-run the effect below
     // against rows we have already put back.
     staleTime: Infinity,
