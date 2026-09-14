@@ -18,7 +18,7 @@
  * The spawner is injected so none of this needs real processes.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PtyRegistry } from '../main/ptyRegistry';
+import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
 
 interface FakePty {
   pid: number;
@@ -375,5 +375,55 @@ describe('conversation ids', () => {
     const result = await reg.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
     expect(result.sessionId).toBeTruthy();
     expect(result.sessionId).not.toBe(result.agentSessionId);
+  });
+});
+
+/**
+ * A bound on how many agents one window can start.
+ *
+ * `countForWindow` existed with no production caller at all — a cap that was
+ * written and never applied. Each `pty:spawn` is a real child process, the map
+ * only shrinks on exit, kill or window close, and the module's own header
+ * threat-models an XSS in the renderer. A loop on `pty:spawn` created processes
+ * without limit.
+ *
+ * The number is not the interesting part; having one is. It sits far above any
+ * real use — a person does not open thirty agents by hand — so it only ever
+ * fires on a bug.
+ */
+describe('a limit on concurrent sessions', () => {
+  it('refuses to start more than the cap for one window', async () => {
+    const reg = makeRegistry();
+    for (let n = 0; n < MAX_SESSIONS_PER_WINDOW; n += 1) {
+      await reg.spawn({ itemId: `i${n}`, agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    }
+    await expect(
+      reg.spawn({ itemId: 'one-too-many', agentId: 'shell', windowId: 1, cols: 80, rows: 24 }),
+    ).rejects.toThrow(/too many/i);
+  });
+
+  it('counts per window, not globally', async () => {
+    // Two windows are two people's worth of work, not one runaway loop.
+    const reg = makeRegistry();
+    for (let n = 0; n < MAX_SESSIONS_PER_WINDOW; n += 1) {
+      await reg.spawn({ itemId: `i${n}`, agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    }
+    await expect(
+      reg.spawn({ itemId: 'other-window', agentId: 'shell', windowId: 2, cols: 80, rows: 24 }),
+    ).resolves.toBeTruthy();
+  });
+
+  it('lets a window start again after its sessions end', async () => {
+    // The cap is about how many run AT ONCE. A window that opened and closed
+    // terminals all day must not be locked out.
+    const reg = makeRegistry();
+    const ids: string[] = [];
+    for (let n = 0; n < MAX_SESSIONS_PER_WINDOW; n += 1) {
+      ids.push((await reg.spawn({ itemId: `i${n}`, agentId: 'shell', windowId: 1, cols: 80, rows: 24 })).sessionId);
+    }
+    reg.kill(ids[0], 1);
+    await expect(
+      reg.spawn({ itemId: 'after-a-close', agentId: 'shell', windowId: 1, cols: 80, rows: 24 }),
+    ).resolves.toBeTruthy();
   });
 });

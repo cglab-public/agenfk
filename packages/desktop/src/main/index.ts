@@ -153,6 +153,33 @@ function createWindow(url: string): BrowserWindow {
   // cannot find or stop.
   win.on('close', () => ptyRegistry?.killAllForWindow(win.webContents.id));
 
+  /*
+   * A reload is a teardown too, and it was not treated as one.
+   *
+   * `webContents.id` is STABLE across a reload, so the old sessions stayed in
+   * the registry owned by a renderer that had just lost every session id —
+   * unaddressable and unkillable until the window closed. Meanwhile the
+   * restore path spawned fresh PTYs for the same cards. Two agents running in
+   * one worktree, both editing the same files, plus two orphans still writing
+   * into it.
+   *
+   * Reachable without dev tooling: no application menu is set, so Electron's
+   * default one ships View > Reload (Cmd+R).
+   *
+   * Reaped BEFORE the new document starts, so the incoming renderer sees an
+   * empty registry rather than sessions it cannot name.
+   */
+  win.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (!isMainFrame || isInPlace) return;
+    ptyRegistry?.killAllForWindow(win.webContents.id);
+  });
+
+  // A crashed renderer leaves the same orphans behind, with no navigation to
+  // hang the cleanup on.
+  win.webContents.on('render-process-gone', () => {
+    ptyRegistry?.killAllForWindow(win.webContents.id);
+  });
+
   const appOrigin = new URL(url).origin;
 
   // External links belong in the user's browser, not in a chrome-less window

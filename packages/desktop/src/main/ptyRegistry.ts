@@ -62,6 +62,18 @@ export interface PtyRegistryDeps {
 }
 
 /** What a spawn gives back: a live process, and the conversation it holds. */
+/**
+ * How many terminals one window may have running at once.
+ *
+ * Far above any real use — nobody opens thirty agents by hand — because the
+ * point is not to ration, it is to bound. Each spawn is a real child process,
+ * the map only shrinks on exit, kill or window close, and this module's own
+ * header threat-models an XSS in the renderer: a loop on `pty:spawn` created
+ * processes without limit. `countForWindow` was written as the cap and never
+ * given a caller.
+ */
+export const MAX_SESSIONS_PER_WINDOW = 30;
+
 export interface SpawnResult {
   readonly sessionId: string;
   readonly agentSessionId?: string;
@@ -122,6 +134,12 @@ export class PtyRegistry {
    * an XSS in the renderer bundle cannot choose what runs or where.
    */
   async spawn(req: SpawnRequest): Promise<SpawnResult> {
+    // Checked BEFORE anything is created, so a refusal leaves nothing behind.
+    if (this.countForWindow(req.windowId) >= MAX_SESSIONS_PER_WINDOW) {
+      throw new Error(
+        `Too many terminals open in this window (${MAX_SESSIONS_PER_WINDOW}). Close one first.`,
+      );
+    }
     // Minted here, not in the renderer: this is where the UUID is validated and
     // where argv is assembled. Only for agents that can actually be told their
     // own id — returning one we never handed over would be a lie the caller
