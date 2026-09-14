@@ -79,7 +79,7 @@ const setBridge = () => {
         kill: async (id: string) => { killCalls.push(id); return true; },
         // Collected for the same reason as onExit below: a mock that drops
         // the handler makes the liveness path untestable.
-        onData: (cb: (e: { sessionId: string; data: string }) => void) => {
+        onData: (_sessionId: string, cb: (e: { sessionId: string; data: string }) => void) => {
           dataHandlers.push(cb);
           return () => { dataHandlers = dataHandlers.filter(h => h !== cb); };
         },
@@ -87,11 +87,11 @@ const setBridge = () => {
         // a no-op unsubscribe and never call anything, so no test could make a
         // session end — which is why "a session that exited still counts as
         // running" shipped.
-        onActivity: (cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void) => {
+        onActivity: (_sessionId: string, cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void) => {
           activityHandlers.push(cb);
           return () => { activityHandlers = activityHandlers.filter(h => h !== cb); };
         },
-        onExit: (cb: (e: { sessionId: string; exitCode: number }) => void) => {
+        onExit: (_sessionId: string, cb: (e: { sessionId: string; exitCode: number }) => void) => {
           exitHandlers.push(cb);
           return () => { exitHandlers = exitHandlers.filter(h => h !== cb); };
         },

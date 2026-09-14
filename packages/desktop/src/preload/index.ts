@@ -11,6 +11,7 @@
  * it is in a browser — see CGLAB-168.
  */
 import { contextBridge, ipcRenderer } from 'electron';
+import { createSessionDemux } from './sessionDemux.js';
 
 export interface AgentInfo {
   readonly id: string;
@@ -64,8 +65,14 @@ export interface AgenfkTerminalApi {
   ack(sessionId: string, bytes: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
   /** Returns an unsubscribe function; a tab that unmounts must stop listening. */
-  onData(cb: (e: { sessionId: string; data: string }) => void): () => void;
-  onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
+  /**
+   * One session's output. SESSION-SCOPED on purpose: a broadcast subscription
+   * meant N listeners on one channel and every chunk dispatched to all of
+   * them, which is O(N²) with N busy terminals and printed a
+   * MaxListenersExceededWarning at the eleventh. See sessionDemux.ts.
+   */
+  onData(sessionId: string, cb: (e: { sessionId: string; data: string }) => void): () => void;
+  onExit(sessionId: string, cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
   /**
    * The agent said what it is doing, by setting the terminal title.
    *
@@ -76,7 +83,7 @@ export interface AgenfkTerminalApi {
    * stopped, and sending that would invite the renderer to treat silence as
    * rest — the mistake this replaces, in the opposite direction.
    */
-  onActivity(cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
+  onActivity(sessionId: string, cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
   listAgents(): Promise<AgentInfo[]>;
   refreshAgents(): Promise<AgentInfo[]>;
   /**
@@ -139,6 +146,12 @@ export interface AgenfkDesktopApi {
  * receives Electron's IpcRendererEvent — that object carries `sender`, which
  * is a way back into the main process that nothing in the renderer should have.
  */
+/**
+ * One demux for every terminal event, shared by every pane in this window.
+ * See sessionDemux.ts: one ipcRenderer listener per channel, not one per pane.
+ */
+const demux = createSessionDemux(ipcRenderer);
+
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   const handler = (_event: unknown, payload: T): void => cb(payload);
   ipcRenderer.on(channel, handler);
@@ -151,9 +164,9 @@ const terminal: AgenfkTerminalApi = {
   resize: (sessionId, cols, rows) => ipcRenderer.invoke('pty:resize', { sessionId, cols, rows }),
   ack: (sessionId, bytes) => ipcRenderer.invoke('pty:ack', { sessionId, bytes }),
   kill: sessionId => ipcRenderer.invoke('pty:kill', { sessionId }),
-  onData: cb => subscribe('pty:data', cb),
-  onExit: cb => subscribe('pty:exit', cb),
-  onActivity: cb => subscribe('pty:activity', cb),
+  onData: (sessionId, cb) => demux.on('pty:data', sessionId, cb as never),
+  onExit: (sessionId, cb) => demux.on('pty:exit', sessionId, cb as never),
+  onActivity: (sessionId, cb) => demux.on('pty:activity', sessionId, cb as never),
   listAgents: () => ipcRenderer.invoke('agents:list'),
   sessionPersistence: () => ipcRenderer.invoke('sessions:persistence'),
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),

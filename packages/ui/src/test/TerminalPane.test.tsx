@@ -36,7 +36,7 @@ interface FakeTerm {
    */
   write: (d: string, done?: () => void) => void;
   dispose: () => void;
-  onData: (cb: (d: string) => void) => { dispose: () => void };
+  onData: (_sessionId: string, cb: (d: string) => void) => { dispose: () => void };
   /** Write callbacks not yet fired, and a way to fire them. Real xterm parses
    *  asynchronously, so a test that wants the ack has to say when. */
   pendingWrites: Array<(() => void) | undefined>;
@@ -114,11 +114,11 @@ beforeEach(() => {
     resize: vi.fn(async () => true),
     kill: vi.fn(async () => true),
     ack: vi.fn(async () => true),
-    onData: vi.fn((cb: (e: { sessionId: string; data: string }) => void) => {
+    onData: vi.fn((_sessionId: string, cb: (e: { sessionId: string; data: string }) => void) => {
       dataSubscribers.push(cb);
       return () => { unsubscribes += 1; };
     }),
-    onExit: vi.fn((cb: (e: { sessionId: string; exitCode: number }) => void) => {
+    onExit: vi.fn((_sessionId: string, cb: (e: { sessionId: string; exitCode: number }) => void) => {
       exitSubscribers.push(cb);
       return () => { unsubscribes += 1; };
     }),

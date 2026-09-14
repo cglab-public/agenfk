@@ -40,11 +40,16 @@ export interface TerminalBridge {
    * outcome than no backpressure.
    */
   ack?(sessionId: string, bytes: number): Promise<boolean>;
-  onData(cb: (e: { sessionId: string; data: string }) => void): () => void;
-  onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
+  /**
+   * One session's output. Session-scoped, because the preload routes by
+   * session now: one ipcRenderer listener per channel rather than one per
+   * pane. See sessionDemux.ts for what that cost.
+   */
+  onData(sessionId: string, cb: (e: { sessionId: string; data: string }) => void): () => void;
+  onExit(sessionId: string, cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
   /** The agent published its own state via the terminal title. Optional: an
    *  older preload does not have it, and the pane must still work. */
-  onActivity?(cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
+  onActivity?(sessionId: string, cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
 }
 
 interface FitLike extends ITerminalAddon {
@@ -178,6 +183,21 @@ export function TerminalPane({
     // orphaned shell attached to the worktree on every reload.
     let cancelled = false;
     const cleanups: Array<() => void> = [];
+    /*
+     * Subscriptions wait for the session id.
+     *
+     * The preload routes terminal events BY SESSION now — one ipcRenderer
+     * listener per channel rather than one per pane, because a broadcast
+     * subscription meant every chunk was dispatched to every open terminal and
+     * discarded by all but one. Routing needs the id, and the id only exists
+     * once the spawn resolves.
+     *
+     * Nothing that used to arrive is lost by waiting: the filter these
+     * callbacks still carry already discarded everything that reached them
+     * before `sessionRef` was set. Buffering that window properly is its own
+     * card (bb70a417).
+     */
+    const pending: Array<(sessionId: string) => () => void> = [];
 
     /*
      * The options are passed THROUGH the seam, not captured behind it.
@@ -215,7 +235,7 @@ export function TerminalPane({
       onScreenActivity(seen);
     };
 
-    cleanups.push(api.onData(({ sessionId, data }) => {
+    pending.push(id => api.onData(id, ({ sessionId, data }) => {
       // Every open terminal listens on this one channel, so the filter is what
       // keeps one card's output out of every other card's tab.
       if (sessionId !== sessionRef.current) return;
@@ -293,13 +313,13 @@ export function TerminalPane({
     // Optional on the bridge: an older preload has no such channel, and a
     // missing signal must degrade to "no opinion", never to a crash.
     if (api.onActivity) {
-      cleanups.push(api.onActivity(({ sessionId, activity }) => {
+      pending.push(id => api.onActivity!(id, ({ sessionId, activity }) => {
         if (sessionId !== sessionRef.current) return;
         onActivity?.(activity);
       }));
     }
 
-    cleanups.push(api.onExit(({ sessionId, exitCode: code }) => {
+    pending.push(id => api.onExit(id, ({ sessionId, exitCode: code }) => {
       if (sessionId !== sessionRef.current) return;
       // Said out loud: without it the terminal simply stops responding, which
       // is indistinguishable from a hang.
@@ -374,6 +394,8 @@ export function TerminalPane({
           return;
         }
         sessionRef.current = result.sessionId;
+        // Now that the session has a name, start listening for its events.
+        for (const subscribe of pending) cleanups.push(subscribe(result.sessionId));
         // After the handle is stored, so a throw in the shell's bookkeeping
         // cannot leave a live process nobody can kill.
         onSpawned?.(result.agentSessionId);
