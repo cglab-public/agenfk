@@ -668,6 +668,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onSelect={setActiveSession}
                 onClose={closeSession}
                 editors={editors}
+                showWorktree
                 onOpenInEditor={(itemId, editorId) => {
                   // Fire and forget: failing to open an editor must not
                   // disturb the terminal the user is working in.

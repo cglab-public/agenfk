@@ -14,6 +14,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
+import { WorktreePanel } from './WorktreePanel';
 import { X, Plus, GitBranch } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
@@ -91,6 +92,13 @@ export interface TerminalTabProps {
    * can be asked to launch are a closed list in the main process.
    */
   readonly onOpenInEditor?: (itemId: string, editorId: string) => void;
+  /**
+   * Show the worktree panel beside the terminal.
+   *
+   * Off unless asked, because it polls git every few seconds and that is not
+   * something to start doing on somebody's behalf.
+   */
+  readonly showWorktree?: boolean;
 }
 
 export function TerminalTab({
@@ -103,6 +111,7 @@ export function TerminalTab({
   onOutput,
   editors,
   onOpenInEditor,
+  showWorktree,
 }: TerminalTabProps): React.ReactElement {
   if (sessions.length === 0) {
     return (
@@ -219,6 +228,12 @@ export function TerminalTab({
       </div>
 
       {/* All of them, always. Hiding is a style; unmounting kills a process. */}
+      {/* Panes and the worktree panel share the row, so the panel sits beside
+          what it describes rather than under it. min-w-0 on the panes: without
+          it a long line of terminal output refuses to shrink and pushes the
+          panel off screen. */}
+      <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
       {sessions.map(session => (
         <div
           key={session.id}
@@ -237,6 +252,13 @@ export function TerminalTab({
           />
         </div>
       ))}
+      </div>
+
+      {/* Asks about the session you are LOOKING at, not all of them: the panel
+          answers "what has this agent touched", and that question only has a
+          meaning for one worktree at a time. */}
+      {showWorktree && <WorktreePanel itemId={current?.itemId ?? null} />}
+      </div>
     </div>
   );
 }

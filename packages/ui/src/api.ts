@@ -144,6 +144,27 @@ export const api = {
     }
   },
   /**
+   * What a session's worktree has changed.
+   *
+   * Errors rather than answering "clean" when the worktree is missing or is
+   * not a repository — the caller has to be able to tell those apart, because
+   * a clean tree is the one thing a user opens this to check.
+   */
+  getGitStatus: async (itemId: string): Promise<{
+    changed: number;
+    staged: number;
+    files: Array<{ path: string; staged: boolean; state: string; from?: string }>;
+  }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/git-status`);
+      return data;
+    } catch (e) {
+      console.error(`API Error reading git status for ${itemId}:`, e);
+      throw e;
+    }
+  },
+
+  /**
    * Terminals to put back, and the conversations they held.
    *
    * The server filters out sessions whose card is gone or trashed, so what
