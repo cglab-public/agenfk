@@ -22,7 +22,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
 
-export type SessionState = 'running' | 'failed' | 'idle';
+export type SessionState = 'running' | 'blocked' | 'failed' | 'idle';
 
 /**
  * The states something upstream can actually produce.
@@ -34,11 +34,13 @@ export type SessionState = 'running' | 'failed' | 'idle';
  * describing behaviour nobody can trigger is a lie that reads like
  * documentation, so it is gone rather than pretended.
  *
- * It should come back the day the app can tell that an agent is blocked on a
- * permission prompt. That is a real and useful state; we simply cannot see it
- * yet, and guessing at it from silence would be worse than not showing it.
+ * That day arrived, and it is called 'blocked' (CGLAB-193). The app can now
+ * read a permission prompt off the rendered screen for the agents that draw
+ * one, so the state has a producer and is back. It is still NOT guessed from
+ * silence — an agent nobody can read stays unknown upstream and lands here as
+ * idle, which is the old wrong answer rather than a new one.
  */
-export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'failed', 'idle']);
+export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'blocked', 'failed', 'idle']);
 
 export interface SessionRow {
   readonly runId: string;
@@ -91,7 +93,15 @@ export interface SessionsRailProps {
  * agents is worse than not showing it, because the rail implies it is showing
  * you what needs you.
  */
-const ORDER: Record<SessionState, number> = { failed: 0, running: 1, idle: 2 };
+/*
+ * Blocked sorts second, under failed and above running.
+ *
+ * Both of the top two are rows that need a PERSON. A failure needs one now; a
+ * blocked agent needs one before it can move at all, and burying it under three
+ * agents that are merrily working is exactly the burial this order exists to
+ * prevent.
+ */
+const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, running: 2, idle: 3 };
 
 /**
  * A spinner for running, a dot for everything else.
@@ -128,12 +138,20 @@ function Spinner(): React.ReactElement {
 
 const DOT: Record<SessionState, string> = {
   running: 'bg-emerald-400',
+  // A hollow ring rather than a filled dot: waiting is not a kind of running,
+  // and the shape says so without relying on hue — these are drawn at 6px,
+  // where colour is the weakest channel and fails outright for the ~8% of men
+  // with a colour vision deficiency.
+  blocked: 'border-2 border-amber-400',
   failed: 'bg-rose-400',
   idle: 'border border-ink-tertiary',
 };
 
 const STATE_LABEL: Record<SessionState, string> = {
   running: 'Running',
+  // "Waiting for you", not "Blocked": the point of the row is that it needs
+  // something FROM THE READER, and a one-word status does not say that.
+  blocked: 'Waiting for you',
   failed: 'Failed',
   idle: 'Idle',
 };

@@ -139,6 +139,44 @@ describe('what a title means', () => {
     expect(activityFromTitle('claude-code', null)).toBe('unknown');
   });
 
+  /*
+   * Codex is not Claude with a different name — and assuming it was is exactly
+   * why this shipped broken for it. Reported from use: "o claude funcionou
+   * perfeito, o codex não". Every case below is one of the three differences.
+   */
+  it('reads the codex spinner wherever it sits in the title', () => {
+    // NOT anchored. This is the one that made codex see nothing: Claude puts
+    // its spinner first, codex does not.
+    expect(activityFromTitle('codex', '⠙ working')).toBe('working');
+    expect(activityFromTitle('codex', 'codex ⠙ working')).toBe('working');
+    expect(activityFromTitle('codex', 'building ⠹')).toBe('working');
+  });
+
+  it('reads Action Required as waiting for a person', () => {
+    // Codex publishes blocked in the title; Claude does not.
+    expect(activityFromTitle('codex', 'Action Required')).toBe('blocked');
+    expect(activityFromTitle('codex', 'codex — Action Required')).toBe('blocked');
+  });
+
+  it('prefers blocked over working when the title could be read as both', () => {
+    // An agent waiting for a person may still be drawing a spinner. "Needs
+    // you" outranks "busy".
+    expect(activityFromTitle('codex', '⠙ Action Required')).toBe('blocked');
+  });
+
+  it('treats any other codex title as idle, because codex always sets one', () => {
+    // Its idle is not a glyph: having a title that is neither the spinner nor
+    // the blocked marker IS the statement.
+    expect(activityFromTitle('codex', 'codex')).toBe('idle');
+    expect(activityFromTitle('codex', '~/GitHub/agenfk')).toBe('idle');
+  });
+
+  it('does not apply that rule to an agent that does not always set a title', () => {
+    // Claude only speaks with a glyph, so an unrecognised Claude title means
+    // we do not know — not that it went to sleep.
+    expect(activityFromTitle('claude-code', 'agenfk — main')).toBe('unknown');
+  });
+
   it('covers only the agents that were actually checked', () => {
     // A drift guard in the other direction from the usual one: adding a rule
     // for an agent whose TUI nobody looked at would be a guess wearing the

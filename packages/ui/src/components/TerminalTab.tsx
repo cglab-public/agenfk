@@ -61,7 +61,15 @@ export interface TerminalSession {
    * the rail falls back to output recency, which is wrong in the other
    * direction but at least is the behaviour that existed before.
    */
-  readonly activity?: 'working' | 'idle';
+  readonly activity?: 'working' | 'blocked' | 'idle';
+  /**
+   * The state read off the rendered screen, for agents that publish no title.
+   *
+   * Kept apart from `activity` because the sources are not equivalent: one is
+   * the agent's own word, the other is our reading of its drawing. A single
+   * field would let whichever fired last win a disagreement in silence.
+   */
+  readonly screenActivity?: 'working' | 'blocked' | 'idle';
   /** Carried so the remembered row can be scoped to a project on restore. */
   readonly projectId?: string;
   /**
@@ -105,7 +113,9 @@ export interface TerminalTabProps {
    *  can share a card, and one exiting says nothing about the other. */
   readonly onExited?: (sessionId: string) => void;
   /** The agent published its state. By SESSION: two agents can share a card. */
-  readonly onActivity?: (sessionId: string, activity: 'working' | 'idle') => void;
+  readonly onActivity?: (sessionId: string, activity: 'working' | 'blocked' | 'idle') => void;
+  /** State read off the rendered screen. By SESSION, like the rest. */
+  readonly onScreenActivity?: (sessionId: string, activity: 'working' | 'blocked' | 'idle') => void;
   /**
    * Editors installed on this machine, if any.
    *
@@ -141,6 +151,7 @@ export function TerminalTab({
   onOutput,
   onExited,
   onActivity,
+  onScreenActivity,
   editors,
   onOpenInEditor,
   showWorktree,
@@ -284,6 +295,7 @@ export function TerminalTab({
             onOutput={() => onOutput?.(session.itemId)}
             onExited={() => onExited?.(session.id)}
             onActivity={a => onActivity?.(session.id, a)}
+            onScreenActivity={a => onScreenActivity?.(session.id, a)}
           />
         </div>
       ))}

@@ -15,6 +15,7 @@
  * not be, since `require` does not exist in that bundle.
  */
 import React from 'react';
+import { activityFromScreen, SCREEN_RULES, TAIL_LINES, type ScreenActivity } from '../screenActivity';
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -33,7 +34,7 @@ export interface TerminalBridge {
   onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
   /** The agent published its own state via the terminal title. Optional: an
    *  older preload does not have it, and the pane must still work. */
-  onActivity?(cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void): () => void;
+  onActivity?(cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
 }
 
 interface FitLike extends ITerminalAddon {
@@ -86,7 +87,16 @@ export interface TerminalPaneProps {
    * the sessions rail needs it, and the pane is the only place the stream
    * arrives.
    */
-  readonly onActivity?: (activity: 'working' | 'idle') => void;
+  readonly onActivity?: (activity: 'working' | 'blocked' | 'idle') => void;
+  /**
+   * The state read off the rendered screen, for agents that publish no title.
+   *
+   * Separate from `onActivity` because the sources are not equivalent: the
+   * title is the agent's own word, the screen is our reading of its drawing.
+   * Keeping them apart means a future disagreement is visible rather than
+   * silently resolved by whichever fired last.
+   */
+  readonly onScreenActivity?: (activity: Exclude<ScreenActivity, 'unknown'>) => void;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -109,6 +119,7 @@ export function TerminalPane({
   onOutput,
   onExited,
   onActivity,
+  onScreenActivity,
   createTerminal,
   createFitAddon,
   bridge,
@@ -116,6 +127,16 @@ export function TerminalPane({
   const hostRef = React.useRef<HTMLDivElement>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [exitCode, setExitCode] = React.useState<number | null>(null);
+  /** Last state read off the screen, so an unchanged one is not re-reported. */
+  const lastScreen = React.useRef<ScreenActivity | null>(null);
+  /*
+   * Through a ref, not the closure. The data handler is registered once and
+   * outlives the render that made it; closing over `agentId` would pin the
+   * value from that first render, which is the same class of bug as reading
+   * state inside an updater.
+   */
+  const agentIdRef = React.useRef(agentId);
+  agentIdRef.current = agentId;
 
   // Everything the cleanup needs, held in refs rather than state: the teardown
   // must run with whatever exists at that moment, and a state update would be
@@ -163,11 +184,38 @@ export function TerminalPane({
       // wakes the shell to recompute the rail, which is the cost the rail's
       // one-timer design exists to avoid.
       const now = Date.now();
-      if (now - lastReport.current > OUTPUT_REPORT_MS) {
+      const reportedNow = now - lastReport.current > OUTPUT_REPORT_MS;
+      if (reportedNow) {
         lastReport.current = now;
         onOutput?.();
       }
       term.write(data);
+
+      /*
+       * Read the state off the RENDERED screen, for agents that publish
+       * nothing in the terminal title (CGLAB-193).
+       *
+       * After the write, deliberately: the buffer has to hold what the user
+       * can see. And on the same throttle as the liveness report above,
+       * because a repainting footer produces many small chunks and scanning
+       * the tail on each one would be the cost this throttle exists to avoid.
+       *
+       * Read from xterm rather than from `data` because in the raw stream a
+       * partial redraw and a scrolled line are indistinguishable from new
+       * content. The buffer is the one place the text is actually true.
+       */
+      if (reportedNow && onScreenActivity && SCREEN_RULES[agentIdRef.current]) {
+        const buf = term.buffer.active;
+        const tail: string[] = [];
+        for (let i = Math.max(0, buf.baseY + buf.cursorY - TAIL_LINES); i <= buf.baseY + buf.cursorY; i += 1) {
+          tail.push(buf.getLine(i)?.translateToString(true) ?? '');
+        }
+        const seen = activityFromScreen(agentIdRef.current, tail);
+        if (seen !== 'unknown' && seen !== lastScreen.current) {
+          lastScreen.current = seen;
+          onScreenActivity(seen);
+        }
+      }
     }));
 
     // Optional on the bridge: an older preload has no such channel, and a

@@ -60,12 +60,14 @@ export interface AgenfkTerminalApi {
   /**
    * The agent said what it is doing, by setting the terminal title.
    *
-   * Only ever 'working' or 'idle', and only on a CHANGE. 'unknown' never
+   * Only a state the agent actually published, and only on a CHANGE. Codex
+   * says 'Action Required' in its title when it wants a person, so 'blocked'
+   * crosses here too. 'unknown' never
    * crosses this boundary: an agent that publishes nothing has not told us it
    * stopped, and sending that would invite the renderer to treat silence as
    * rest — the mistake this replaces, in the opposite direction.
    */
-  onActivity(cb: (e: { sessionId: string; activity: 'working' | 'idle' }) => void): () => void;
+  onActivity(cb: (e: { sessionId: string; activity: 'working' | 'blocked' | 'idle' }) => void): () => void;
   listAgents(): Promise<AgentInfo[]>;
   refreshAgents(): Promise<AgentInfo[]>;
   /**

@@ -292,6 +292,61 @@ describe('the states the app can actually produce', () => {
   it('has no state the app cannot build', () => {
     // The check that keeps this honest as the component grows. Every state the
     // rail can render has to be one something upstream can actually emit.
-    expect([...PRODUCIBLE_STATES].sort()).toEqual(['failed', 'idle', 'running']);
+    // 'blocked' joined the set when the screen-text reader gave it a producer
+    // (CGLAB-193). It had been removed precisely because it had none.
+    expect([...PRODUCIBLE_STATES].sort()).toEqual(['blocked', 'failed', 'idle', 'running']);
+  });
+});
+
+/**
+ * The state that came back (CGLAB-193).
+ *
+ * `waiting` was removed from this component because nothing could produce one —
+ * the docblock called it load-bearing while the app could not reach it, and the
+ * tests passed because they handed the state straight to the component. It
+ * returns as `blocked`, with a producer: the screen-text reader sees the
+ * permission prompt that agents draw.
+ */
+describe('a session waiting on a person', () => {
+  it('says what it wants, rather than naming a status', () => {
+    // "Waiting for you", not "Blocked". The point of the row is that it needs
+    // something FROM THE READER, and a one-word status does not say that.
+    renderRail([row({ state: 'blocked' })]);
+    const dot = screen.getByTestId('session-dot');
+    expect(dot.getAttribute('data-state')).toBe('blocked');
+    // The label is the dot's ACCESSIBLE name — the state is visual for everyone
+    // else, and this is the only way a screen reader gets it at all.
+    expect(dot.getAttribute('aria-label')).toMatch(/waiting for you/i);
+  });
+
+  it('is drawn as a ring, not a filled dot', () => {
+    // Waiting is not a kind of running, and these are 6px: colour is the
+    // weakest channel at that size and fails outright for a colour-blind
+    // reader, so the shape has to carry it too.
+    renderRail([row({ state: 'blocked' })]);
+    expect(screen.getByTestId('session-dot').className).toMatch(/border-2/);
+  });
+
+  it('sorts above agents that are merrily working', () => {
+    /*
+     * Both of the top two states are rows that need a PERSON. Burying a
+     * blocked agent under three running ones is the burial this order exists
+     * to prevent — and the rail implies it is showing you what needs you.
+     */
+    renderRail([
+      row({ runId: 'a', state: 'running' }),
+      row({ runId: 'b', state: 'blocked' }),
+      row({ runId: 'c', state: 'failed' }),
+    ]);
+    const order = Array.from(document.querySelectorAll('[data-testid="session-dot"]'))
+      .map(el => el.getAttribute('data-state'));
+    expect(order).toEqual(['failed', 'blocked', 'running']);
+  });
+
+  it('is a state the app can actually produce', () => {
+    // The guard that caught the original lie: a state the component can draw
+    // but nothing upstream can build is documentation for behaviour that does
+    // not exist.
+    expect(PRODUCIBLE_STATES.has('blocked')).toBe(true);
   });
 });

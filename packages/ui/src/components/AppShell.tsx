@@ -497,13 +497,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
          *
          * A dead process still wins over both: that is a fact, not a claim.
          */
+        /*
+         * Four sources, in order of how much they actually know.
+         *
+         * A dead process is a FACT and beats everything. Then the agent's own
+         * word, published in the terminal title — claude-code and codex. Then
+         * what we read off its rendered screen — pi and gemini, which publish
+         * no title. Only when none of those has an opinion does it fall back to
+         * output recency, which is the signal a repainting footer keeps
+         * permanently true and which this whole line of work exists to retire.
+         */
         state: open.exited
           ? 'idle'
-          : open.activity === 'working'
-            ? 'running'
-            : open.activity === 'idle'
-              ? 'idle'
-              : live.isLive(open.itemId) ? 'running' : 'idle',
+          : open.activity === 'blocked'
+            ? 'blocked'
+            : open.activity === 'working'
+              ? 'running'
+              : open.activity === 'idle'
+                ? 'idle'
+              : open.screenActivity === 'blocked'
+                ? 'blocked'
+                : open.screenActivity === 'working'
+                  ? 'running'
+                  : open.screenActivity === 'idle'
+                    ? 'idle'
+                    : live.isLive(open.itemId) ? 'running' : 'idle',
         // The run's start time when this terminal IS that run, never a fresh
         // stamp: this memo recomputes whenever any card lights up, and stamping
         // here reset every terminal's elapsed time to "0s" on an unrelated
@@ -1094,6 +1112,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 // only offers STOP for running or waiting, so the one state
                 // they could reach was the one with no controls.
                 onOutput={itemId => { live.touch(itemId); }}
+                onScreenActivity={(sessionId, screenActivity) => {
+                  setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, screenActivity } : s)));
+                }}
                 onActivity={(sessionId, activity) => {
                   // Recorded on the SESSION, like the exit: two agents can
                   // share a card, and one working says nothing about the other.

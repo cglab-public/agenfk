@@ -24,11 +24,21 @@
  */
 
 /** What the title says. `unknown` means no opinion — never "idle". */
-export type AgentActivity = 'working' | 'idle' | 'unknown';
+export type AgentActivity = 'working' | 'blocked' | 'idle' | 'unknown';
 
 interface TitleRule {
   readonly working?: RegExp;
+  /** Some agents say in the title that they are waiting for a person. */
+  readonly blocked?: RegExp;
+  /**
+   * How idle is recognised.
+   *
+   * `pattern` matches idle directly. `otherwiseAnyTitle` means "having a title
+   * at all, once working and blocked are ruled out" — which is how codex says
+   * it: it always sets a title, and the absence of a spinner IS the statement.
+   */
   readonly idle?: RegExp;
+  readonly idleIsAnyOtherTitle?: boolean;
 }
 
 /**
@@ -43,18 +53,34 @@ interface TitleRule {
 export const TITLE_RULES: Readonly<Record<string, TitleRule>> = {
   // Braille covers Claude Code up to 2.1.227; the half-circles are the 2.1.228
   // busy spinner. Anchored at the start and followed by a space, because that
-  // is where the spinner sits — a Braille character elsewhere in a title is a
-  // filename, not a state.
+  // is where Claude puts it — a Braille character elsewhere in a Claude title
+  // is a filename, not a state. Verified working in the app.
   'claude-code': {
     working: /^[⠀-⣿◐-◓] /u,
     idle: /^✳ /u,
   },
+  /*
+   * Codex is NOT Claude with a different name, and assuming it was is why this
+   * shipped broken for it.
+   *
+   * Three differences, each of which alone was enough to see nothing:
+   *  - the spinner is not anchored to the start. It appears surrounded by
+   *    spaces anywhere in the title, so a `^` match misses "codex ⠙ working"
+   *    entirely;
+   *  - the glyphs are the ten-frame braille spinner, not the whole block;
+   *  - idle is not a glyph. Codex ALWAYS sets a title, so having one that is
+   *    neither the spinner nor the blocked marker is itself the statement.
+   *
+   * And it publishes blocked, which Claude does not: "Action Required" in the
+   * title means it is waiting for a person.
+   */
   codex: {
-    working: /^[⠀-⣿◐-◓] /u,
+    working: /(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)/u,
+    blocked: /Action Required/i,
+    idleIsAnyOtherTitle: true,
   },
   // pi and gemini deliberately absent: they publish no OSC title at all, so a
-  // rule here would be a guess. They are the screen-text path, and until that
-  // exists they answer `unknown`.
+  // rule here would be a guess. They are the screen-text path.
 };
 
 /** Last recorded date for the patterns above, so staleness is visible. */
@@ -70,9 +96,15 @@ export const TITLE_RULES_CHECKED = '2026-09-14';
  */
 export function activityFromTitle(agentId: string, title: string | null): AgentActivity {
   const rule = TITLE_RULES[agentId];
-  if (!rule || !title) return 'unknown';
+  if (!rule || title === null) return 'unknown';
+  // Blocked first: an agent that is waiting for a person may still be drawing
+  // a spinner, and "needs you" outranks "busy" wherever both could be read.
+  if (rule.blocked?.test(title)) return 'blocked';
   if (rule.working?.test(title)) return 'working';
   if (rule.idle?.test(title)) return 'idle';
+  // Only for agents that always set one. Elsewhere a title we do not recognise
+  // means we do not know, and calling that idle is the confident wrong claim.
+  if (rule.idleIsAnyOtherTitle && title.trim() !== '') return 'idle';
   return 'unknown';
 }
 
