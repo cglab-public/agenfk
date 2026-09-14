@@ -11,10 +11,10 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Network, AlertTriangle, Clock } from 'lucide-react';
 import { api } from '../api';
+import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
 
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const errText = (e: unknown) => (e as any)?.response?.data?.error ?? (e as any)?.message ?? 'Request failed';
 const inputCls = 'w-full rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-sm text-ink';
 
 interface Status {

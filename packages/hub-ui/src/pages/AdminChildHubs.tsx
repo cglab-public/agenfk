@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Network, Clock, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
+import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
 
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
@@ -47,7 +48,6 @@ interface Invite {
 // UTC formatter here would have admins in other zones misjudging staleness.
 const fmt = (iso: string | null) => (iso ? fmtDateTime(iso) : '—');
 
-const errText = (e: unknown) => (e as any)?.response?.data?.error ?? (e as any)?.message ?? 'Request failed';
 
 /**
  * Detach confirmation. A real dialog rather than a panel appended below the
