@@ -144,3 +144,41 @@ describe('an event with no seq', () => {
     expect(list.map(e => e.text)).toEqual(['a', 'b']);
   });
 });
+
+describe('a positionless event stranded mid-list', () => {
+  /*
+   * The hole the first guard left. It compared the incoming event against the
+   * LAST element only, so a positionless event already sitting in the middle
+   * was invisible to it — and the slow path then sorted with
+   * `a.seq - z.seq`, where `undefined - n` is NaN. A NaN comparator does not
+   * throw and does not sort; it leaves the order arbitrary.
+   *
+   * Reproduced before the fix: [0, undefined, 9] + seq 1 came out as
+   * 0, undefined, 1, 9 — the new event past the one it should precede. That is
+   * the "transcript that reads as a different conversation" this module's
+   * header says nothing pays for.
+   */
+  const bare = (t: string) => ({ text: t } as { seq?: number; text: string });
+  const num = (seq: number, t: string) => ({ seq, text: t });
+
+  it('does not let a numbered event jump over it', () => {
+    const list = appendEvent([num(0, 'a'), bare('gap'), num(9, 'i')], num(1, 'b'));
+    expect(list.map(e => e.text)).toEqual(['a', 'gap', 'i', 'b']);
+  });
+
+  it('keeps the existing order untouched, whatever arrives', () => {
+    // The only honest answer once the list is partly unnumbered: leave what is
+    // there alone and append. Any reordering would be a guess about events
+    // that never carried an order.
+    let list: readonly { seq?: number; text: string }[] =
+      [num(0, 'a'), bare('gap'), num(3, 'c')];
+    for (const e of [num(1, 'x'), bare('y'), num(2, 'z')]) list = appendEvent(list, e);
+    expect(list.map(e => e.text)).toEqual(['a', 'gap', 'c', 'x', 'y', 'z']);
+  });
+
+  it('still sorts properly when every position is present', () => {
+    // The fix must not cost the ordinary case its ordering.
+    expect(appendEvent([num(1, 'a'), num(3, 'c')], num(2, 'b')).map(e => e.text))
+      .toEqual(['a', 'b', 'c']);
+  });
+});

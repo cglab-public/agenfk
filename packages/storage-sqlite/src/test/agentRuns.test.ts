@@ -166,3 +166,51 @@ describe('the position an appended event was given', () => {
     expect(stored[stored.length - 1].seq).toBe(second);
   });
 });
+
+/**
+ * The payload, stored once rather than twice (review follow-up).
+ *
+ * `RunEvent.payload` is already a STRING by the time it reaches storage — the
+ * route serialises it, and the auto-position branch says so in its own comment
+ * and passes it through untouched. Thirty lines down, the explicit-position
+ * branch called `JSON.stringify` on it again.
+ *
+ * That branch is the one the pi tailer always took, so a reader doing
+ * JSON.parse got a string back instead of the object. The two branches
+ * disagreed about the same field, and nothing noticed because nothing asserted
+ * it either way.
+ */
+describe('the payload', () => {
+  const withPayload = (seq: number | undefined, payload: string) => ({
+    id: `p-${seq ?? 'auto'}-${Math.random().toString(36).slice(2)}`,
+    runId: 'run-1', ts: new Date().toISOString(),
+    lane: 'worker' as const, kind: 'tool' as const, tool: 'Bash',
+    ...(seq === undefined ? {} : { seq }), payload,
+  });
+
+  beforeEach(async () => { await storage.createAgentRun(sampleRun()); });
+
+  it('survives a round trip when the store assigned the position', async () => {
+    await storage.appendRunEvent(withPayload(undefined, '{"cmd":"npm test"}') as never);
+    const [e] = await storage.listRunEvents('run-1');
+    expect(JSON.parse(e.payload as string)).toEqual({ cmd: 'npm test' });
+  });
+
+  it('survives it when the caller supplied the position', async () => {
+    // The branch the pi tailer used to take every time. It stored
+    // "{\\"cmd\\":\\"npm test\\"}" — a string of a string.
+    await storage.appendRunEvent(withPayload(5, '{"cmd":"npm test"}') as never);
+    const [e] = await storage.listRunEvents('run-1');
+    expect(JSON.parse(e.payload as string)).toEqual({ cmd: 'npm test' });
+  });
+
+  it('stores the same bytes either way', async () => {
+    // The point is not that each branch works, it is that they AGREE. Two
+    // branches with two encodings is a field whose meaning depends on which
+    // writer happened to reach it.
+    await storage.appendRunEvent(withPayload(undefined, '{"a":1}') as never);
+    await storage.appendRunEvent(withPayload(9, '{"a":1}') as never);
+    const stored = await storage.listRunEvents('run-1');
+    expect(stored[0].payload).toBe(stored[1].payload);
+  });
+});

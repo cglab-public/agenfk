@@ -55,13 +55,28 @@ export async function tailRunsOnce(
     const consumed = state ? state.lastOffset : 0;
     for (let i = consumed; i < parsed.length; i++) {
       const p = parsed[i];
-      // Append at end: seq = current total event count, so tailer and REST
-      // writers never collide on the (run_id, seq) dedup index.
-      const seq = (await storage.listRunEvents(run.id)).length;
+      /*
+       * The POSITION IS THE STORE'S TO ASSIGN, and taking it back was the bug.
+       *
+       * This used to compute `seq` as the run's total event count, and the
+       * comment above it claimed that was what stopped the tailer and the REST
+       * writers colliding on `(run_id, seq)`. It is what caused the collision:
+       * count is not MAX+1, and the orchestrator appends to this same run over
+       * REST, so a gap is ordinary — after which the count names a slot that
+       * already exists and `INSERT OR IGNORE` drops the row.
+       *
+       * Omitting it hands the job to the atomic `COALESCE(MAX(seq)+1, 0)`
+       * inside the insert, which is what it is there for. Order within a batch
+       * is preserved because the events are appended one at a time, in
+       * transcript order.
+       *
+       * It also cost a full read of every event on the run, per event, every
+       * two seconds — the exact O(n) pattern the storage layer says it
+       * replaced with a single indexed aggregate.
+       */
       const event: RunEvent = {
         id: uuidv4(),
         runId: run.id,
-        seq,
         ts: now(),
         lane: p.lane,
         kind: p.kind,
@@ -70,9 +85,20 @@ export async function tailRunsOnce(
         payload: p.payload,
         tokens: p.tokens,
       };
-      await storage.appendRunEvent(event);
-      emit({ itemId: run.itemId, runId: run.id, event });
-      appended.push(event);
+      /*
+       * Announce only what was actually written.
+       *
+       * `appendRunEvent` answers null when the insert wrote nothing, and this
+       * caller used to ignore that — so a dropped row was still broadcast to
+       * every open panel, painting a line that is gone on the next refresh.
+       * Worse, the ingestion offset below advances regardless, so the event is
+       * never retried: silent, permanent loss.
+       */
+      const seq = await storage.appendRunEvent(event);
+      if (seq === null) continue;
+      const stored = { ...event, seq };
+      emit({ itemId: run.itemId, runId: run.id, event: stored });
+      appended.push(stored);
     }
     if (parsed.length > consumed) {
       await storage.setIngestionState({ sourcePath: offsetKey, lastOffset: parsed.length, lastRunAt: now() });

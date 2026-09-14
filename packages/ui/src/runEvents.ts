@@ -60,6 +60,22 @@ export function appendEvent<T extends Sequenced>(
   const last = list[list.length - 1];
   if (event.seq === undefined || last.seq === undefined) return [...list, event];
 
+  /*
+   * The slow path below SORTS, and it can only sort what is numbered.
+   *
+   * Checking the tail alone was not enough: a positionless event stranded in
+   * the middle of the list is invisible to that check, survives into the sort,
+   * and `undefined - n` is NaN. A NaN comparator neither throws nor orders —
+   * it leaves the result arbitrary, which is a transcript that reads as a
+   * different conversation.
+   *
+   * So once any position is missing, appending is the only honest answer:
+   * those events never carried an order, and inventing one for them would be a
+   * guess dressed as a correction. Scanned only on the rare path; the common
+   * one returned above without looking at the list at all.
+   */
+  if (list.some(e => e.seq === undefined)) return [...list, event];
+
   // The overwhelmingly common case: the newest event, arriving newest-last.
   // One comparison, no scan, no sort.
   if (event.seq > last.seq) return [...list, event];

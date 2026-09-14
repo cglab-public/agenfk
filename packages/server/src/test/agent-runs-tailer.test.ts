@@ -110,3 +110,118 @@ describe('tailRunsOnce', () => {
     expect(appended).toEqual([]);
   });
 });
+
+/**
+ * Events the tailer announced but never wrote (BUG 510df783, review follow-up).
+ *
+ * `appendRunEvent` was given a return value precisely so callers stop telling
+ * every open panel about rows that do not exist. The route was fixed; this
+ * caller — the OTHER producer of `run:event` — kept ignoring it.
+ *
+ * And it is worse here, because of how the position was chosen:
+ *
+ *     const seq = (await storage.listRunEvents(run.id)).length;
+ *
+ * Count, not MAX+1. The comment above it claimed this was what stopped the
+ * tailer and the REST writers colliding on `(run_id, seq)`; it is what CAUSES
+ * the collision. Any gap in the sequence — and the orchestrator appends to the
+ * same run over REST, so gaps are ordinary — puts the count on a slot that is
+ * already taken, `INSERT OR IGNORE` drops the row, and the loop then advances
+ * the ingestion offset past it. The panel paints a line that is gone on the
+ * next refresh, and the event is never retried. Silent, permanent loss.
+ */
+describe('a position that is already taken', () => {
+  // Its own storage: the block above keeps `storage` and `emitted` inside its
+  // describe, so appending after it left them out of scope.
+  let storage: SQLiteStorageProvider;
+  let emitted: RunEventBroadcast[];
+  const emit = (b: RunEventBroadcast) => emitted.push(b);
+  beforeEach(async () => {
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: ':memory:' });
+    emitted = [];
+  });
+
+  it('does not lose the event to a gap in the sequence', async () => {
+    /*
+     * A gap is built the way a real one appears: the orchestrator writes at an
+     * explicit position over REST, leaving 0 and 2 occupied and 1 empty. The
+     * old arithmetic then offers 2 for the tailer's first event — a slot that
+     * exists — and the insert silently drops it.
+     */
+    const runId = await seedRun(storage);
+    for (const seq of [0, 2]) {
+      await storage.appendRunEvent({
+        id: `orch-${seq}`, runId, seq, ts: '2026-07-21T10:00:00.000Z',
+        lane: 'orchestrator', kind: 'dispatch', text: 'from REST',
+      } as never);
+    }
+
+    const content = [asst('bash', 'npx vitest', 100)].join('\n');
+    await tailRunsOnce(storage, emit, { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' });
+
+    const stored = await storage.listRunEvents(runId);
+    expect(stored.filter(e => e.text?.includes('vitest'))).toHaveLength(1);
+  });
+
+  it('does not announce an event it failed to write', async () => {
+    /*
+     * The rule the route already follows and this caller did not. A broadcast
+     * for a row that was dropped paints an event that exists on screen and in
+     * no database — and the ingestion offset moves on regardless, so it never
+     * comes back.
+     */
+    const runId = await seedRun(storage);
+    for (const seq of [0, 2]) {
+      await storage.appendRunEvent({
+        id: `orch-${seq}`, runId, seq, ts: '2026-07-21T10:00:00.000Z',
+        lane: 'orchestrator', kind: 'dispatch', text: 'from REST',
+      } as never);
+    }
+    const content = [asst('bash', 'npx vitest', 100)].join('\n');
+    await tailRunsOnce(storage, emit, { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' });
+
+    const stored = await storage.listRunEvents(runId);
+    for (const b of emitted) {
+      expect(stored.some(e => e.id === b.event.id), `announced ${b.event.id} but it is not stored`).toBe(true);
+    }
+  });
+
+  it('says nothing when the store reports it wrote nothing', async () => {
+    /*
+     * The guard itself, which the tests above cannot reach: now that the store
+     * assigns the position atomically, a refusal needs a store that refuses.
+     *
+     * Without this the mutation that deletes `if (seq === null) continue` goes
+     * unnoticed — and that line is the whole reason `appendRunEvent` was given
+     * a return value. A row that was not written must not be announced to
+     * every open panel, because the ingestion offset moves on regardless and
+     * the event never comes back.
+     */
+    const runId = await seedRun(storage);
+    const refusing = new Proxy(storage, {
+      get: (t, k) => (k === 'appendRunEvent' ? async () => null : Reflect.get(t, k).bind(t)),
+    }) as unknown as SQLiteStorageProvider;
+
+    const content = [asst('bash', 'npx vitest', 100)].join('\n');
+    const appended = await tailRunsOnce(refusing, emit, {
+      readFile: () => content, now: () => '2026-07-21T10:00:01.000Z',
+    });
+
+    expect(emitted).toEqual([]);
+    expect(appended).toEqual([]);
+    expect(await storage.listRunEvents(runId)).toEqual([]);
+  });
+
+  it('keeps the events in the order the transcript had them', async () => {
+    // Letting the store assign the position must not reorder a batch: the
+    // transcript's order is the conversation's order.
+    const runId = await seedRun(storage);
+    const content = [
+      asst('bash', 'first', 10), asst('bash', 'second', 10), asst('bash', 'third', 10),
+    ].join('\n');
+    await tailRunsOnce(storage, emit, { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' });
+    const stored = await storage.listRunEvents(runId);
+    expect(stored.map(e => e.text)).toEqual(['first', 'second', 'third'].map(t => expect.stringContaining(t)));
+  });
+});

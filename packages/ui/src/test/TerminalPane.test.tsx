@@ -19,6 +19,7 @@ import { render, screen, cleanup, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { TerminalPane } from '../components/TerminalPane';
+import { TERMINAL_OPTIONS } from '../terminalOptions';
 
 interface FakeTerm {
   opened: HTMLElement | null;
@@ -416,5 +417,42 @@ describe('acking drawn output', () => {
     dataSubscribers[0]({ sessionId: 'sess-1', data: 'hello' });
     expect(() => terms[0].drain()).not.toThrow();
     expect(terms[0].written).toContain('hello');
+  });
+});
+
+/**
+ * That the pane actually USES the shared options (review follow-up).
+ *
+ * `terminalOptions.test.ts` asserts the constant against itself, which pins the
+ * value and not its use. Reverting this pane to the old inline
+ * `new XTerm({ convertEol, fontSize, cursorBlink })` left all 986 UI tests
+ * green — the same regression the commit set out to prevent, one step further
+ * along: the scrollback would be nobody's decision again, and no test would
+ * say so.
+ *
+ * The real constructor is never exercised here because these tests always
+ * inject `createTerminal`, so the assertion has to be on what the pane passes
+ * to that factory.
+ */
+describe('the options the pane builds its terminal with', () => {
+  it('passes the shared options object through', async () => {
+    const seen: unknown[] = [];
+    render(
+      <TerminalPane
+        itemId="i1"
+        agentId="claude-code"
+        createTerminal={((opts: unknown) => { seen.push(opts); return makeTerm() as never; }) as never}
+        createFitAddon={() => ({ fit: () => {}, dispose: () => {} }) as never}
+        bridge={bridge as never}
+      />,
+    );
+    await waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toBe(TERMINAL_OPTIONS);
+  });
+
+  it('carries a scrollback, which is the whole point of the module', () => {
+    // Stated here as well as in terminalOptions.test.ts, because this is the
+    // side that proves it reaches a terminal rather than merely existing.
+    expect((TERMINAL_OPTIONS as { scrollback?: number }).scrollback).toBeGreaterThan(0);
   });
 });

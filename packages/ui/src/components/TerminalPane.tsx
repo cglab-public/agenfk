@@ -20,6 +20,7 @@ import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xt
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { TERMINAL_OPTIONS } from '../terminalOptions';
+import type { ITerminalOptions } from '@xterm/xterm';
 
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
@@ -106,7 +107,11 @@ export interface TerminalPaneProps {
    * silently resolved by whichever fired last.
    */
   readonly onScreenActivity?: (activity: Exclude<ScreenActivity, 'unknown'>) => void;
-  readonly createTerminal?: () => Terminal;
+  /**
+   * Builds the terminal. Receives the options the real path would use, so a
+   * test can assert on them — see TerminalPane.test.ts.
+   */
+  readonly createTerminal?: (options: ITerminalOptions) => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
 }
@@ -174,8 +179,15 @@ export function TerminalPane({
     let cancelled = false;
     const cleanups: Array<() => void> = [];
 
-    const term = (createTerminal ?? (() =>
-      new XTerm(TERMINAL_OPTIONS)))();
+    /*
+     * The options are passed THROUGH the seam, not captured behind it.
+     *
+     * The factory used to take no arguments, so an injected one never saw what
+     * the real path builds — and reverting this line to an inline options
+     * object left all 986 UI tests green. A seam that hides the thing it
+     * exists to let you observe is not a seam.
+     */
+    const term = (createTerminal ?? (opts => new XTerm(opts)))(TERMINAL_OPTIONS);
     termRef.current = term;
 
     const fit = (createFitAddon ?? (() => new FitAddon() as FitLike))();

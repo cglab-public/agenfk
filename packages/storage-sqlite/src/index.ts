@@ -845,7 +845,12 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.kind,
       event.tool ?? null,
       event.text ?? null,
-      event.payload ? JSON.stringify(event.payload) : null,
+      // Passed through, exactly as the auto-position branch does. It is
+      // already a string - the route serialises it - and stringifying again
+      // stored a string OF a string, so a reader doing JSON.parse got the
+      // text back instead of the object. The two branches disagreed about
+      // the same field, and this is the one the pi tailer always took.
+      event.payload ?? null,
       event.tokens ?? null,
     );
     // The position asked for, or nothing when the row was already there.
