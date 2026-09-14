@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
+import { makeProject, makeItem } from './helpers/fixtures';
 import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
@@ -198,8 +199,8 @@ describe('GET /items/:id', () => {
   });
 
   it('returns item for known id', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app).get(`/items/${item.id}`);
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(item.id);
@@ -226,8 +227,8 @@ describe('PUT /items/:id workflow guards', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('returns 403 when setting DONE directly', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app).put(`/items/${item.id}`).send({ status: 'DONE' });
     expect(res.status).toBe(403);
   });
@@ -239,8 +240,8 @@ describe('PUT /items/:id workflow guards', () => {
   // 'rejects invalid skip transition (TODO -> REVIEW, skipping IN_PROGRESS)',
   // which asserted the opposite for a custom-flow project. Both now agree.
   it('rejects setting REVIEW directly, skipping the coding step', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
@@ -256,8 +257,8 @@ describe('PUT /items/:id workflow guards', () => {
   });
 
   it('updates title successfully', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app).put(`/items/${item.id}`).send({ title: 'Updated' });
     expect(res.status).toBe(200);
     expect(res.body.title).toBe('Updated');
@@ -290,8 +291,8 @@ describe('POST /items/bulk', () => {
   });
 
   it('skips DONE status without internal token', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
 
     const res = await request(app).post('/items/bulk').send({
       items: [{ id: item.id, updates: { status: 'DONE' } }]
@@ -303,8 +304,8 @@ describe('POST /items/bulk', () => {
   });
 
   it('archives item recursively via bulk', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
 
     const res = await request(app).post('/items/bulk').send({
       items: [{ id: item.id, updates: { status: 'ARCHIVED' } }]
@@ -325,8 +326,8 @@ describe('POST /items/:id/review', () => {
 
   it('returns 400 when command missing (with token)', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app)
       .post(`/items/${item.id}/review`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
@@ -543,8 +544,8 @@ describe('POST /items/:id/validate — command required only on final step', () 
 
   it('advances intermediate step (IN_PROGRESS→REVIEW) with no command', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'PV2' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV2', projectId: p.id })).body;
+    const p = await makeProject(app, 'PV2');
+    const item = await makeItem(app, { type: 'TASK', title: 'TV2', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -558,8 +559,8 @@ describe('POST /items/:id/validate — command required only on final step', () 
 
   it('still returns NO_VERIFY_COMMAND when on final step (TEST→DONE) with no command and no verifyCommand', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'PV3' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'TV3', projectId: p.id })).body;
+    const p = await makeProject(app, 'PV3');
+    const item = await makeItem(app, { type: 'TASK', title: 'TV3', projectId: p.id });
     await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
@@ -607,8 +608,8 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
 
   it('logs evidence as a tagged comment before advancing', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'EV1' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV1', projectId: p.id })).body;
+    const p = await makeProject(app, 'EV1');
+    const item = await makeItem(app, { type: 'TASK', title: 'EV1', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -625,8 +626,8 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
 
   it('still advances without evidence when omitted', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'EV2' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'EV2', projectId: p.id })).body;
+    const p = await makeProject(app, 'EV2');
+    const item = await makeItem(app, { type: 'TASK', title: 'EV2', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -646,8 +647,8 @@ describe('POST /items/:id/review success paths', () => {
 
   it('moves REVIEW item to TEST on passing command', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
@@ -664,8 +665,8 @@ describe('POST /items/:id/review success paths', () => {
 
   it('returns 422 on failing command and moves back to IN_PROGRESS', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P3' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T3', projectId: p.id })).body;
+    const p = await makeProject(app, 'P3');
+    const item = await makeItem(app, { type: 'TASK', title: 'T3', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
     await request(app).put(`/items/${item.id}`).send({ status: 'REVIEW' });
 
@@ -714,8 +715,8 @@ describe('POST /items/:id/test success paths', () => {
 
   it('returns 400 when no verifyCommand configured', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P-novc' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T-novc', projectId: p.id })).body;
+    const p = await makeProject(app, 'P-novc');
+    const item = await makeItem(app, { type: 'TASK', title: 'T-novc', projectId: p.id });
 
     await request(app)
       .post('/items/bulk')
@@ -916,8 +917,8 @@ describe('PUT /items/:id with internal token', () => {
 
   it('allows DONE with internal verify token', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app)
       .put(`/items/${item.id}`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
@@ -1053,8 +1054,8 @@ describe('GET /items query filters', () => {
   });
 
   it('includes archived when includeArchived=true', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     await request(app).post('/items/bulk').send({ items: [{ id: item.id, updates: { status: 'ARCHIVED' } }] });
     const res = await request(app).get('/items').query({ includeArchived: 'true', projectId: p.id });
     expect(res.status).toBe(200);
@@ -1069,8 +1070,8 @@ describe('PUT /items/:id unarchive via status change', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('unarchives item by setting non-archived status', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     // Archive via bulk
     await request(app).post('/items/bulk').send({ items: [{ id: item.id, updates: { status: 'ARCHIVED' } }] });
     // Unarchive by setting TODO
@@ -1106,8 +1107,8 @@ describe('POST /items/bulk with internal token', () => {
 
   it('allows DONE status with internal token', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app)
       .post('/items/bulk')
       .set('x-agenfk-internal', VERIFY_TOKEN)
@@ -1238,8 +1239,8 @@ describe('PUT /items/:id with optional fields', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('updates context, implementationPlan, comments, sortOrder', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
     const res = await request(app).put(`/items/${item.id}`).send({
       title: 'Updated',
       description: 'desc',
@@ -1318,8 +1319,8 @@ describe('POST /items/bulk - branch coverage', () => {
   // of items any distance forward. It now applies the same rule, reporting the
   // rejection per entry rather than failing the whole batch.
   it('reports a skipping transition as skipped instead of applying it', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'P' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'P');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
 
     const res = await request(app).post('/items/bulk').send({
       items: [{ id: item.id, updates: { status: 'REVIEW' } }]
@@ -1876,8 +1877,8 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
 
   it('persists cwd on the project when validate is called with cwd in body', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'CWD1' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD1', projectId: p.id })).body;
+    const p = await makeProject(app, 'CWD1');
+    const item = await makeItem(app, { type: 'TASK', title: 'CWD1', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     await request(app)
@@ -1891,8 +1892,8 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
 
   it('does not overwrite an existing projectRoot when cwd is absent', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'CWD2' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'CWD2', projectId: p.id })).body;
+    const p = await makeProject(app, 'CWD2');
+    const item = await makeItem(app, { type: 'TASK', title: 'CWD2', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     // Establish projectRoot the legitimate way — a validate that carries cwd
@@ -2020,8 +2021,8 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
 
   it('does NOT include push instruction when item moves to an intermediate step', async () => {
     if (!VERIFY_TOKEN) return;
-    const p = (await request(app).post('/projects').send({ name: 'PI4' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'PI4', projectId: p.id })).body;
+    const p = await makeProject(app, 'PI4');
+    const item = await makeItem(app, { type: 'TASK', title: 'PI4', projectId: p.id });
     await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
 
     const res = await request(app)
@@ -2041,8 +2042,8 @@ describe('PUT /items/:id — comment with step field', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('stores and returns a comment with step field', async () => {
-    const p = (await request(app).post('/projects').send({ name: 'CommentStep1' })).body;
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 'T', projectId: p.id })).body;
+    const p = await makeProject(app, 'CommentStep1');
+    const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
 
     const comment = { id: 'c1', author: 'agent', content: 'evidence text', timestamp: new Date().toISOString(), step: 'create_unit_tests' };
     const res = await request(app).put(`/items/${item.id}`).send({ comments: [comment] });

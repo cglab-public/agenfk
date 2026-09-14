@@ -38,6 +38,28 @@ export function testHomeEnv() {
     // Pre-seed the framework dir so code that reads verify-token / server-port
     // sees "absent", not a hostile foreign home.
     fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });
+    /*
+     * And seed a STABLE verify-token (BUG 9de0c99c).
+     *
+     * Leaving it absent was deliberate — "absent, not hostile" — but absent has
+     * a cost that only shows up under load. The server computes VERIFY_TOKEN
+     * once at module evaluation and, with no file to read, mints a RANDOM
+     * ephemeral one. The server module is evaluated more than once in a run, so
+     * a test holding the first token sends it to a route now comparing against
+     * the second, and every token-gated call answers 401 — as a confident,
+     * wrong statement about the route under test.
+     *
+     * Proof, from a failing run's own log: `[SERVER_START] Warning:
+     * ~/.agenfk/verify-token not found ... Using ephemeral token` printed in
+     * the middle of a test that then failed with `expected 401 to be 201`, on
+     * `POST /items`, which has no token check of its own at all.
+     *
+     * A sandbox-owned fixed token is not a hostile foreign one: it lives in the
+     * per-run sandbox and never touches the machine home. It only removes the
+     * randomness, so however many times the module is evaluated, every instance
+     * agrees.
+     */
+    fs.writeFileSync(path.join(home, '.agenfk', 'verify-token'), 'agenfk-test-verify-token');
     cached = {
       HOME: home,
       USERPROFILE: home, // Windows parity; harmless on POSIX

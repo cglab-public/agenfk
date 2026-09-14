@@ -58,16 +58,47 @@ async function waitForRun(runId: string, timeoutMs = 15000) {
   }
 }
 
-/** Create project (+ verifyCommand) and a TASK moved to the final intermediate step. */
+/**
+ * Create project (+ verifyCommand) and a TASK moved to the final intermediate
+ * step.
+ *
+ * EVERY STEP IS CHECKED, and that is the point rather than defensiveness.
+ *
+ * This helper made four requests and looked at none of them. When one of them
+ * did not do what it was asked, the test carried on with a half-built fixture —
+ * no verify command, or an item not on the step that makes a command run — and
+ * the validate then answered 200 instead of 202 because there was nothing to
+ * run in the background. The failure surfaced as an assertion about the
+ * behaviour under test, several lines away from the request that actually
+ * broke, which is how a setup problem gets mistaken for a product one.
+ *
+ * Part of the rotating-failure investigation (BUG 9de0c99c): the "different
+ * test every run" shape is what you get when several helpers can each fail
+ * silently in their own way.
+ */
 async function itemOnFinalStep(name: string, verifyCommand: string) {
-  const p = (await request(app).post('/projects').send({ name })).body;
-  await request(app).put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
-  const item = (await request(app).post('/items').send({ type: 'TASK', title: `${name}-item`, projectId: p.id })).body;
-  await request(app)
-    .post('/items/bulk')
+  const project = await request(app).post('/projects').send({ name });
+  expect(project.status, `could not create project ${name}: ${JSON.stringify(project.body)}`).toBe(201);
+
+  const cmd = await request(app).put(`/projects/${project.body.id}/verify-command`)
+    .set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
+  expect(cmd.status, `could not set the verify command: ${JSON.stringify(cmd.body)}`).toBe(200);
+
+  const created = await request(app).post('/items')
+    .send({ type: 'TASK', title: `${name}-item`, projectId: project.body.id });
+  expect(created.status, `could not create the item: ${JSON.stringify(created.body)}`).toBe(201);
+
+  const moved = await request(app).post('/items/bulk')
     .set('x-agenfk-internal', VERIFY_TOKEN!)
-    .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
-  return item;
+    .send({ items: [{ id: created.body.id, updates: { status: 'TEST' } }] });
+  expect(moved.status, `could not move the item to TEST: ${JSON.stringify(moved.body)}`).toBe(200);
+
+  // The state the test actually depends on, read back rather than assumed: a
+  // validate only goes asynchronous when there is a command to run AND the item
+  // is on the step that runs it.
+  const readBack = await request(app).get(`/items/${created.body.id}`);
+  expect(readBack.body.status, 'the item is not on the step a command runs on').toBe('TEST');
+  return created.body;
 }
 
 describe('POST /items/:id/validate — async runs', () => {
