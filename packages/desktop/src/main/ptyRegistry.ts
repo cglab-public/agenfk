@@ -21,6 +21,7 @@ import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 import { FlowControl } from './flowControl.js';
+import { killProcessTree } from './processTree.js';
 
 /** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
 export interface PtyLike {
@@ -73,6 +74,14 @@ export interface PtyRegistryDeps {
    * persistence, rather than a failure.
    */
   readonly tmux?: { readonly available: boolean };
+  /**
+   * Signal a pty's whole process GROUP.
+   *
+   * Injected so a test can watch the reach rather than the signal. Agents
+   * spawn MCP servers, npx and language servers, and `pty.kill()` reaches none
+   * of them — see processTree.ts, where the dangerous half lives.
+   */
+  readonly killTree?: (pid: number, signal?: string) => void;
 }
 
 /** What a spawn gives back: a live process, and the conversation it holds. */
@@ -170,6 +179,24 @@ export class PtyRegistry {
    */
   private globalGeneration = 0;
   private readonly windowGeneration = new Map<number, number>();
+
+  /**
+   * End a session and everything it started.
+   *
+   * One method, called from all three reaping paths, because a missed path is
+   * a leak that only ever shows up as "my fans are on".
+   *
+   * BOTH signals, deliberately. The group kill is the new reach; `pty.kill()`
+   * is what already worked, and dropping it would make this a swap rather than
+   * an addition — with a worse failure if a child turns out not to lead its
+   * group. The direct child therefore gets the hangup twice, which costs
+   * nothing: it is already on its way out from the first.
+   */
+  private reap(session: Session): void {
+    session.flow.dispose();
+    (this.deps.killTree ?? killProcessTree)(session.pty.pid);
+    session.pty.kill();
+  }
 
   private generationOf(windowId: number): number {
     return this.globalGeneration + (this.windowGeneration.get(windowId) ?? 0);
@@ -451,8 +478,7 @@ export class PtyRegistry {
      * relying on the timing of somebody else's callback.
      */
     this.sessions.delete(sessionId);
-    session.flow.dispose();
-    session.pty.kill();
+    this.reap(session);
   }
 
   /** A window closed. Its shells must not outlive it. */
@@ -472,8 +498,7 @@ export class PtyRegistry {
       // Delete first, for the reason `kill` gives: a synchronous exit must not
       // find its own session still registered.
       this.sessions.delete(id);
-      session.flow.dispose();
-      session.pty.kill();
+      this.reap(session);
     }
   }
 
@@ -482,8 +507,7 @@ export class PtyRegistry {
     this.globalGeneration += 1;
     for (const [id, session] of [...this.sessions]) {
       this.sessions.delete(id);
-      session.flow.dispose();
-      session.pty.kill();
+      this.reap(session);
     }
   }
 

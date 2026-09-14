@@ -979,3 +979,75 @@ describe('a pty that exits synchronously from kill', () => {
     expect(spawned.filter(s => !s.pty.killed)).toHaveLength(0);
   });
 });
+
+/**
+ * Reaping what the agent started, not just the agent (CGLAB eda2628f).
+ *
+ * `pty.kill()` signals one pid. Agents spawn MCP servers, npx, language
+ * servers and test runners, and none of them were reachable — STOP and window
+ * close left them running with nothing pointing at them.
+ *
+ * The registry now signals the process GROUP. These tests are about it doing
+ * so on every reaping path, because a single missed path is a leak that only
+ * shows up as "my fans are on".
+ */
+describe('killing the whole tree', () => {
+  /** A registry whose group-kill is observable. */
+  const withReaper = () => {
+    const reaped: Array<{ pid: number; signal?: string }> = [];
+    const reg = new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      emit: () => {},
+      killTree: (pid: number, signal?: string) => { reaped.push({ pid, signal }); },
+    } as never);
+    return { reg, reaped };
+  };
+
+  it('reaps the group when one session is stopped', async () => {
+    const { reg, reaped } = withReaper();
+    const id = await open(reg, 1);
+    reg.kill(id, 1);
+    expect(reaped.map(r => r.pid)).toEqual([spawned[0].pty.pid]);
+  });
+
+  it('reaps every group when the window closes', async () => {
+    const { reg, reaped } = withReaper();
+    await open(reg, 1);
+    await open(reg, 1, 'i2');
+    reg.killAllForWindow(1);
+    expect(reaped).toHaveLength(2);
+  });
+
+  it('reaps every group when the app quits', async () => {
+    const { reg, reaped } = withReaper();
+    await open(reg, 1);
+    await open(reg, 2, 'i2');
+    reg.killAll();
+    expect(reaped).toHaveLength(2);
+  });
+
+  it('leaves another window alone', async () => {
+    // The blast radius question, asked of the registry rather than the signal:
+    // closing one window must not reach a second window's agents.
+    const { reg, reaped } = withReaper();
+    await open(reg, 1);
+    const other = await open(reg, 2, 'i2');
+    reg.killAllForWindow(1);
+    expect(reaped.map(r => r.pid)).not.toContain(spawned[1].pty.pid);
+    expect(reg.countForWindow(2)).toBe(1);
+    expect(other).toBeTruthy();
+  });
+
+  it('still signals the pty itself', async () => {
+    // Belt and braces, deliberately: the group kill is the new REACH, and the
+    // direct kill is what already worked. Dropping it would make this a swap
+    // rather than an addition, with a worse failure if a child turns out not
+    // to lead its group.
+    const { reg, reaped } = withReaper();
+    const id = await open(reg, 1);
+    reg.kill(id, 1);
+    expect(spawned[0].pty.killed).toBe(true);
+    expect(reaped).toHaveLength(1);
+  });
+});
