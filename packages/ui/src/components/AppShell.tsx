@@ -364,6 +364,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * agents working where there is one. An open terminal wins over a recorded
    * run, because that is the one the user can actually be taken to.
    */
+  /**
+   * Which cards an agent has touched recently.
+   *
+   * RECENCY of events, never AgentRun.status — the hook never issues the
+   * closing PATCH (BUG df4b3343), so status stays 'running' and endedAt stays
+   * null forever. A dot driven by that would go green on a card's first run and
+   * never go out, which is the same no-information dot in a different colour.
+   *
+   * Recency is also the truer claim: "an agent touched this 90 seconds ago" is
+   * what someone wants to know, and a wedged agent stops glowing on its own
+   * without anyone having to close a run.
+   *
+   * `liveTick` is the dependency that matters. Going dark is driven by a clock
+   * rather than by an event, so without it the dot would stay lit until the
+   * next unrelated render.
+   */
+  const liveItems: ReadonlySet<string> = React.useMemo(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => new Set(live.liveIds()),
+    [live, liveTick],
+  );
+
   const sessionRows: SessionRow[] = React.useMemo(() => {
     // liveTick is a dependency on purpose: going dark is driven by a clock, not
     // by new data, so without it the dots would only ever turn off when
@@ -745,6 +767,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           isMac={isMac}
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
+          liveItems={liveItems}
           openTerminalCount={sessions.length}
           openSession={openSession}
           stopSession={stopSession}
@@ -1129,6 +1152,8 @@ interface SidebarProps {
   onToggle: () => void;
   isMac: boolean;
   sessionRows: SessionRow[];
+  /** Cards an agent has touched inside the live window. */
+  liveItems: ReadonlySet<string>;
   openTerminalCount: number;
   openSession: (row: SessionRow) => void;
   stopSession: (runId: string) => void;
@@ -1140,7 +1165,7 @@ interface SidebarProps {
   openSettings: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -1361,7 +1386,20 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerm
                         title={item.title}
                         className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
                       >
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+                        {/* Only when an agent is actually working on it.
+                            Before, every row got the same dot in the same
+                            colour — it distinguished nothing, which makes it
+                            decoration rather than information. If nothing is
+                            happening, nothing is drawn: the absence is the
+                            answer, and the step label on the right already
+                            says where the card is sitting. */}
+                        {liveItems.has(item.id) && (
+                          <span
+                            data-testid="live-dot"
+                            title="An agent is working on this now"
+                            className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none"
+                          />
+                        )}
                         <span className="truncate text-ink-secondary">{item.title}</span>
                         {/* The step is the thing that says where it is stuck. */}
                         <span className="ml-auto shrink-0 font-mono text-[9px] uppercase tracking-wide">

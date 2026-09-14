@@ -1192,3 +1192,81 @@ describe('the Sessions rail (CGLAB-170)', () => {
     expect(screen.getByTestId('session-dot').getAttribute('data-state')).toBe('idle');
   });
 });
+
+/**
+ * The dot under a project (CGLAB-183).
+ *
+ * It used to be drawn for every card in the list, one colour, always. That
+ * distinguishes nothing, which makes it decoration rather than information.
+ * The ask was plain: green only when an agent is working on that card right
+ * now, and nothing at all otherwise.
+ *
+ * The obvious implementation is the wrong one and the card says why:
+ * `AgentRun.status === 'running'` never becomes anything else, because the hook
+ * never issues the closing PATCH (BUG df4b3343). A dot on that field goes green
+ * the first time a card ever has a run and stays green forever — trading one
+ * uninformative dot for another. So liveness is the RECENCY of `run:event`,
+ * which is truer anyway ("an agent touched this 90 seconds ago") and lets a
+ * wedged agent stop glowing on its own.
+ */
+describe('the working dot in the sidebar', () => {
+  const oneCard = [{ id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' }];
+
+  const openTheFolder = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /expand horizon-lab/i }));
+  };
+
+  it('draws nothing when no agent is working', async () => {
+    // "If nothing is happening, do not draw anything" — the absence is the
+    // answer, not a gap where a dot should be.
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    await screen.findByTitle('Some work');
+    expect(screen.queryByTestId('live-dot')).toBeNull();
+  });
+
+  it('appears when a run event arrives for that card', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    await screen.findByTitle('Some work');
+
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(() => expect(screen.getByTestId('live-dot')).toBeTruthy());
+  });
+
+  it('stays dark for a card the event was not about', async () => {
+    // The whole point of the change: the dot has to mean something about THIS
+    // card, or it is the old always-on dot with extra steps.
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    await screen.findByTitle('Some work');
+
+    act(() => { socketHandlers['run:event']?.({ itemId: 'some-other-card' }); });
+    await waitFor(() => expect(screen.queryByTestId('live-dot')).toBeNull());
+  });
+
+  it('leaves the step label alone, because the dot does not repeat it', async () => {
+    // Two things, two jobs: the dot says an agent is here now, the label says
+    // which step the card is sitting in.
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    const row = await screen.findByTitle('Some work');
+    expect(row.textContent).toMatch(/IN_PROGRESS/);
+  });
+
+  it('does not pulse for someone who asked for less motion', async () => {
+    // An indefinite animation in the corner of the eye is exactly what that
+    // preference exists to turn off.
+    vi.mocked(api.listActiveItems).mockResolvedValue(oneCard as never);
+    renderShell();
+    await openTheFolder();
+    await screen.findByTitle('Some work');
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    const dot = await screen.findByTestId('live-dot');
+    expect(dot.className).toContain('motion-reduce:animate-none');
+  });
+});
