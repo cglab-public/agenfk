@@ -8,3 +8,4 @@ export * from "./semver.js";
 export * from "./sizing.js";
 export * from "./gitStatus.js";
 export * from "./pathContainment.js";
+export * from "./worktreePrune.js";
