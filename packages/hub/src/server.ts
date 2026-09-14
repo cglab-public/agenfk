@@ -42,6 +42,13 @@ const HUB_VERSION: string = (() => {
 export interface HubServerContext {
   db: DB;
   config: HubServerConfig;
+  /**
+   * Stop the background workers this app started. Present on a fully booted
+   * hub; absent on the maintenance app, which starts none. Tests and any
+   * graceful shutdown must call it before closing the DB — a timer left
+   * running ticks on against a closed handle.
+   */
+  stopWorkers?: () => void;
 }
 
 /**
@@ -240,11 +247,12 @@ export async function createHubApp(
     })
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
-  startRollupTimer(db);
+  const rollupTimer = startRollupTimer(db);
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
-  startFederationSync({ db, secretKey: config.secretKey, hubVersion: HUB_VERSION });
+  const stopFederation = startFederationSync({ db, secretKey: config.secretKey, hubVersion: HUB_VERSION });
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few

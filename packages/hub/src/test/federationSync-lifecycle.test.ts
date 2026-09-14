@@ -74,3 +74,35 @@ describe('startFederationSync', () => {
     stop();
   });
 });
+
+describe('the hub app owns its workers', () => {
+  it('stops ticking once stopWorkers is called, and ticks on without it', async () => {
+    const { createHubApp } = await import('../server');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Contrast case first: workers left running after the DB closes DO complain,
+    // which is exactly the noise (and the dead-handle access) the handle prevents.
+    const leaky = await createHubApp({
+      dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org',
+    });
+    await writeParentBinding(leaky.ctx.db, SECRET, binding);
+    await leaky.ctx.db.close();
+    await vi.advanceTimersByTimeAsync(FEDERATION_TICK_MS * 2);
+    const leakyWarnings = warn.mock.calls.length;
+    expect(leakyWarnings).toBeGreaterThan(0);
+    leaky.ctx.stopWorkers!();
+
+    warn.mockClear();
+    const clean = await createHubApp({
+      dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org',
+    });
+    expect(typeof clean.ctx.stopWorkers).toBe('function');
+    await writeParentBinding(clean.ctx.db, SECRET, binding);
+    clean.ctx.stopWorkers!();
+    await clean.ctx.db.close();
+    await vi.advanceTimersByTimeAsync(FEDERATION_TICK_MS * 2);
+    expect(warn).not.toHaveBeenCalled();
+
+    warn.mockRestore();
+  });
+});
