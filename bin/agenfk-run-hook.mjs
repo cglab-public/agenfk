@@ -211,9 +211,10 @@ async function main() {
    * none. The server stamps endedAt itself when a terminal status arrives.
    *
    * The cache entry goes too. A closed run must not receive events if the
-   * session somehow emits more.
+   * session somehow emits more — and see `closesRun` for why that sentence is
+   * the reason getting the EVENT right matters so much.
    */
-  if (payload.hook_event_name === 'Stop' || payload.hook_event_name === 'SessionEnd') {
+  if (closesRun(payload.hook_event_name)) {
     const map = readRunMap();
     const prefix = `${payload.session_id || 'nosession'}::`;
     for (const [key, runId] of Object.entries(map)) {
@@ -263,4 +264,36 @@ if (runningAsHook) {
   main().catch(() => {}).finally(() => process.exit(0));
 }
 
-export { forgetRun, rememberRun, readRunMap, RUN_MAP };
+/**
+ * Does this hook event mean the SESSION is over?
+ *
+ * Only one does, and the difference is not a detail. `Stop` was treated as a
+ * close and it is a PER-TURN hook: the Claude Code binary describes it as one
+ * that can block "the turn from ending" and hands it `stop_hook_active` so a
+ * hook can tell it is being re-entered within the same turn. It fires every
+ * time the assistant finishes answering, with the session still very much
+ * alive and its human about to type again.
+ *
+ * Closing on it did two things, and the second is the worse one. The run was
+ * marked `done` while the work continued — so anything reading `status` to
+ * mean "this session finished" was wrong once per turn. And because closing
+ * drops the cache entry, the next tool call opened a BRAND NEW run: one
+ * session became dozens, each holding a few minutes of a conversation that
+ * was never actually split.
+ *
+ * A closed list, and everything unknown is NOT a close. Hook events get added,
+ * and the two failures are not symmetric: a run left open too long is visible
+ * and can be closed later, while one closed early silently discards the rest
+ * of the session's history.
+ *
+ * The case this gives up is a session that never sends `SessionEnd` at all —
+ * a crash, a `kill -9`. That run stays `running` forever, and it is handled
+ * where it belongs: the sessions rail drops runs that predate the app's launch
+ * and have gone quiet (see liveSessions.ts), rather than the hook declaring
+ * every turn boundary a death to be safe.
+ */
+function closesRun(eventName) {
+  return eventName === 'SessionEnd';
+}
+
+export { forgetRun, rememberRun, readRunMap, RUN_MAP, closesRun };

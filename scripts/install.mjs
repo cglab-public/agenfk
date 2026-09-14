@@ -1629,12 +1629,27 @@ process.exit(0);
         // hook opens stays `running` with no endedAt forever — the sessions
         // rail shows work that finished weeks ago as still in flight, and the
         // states that need a run to reach an outcome are unreachable.
-        settings.hooks.Stop = (settings.hooks.Stop ?? []).filter(
+        //
+        // SessionEnd, NOT Stop. `Stop` is a per-TURN hook — it fires each time
+        // the assistant finishes answering, and can block "the turn from
+        // ending" — so registering it there closed the run after the first
+        // turn of a live session and, because closing drops the cache entry,
+        // made the next tool call open a brand new run. One session became
+        // dozens. See `closesRun` in bin/agenfk-run-hook.mjs.
+        settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
             entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
         );
-        settings.hooks.Stop.push({
+        settings.hooks.SessionEnd.push({
             hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
         });
+        // Remove the old registration from anyone who installed before the fix,
+        // or the per-turn close keeps happening beside the correct one.
+        if (settings.hooks.Stop) {
+            settings.hooks.Stop = settings.hooks.Stop.filter(
+                entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+            );
+            if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+        }
 
         // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)
         delete settings.mcpServers;
