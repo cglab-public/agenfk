@@ -479,7 +479,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // The name, not the id: the rail sat beside a picker showing
         // "Claude Code" while itself showing "claude-code".
         agentLabel: agentLabel(open.agentId),
-        state: live.isLive(open.itemId) ? 'running' : 'idle',
+        /*
+         * A process that has ended is not running, whatever the liveness
+         * window says. `live` is fed by terminal OUTPUT, and the exit message
+         * is output — so without this the row stayed green for the full TTL
+         * after the session died, which is what was reported.
+         */
+        state: open.exited ? 'idle' : live.isLive(open.itemId) ? 'running' : 'idle',
         // The run's start time when this terminal IS that run, never a fresh
         // stamp: this memo recomputes whenever any card lights up, and stamping
         // here reset every terminal's elapsed time to "0s" on an unrelated
@@ -1050,6 +1056,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 // only offers STOP for running or waiting, so the one state
                 // they could reach was the one with no controls.
                 onOutput={itemId => { live.touch(itemId); }}
+                onExited={sessionId => {
+                  // Recorded on the SESSION. Clearing liveness by card would
+                  // darken a second agent still working in the same worktree.
+                  setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, exited: true } : s)));
+                }}
                 /*
                  * Asks WHICH CARD, instead of assuming the active one.
                  *

@@ -47,10 +47,14 @@ vi.mock('socket.io-client', () => ({
 }));
 
 let spawnCalls: Array<Record<string, unknown>>;
+let exitHandlers: Array<(e: { sessionId: string; exitCode: number }) => void> = [];
+let dataHandlers: Array<(e: { sessionId: string; data: string }) => void> = [];
 let killCalls: string[];
 
 const setBridge = () => {
   spawnCalls = [];
+  exitHandlers = [];
+  dataHandlers = [];
   killCalls = [];
   Object.defineProperty(window, 'agenfkDesktop', {
     value: {
@@ -71,8 +75,20 @@ const setBridge = () => {
         write: async () => true,
         resize: async () => true,
         kill: async (id: string) => { killCalls.push(id); return true; },
-        onData: () => () => {},
-        onExit: () => () => {},
+        // Collected for the same reason as onExit below: a mock that drops
+        // the handler makes the liveness path untestable.
+        onData: (cb: (e: { sessionId: string; data: string }) => void) => {
+          dataHandlers.push(cb);
+          return () => { dataHandlers = dataHandlers.filter(h => h !== cb); };
+        },
+        // Handlers are COLLECTED, not dropped. The bridge mock used to return
+        // a no-op unsubscribe and never call anything, so no test could make a
+        // session end — which is why "a session that exited still counts as
+        // running" shipped.
+        onExit: (cb: (e: { sessionId: string; exitCode: number }) => void) => {
+          exitHandlers.push(cb);
+          return () => { exitHandlers = exitHandlers.filter(h => h !== cb); };
+        },
         listAgents: async () => [
           { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
           { id: 'codex', label: 'Codex', installed: true, supportsAutoApprove: true },
@@ -815,5 +831,67 @@ describe('opening another terminal from the strip', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: /which card/i })).toBeNull());
+  });
+});
+
+/**
+ * A session whose process ended stops counting as running (CGLAB-189).
+ *
+ * Reported with a screenshot: the rail said "1 running" while that very
+ * session's terminal showed "Session exited (1)."
+ *
+ * The rail's only signal for our own terminals was recency of OUTPUT — and the
+ * exit message is itself output, so dying made the row look alive. A dead
+ * process is a FACT; it must not have to age out of a liveness window.
+ *
+ * The fix is per SESSION and not per card, which is the part worth pinning:
+ * clearing liveness by itemId would have darkened a second agent still working
+ * in the same worktree.
+ */
+describe('a terminal whose process ended', () => {
+  const twoOnOneCard = [
+    { id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString() },
+    { id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'codex',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString() },
+  ];
+
+  const runningCount = () =>
+    document.querySelectorAll('[data-testid="session-dot"][data-state="running"]').length;
+
+  it('stops counting as running the moment it exits', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue([twoOnOneCard[0]] as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+
+    // Made live FIRST, or this test cannot fail: with no output the session was
+    // never running, so asserting it is not running afterwards proves nothing.
+    // Caught by reverting the fix and watching this one stay green.
+    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'working\r\n' })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
+
+    act(() => { exitHandlers.forEach(h => h({ sessionId: 'pty-1', exitCode: 1 })); });
+    await waitFor(() => expect(runningCount()).toBe(0));
+  });
+
+  it('does not darken the other agent on the same card', async () => {
+    /*
+     * The defect the obvious fix would have introduced. LiveAgents is keyed by
+     * itemId, so clearing it on exit would have taken out a second agent that
+     * is still working in the same worktree.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(twoOnOneCard as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(2));
+
+    // Lit by the real path: terminal output is what marks a card live, and
+    // both sessions are on card i1, so both light up.
+    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'working\r\n' })); });
+    await waitFor(() => expect(runningCount()).toBe(2));
+
+    act(() => { exitHandlers.forEach(h => h({ sessionId: 'pty-1', exitCode: 1 })); });
+    await waitFor(() => expect(runningCount()).toBe(1));
   });
 });

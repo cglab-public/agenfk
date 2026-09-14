@@ -67,6 +67,15 @@ export interface TerminalPaneProps {
    * put terminal output through a component that has no business reading it.
    */
   readonly onOutput?: () => void;
+  /**
+   * The process ended.
+   *
+   * The pane knew this and kept it to itself — `exitCode` was local state used
+   * only to draw a line. The shell needs it too: the sessions rail was still
+   * calling an exited session "running", because the only thing it had to go
+   * on was recency of OUTPUT, and the exit message is itself output.
+   */
+  readonly onExited?: (exitCode: number) => void;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -87,6 +96,7 @@ export function TerminalPane({
   resume,
   onSpawned,
   onOutput,
+  onExited,
   createTerminal,
   createFitAddon,
   bridge,
@@ -153,6 +163,10 @@ export function TerminalPane({
       // Said out loud: without it the terminal simply stops responding, which
       // is indistinguishable from a hang.
       setExitCode(code);
+      // And told upwards. A session whose process is gone must stop counting
+      // as running immediately — that is a fact, not something to age out of
+      // a liveness window.
+      onExited?.(code);
     }));
 
     const input = term.onData(data => {

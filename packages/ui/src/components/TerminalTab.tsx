@@ -38,6 +38,20 @@ export interface TerminalSession {
    * and the setting looked wired end to end while doing nothing.
    */
   readonly persist: boolean;
+  /**
+   * Whether this session's process has ended.
+   *
+   * Set from the pane's own `pty:exit`, and the reason it lives on the session
+   * rather than staying in the pane: the sessions rail was calling an exited
+   * session "running", because the only signal it had was recency of OUTPUT —
+   * and the exit message is itself output. A dead process is a FACT; it must
+   * not have to age out of a liveness window.
+   *
+   * Per SESSION, never per card. Two agents can share a card, and one exiting
+   * says nothing about the other — which is exactly why clearing liveness by
+   * itemId would have been the wrong fix.
+   */
+  readonly exited?: boolean;
   /** Carried so the remembered row can be scoped to a project on restore. */
   readonly projectId?: string;
   /**
@@ -77,6 +91,9 @@ export interface TerminalTabProps {
   readonly onSpawned?: (sessionId: string, agentSessionId: string | undefined) => void;
   /** A pane reporting that its terminal is producing output. */
   readonly onOutput?: (itemId: string) => void;
+  /** A session's process ended. Carried by SESSION, never by card: two agents
+   *  can share a card, and one exiting says nothing about the other. */
+  readonly onExited?: (sessionId: string) => void;
   /**
    * Editors installed on this machine, if any.
    *
@@ -110,6 +127,7 @@ export function TerminalTab({
   onNew,
   onSpawned,
   onOutput,
+  onExited,
   editors,
   onOpenInEditor,
   showWorktree,
@@ -251,6 +269,7 @@ export function TerminalTab({
             resume={session.resume}
             onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
             onOutput={() => onOutput?.(session.itemId)}
+            onExited={() => onExited?.(session.id)}
           />
         </div>
       ))}
