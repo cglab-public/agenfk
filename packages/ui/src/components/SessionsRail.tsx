@@ -27,6 +27,15 @@ export type SessionState = 'running' | 'waiting' | 'failed' | 'idle';
 export interface SessionRow {
   readonly runId: string;
   readonly itemId: string;
+  /**
+   * The card's project.
+   *
+   * Carried because revealing a card on the board has to bring its project
+   * along — the board can only find a card belonging to the project it is
+   * showing, so without this the reveal lands on the right tab and the wrong
+   * list.
+   */
+  readonly projectId?: string;
   readonly title: string;
   readonly agentId: string;
   readonly agentLabel: string;
@@ -48,6 +57,15 @@ export interface SessionsRailProps {
   readonly rows: readonly SessionRow[];
   readonly onOpen: (row: SessionRow) => void;
   readonly onStop: (runId: string) => void;
+  /**
+   * Show this card on the board.
+   *
+   * A second affordance, not a replacement: the row's own click opens the
+   * terminal, which is what was asked for. Without this there is no way to
+   * reach the card at all, and the board's scroll-to-and-highlight became
+   * unreachable code the day the row changed meaning.
+   */
+  readonly onReveal?: (row: SessionRow) => void;
 }
 
 /** Waiting first — it is the only state actively costing the user time. */
@@ -111,7 +129,7 @@ export function elapsedSince(iso: string, now = Date.now()): string {
   return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
 }
 
-export function SessionsRail({ rows, onOpen, onStop }: SessionsRailProps): React.ReactElement {
+export function SessionsRail({ rows, onOpen, onStop, onReveal }: SessionsRailProps): React.ReactElement {
   const ordered = React.useMemo(
     () => [...rows].sort((a, b) => ORDER[a.state] - ORDER[b.state]),
     [rows],
@@ -192,6 +210,21 @@ export function SessionsRail({ rows, onOpen, onStop }: SessionsRailProps): React
                 </span>
               </span>
             </button>
+
+            {onReveal && (
+              <button
+                onClick={event => {
+                  // The row behind opens a terminal; this must not.
+                  event.stopPropagation();
+                  onReveal(row);
+                }}
+                aria-label={`Show ${row.title} on the board`}
+                title="Show on the board"
+                className="absolute right-2 top-1.5 font-mono text-[9px] tracking-wide text-ink-tertiary opacity-0 transition-opacity hover:text-brand focus:opacity-100 group-hover:opacity-100"
+              >
+                BOARD
+              </button>
+            )}
 
             {/* Only where there is something of ours to stop. A row recorded
                 by the hook has a transcript and no PTY here, so its STOP did

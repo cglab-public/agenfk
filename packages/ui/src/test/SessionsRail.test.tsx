@@ -199,3 +199,39 @@ describe('motion', () => {
     expect(screen.getByTestId('session-spinner').className).toMatch(/motion-reduce:animate-none/);
   });
 });
+
+/**
+ * Reaching the CARD, without taking the row's click away from the terminal.
+ *
+ * When the sidebar row started opening a terminal — asked for explicitly —
+ * `focusItem` lost its only production caller, and with it went the board's
+ * scroll-to-and-highlight effect and the tab switch that depended on it: real,
+ * tested behaviour that nothing could reach any more.
+ *
+ * The row's click stays where it was asked to be. This is a second, quieter
+ * affordance for the other question, so neither answer has to displace the
+ * other.
+ */
+describe('going to the card on the board', () => {
+  const row = {
+    runId: 'r1', itemId: 'i1', title: 'A card', agentId: 'claude-code',
+    agentLabel: 'Claude Code', state: 'running' as const,
+    startedAt: new Date().toISOString(), hasTerminal: true,
+  };
+
+  it('offers it separately from the row itself', () => {
+    const onReveal = vi.fn();
+    render(<SessionsRail rows={[row]} onOpen={vi.fn()} onStop={vi.fn()} onReveal={onReveal} />);
+    fireEvent.click(screen.getByRole('button', { name: /show .*on the board/i }));
+    expect(onReveal).toHaveBeenCalledWith(row);
+  });
+
+  it('does not steal the row click, which still opens the terminal', () => {
+    const onOpen = vi.fn();
+    const onReveal = vi.fn();
+    render(<SessionsRail rows={[row]} onOpen={onOpen} onStop={vi.fn()} onReveal={onReveal} />);
+    fireEvent.click(screen.getByTitle('A card'));
+    expect(onOpen).toHaveBeenCalled();
+    expect(onReveal).not.toHaveBeenCalled();
+  });
+});

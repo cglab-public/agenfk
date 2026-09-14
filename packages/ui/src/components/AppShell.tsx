@@ -76,7 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked } = useActiveProject();
+  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -206,6 +206,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       byAgent.set(key(run.itemId, run.harness ?? 'claude-code'), {
         runId: run.id,
         itemId: run.itemId,
+        projectId: run.projectId,
         title: run.itemId.slice(0, 8),
         // No mapping: a run's `harness` IS an agent id. They used to be two
         // vocabularies — 'claude-code' against 'claude' — which is what
@@ -224,6 +225,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       byAgent.set(key(open.itemId, open.agentId), {
         runId: open.id,
         itemId: open.itemId,
+        projectId: open.projectId,
         title: open.title,
         agentId: open.agentId,
         // The name, not the id: the rail sat beside a picker showing
@@ -263,6 +265,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // starts a session rather than resuming the one that is running.
     setPending({ itemId: row.itemId, title: row.title, agentId: row.agentId });
   }, [sessions]);
+
+  /**
+   * Take the board to a card.
+   *
+   * The rail's row opens a terminal — asked for explicitly — which left
+   * `focusItem` without a production caller and made the board's
+   * scroll-to-and-highlight unreachable. This gives it one back without taking
+   * the row's click away from the terminal.
+   */
+  const revealOnBoard = React.useCallback((row: SessionRow): void => {
+    focusItem(row.itemId, row.projectId);
+    setActive('kanban');
+  }, [focusItem]);
 
   const stopSession = React.useCallback((runId: string): void => {
     // By session id ONLY. The `|| s.itemId === runId` fallback could stop a
@@ -481,6 +496,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           openSession={openSession}
           stopSession={stopSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
+          revealOnBoard={revealOnBoard}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -725,11 +741,13 @@ interface SidebarProps {
   stopSession: (runId: string) => void;
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
+  /** Take the board to a card. The rail's secondary affordance. */
+  revealOnBoard: (row: SessionRow) => void;
   /** Opens the settings screen. Pinned, so it is reachable at any list length. */
   openSettings: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession, openSettings }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -989,7 +1007,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerm
           )}
         </div>
         <div className="min-h-0 overflow-y-auto scrollbar-slim">
-          <SessionsRail rows={sessionRows} onOpen={openSession} onStop={stopSession} />
+          <SessionsRail rows={sessionRows} onOpen={openSession} onStop={stopSession} onReveal={revealOnBoard} />
         </div>
       </div>
 
