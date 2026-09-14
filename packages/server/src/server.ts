@@ -3263,13 +3263,64 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
  * is the user's intent and the worktree is a convenience on top of it, so a
  * broken git setup must not block the workflow.
  */
-async function ensureWorktreeForItem(item: any): Promise<void> {
-  try {
-    if (!item?.projectId || item.worktreePath) return;
-    const project: any = await storage.getProject(item.projectId);
-    if (!project?.autoWorktree || !project.projectRoot) return;
+/**
+ * Is this an item that should get its own worktree?
+ *
+ * Exported because the rule is the interesting part and it disagreed with
+ * `agenfk branch create`, which refuses children outright while this path
+ * happily made worktrees for them — and for EPICs.
+ *
+ * An EPIC is a container with no code of its own: a checkout for it is a full
+ * copy of the repository that nobody will ever type in, and one per epic is
+ * how ~/.agenfk-worktrees grows without anybody noticing. A child shares its
+ * parent's branch by design, which is exactly why the CLI refuses it.
+ */
+export function shouldAutoWorktree(item: any): boolean {
+  if (!item?.projectId || item.worktreePath) return false;
+  if (item.type === 'EPIC') return false;
+  if (item.parentId) return false;
+  return true;
+}
 
-    const branchName = item.branchName || buildBranchName(item.type, item.title);
+/**
+ * Say on the ITEM that the worktree could not be made.
+ *
+ * The agent receives a 200 whatever happens here, so without a mark it assumes
+ * it has a worktree and edits the MAIN tree — the precise collision this
+ * feature exists to prevent. A console warning is somewhere the agent never
+ * looks; a comment on the item is somewhere it already reads.
+ */
+export async function noteWorktreeFailure(itemId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`[WORKTREE] auto-create failed for ${itemId}:`, message);
+  try {
+    const item: any = await storage.getItem(itemId);
+    if (!item) return;
+    const comment = {
+      id: crypto.randomUUID(),
+      author: 'agenfk',
+      text:
+        `Worktree could not be created automatically: ${message}\n\n` +
+        `This item has NO worktree of its own, so work on it happens in the main ` +
+        `checkout. Create one with \`agenfk branch create ${itemId}\` before editing, ` +
+        `or expect to collide with whatever else is using that tree.`,
+      createdAt: new Date().toISOString(),
+    };
+    await storage.updateItem(itemId, { comments: [...(item.comments || []), comment] } as any);
+  } catch (e: any) {
+    // The comment is the signal; failing to write it must not also take down
+    // the request that was only trying to be helpful.
+    console.warn(`[WORKTREE] could not record the failure on ${itemId}:`, e?.message);
+  }
+}
+
+async function ensureWorktreeForItem(item: any): Promise<void> {
+  if (!shouldAutoWorktree(item)) return;
+  const project: any = await storage.getProject(item.projectId);
+  if (!project?.autoWorktree || !project.projectRoot) return;
+
+  const branchName = item.branchName || buildBranchName(item.type, item.title);
+  try {
     const result = createWorktree({
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
@@ -3277,7 +3328,8 @@ async function ensureWorktreeForItem(item: any): Promise<void> {
     });
     await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
   } catch (e: any) {
-    console.warn(`[WORKTREE] auto-create skipped for ${item?.id}:`, e?.message);
+    // Recorded where the agent will see it, not swallowed into the log.
+    await noteWorktreeFailure(item.id, e);
   }
 }
 
