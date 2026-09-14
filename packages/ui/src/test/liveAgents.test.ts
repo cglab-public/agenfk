@@ -105,6 +105,35 @@ describe('telling the UI something changed', () => {
     expect(seen).toHaveLength(0);
   });
 
+  it('notifies when a card that had gone dark lights up again', () => {
+    /*
+     * The gap between KNOWN and LIVE, which is where this used to be wrong:
+     * the guard read `lastSeen.has(itemId)` — presence — while being named
+     * `wasLive`. So a card that had gone dark but was still in the map counted
+     * as "already lit", nobody was told it came back, and anything derived
+     * from `liveIds()` stayed staler than `isLive()`.
+     *
+     * The window has to be BUILT, and the first version of this test did not
+     * build it — it expired the entry right onto a sweep tick, which deletes
+     * it, leaving `has()` and `isLive()` agreeing and the test passing against
+     * the bug. Sweeps are phased from the FIRST touch, so touching another
+     * card first and then offsetting by a millisecond puts i1's expiry between
+     * two ticks: at 90001ms it is expired, and the sweep that would remove it
+     * does not run until 95000ms.
+     */
+    live.touch('other');           // starts the sweep clock, ticking at +5s
+    vi.advanceTimersByTime(1);     // i1 now expires 1ms AFTER a tick
+    live.touch('i1');
+    vi.advanceTimersByTime(LIVE_TTL_MS + 2_000);
+    expect(live.isLive('i1')).toBe(false);
+    expect(live.size()).toBe(1);   // expired, and still in the map: the window
+
+    const seen: string[][] = [];
+    live.subscribe(() => seen.push(live.liveIds()));
+    live.touch('i1');
+    expect(seen.at(-1)).toEqual(['i1']);
+  });
+
   it('stops notifying once unsubscribed', () => {
     const seen: unknown[] = [];
     const off = live.subscribe(() => seen.push(1));

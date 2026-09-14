@@ -53,6 +53,15 @@ export interface TerminalSession {
    */
   readonly exited?: boolean;
   /**
+   * The code it exited WITH. Only meaningful alongside `exited`.
+   *
+   * Zero, or a user typing `exit`, is an ordinary end. Anything else is the
+   * one failure this app can observe directly, and the rail keeps failures
+   * however old — so losing this turned a crashed agent into a row that just
+   * disappeared.
+   */
+  readonly exitCode?: number;
+  /**
    * What the agent itself says it is doing, when it says anything.
    *
    * Undefined means NO OPINION, not idle. Two of our four agents publish
@@ -111,7 +120,16 @@ export interface TerminalTabProps {
   readonly onOutput?: (itemId: string) => void;
   /** A session's process ended. Carried by SESSION, never by card: two agents
    *  can share a card, and one exiting says nothing about the other. */
-  readonly onExited?: (sessionId: string) => void;
+  /**
+   * The process ended, and with WHICH code.
+   *
+   * The code used to be dropped here — `() => onExited?.(session.id)` swapped
+   * the pane's only argument for the session id — so an agent that crashed was
+   * indistinguishable from one the user typed `exit` into. Nothing downstream
+   * could mark it failed, which left the rail's "a failure always stays" rule
+   * guarding a state nothing could produce.
+   */
+  readonly onExited?: (sessionId: string, exitCode: number) => void;
   /** The agent published its state. By SESSION: two agents can share a card. */
   readonly onActivity?: (sessionId: string, activity: 'working' | 'blocked' | 'idle') => void;
   /** State read off the rendered screen. By SESSION, like the rest. */
@@ -293,7 +311,7 @@ export function TerminalTab({
             resume={session.resume}
             onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
             onOutput={() => onOutput?.(session.itemId)}
-            onExited={() => onExited?.(session.id)}
+            onExited={code => onExited?.(session.id, code)}
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
           />

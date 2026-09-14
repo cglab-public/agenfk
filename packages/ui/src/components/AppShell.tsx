@@ -77,6 +77,17 @@ const TABS_KEY = 'agenfk_shell_tabs';
 const RUNS_DOCK_KEY = 'agenfk_runs_dock';
 
 /**
+ * When this run of the app began.
+ *
+ * Read once at module load, which is both the earliest honest answer and the
+ * only place it can be read — `Date.now()` during render is impure. The rail
+ * uses it to tell a run still working in silence from one orphaned by a
+ * previous launch: both read `running` forever, and only the start time
+ * separates them. See liveSessions.ts.
+ */
+const APP_STARTED_AT = Date.now();
+
+/**
  * Where the Runs view sits.
  *
  * A CLOSED set, and that is the design rather than a limitation. Free layout
@@ -467,6 +478,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // A run from the hook has a transcript but no terminal this app owns,
         // so clicking must not pretend to attach to one.
         hasTerminal: false,
+        // Carried raw, for liveSessions to decide with. `state` above has
+        // already collapsed it into running/idle and cannot answer "did this
+        // end?" — which is the question the rail's membership turns on.
+        runStatus: run.status,
       });
     }
 
@@ -509,7 +524,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
          * permanently true and which this whole line of work exists to retire.
          */
         state: open.exited
-          ? 'idle'
+          /*
+           * A process that ended BADLY is a failure, and failures outlive
+           * everything — see liveSessions. While the exit code was discarded
+           * this branch could only ever say 'idle', so a crashed agent left no
+           * trace in the rail at all: the row simply vanished once dead rows
+           * started being filtered, and the only evidence was the terminal tab
+           * reading "Session exited (1)".
+           */
+          ? (open.exitCode ? 'failed' : 'idle')
           : open.activity === 'blocked'
             ? 'blocked'
             : open.activity === 'working'
@@ -546,10 +569,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      * A failed run is the exception and survives this, however old: it is the
      * row that needs a person.
      */
-    // `liveItems` rather than a closure over `live`: the set is already
-    // computed above, on the same inputs, and handing the filter a callback
-    // that reaches into the ref would let it read whenever it happened to run.
-    return liveSessions([...byAgent.values()], { isLive: id => liveItems.has(id) });
+    /*
+     * `liveItems` rather than a closure over `live`: the set is already
+     * computed above, on the same inputs, and handing the filter a callback
+     * that reaches into the ref would let it read whenever it happened to run.
+     *
+     * Sound only because `LiveAgents.touch` was fixed to test LIVENESS rather
+     * than mere presence. While it tested presence, a card that expired
+     * unswept and was touched again emitted nothing, so this set stayed staler
+     * than `live.isLive()` — and the same pass could call a row `running` from
+     * the fresh read and then drop it on the stale one.
+     */
+    return liveSessions([...byAgent.values()], {
+      isLive: id => liveItems.has(id),
+      appStartedAt: APP_STARTED_AT,
+    });
   }, [runs, sessions, live, liveItems, liveTick]);
 
   const openSession = React.useCallback((row: SessionRow): void => {
@@ -1138,10 +1172,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   // share a card, and one working says nothing about the other.
                   setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, activity } : s)));
                 }}
-                onExited={sessionId => {
+                onExited={(sessionId, exitCode) => {
                   // Recorded on the SESSION. Clearing liveness by card would
                   // darken a second agent still working in the same worktree.
-                  setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, exited: true } : s)));
+                  //
+                  // The CODE is kept, not just the fact: a nonzero exit is the
+                  // one failure this app can actually observe, and discarding
+                  // it made a crashed agent look exactly like `exit`.
+                  setSessions(prev => prev.map(s => (
+                    s.id === sessionId ? { ...s, exited: true, exitCode } : s
+                  )));
                 }}
                 /*
                  * Asks WHICH CARD, instead of assuming the active one.

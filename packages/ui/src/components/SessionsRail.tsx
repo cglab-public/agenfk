@@ -78,6 +78,15 @@ export interface SessionRow {
    * session you can click into.
    */
   readonly exited?: boolean;
+  /**
+   * The hook's own verdict on the run: `running`, `done`, `failed`.
+   *
+   * Only for rows WITHOUT a terminal. It is the one trustworthy end marker
+   * there is — the hook PATCHes it on Stop/SessionEnd — and liveSessions uses
+   * it to drop a finished run instead of guessing from how long the card has
+   * been quiet. Absent on older records, which is not the same as ended.
+   */
+  readonly runStatus?: string;
 }
 
 export interface SessionsRailProps {

@@ -2,15 +2,19 @@
  * Which cards have an agent working on them right now (CGLAB-170).
  *
  * Liveness is derived from the RECENCY of run events, not from
- * `AgentRun.status`. The status field looks like the obvious source and is the
- * wrong one: BUG df4b3343 records that the hook never issues the closing
- * `PATCH /agent-runs/:id`, so `status` stays `'running'` and `endedAt` stays
- * null forever. Reading it would light every card that ever had a run,
- * permanently — trading one uninformative indicator for another.
+ * `AgentRun.status`, and the reason is NOT the one this comment used to give.
+ * It claimed the hook never issues the closing `PATCH /agent-runs/:id` (BUG
+ * df4b3343) so `status` was stuck on `'running'` forever. That was true when it
+ * was written and is not true now: `bin/agenfk-run-hook.mjs` closes the run on
+ * `Stop`/`SessionEnd`. Anything reasoning about a run ENDING should read
+ * `status` — see liveSessions.ts, which was built on the stale premise and had
+ * to be rewritten.
  *
- * Recency is also the truer statement. "An agent touched this a moment ago" is
- * what a person actually wants to know, and a stalled agent stops glowing by
- * itself, which no status field would do.
+ * Recency survives that correction because it answers a different question.
+ * This is the DOT: "is an agent touching this card right now", which a status
+ * field cannot say — a run is `'running'` from its first event to its last,
+ * including the hours it sits waiting for a person. A stalled agent stops
+ * glowing by itself; a `'running'` row would glow until it was closed.
  *
  * The hard part is going DARK. That happens with no event arriving, so it needs
  * a clock — and one clock for the whole board, not one per card. A busy board
@@ -32,7 +36,16 @@ export class LiveAgents {
 
   /** Record that an agent event arrived for this card. */
   touch(itemId: string): void {
-    const wasLive = this.lastSeen.has(itemId);
+    /*
+     * LIVE, not merely KNOWN. `has()` is presence, and the two part company
+     * exactly when it matters: an entry that aged past the TTL is still in the
+     * map until the 5s sweep removes it, and one that is re-touched inside
+     * that gap is never swept at all. Reading presence there said "already
+     * lit" about a card that had gone dark, so no listener was told it came
+     * back — the dot stayed off, and anything derived from `liveIds()` stayed
+     * staler than `isLive()` until some unrelated card happened to emit.
+     */
+    const wasLive = this.isLive(itemId);
     this.lastSeen.set(itemId, Date.now());
     this.ensureSweeping();
     // Only when something VISIBLE changed. An agent emits events constantly,
