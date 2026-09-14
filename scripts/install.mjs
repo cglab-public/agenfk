@@ -1625,6 +1625,16 @@ process.exit(0);
             matcher: 'Bash|Edit|Write|NotebookEdit|Task|WebFetch',
             hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
         });
+        // Closes the run when the session ends. Without this every run the
+        // hook opens stays `running` with no endedAt forever — the sessions
+        // rail shows work that finished weeks ago as still in flight, and the
+        // states that need a run to reach an outcome are unreachable.
+        settings.hooks.Stop = (settings.hooks.Stop ?? []).filter(
+            entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+        );
+        settings.hooks.Stop.push({
+            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
+        });
 
         // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)
         delete settings.mcpServers;

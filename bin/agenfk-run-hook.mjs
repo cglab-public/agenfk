@@ -198,6 +198,32 @@ async function main() {
   ]).catch(() => [{}, {}]);
   if (!toRunEvent || !readActiveWork) return;
 
+  /*
+   * The session ended: close the run.
+   *
+   * Nothing did this, so every run this hook opened stayed `running` with no
+   * endedAt FOREVER. The sessions rail then shows work that finished weeks ago
+   * as still in flight, and the states that depend on a run reaching an
+   * outcome — waiting, failed — are unreachable by construction.
+   *
+   * `done` and not `failed`: this hook cannot see whether the work succeeded,
+   * and claiming a verdict it did not observe would be worse than claiming
+   * none. The server stamps endedAt itself when a terminal status arrives.
+   *
+   * The cache entry goes too. A closed run must not receive events if the
+   * session somehow emits more.
+   */
+  if (payload.hook_event_name === 'Stop' || payload.hook_event_name === 'SessionEnd') {
+    const map = readRunMap();
+    const prefix = `${payload.session_id || 'nosession'}::`;
+    for (const [key, runId] of Object.entries(map)) {
+      if (!key.startsWith(prefix)) continue;
+      await api(`/agent-runs/${runId}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) });
+      forgetRun(key);
+    }
+    return;
+  }
+
   const event = toRunEvent(payload);
   if (!event) return;
 
