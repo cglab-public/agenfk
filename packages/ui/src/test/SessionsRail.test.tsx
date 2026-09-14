@@ -20,7 +20,7 @@
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
-import { SessionsRail, type SessionRow } from '../components/SessionsRail';
+import { SessionsRail, type SessionRow, PRODUCIBLE_STATES } from '../components/SessionsRail';
 
 const row = (over: Partial<SessionRow> = {}): SessionRow => ({
   runId: 'r1',
@@ -52,31 +52,34 @@ describe('when nothing is running', () => {
   });
 });
 
-describe('the four states', () => {
+describe('the states', () => {
   it('marks each row with its own state, not just a colour', () => {
     // The dots are 8px. Colour alone fails for a colour-blind reader and in a
     // greyscale screenshot, so state is in the shape and also readable here.
     renderRail([
       row({ runId: 'a', state: 'running' }),
-      row({ runId: 'b', state: 'waiting' }),
       row({ runId: 'c', state: 'failed' }),
       row({ runId: 'd', state: 'idle' }),
     ]);
     const states = screen.getAllByTestId('session-dot').map(d => d.getAttribute('data-state'));
-    expect(states.sort()).toEqual(['failed', 'idle', 'running', 'waiting']);
+    expect(states.sort()).toEqual(['failed', 'idle', 'running']);
   });
 
-  it('puts the one that is costing you time first', () => {
-    // "Waiting on you" means a prompt is up and nothing moves until you answer.
-    // Burying it under three running agents is the whole failure this ordering
-    // prevents.
+  it('puts the one that needs a person first', () => {
+    // A failure is the row that needs reading. Burying it under three running
+    // agents is the failure this ordering prevents — the rail implies it is
+    // showing you what needs you.
+    //
+    // This used to assert a 'waiting' state, which nothing in the app could
+    // produce: the test handed it straight to the component, so it passed
+    // while the state was unreachable.
     renderRail([
       row({ runId: 'a', state: 'running', title: 'Running one' }),
       row({ runId: 'b', state: 'idle', title: 'Idle one' }),
-      row({ runId: 'c', state: 'waiting', title: 'Waiting one' }),
+      row({ runId: 'c', state: 'failed', title: 'Failed one' }),
     ]);
     const titles = screen.getAllByTestId('session-title').map(t => t.textContent);
-    expect(titles[0]).toMatch(/waiting one/i);
+    expect(titles[0]).toMatch(/failed one/i);
   });
 
   it('keeps failures visible rather than dropping them', () => {
@@ -86,8 +89,8 @@ describe('the four states', () => {
   });
 
   it('announces state to assistive tech, not only in pixels', () => {
-    renderRail([row({ state: 'waiting' })]);
-    expect(screen.getByTestId('session-dot').getAttribute('aria-label')).toMatch(/waiting/i);
+    renderRail([row({ state: 'failed' })]);
+    expect(screen.getByTestId('session-dot').getAttribute('aria-label')).toMatch(/failed/i);
   });
 });
 
@@ -174,8 +177,8 @@ describe('the running indicator', () => {
     expect(screen.queryByTestId('session-spinner')).toBeNull();
   });
 
-  it('does not spin for failed or waiting', () => {
-    renderRail([row({ runId: 'a', state: 'failed' }), row({ runId: 'b', state: 'waiting' })]);
+  it('does not spin for a row that is not working', () => {
+    renderRail([row({ runId: 'a', state: 'failed' }), row({ runId: 'b', state: 'idle' })]);
     expect(screen.queryByTestId('session-spinner')).toBeNull();
   });
 
@@ -233,5 +236,52 @@ describe('going to the card on the board', () => {
     fireEvent.click(screen.getByTitle('A card'));
     expect(onOpen).toHaveBeenCalled();
     expect(onReveal).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * States the rail claims to have, and whether anything can produce them.
+ *
+ * The component's docblock named three properties as load-bearing: waiting
+ * sorts to the top, failures stay until dismissed, and `lastAction` is "the
+ * difference between a status light and knowing whether to step in". All three
+ * were unreachable — the shell only ever emitted running or idle, and the runs
+ * query filtered to `status: 'running'`, so a failed run could not even reach
+ * the client.
+ *
+ * That is worse than a missing feature: the tests handed the states straight
+ * to the component, so they passed while the app could never build one. A
+ * docblock describing behaviour nobody can trigger is a lie that reads like
+ * documentation.
+ *
+ * Two of the three are now real, because runs finally reach a terminal status.
+ * The third is not, and is gone rather than pretended.
+ */
+describe('the states the app can actually produce', () => {
+  it('shows a failed run as failed', () => {
+    const rows = [{
+      runId: 'r1', itemId: 'i1', title: 'Broke', agentId: 'claude-code',
+      agentLabel: 'Claude Code', state: 'failed' as const,
+      startedAt: new Date().toISOString(), hasTerminal: false,
+    }];
+    render(<SessionsRail rows={rows} onOpen={vi.fn()} onStop={vi.fn()} />);
+    expect(screen.getByTestId('session-dot')).toHaveAttribute('data-state', 'failed');
+  });
+
+  it('sorts a failure above an idle row, because a failure needs reading', () => {
+    const base = { startedAt: new Date().toISOString(), hasTerminal: false, agentLabel: 'X', agentId: 'pi' };
+    const rows = [
+      { ...base, runId: 'r1', itemId: 'i1', title: 'Quiet', state: 'idle' as const },
+      { ...base, runId: 'r2', itemId: 'i2', title: 'Broke', state: 'failed' as const },
+    ];
+    render(<SessionsRail rows={rows} onOpen={vi.fn()} onStop={vi.fn()} />);
+    const titles = screen.getAllByTestId('session-title').map(n => n.textContent);
+    expect(titles[0]).toBe('Broke');
+  });
+
+  it('has no state the app cannot build', () => {
+    // The check that keeps this honest as the component grows. Every state the
+    // rail can render has to be one something upstream can actually emit.
+    expect([...PRODUCIBLE_STATES].sort()).toEqual(['failed', 'idle', 'running']);
   });
 });

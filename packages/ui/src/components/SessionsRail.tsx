@@ -10,19 +10,35 @@
  * screenshot, so running is filled, waiting is a ring, idle is a thin ring, and
  * each also carries an aria-label.
  *
- * **Waiting sorts to the top.** It means a permission prompt is on screen and
- * nothing moves until the user answers — the one state that is costing them
- * time right now. Buried under three running agents, it is worse than absent,
- * because the rail implies it is showing you what needs you.
+ * **Failures sort to the top.** A failure is the row that needs a person, and
+ * burying it under three running agents is worse than not showing it — the
+ * rail implies it is showing you what needs you.
  *
- * **Failures stay until dismissed.** A failure that disappears is a failure
- * nobody sees.
+ * This used to claim a 'waiting' state as well. Nothing could produce one, so
+ * the claim was documentation for behaviour that did not exist; see
+ * PRODUCIBLE_STATES.
  */
 import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
 
-export type SessionState = 'running' | 'waiting' | 'failed' | 'idle';
+export type SessionState = 'running' | 'failed' | 'idle';
+
+/**
+ * The states something upstream can actually produce.
+ *
+ * A 'waiting' state used to live here too, sorted to the top, and the docblock
+ * called it load-bearing. Nothing could ever build one: the shell emitted only
+ * running or idle, and the rail's own tests handed the state directly to the
+ * component — so they passed while the app could not reach it. A docblock
+ * describing behaviour nobody can trigger is a lie that reads like
+ * documentation, so it is gone rather than pretended.
+ *
+ * It should come back the day the app can tell that an agent is blocked on a
+ * permission prompt. That is a real and useful state; we simply cannot see it
+ * yet, and guessing at it from silence would be worse than not showing it.
+ */
+export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'failed', 'idle']);
 
 export interface SessionRow {
   readonly runId: string;
@@ -68,8 +84,14 @@ export interface SessionsRailProps {
   readonly onReveal?: (row: SessionRow) => void;
 }
 
-/** Waiting first — it is the only state actively costing the user time. */
-const ORDER: Record<SessionState, number> = { waiting: 0, running: 1, failed: 2, idle: 3 };
+/**
+ * Failures first, then what is working, then what is quiet.
+ *
+ * A failure is the row that needs a person; burying it under three running
+ * agents is worse than not showing it, because the rail implies it is showing
+ * you what needs you.
+ */
+const ORDER: Record<SessionState, number> = { failed: 0, running: 1, idle: 2 };
 
 /**
  * A spinner for running, a dot for everything else.
@@ -106,15 +128,12 @@ function Spinner(): React.ReactElement {
 
 const DOT: Record<SessionState, string> = {
   running: 'bg-emerald-400',
-  // A ring, not a fill: the shape is what survives greyscale.
-  waiting: 'border-2 border-amber-400',
   failed: 'bg-rose-400',
   idle: 'border border-ink-tertiary',
 };
 
 const STATE_LABEL: Record<SessionState, string> = {
   running: 'Running',
-  waiting: 'Waiting on you',
   failed: 'Failed',
   idle: 'Idle',
 };
@@ -230,7 +249,7 @@ export function SessionsRail({ rows, onOpen, onStop, onReveal }: SessionsRailPro
                 by the hook has a transcript and no PTY here, so its STOP did
                 nothing at all — silently, which reads as the app ignoring you.
                 Offering no button is the honest version. */}
-            {row.hasTerminal && (row.state === 'running' || row.state === 'waiting') && (
+            {row.hasTerminal && row.state === 'running' && (
               <button
                 onClick={event => {
                   // Without this the click also reaches the row behind, so

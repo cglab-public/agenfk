@@ -250,7 +250,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const { data: runs = [] } = useQuery({
     queryKey: ['runs'],
-    queryFn: () => api.listRuns({ status: 'running' }),
+    /*
+     * No status filter, and that is the fix.
+     *
+     * Filtering to `running` meant a FAILED run could not reach the client at
+     * all — so the rail's failed state was unreachable no matter what the
+     * component did with it. The runs come back newest-first and bounded, so
+     * asking for all of them is asking for the recent ones.
+     */
+    queryFn: () => api.listRuns({}),
   });
   useSocketEvent('run:event', (payload: { itemId?: string }) => {
     if (payload?.itemId) live.touch(payload.itemId);
@@ -311,7 +319,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // produced "Unknown agent" the first time one reached a spawn.
         agentId: run.harness ?? 'claude-code',
         agentLabel: run.harness ? agentLabel(run.harness) : 'agent',
-        state: live.isLive(run.itemId) ? 'running' : 'idle',
+        // A run that ENDED badly stays failed however long ago it was: a
+        // failure that ages into 'idle' is a failure nobody sees. Recency only
+        // decides between running and idle.
+        state: run.status === 'failed'
+          ? 'failed'
+          : live.isLive(run.itemId) ? 'running' : 'idle',
         startedAt: run.startedAt,
         // A run from the hook has a transcript but no terminal this app owns,
         // so clicking must not pretend to attach to one.

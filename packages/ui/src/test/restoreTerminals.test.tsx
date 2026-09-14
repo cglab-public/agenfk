@@ -510,3 +510,51 @@ describe('restoring two terminals of the same agent on one card', () => {
     expect(spawnCalls.filter(c => c.resume === true)).toHaveLength(2);
   });
 });
+
+/**
+ * A run that failed has to be able to reach the rail at all.
+ *
+ * The shell asked the server for `status: 'running'` runs only, so a failed
+ * one never arrived — the rail's failed state was unreachable no matter what
+ * the component did with it. The component's tests passed because they handed
+ * the state straight in.
+ */
+describe('failed runs', () => {
+  it('asks for runs without filtering out the failed ones', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    renderShell();
+    await waitFor(() => expect(api.listRuns).toHaveBeenCalled());
+    const args = vi.mocked(api.listRuns).mock.calls[0][0] ?? {};
+    expect(args, 'filtering to running hides every failure').not.toHaveProperty('status');
+  });
+
+  it('shows one as failed, not as idle', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listRuns).mockResolvedValue([{
+      id: 'r1', itemId: 'i1', harness: 'claude-code', status: 'failed',
+      startedAt: new Date().toISOString(),
+    }] as never);
+    renderShell();
+    await waitFor(() => {
+      const states = [...document.querySelectorAll('[data-testid="session-dot"]')]
+        .map(d => d.getAttribute('data-state'));
+      expect(states).toContain('failed');
+    });
+  });
+
+  it('keeps it failed however old it is', async () => {
+    // A failure that ages into 'idle' is a failure nobody sees. Recency decides
+    // between running and idle, never whether something broke.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listRuns).mockResolvedValue([{
+      id: 'r1', itemId: 'i1', harness: 'claude-code', status: 'failed',
+      startedAt: '2020-01-01T00:00:00.000Z',
+    }] as never);
+    renderShell();
+    await waitFor(() => {
+      const states = [...document.querySelectorAll('[data-testid="session-dot"]')]
+        .map(d => d.getAttribute('data-state'));
+      expect(states).toContain('failed');
+    });
+  });
+});
