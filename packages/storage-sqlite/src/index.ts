@@ -707,10 +707,25 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
-    sql += ' ORDER BY started_at ASC';
+    /*
+     * Newest first, because the LIMIT applies AFTER the sort.
+     *
+     * Ordered ASC, a capped response was the OLDEST runs ever recorded — so on
+     * a machine with more history than the page size, an agent started right
+     * now was never in the answer, and the sessions rail showed work that
+     * finished weeks ago instead. Runs also stay `running` forever (nothing
+     * sends the closing update), so those old rows never aged out of the
+     * filter on their own.
+     */
+    // rowid breaks ties. started_at has millisecond resolution, so a burst of
+    // runs recorded in the same millisecond would otherwise come back in an
+    // arbitrary order — and with a LIMIT applied, an arbitrary SUBSET.
+    sql += ' ORDER BY started_at DESC, rowid DESC';
     if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
     const rows = this.database.prepare(sql).all(...params) as any[];
-    return rows.map((r) => this.mapAgentRunRow(r));
+    // Oldest-first for the caller: the page is chosen from the newest end, but
+    // consumers that render a sequence still want it in the order it happened.
+    return rows.map((r) => this.mapAgentRunRow(r)).reverse();
   }
 
   async appendRunEvent(event: RunEvent): Promise<void> {

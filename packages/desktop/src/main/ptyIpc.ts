@@ -75,9 +75,19 @@ export function registerPtyIpc(
       windowId: senderWindowId(event),
       cols: asSize(req.cols, 'cols'),
       rows: asSize(req.rows, 'rows'),
-      // Strict === true, not truthiness. This disables the agent's own safety
-      // prompts, so a stray string, a 1, or an object must not be enough.
-      autoApprove: req.autoApprove === true,
+      /*
+       * Read from the STORED preference, never from the payload.
+       *
+       * This value appends --dangerously-skip-permissions (and for codex
+       * sandbox_mode=danger-full-access), so it decides what the next process
+       * is allowed to do. The preference was moved into the main process
+       * precisely so that nothing on the other side of this border could set
+       * it — and then the handler went on taking it from the renderer anyway,
+       * which made the border decorative. Whatever `req.autoApprove` says is
+       * ignored, in both directions: a renderer that could turn it OFF could
+       * also hide that it is on.
+       */
+      autoApprove: readPrefs(prefsDir()).autoApprove === true,
       // Optional, and only meaningful when resuming. The registry mints one for
       // a fresh spawn; it is validated as a UUID before it reaches argv.
       agentSessionId: req.agentSessionId === undefined ? undefined : asString(req.agentSessionId, 'agentSessionId'),

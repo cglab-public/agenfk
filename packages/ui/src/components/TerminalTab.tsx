@@ -13,6 +13,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { agentLabel } from '../agentLabels';
 import { X, Plus, GitBranch } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
@@ -114,8 +115,19 @@ export function TerminalTab({
       </div>
 
       <div role="tablist" aria-label="Open terminals" className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">
-        {sessions.map(session => {
+        {sessions.map((session, index) => {
           const selected = session.id === activeId;
+          /*
+           * The AGENT and the position, not the card title.
+           *
+           * Every tab in a set is usually on the same card, so titling them
+           * with the card repeats the same string across the whole strip and
+           * distinguishes nothing — which is exactly what it did while the
+           * restored tabs were also falling back to a raw uuid: three tabs,
+           * one indistinguishable id. The card's name is in the header above,
+           * where it belongs, said once.
+           */
+          const tabLabel = `${agentLabel(session.agentId)} ${index + 1}`;
           return (
             <div
               key={session.id}
@@ -128,12 +140,14 @@ export function TerminalTab({
                 role="tab"
                 aria-selected={selected}
                 onClick={() => onSelect(session.id)}
+                // The card stays in the tooltip: the strip says which agent,
+                // hovering says which card.
                 title={session.title}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
               >
                 <AgentIcon agentId={session.agentId} size={13} />
                 <span className={clsx('truncate text-xs', selected ? 'text-ink' : 'text-ink-secondary')}>
-                  {session.title}
+                  {tabLabel}
                 </span>
                 {session.autoApprove && (
                   // Marked on the tab itself, not only inside the pane: with

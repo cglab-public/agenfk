@@ -160,11 +160,24 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
     id: 'pi',
     label: 'Pi',
     command: { file: 'pi', args: [] },
-    // `pi --help`: "--session-id <id>  Use exact project session ID, creating
-    // it if missing" — which is exactly the semantics dictating an id needs.
+    /*
+     * The SAME flag for both modes, and that is pi's actual semantics rather
+     * than a shortcut:
+     *
+     *   --session-id <id>   Use exact project session ID, CREATING IT IF MISSING
+     *
+     * So the first spawn creates the conversation and the second reuses it.
+     *
+     * NOT `--resume`. pi's `--resume, -r` is "Select a session to resume" and
+     * takes NO argument — it opens an interactive picker. Passing
+     * `--resume <uuid>` would have shown the user a picker and handed the uuid
+     * to pi as a prompt. It was written that way here by pattern-matching
+     * claude's flags instead of reading pi's, and the test passed because it
+     * asserted the same wrong assumption back.
+     */
     session: {
       fresh: id => ['--session-id', id],
-      resume: id => ['--resume', id],
+      resume: id => ['--session-id', id],
     },
   },
   // No `session` descriptor, and that is a statement rather than an omission:

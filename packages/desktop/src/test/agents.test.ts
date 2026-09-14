@@ -259,10 +259,28 @@ describe('resuming a conversation', () => {
     expect(cmd.args[cmd.args.indexOf('--resume') + 1]).toBe(UUID);
   });
 
-  it('does the same for pi', () => {
+  it('resumes pi with the same flag it was created with', () => {
+    // pi's `--session-id` is documented as "creating it if missing", so one
+    // flag covers both modes: first spawn creates, second reuses.
+    //
+    // Deliberately NOT `--resume`. pi's `--resume, -r` is "Select a session to
+    // resume" and takes NO argument — it opens an interactive picker, and
+    // `--resume <uuid>` would have shown the user that picker while handing pi
+    // the uuid as a prompt. This file previously asserted `--resume` because it
+    // was written by pattern-matching claude's flags rather than reading pi's,
+    // which made the test agree with the bug instead of catching it.
     expect(resolveAgentCommand('pi', { agentSessionId: UUID }).args).toEqual(['--session-id', UUID]);
     expect(resolveAgentCommand('pi', { agentSessionId: UUID, resume: true }).args)
-      .toEqual(['--resume', UUID]);
+      .toEqual(['--session-id', UUID]);
+  });
+
+  it('never hands pi a flag that takes no argument', () => {
+    // The specific failure: a valueless flag followed by a uuid turns the uuid
+    // into a positional argument, which for an agent CLI means a prompt.
+    for (const resume of [true, false]) {
+      expect(resolveAgentCommand('pi', { agentSessionId: UUID, resume }).args)
+        .not.toContain('--resume');
+    }
   });
 
   it('resumes codex with a subcommand, not a flag', () => {

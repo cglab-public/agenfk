@@ -157,3 +157,42 @@ describe('GET /agent-runs', () => {
     expect(res.body[0]).not.toHaveProperty('isActive');
   });
 });
+
+/**
+ * WHICH runs come back, not how many.
+ *
+ * The existing bounds tests assert only `length`, and that is exactly how this
+ * survived: the query ordered ASC and then applied the limit, so a capped
+ * response was the OLDEST runs ever recorded. On a machine with more than the
+ * limit's worth of history, an agent started right now is never in the answer —
+ * the rail shows work that finished weeks ago and nothing that is running.
+ *
+ * It matters more than it looks because the route's own comment notes that
+ * runs stay `running` forever (nothing sends the closing update), so the old
+ * rows never age out of the filter on their own.
+ */
+describe('which runs the rail gets', () => {
+  it('returns the NEWEST runs when there are more than the limit', async () => {
+    const p = await request(app).post('/projects').send({ name: 'ordering' });
+    const i = await request(app).post('/items')
+      .send({ title: 'Work', type: 'TASK', projectId: p.body.id });
+
+    // More than the default page, created oldest-first.
+    for (let n = 0; n < 30; n += 1) {
+      const created = await request(app).post('/agent-runs').send({
+        itemId: i.body.id, projectId: p.body.id, step: 'IN_PROGRESS',
+        actor: 'worker', harness: 'claude-code', model: `m-${n}`,
+      });
+      if (n === 0) expect(created.status, JSON.stringify(created.body)).toBe(201);
+    }
+
+    const res = await request(app).get('/agent-runs?limit=5');
+    expect(res.body).toHaveLength(5);
+    // Identified by `model`, which round-trips plainly. The point is WHICH
+    // five come back, not how many — asserting the count is what let the
+    // oldest-first bug live.
+    const returned = res.body.map((r: { model: string }) => r.model);
+    expect(returned).toContain('m-29');
+    expect(returned).not.toContain('m-0');
+  });
+});

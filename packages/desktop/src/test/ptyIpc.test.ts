@@ -97,16 +97,17 @@ describe('arguments are validated before anything is done with them', () => {
     await expect(spawn({ itemId: 'i1', cols: 80, rows: 24 })).rejects.toThrow(/agentId/);
   });
 
-  it('treats auto-approve as strictly boolean true', async () => {
-    // It disables the agent's own safety prompts. A stray truthy value from a
-    // renderer bug — a string, a 1, an object — must not be enough to turn the
-    // rails off.
-    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: 'yes' });
-    expect(spawnCalls[0].autoApprove).toBe(false);
-    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: 1 });
-    expect(spawnCalls[1].autoApprove).toBe(false);
-    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: true });
-    expect(spawnCalls[2].autoApprove).toBe(true);
+  it('ignores auto-approve in the payload, whatever shape it arrives in', async () => {
+    // This used to assert that only a literal `true` counted, which guarded the
+    // TYPE of a value whose SOURCE was the problem. The payload is not
+    // consulted at all now: the stored preference in the main process decides,
+    // so no value a renderer can put here changes what the agent is allowed to
+    // do. See the "auto-approve is decided by main" block below.
+    for (const asked of ['yes', 1, {}, true, false]) {
+      spawnCalls.length = 0;
+      await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: asked });
+      expect(spawnCalls[0].autoApprove).toBe(false);
+    }
   });
 
   it('defaults auto-approve to off when it is not mentioned', async () => {
@@ -177,5 +178,45 @@ describe('prefs over IPC', () => {
   it('round-trips a real boolean', async () => {
     await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
     expect((await handlers['prefs:get']({} as never, undefined)).autoApprove).toBe(true);
+  });
+});
+
+/**
+ * Where auto-approve actually comes from.
+ *
+ * The preference was moved into the main process on the argument that the
+ * server's settings route is unauthenticated and this value changes the argv of
+ * every agent spawned afterwards. An adversarial review then pointed out the
+ * obvious hole: the spawn handler still took `autoApprove` from the RENDERER's
+ * payload and never read the stored preference at all. The border was drawn and
+ * then not used, which is worse than not drawing it — the code reads as
+ * protected.
+ */
+describe('auto-approve is decided by main, not by the caller', () => {
+  it('ignores an autoApprove the renderer asks for', async () => {
+    // The whole point. An XSS in the renderer, or any bug that puts `true` in
+    // this payload, must not be able to take an agent's safety prompts away.
+    await handlers['pty:spawn']({ sender: { id: 1 } } as never, {
+      itemId: 'i1', agentId: 'shell', cols: 80, rows: 24, autoApprove: true,
+    });
+    expect(spawnCalls[0].autoApprove).toBe(false);
+  });
+
+  it('uses the stored preference when it is on', async () => {
+    await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
+    await handlers['pty:spawn']({ sender: { id: 1 } } as never, {
+      itemId: 'i1', agentId: 'shell', cols: 80, rows: 24,
+    });
+    expect(spawnCalls[0].autoApprove).toBe(true);
+  });
+
+  it('uses the stored preference even when the renderer asks for the opposite', async () => {
+    // Symmetry matters: if the renderer could turn it OFF, a compromised one
+    // could hide that it is on. Main is the only authority either way.
+    await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
+    await handlers['pty:spawn']({ sender: { id: 1 } } as never, {
+      itemId: 'i1', agentId: 'shell', cols: 80, rows: 24, autoApprove: false,
+    });
+    expect(spawnCalls[0].autoApprove).toBe(true);
   });
 });

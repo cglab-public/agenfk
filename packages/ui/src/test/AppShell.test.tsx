@@ -961,8 +961,21 @@ describe('several terminals at once (CGLAB-169)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /close terminal on second card/i }));
 
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /First card/i }).getAttribute('aria-selected')).toBe('true'));
+    // Located by the CARD, through the close button's label, rather than by
+    // the tab's own text: tabs are titled by agent and position now, because a
+    // set of tabs is usually on one card and repeating its name distinguished
+    // nothing. The claim here is unchanged — the surviving tab is the selected
+    // one — only the way to find it is.
+    await waitFor(() => {
+      // Scoped to the terminal strip: the shell's own Kanban/Terminal/Runs bar
+      // is also a tablist, so an unscoped query counts four tabs and passes or
+      // fails for reasons that have nothing to do with terminals.
+      const strip = screen.getByRole('tablist', { name: /open terminals/i });
+      const remaining = within(strip).getAllByRole('tab');
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].getAttribute('aria-selected')).toBe('true');
+    });
+    expect(screen.getByRole('button', { name: /close terminal on first card/i })).toBeInTheDocument();
   });
 
   it('goes back to the empty state when the last tab is closed', async () => {
@@ -1016,7 +1029,11 @@ describe('several terminals at once (CGLAB-169)', () => {
 
     // No dialog: it was a selection, not a spawn.
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getAllByRole('tab', { name: /First card/i })).toHaveLength(1);
+    // One terminal tab, scoped to the terminal strip — tabs are titled by
+    // agent and position now, so the card is identified by its close button.
+    const strip = screen.getByRole('tablist', { name: /open terminals/i });
+    expect(within(strip).getAllByRole('tab')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /close terminal on first card/i })).toHaveLength(1);
   });
 
   it('shows which branch the visible terminal is typing into', async () => {

@@ -1062,7 +1062,12 @@ app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
     // the row, so checking existence alone would keep offering terminals for
     // cards the user threw away. The row stays, so restoring the card from the
     // trash brings its terminals back with it.
-    return item && item.status !== Status.TRASHED ? s : null;
+    if (!item || item.status === Status.TRASHED) return null;
+    // The item is already loaded here, so its title costs nothing and saves the
+    // caller a second round trip. Without it the desktop had no name for a
+    // restored tab and fell back to the raw item id — a uuid where a card title
+    // belongs, on every tab and in the header.
+    return { ...s, itemTitle: item.title };
   }));
   res.json(alive.filter(Boolean));
 }));

@@ -24,6 +24,8 @@ export interface TerminalSessionDto {
   projectId?: string;
   agentId: string;
   agentSessionId?: string;
+  /** The card's title, so a restored tab has a name and not a uuid. */
+  itemTitle?: string;
   openedAt: string;
 }
 

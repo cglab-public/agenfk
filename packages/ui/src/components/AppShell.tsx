@@ -20,6 +20,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
@@ -193,7 +194,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // vocabularies — 'claude-code' against 'claude' — which is what
         // produced "Unknown agent" the first time one reached a spawn.
         agentId: run.harness ?? 'claude-code',
-        agentLabel: run.harness ?? 'agent',
+        agentLabel: run.harness ? agentLabel(run.harness) : 'agent',
         state: live.isLive(run.itemId) ? 'running' : 'idle',
         startedAt: run.startedAt,
         // A run from the hook has a transcript but no terminal this app owns,
@@ -208,7 +209,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         itemId: open.itemId,
         title: open.title,
         agentId: open.agentId,
-        agentLabel: open.agentId,
+        // The name, not the id: the rail sat beside a picker showing
+        // "Claude Code" while itself showing "claude-code".
+        agentLabel: agentLabel(open.agentId),
         state: live.isLive(open.itemId) ? 'running' : 'idle',
         startedAt: byItem.get(open.itemId)?.startedAt ?? new Date().toISOString(),
         hasTerminal: true,
@@ -334,7 +337,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         id: `${row.itemId}#restored-${sessionSeq.current}`,
         itemId: row.itemId,
         projectId: row.projectId,
-        title: row.itemId,
+        // The card's title, which the server sends because it has the item
+        // loaded anyway. Falling back to the id put a uuid where a card name
+        // belongs — on the tab, and in the header above it.
+        title: row.itemTitle ?? row.itemId,
         agentId: row.agentId,
         autoApprove: false,
         persist: false,
@@ -348,6 +354,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
     setSessions(prev => [...prev, ...putBack]);
     setActiveSession(cur => cur ?? putBack[0]?.id ?? null);
+    // Mounted, but NOT switched to. Reopening the app should put the terminals
+    // back where the user left them, not yank them off the board into a
+    // terminal they did not ask to look at right now.
     setTerminalOpened(true);
   }, [rememberedSessions]);
 

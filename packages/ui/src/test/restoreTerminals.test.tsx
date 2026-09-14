@@ -259,3 +259,54 @@ describe('closing a tab', () => {
     await waitFor(() => expect(api.forgetTerminalSession).toHaveBeenCalledWith('row-1'));
   });
 });
+
+/**
+ * What a tab is called.
+ *
+ * Two failures that showed up together on a real screen: every tab in the strip
+ * read as the same raw uuid. One was the restore path having no name for the
+ * card and falling back to its id; the other was the strip titling tabs by the
+ * CARD at all, which repeats the same string across every tab of a set and
+ * distinguishes nothing.
+ */
+describe('naming the tabs', () => {
+  const stored = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    itemTitle: 'Something in agenfk',
+    openedAt: new Date().toISOString(),
+  }];
+
+  it('never shows a raw item id where a card name belongs', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    // The uuid must appear nowhere on screen. It is an internal key.
+    expect(document.body.textContent).not.toContain('aaaaaaaa-bbbb-cccc-dddd');
+  });
+
+  it('titles each tab by its agent and position, not by the card', async () => {
+    // Tabs in a set are usually on the SAME card, so the card name repeats and
+    // tells the user nothing about which tab is which.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    // Restoring puts the terminals back WITHOUT switching to them: reopening
+    // the app should not yank the user off the board. So the strip has to be
+    // looked at, not waited for.
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findByRole('tab', { name: /Claude Code 1/ })).toBeInTheDocument();
+  });
+
+  it('still says which card, in the header', async () => {
+    // The card's name is said ONCE, where it applies to everything below it.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    expect(await screen.findAllByText('Something in agenfk')).not.toHaveLength(0);
+  });
+});

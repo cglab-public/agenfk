@@ -13,6 +13,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { AGENT_LABELS } from '../agentLabels';
 import { Check, ChevronDown, Search } from 'lucide-react';
 import { AgentIcon } from './AgentIcon';
 
@@ -54,13 +55,7 @@ const INSTALL_HINT: Record<string, string> = {
  * every open. Presentation only: the ids are the contract with the main
  * process, and these strings are never sent anywhere.
  */
-const FALLBACK_LABELS: Record<string, string> = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  gemini: 'Gemini CLI',
-  pi: 'Pi',
-  shell: 'Shell',
-};
+const FALLBACK_LABELS = AGENT_LABELS;
 
 /** A machine where detection failed is not a machine with no terminal. */
 const SHELL_FALLBACK: AgentInfo[] = [{ id: 'shell', label: 'Shell', installed: true }];
