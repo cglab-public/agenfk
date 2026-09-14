@@ -1151,6 +1151,84 @@ app.get("/items/:id/files", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
+/**
+ * Start a task from a branch, in one action (CGLAB-179).
+ *
+ * A composition, not new machinery — the card's own reading and it is right:
+ * creating the item, naming the branch, cutting the worktree and recording
+ * which agent to use are four steps a person does by hand, and three of them
+ * are bookkeeping.
+ *
+ * What a composition has to get right is the failure in the middle. A card
+ * with a branch name and no worktree LOOKS finished, and the user has no way
+ * to tell which of the four steps did not happen — so if the worktree cannot
+ * be cut, the item is removed and the call fails. Half a task is worse than
+ * none.
+ */
+app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  const { title, branchName, agentId, type, description } = req.body ?? {};
+  if (typeof title !== 'string' || !title.trim()) {
+    return res.status(400).json({ error: "title (string) required" });
+  }
+  if (agentId !== undefined && !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    // The launchable set is a closed list and a security boundary: recording
+    // something outside it either fails at spawn or becomes a way to influence
+    // what runs.
+    return res.status(400).json({ error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}` });
+  }
+
+  const itemType = typeof type === 'string' && ['STORY', 'TASK', 'BUG'].includes(type) ? type : 'TASK';
+  // Derived from the title when not given, by the same rule the CLI uses, so
+  // the two do not produce different branches for the same card.
+  const branch = typeof branchName === 'string' && branchName.trim()
+    ? branchName.trim()
+    : buildBranchName(itemType as ItemType, title);
+
+  // Built the same way POST /items builds one, so a card made here is
+  // indistinguishable from a card made there — a composition that produces a
+  // subtly different item is how two code paths start disagreeing.
+  const created: any = await storage.createItem({
+    id: uuidv4(),
+    projectId: project.id,
+    type: itemType as ItemType,
+    title: title.trim(),
+    description: typeof description === 'string' ? description : "",
+    status: Status.TODO,
+    parentId: undefined,
+    implementationPlan: "",
+    branchName: branch,
+    ...(agentId ? { agentId } : {}),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as any);
+
+  try {
+    if (!project.projectRoot) {
+      throw Object.assign(new Error('Project has no projectRoot. Set it before creating a worktree.'), { statusCode: 400 });
+    }
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName: branch,
+    });
+    const withWorktree = await storage.updateItem(created.id, {
+      worktreePath: result.path,
+      branchName: branch,
+    } as any);
+    io.emit('items_updated');
+    res.status(201).json({ item: withWorktree, worktree: result });
+  } catch (e: any) {
+    // Rolled back rather than left half-made. The item only exists to hold a
+    // worktree that does not exist, and leaving it would put a card on the
+    // board that silently is not what it appears to be.
+    await storage.deleteItem(created.id).catch(() => {});
+    res.status(e?.statusCode ?? 400).json({ error: e?.message ?? 'Could not create the worktree' });
+  }
+}));
+
 app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
   const projectId = typeof req.query?.projectId === 'string' ? req.query.projectId : undefined;
   const sessions = await storage.listTerminalSessions(projectId);
