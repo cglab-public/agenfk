@@ -18,6 +18,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./item-git-status-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -32,21 +49,21 @@ describe('GET /items/:id/git-status', () => {
   afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
   beforeEach(async () => {
     await initStorage();
-    const p = await internal(request(app).post('/projects')).send({ name: 'git-status' });
+    const p = await internal(agent().post('/projects')).send({ name: 'git-status' });
     projectId = p.body.id;
   });
 
   it('404s for an item that does not exist', async () => {
-    expect((await request(app).get('/items/no-such-item/git-status')).status).toBe(404);
+    expect((await agent().get('/items/no-such-item/git-status')).status).toBe(404);
   });
 
   it('says so when the item has no worktree, rather than guessing a directory', async () => {
     // Falling back to the server's cwd would report the state of whatever
     // repository the server happens to be running in — confidently, and about
     // the wrong tree.
-    const item = await request(app).post('/items')
+    const item = await agent().post('/items')
       .send({ title: 'No worktree', type: 'TASK', projectId });
-    const res = await request(app).get(`/items/${item.body.id}/git-status`);
+    const res = await agent().get(`/items/${item.body.id}/git-status`);
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/worktree/i);
   });
@@ -65,7 +82,7 @@ describe('GET /items/:id/git-status', () => {
     execFileSync('git', ['add', '.'], { cwd: repo });
     execFileSync('git', ['commit', '-qm', 'first'], { cwd: repo });
 
-    const item = await request(app).post('/items')
+    const item = await agent().post('/items')
       .send({ title: 'Has a worktree', type: 'TASK', projectId });
     // projectRoot is deliberately not settable over PUT /projects/:id — it is
     // a cwd, and the route's own comment keeps it out of the allowlist for
@@ -73,9 +90,9 @@ describe('GET /items/:id/git-status', () => {
     // which is also the path a real agent takes. `.agenfk` marks it as a
     // project root so the walk-up stops here instead of at $HOME.
     fs.mkdirSync(path.join(repo, '.agenfk'), { recursive: true });
-    await internal(request(app).post(`/items/${item.body.id}/validate`))
+    await internal(agent().post(`/items/${item.body.id}/validate`))
       .send({ cwd: repo, evidence: 'setting the project root for this test' });
-    const made = await internal(request(app).post(`/items/${item.body.id}/worktree`))
+    const made = await internal(agent().post(`/items/${item.body.id}/worktree`))
       .send({ repoRoot: repo, branchName: 'feat/status-probe' });
     expect(made.status, JSON.stringify(made.body)).toBeLessThan(300);
 
@@ -83,7 +100,7 @@ describe('GET /items/:id/git-status', () => {
     fs.writeFileSync(path.join(wt, 'tracked.txt'), 'two\n');
     fs.writeFileSync(path.join(wt, 'brand new.txt'), 'x\n');
 
-    const res = await request(app).get(`/items/${item.body.id}/git-status`);
+    const res = await agent().get(`/items/${item.body.id}/git-status`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.changed).toBeGreaterThanOrEqual(2);
     // The path with a space has to survive, which is the whole reason for -z.
@@ -97,10 +114,10 @@ describe('GET /items/:id/git-status', () => {
     // A worktree recorded and then deleted by hand. An empty status would be a
     // lie — "nothing changed" reads as a clean tree.
     const notARepo = fs.mkdtempSync(path.join(require('os').tmpdir(), 'agenfk-nogit-'));
-    const item = await request(app).post('/items')
+    const item = await agent().post('/items')
       .send({ title: 'Gone', type: 'TASK', projectId });
-    await internal(request(app).put(`/items/${item.body.id}`)).send({ worktreePath: notARepo });
-    const res = await request(app).get(`/items/${item.body.id}/git-status`);
+    await internal(agent().put(`/items/${item.body.id}`)).send({ worktreePath: notARepo });
+    const res = await agent().get(`/items/${item.body.id}/git-status`);
     expect(res.status).toBe(409);
     fs.rmSync(notARepo, { recursive: true, force: true });
   });

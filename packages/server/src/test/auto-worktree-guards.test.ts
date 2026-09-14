@@ -22,6 +22,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN, shouldAutoWorktree, noteWorktreeFailure } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./auto-worktree-guards-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
@@ -36,18 +53,18 @@ describe('who gets an automatic worktree', () => {
   afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
   beforeEach(async () => {
     await initStorage();
-    const p = await internal(request(app).post('/projects')).send({ name: 'wt-guards' });
+    const p = await internal(agent().post('/projects')).send({ name: 'wt-guards' });
     projectId = p.body.id;
     // projectRoot deliberately left unset: these tests are about the GUARDS
     // that run before any git command, so no repository is needed.
-    await internal(request(app).put(`/projects/${projectId}`)).send({ autoWorktree: true });
+    await internal(agent().put(`/projects/${projectId}`)).send({ autoWorktree: true });
   });
 
   it('never makes one for an EPIC', async () => {
     // A container with no code of its own. A checkout for it is a full copy of
     // the repository that nobody will ever type in — and `agenfk branch
     // create` already refuses it, so the two paths disagreed.
-    const epic = await request(app).post('/items')
+    const epic = await agent().post('/items')
       .send({ title: 'The epic', type: 'EPIC', projectId });
     expect(shouldAutoWorktree(epic.body)).toBe(false);
   });
@@ -55,9 +72,9 @@ describe('who gets an automatic worktree', () => {
   it('never makes one for a child item', async () => {
     // A child shares its parent's branch by design, which is the whole reason
     // `agenfk branch create` refuses children explicitly.
-    const parent = await request(app).post('/items')
+    const parent = await agent().post('/items')
       .send({ title: 'Parent', type: 'STORY', projectId });
-    const child = await request(app).post('/items')
+    const child = await agent().post('/items')
       .send({ title: 'Child', type: 'TASK', projectId, parentId: parent.body.id });
     expect(shouldAutoWorktree(child.body)).toBe(false);
   });
@@ -65,14 +82,14 @@ describe('who gets an automatic worktree', () => {
   it('makes one for a top-level STORY, TASK or BUG', async () => {
     // The common case has to keep working, or the guard has eaten the feature.
     for (const type of ['STORY', 'TASK', 'BUG']) {
-      const item = await request(app).post('/items')
+      const item = await agent().post('/items')
         .send({ title: `A ${type}`, type, projectId });
       expect(shouldAutoWorktree(item.body), type).toBe(true);
     }
   });
 
   it('does not make a second one for an item that already has it', async () => {
-    const item = await request(app).post('/items')
+    const item = await agent().post('/items')
       .send({ title: 'Already has one', type: 'TASK', projectId });
     expect(shouldAutoWorktree({ ...item.body, worktreePath: '/somewhere' })).toBe(false);
   });
@@ -82,11 +99,11 @@ describe('when the worktree cannot be made', () => {
   let projectId: string;
   beforeEach(async () => {
     await initStorage();
-    const p = await internal(request(app).post('/projects')).send({ name: 'wt-fail' });
+    const p = await internal(agent().post('/projects')).send({ name: 'wt-fail' });
     projectId = p.body.id;
-    await internal(request(app).put(`/projects/${projectId}`)).send({ autoWorktree: true });
+    await internal(agent().put(`/projects/${projectId}`)).send({ autoWorktree: true });
     // A root that is not a repository, so `git worktree add` cannot succeed.
-    await internal(request(app).put(`/projects/${projectId}`)).send({ name: 'wt-fail' });
+    await internal(agent().put(`/projects/${projectId}`)).send({ name: 'wt-fail' });
   });
 
   it('records the failure on the item instead of only the server log', async () => {
@@ -94,10 +111,10 @@ describe('when the worktree cannot be made', () => {
     // it has a worktree and edits the main tree — the exact collision this
     // feature exists to prevent, and a console warning is somewhere the agent
     // never looks.
-    const item = await request(app).post('/items')
+    const item = await agent().post('/items')
       .send({ title: 'Will fail', type: 'TASK', projectId });
     await noteWorktreeFailure(item.body.id, new Error('not a git repository'));
-    const after = await request(app).get(`/items/${item.body.id}`);
+    const after = await agent().get(`/items/${item.body.id}`);
     const text = JSON.stringify(after.body.comments ?? []);
     expect(text).toMatch(/worktree/i);
     expect(text).toMatch(/not a git repository/);

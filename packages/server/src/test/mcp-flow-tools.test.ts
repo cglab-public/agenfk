@@ -15,6 +15,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
@@ -76,7 +93,7 @@ describe('Flow management REST API (list_flows backing)', () => {
   });
 
   it('GET /flows returns an array', async () => {
-    const res = await request(app).get('/flows');
+    const res = await agent().get('/flows');
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
   });
@@ -94,7 +111,7 @@ describe('Flow management REST API (create_flow backing)', () => {
   });
 
   it('POST /flows creates a flow with steps', async () => {
-    const res = await request(app).post('/flows').send({
+    const res = await agent().post('/flows').send({
       name: 'Shipping Flow',
       description: 'Custom flow for shipping features',
       steps: [
@@ -111,13 +128,13 @@ describe('Flow management REST API (create_flow backing)', () => {
   });
 
   it('POST /flows rejects missing name', async () => {
-    const res = await request(app).post('/flows').send({ steps: [] });
+    const res = await agent().post('/flows').send({ steps: [] });
     expect(res.status).toBe(400);
   });
 
   it('POST /flows + POST /projects/:id/flow activates flow for project (use_flow scenario)', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'FlowProject' })).body;
-    const flow = (await request(app).post('/flows').send({
+    const project = (await agent().post('/projects').send({ name: 'FlowProject' })).body;
+    const flow = (await agent().post('/flows').send({
       name: 'TDD Flow',
       steps: [
         { id: 'a', name: 'TODO', order: 1, isAnchor: true },
@@ -126,12 +143,12 @@ describe('Flow management REST API (create_flow backing)', () => {
       ],
     })).body;
 
-    const activate = await request(app)
+    const activate = await agent()
       .post(`/projects/${project.id}/flow`)
       .send({ flowId: flow.id });
     expect(activate.status).toBe(200);
 
-    const activeFlow = (await request(app).get(`/projects/${project.id}/flow`)).body;
+    const activeFlow = (await agent().get(`/projects/${project.id}/flow`)).body;
     expect(activeFlow.id).toBe(flow.id);
     expect(activeFlow.name).toBe('TDD Flow');
   });
@@ -149,12 +166,12 @@ describe('Flow management REST API (update_flow backing)', () => {
   });
 
   it('PUT /flows/:id updates name and steps', async () => {
-    const created = (await request(app).post('/flows').send({
+    const created = (await agent().post('/flows').send({
       name: 'Old Name',
       steps: [],
     })).body;
 
-    const res = await request(app).put(`/flows/${created.id}`).send({
+    const res = await agent().put(`/flows/${created.id}`).send({
       name: 'New Name',
       steps: [{ id: 'x', name: 'DONE', order: 1, isAnchor: true }],
     });
@@ -164,7 +181,7 @@ describe('Flow management REST API (update_flow backing)', () => {
   });
 
   it('PUT /flows/:id returns 404 for unknown id', async () => {
-    const res = await request(app).put('/flows/no-such-flow').send({ name: 'X' });
+    const res = await agent().put('/flows/no-such-flow').send({ name: 'X' });
     expect(res.status).toBe(404);
   });
 });
@@ -181,17 +198,17 @@ describe('Flow management REST API (delete_flow backing)', () => {
   });
 
   it('DELETE /flows/:id removes the flow', async () => {
-    const created = (await request(app).post('/flows').send({ name: 'ToDelete', steps: [] })).body;
+    const created = (await agent().post('/flows').send({ name: 'ToDelete', steps: [] })).body;
 
-    const del = await request(app).delete(`/flows/${created.id}`);
+    const del = await agent().delete(`/flows/${created.id}`);
     expect(del.status).toBe(204);
 
-    const get = await request(app).get(`/flows/${created.id}`);
+    const get = await agent().get(`/flows/${created.id}`);
     expect(get.status).toBe(404);
   });
 
   it('DELETE /flows/:id returns 404 for unknown flow', async () => {
-    const res = await request(app).delete('/flows/nonexistent');
+    const res = await agent().delete('/flows/nonexistent');
     expect(res.status).toBe(404);
   });
 });
@@ -208,14 +225,14 @@ describe('Flow management REST API (use_flow backing)', () => {
   });
 
   it('POST /projects/:id/flow rejects missing flowId body', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P1' })).body;
-    const res = await request(app).post(`/projects/${project.id}/flow`).send({});
+    const project = (await agent().post('/projects').send({ name: 'P1' })).body;
+    const res = await agent().post(`/projects/${project.id}/flow`).send({});
     expect(res.status).toBe(400);
   });
 
   it('POST /projects/:id/flow rejects unknown flowId', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'P2' })).body;
-    const res = await request(app)
+    const project = (await agent().post('/projects').send({ name: 'P2' })).body;
+    const res = await agent()
       .post(`/projects/${project.id}/flow`)
       .send({ flowId: 'no-such-flow' });
     expect(res.status).toBe(404);

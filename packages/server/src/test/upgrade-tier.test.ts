@@ -13,6 +13,23 @@ import { buildUpgradeNotice } from '../mcpUpgradeNotice';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
@@ -99,7 +116,7 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '1.2.3' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('upgradeTier');
     expect(res.body.upgradeTier).toBe('optional');
@@ -119,7 +136,7 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '2.0.0', agenfkUpgradeTier: 'mandatory' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('mandatory');
   });
@@ -138,7 +155,7 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '1.5.0', agenfkUpgradeTier: 'recommended' }
     });
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('recommended');
   });
@@ -156,7 +173,7 @@ describe('GET /releases/latest — upgradeTier in response', () => {
     });
     // Second call fails (network error)
     axios.get.mockRejectedValueOnce(new Error('Network Error'));
-    const res = await request(app).get('/releases/latest');
+    const res = await agent().get('/releases/latest');
     expect(res.status).toBe(200);
     expect(res.body.upgradeTier).toBe('optional');
   });

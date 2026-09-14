@@ -17,6 +17,23 @@ import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, resolveUiDir, mountStaticUI, API_PATH_PREFIXES } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./serve-ui-test-db.sqlite');
 
 const INDEX_HTML = '<!doctype html><title>AgEnFK</title><div id="root"></div>';
@@ -112,13 +129,13 @@ describe('resolveUiDir', () => {
 
 describe('with no UI bundle mounted (today\'s `agenfk up` behaviour)', () => {
   it('GET / answers the API status JSON even to a browser', async () => {
-    const res = await request(app).get('/').set('Accept', 'text/html,application/xhtml+xml');
+    const res = await agent().get('/').set('Accept', 'text/html,application/xhtml+xml');
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('AgEnFK Framework API is running');
   });
 
   it('does not serve UI assets', async () => {
-    const res = await request(app).get('/assets/app.js');
+    const res = await agent().get('/assets/app.js');
     expect(res.status).toBe(404);
   });
 });
@@ -129,45 +146,45 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
   });
 
   it('GET / still answers JSON to API clients, so agenfk health keeps working', async () => {
-    const res = await request(app).get('/').set('Accept', 'application/json, text/plain, */*');
+    const res = await agent().get('/').set('Accept', 'application/json, text/plain, */*');
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('AgEnFK Framework API is running');
   });
 
   it('GET / answers JSON to a client that sends no Accept preference (curl)', async () => {
-    const res = await request(app).get('/').set('Accept', '*/*');
+    const res = await agent().get('/').set('Accept', '*/*');
     expect(res.body.message).toBe('AgEnFK Framework API is running');
   });
 
   it('GET / serves the SPA shell to a browser', async () => {
-    const res = await request(app).get('/').set('Accept', 'text/html,application/xhtml+xml,*/*;q=0.8');
+    const res = await agent().get('/').set('Accept', 'text/html,application/xhtml+xml,*/*;q=0.8');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.text).toContain('<div id="root">');
   });
 
   it('serves hashed assets with a sensible content type', async () => {
-    const res = await request(app).get('/assets/app.js');
+    const res = await agent().get('/assets/app.js');
     expect(res.status).toBe(200);
     expect(res.text).toBe(APP_JS);
     expect(res.headers['content-type']).toMatch(/javascript/);
   });
 
   it('falls back to the SPA shell for a deep-linked UI route', async () => {
-    const res = await request(app).get('/board/some-project').set('Accept', 'text/html');
+    const res = await agent().get('/board/some-project').set('Accept', 'text/html');
     expect(res.status).toBe(200);
     expect(res.text).toContain('<div id="root">');
   });
 
   it('does not shadow existing API routes', async () => {
-    const res = await request(app).get('/version').set('Accept', 'text/html');
+    const res = await agent().get('/version').set('Accept', 'text/html');
     expect(res.status).toBe(200);
     expect(res.body.version).toBeTruthy();
     expect(res.text).not.toContain('<div id="root">');
   });
 
   it('lets an unknown API path 404 as JSON instead of swallowing it into the SPA', async () => {
-    const res = await request(app).get('/projects/definitely-not-a-project').set('Accept', 'text/html');
+    const res = await agent().get('/projects/definitely-not-a-project').set('Accept', 'text/html');
     expect(res.status).toBe(404);
     expect(res.text).not.toContain('<div id="root">');
   });
@@ -177,7 +194,7 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
     // headersSent guard rather than API_PATH_PREFIXES. These reach the
     // fallback with nothing sent, so only the prefix list can reject them.
     for (const p of ['/projects/a/b/c', '/items/x/y', '/agent-runs/1/2/3']) {
-      const res = await request(app).get(p).set('Accept', 'text/html');
+      const res = await agent().get(p).set('Accept', 'text/html');
       expect(res.text, `${p} leaked the SPA shell`).not.toContain('<div id="root">');
     }
   });
@@ -197,8 +214,8 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
   });
 
   it('answers HEAD and GET consistently on a SPA path', async () => {
-    const get = await request(app).get('/deep/link').set('Accept', 'text/html');
-    const head = await request(app).head('/deep/link').set('Accept', 'text/html');
+    const get = await agent().get('/deep/link').set('Accept', 'text/html');
+    const head = await agent().head('/deep/link').set('Accept', 'text/html');
     expect(get.status).toBe(200);
     expect(head.status).toBe(get.status);
   });
@@ -206,7 +223,7 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
   it('denies dotfiles instead of serving them', async () => {
     fs.writeFileSync(path.join(uiDir, '.env'), 'SECRET=hunter2');
     try {
-      const res = await request(app).get('/.env').set('Accept', '*/*');
+      const res = await agent().get('/.env').set('Accept', '*/*');
       expect(res.status).not.toBe(200);
       expect(res.text ?? '').not.toContain('hunter2');
     } finally {
@@ -215,33 +232,33 @@ describe('with the UI bundle mounted (desktop / AGENFK_SERVE_UI)', () => {
   });
 
   it('marks hashed assets immutable but never the shell', async () => {
-    const asset = await request(app).get('/assets/app.js');
+    const asset = await agent().get('/assets/app.js');
     expect(asset.headers['cache-control']).toMatch(/immutable/);
 
-    const shell = await request(app).get('/').set('Accept', 'text/html');
+    const shell = await agent().get('/').set('Accept', 'text/html');
     expect(shell.headers['cache-control'] ?? '').not.toMatch(/immutable/);
   });
 
   it('serves the shell from one source — "/" and a deep link agree byte for byte', async () => {
     // If "/" came off disk via express.static's index while deep links came
     // from the boot snapshot, a bundle swap would desync them.
-    const root = await request(app).get('/').set('Accept', 'text/html');
-    const deep = await request(app).get('/deep/link').set('Accept', 'text/html');
+    const root = await agent().get('/').set('Accept', 'text/html');
+    const deep = await agent().get('/deep/link').set('Accept', 'text/html');
     expect(root.text).toBe(deep.text);
   });
 
   it('does not hijack Socket.io polling requests', async () => {
-    const res = await request(app).get('/socket.io/?EIO=4&transport=polling').set('Accept', 'text/html');
+    const res = await agent().get('/socket.io/?EIO=4&transport=polling').set('Accept', 'text/html');
     expect(res.text).not.toContain('<div id="root">');
   });
 
   it('does not answer non-GET requests with the SPA shell', async () => {
-    const res = await request(app).post('/not/a/real/endpoint').set('Accept', 'text/html').send({});
+    const res = await agent().post('/not/a/real/endpoint').set('Accept', 'text/html').send({});
     expect(res.text).not.toContain('<div id="root">');
   });
 
   it('does not serve the SPA shell to a non-browser client on an unknown path', async () => {
-    const res = await request(app).get('/some/unknown/path').set('Accept', 'application/json');
+    const res = await agent().get('/some/unknown/path').set('Accept', 'application/json');
     expect(res.text).not.toContain('<div id="root">');
   });
 });

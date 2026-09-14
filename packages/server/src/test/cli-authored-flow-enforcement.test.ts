@@ -29,6 +29,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./cli-authored-flow-test-db.sqlite');
 
 /** Exactly what `agenfk flow create` emits: isSpecial only, never isAnchor. */
@@ -40,16 +57,16 @@ const CLI_FLOW_STEPS = [
 ];
 
 async function projectOnCliFlow(name: string, verifyCommand?: string): Promise<string> {
-  const p = await request(app).post('/projects').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name });
+  const p = await agent().post('/projects').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name });
   const projectId = p.body.id;
-  const f = await request(app).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name: `${name}-flow`, steps: CLI_FLOW_STEPS });
+  const f = await agent().post('/flows').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name: `${name}-flow`, steps: CLI_FLOW_STEPS });
   expect(f.status).toBeLessThan(400);
-  await request(app).post(`/projects/${projectId}/flow`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ flowId: f.body.id });
+  await agent().post(`/projects/${projectId}/flow`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ flowId: f.body.id });
   if (verifyCommand) {
     // Its own privileged endpoint, not PUT /projects: verifyCommand is a shell
     // string run by validate_progress, so it is deliberately outside the
     // general update allowlist (bug e60e20aa, mass assignment → RCE).
-    const set = await request(app)
+    const set = await agent()
       .put(`/projects/${projectId}/verify-command`)
       .set('x-agenfk-internal', VERIFY_TOKEN!)
       .send({ verifyCommand });
@@ -75,10 +92,10 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // verification whatsoever. The agent followed the instructions it was
     // given, and the gate silently did not exist.
     const projectId = await projectOnCliFlow('cli-no-verify-cmd');
-    const item = await request(app).post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await request(app).put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.body.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN!)
       .send({ evidence: 'done, honest' });
@@ -86,7 +103,7 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('NO_VERIFY_COMMAND');
 
-    const after = await request(app).get(`/items/${item.body.id}`);
+    const after = await agent().get(`/items/${item.body.id}`);
     expect(after.body.status).toBe('CHECKING');
   });
 
@@ -94,17 +111,17 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // The other half of the same disagreement: with a verifyCommand configured,
     // omitting the command must RUN it, not skip it.
     const projectId = await projectOnCliFlow('cli-with-verify-cmd', 'exit 1');
-    const item = await request(app).post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await request(app).put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.body.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN!)
       .send({ evidence: 'claiming success' });
 
     // The command ran and failed, so the item must NOT have advanced.
     expect(res.status).toBe(422);
-    const after = await request(app).get(`/items/${item.body.id}`);
+    const after = await agent().get(`/items/${item.body.id}`);
     expect(after.body.status).not.toBe('SHIPPED');
   });
 
@@ -117,24 +134,24 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // takes its currentIdx === -1 recovery branch whose real-step filter is
     // also empty here, so it offers no route back in. The item is stuck with
     // no supported command that can move it.
-    const p = await request(app).post('/projects').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name: 'degenerate' });
+    const p = await agent().post('/projects').set('x-agenfk-internal', VERIFY_TOKEN!).send({ name: 'degenerate' });
     const projectId = p.body.id;
-    const f = await request(app).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN!).send({
+    const f = await agent().post('/flows').set('x-agenfk-internal', VERIFY_TOKEN!).send({
       name: 'all-terminal',
       steps: [
         { name: 'ONE', label: 'One', order: 0, isSpecial: true },
         { name: 'TWO', label: 'Two', order: 1, isSpecial: true },
       ],
     });
-    await request(app).post(`/projects/${projectId}/flow`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ flowId: f.body.id });
-    await request(app).put(`/projects/${projectId}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand: 'exit 1' });
+    await agent().post(`/projects/${projectId}/flow`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ flowId: f.body.id });
+    await agent().put(`/projects/${projectId}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand: 'exit 1' });
 
-    const item = await request(app).post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await request(app).put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'ONE' });
+    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'ONE' });
 
-    await request(app).post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
+    await agent().post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
 
-    const after = await request(app).get(`/items/${item.body.id}`);
+    const after = await agent().get(`/items/${item.body.id}`);
     expect(['ONE', 'TWO']).toContain(after.body.status);
   });
 
@@ -145,17 +162,17 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // mechanically blocks every Edit. The agent is sent back to fix a failure
     // and simultaneously forbidden from touching the code.
     const projectId = await projectOnCliFlow('cli-failure-rollback', 'exit 1');
-    const item = await request(app).post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await request(app).put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
 
-    await request(app).post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
+    await agent().post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
 
-    const after = await request(app).get(`/items/${item.body.id}`);
+    const after = await agent().get(`/items/${item.body.id}`);
     expect(after.body.status).not.toBe('BACKLOG');
 
     // The property that actually matters, stated directly: the item is still
     // something the gatekeeper counts as active work.
-    const active = await request(app).get('/items').query({ active: 'true', projectId });
+    const active = await agent().get('/items').query({ active: 'true', projectId });
     expect(active.body.map((i: { id: string }) => i.id)).toContain(item.body.id);
   });
 });

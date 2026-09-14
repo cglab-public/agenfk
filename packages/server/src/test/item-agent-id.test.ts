@@ -23,6 +23,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./item-agent-id-test-db.sqlite');
 
 const internal = (req: request.Test) => req.set('x-agenfk-internal', VERIFY_TOKEN!);
@@ -38,20 +55,20 @@ describe('the agent a card is worked with', () => {
   afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
   beforeEach(async () => {
     await initStorage();
-    const p = await internal(request(app).post('/projects')).send({ name: 'agent-id' });
+    const p = await internal(agent().post('/projects')).send({ name: 'agent-id' });
     projectId = p.body.id;
   });
 
   const makeItem = async () => {
-    const res = await internal(request(app).post('/items'))
+    const res = await internal(agent().post('/items'))
       .send({ type: 'TASK', title: 'probe', projectId });
     return res.body.id as string;
   };
 
   it('is stored on the item and comes back on read', async () => {
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: 'codex' });
-    const after = await request(app).get(`/items/${id}`);
+    await internal(agent().put(`/items/${id}`)).send({ agentId: 'codex' });
+    const after = await agent().get(`/items/${id}`);
     expect(after.body.agentId).toBe('codex');
   });
 
@@ -60,18 +77,18 @@ describe('the agent a card is worked with', () => {
     // card silently launched whatever the first card used.
     const a = await makeItem();
     const b = await makeItem();
-    await internal(request(app).put(`/items/${a}`)).send({ agentId: 'codex' });
-    await internal(request(app).put(`/items/${b}`)).send({ agentId: 'claude' });
+    await internal(agent().put(`/items/${a}`)).send({ agentId: 'codex' });
+    await internal(agent().put(`/items/${b}`)).send({ agentId: 'claude' });
 
-    expect((await request(app).get(`/items/${a}`)).body.agentId).toBe('codex');
-    expect((await request(app).get(`/items/${b}`)).body.agentId).toBe('claude');
+    expect((await agent().get(`/items/${a}`)).body.agentId).toBe('codex');
+    expect((await agent().get(`/items/${b}`)).body.agentId).toBe('claude');
   });
 
   it('survives an unrelated update', async () => {
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: 'codex' });
-    await internal(request(app).put(`/items/${id}`)).send({ title: 'renamed' });
-    const after = await request(app).get(`/items/${id}`);
+    await internal(agent().put(`/items/${id}`)).send({ agentId: 'codex' });
+    await internal(agent().put(`/items/${id}`)).send({ title: 'renamed' });
+    const after = await agent().get(`/items/${id}`);
     expect(after.body.agentId).toBe('codex');
     expect(after.body.title).toBe('renamed');
   });
@@ -80,21 +97,21 @@ describe('the agent a card is worked with', () => {
     // The server has no agent registry and must not grow one. Which agent is
     // the sensible default is a client question.
     const id = await makeItem();
-    expect((await request(app).get(`/items/${id}`)).body.agentId).toBeUndefined();
+    expect((await agent().get(`/items/${id}`)).body.agentId).toBeUndefined();
   });
 
   it('ignores a non-string, so a bad client cannot corrupt the field', async () => {
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: { evil: true } });
-    expect((await request(app).get(`/items/${id}`)).body.agentId).toBeUndefined();
+    await internal(agent().put(`/items/${id}`)).send({ agentId: { evil: true } });
+    expect((await agent().get(`/items/${id}`)).body.agentId).toBeUndefined();
   });
 
   it('refuses an absurdly long value', async () => {
     // It is an opaque id, not a payload. A bound keeps a hostile client from
     // growing the row without limit.
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: 'x'.repeat(5000) });
-    expect((await request(app).get(`/items/${id}`)).body.agentId).toBeUndefined();
+    await internal(agent().put(`/items/${id}`)).send({ agentId: 'x'.repeat(5000) });
+    expect((await agent().get(`/items/${id}`)).body.agentId).toBeUndefined();
   });
 
   it('stores an unknown id verbatim rather than validating it here', async () => {
@@ -103,8 +120,8 @@ describe('the agent a card is worked with', () => {
     // time, so an unknown value is refused THERE rather than executed. Adding a
     // second, drifting copy of the list here would be worse than useless.
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: 'not-a-real-agent' });
-    expect((await request(app).get(`/items/${id}`)).body.agentId).toBe('not-a-real-agent');
+    await internal(agent().put(`/items/${id}`)).send({ agentId: 'not-a-real-agent' });
+    expect((await agent().get(`/items/${id}`)).body.agentId).toBe('not-a-real-agent');
   });
 
   it('does not persist a decision to skip permissions', async () => {
@@ -112,8 +129,8 @@ describe('the agent a card is worked with', () => {
     // own safety prompts on every later run of this card. It is a per-run
     // decision and stays one.
     const id = await makeItem();
-    await internal(request(app).put(`/items/${id}`)).send({ agentId: 'claude', autoApprove: true });
-    const after = await request(app).get(`/items/${id}`);
+    await internal(agent().put(`/items/${id}`)).send({ agentId: 'claude', autoApprove: true });
+    const after = await agent().get(`/items/${id}`);
     expect(after.body.autoApprove).toBeUndefined();
   });
 });

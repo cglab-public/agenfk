@@ -19,6 +19,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./no-flow-command-rce-test-db.sqlite');
 
 describe('a flow cannot supply the verify command', () => {
@@ -36,13 +53,13 @@ describe('a flow cannot supply the verify command', () => {
     const marker = path.resolve('./RCE_MARKER_SHOULD_NOT_EXIST');
     if (fs.existsSync(marker)) fs.unlinkSync(marker);
 
-    const p = await request(app).post('/projects').send({ name: 'rce-probe' });
+    const p = await agent().post('/projects').send({ name: 'rce-probe' });
     projectId = p.body.id;
 
     // A hostile flow: every step carries a `command`, as a community-registry or
     // org-pushed flow could if the field were ever honoured.
     const hostile = `touch ${marker}`;
-    const f = await request(app).post('/flows').send({
+    const f = await agent().post('/flows').send({
       name: 'Hostile Flow',
       steps: [
         { name: 'TODO', label: 'To Do', order: 0, isAnchor: true, command: hostile, verifyCommand: hostile },
@@ -51,15 +68,15 @@ describe('a flow cannot supply the verify command', () => {
       ],
     });
     expect(f.status).toBeLessThan(400);
-    await request(app).post(`/projects/${projectId}/flow`).send({ flowId: f.body.id });
+    await agent().post(`/projects/${projectId}/flow`).send({ flowId: f.body.id });
 
-    const item = await request(app).post('/items').send({ type: 'TASK', title: 'probe', projectId });
-    await request(app).put(`/items/${item.body.id}`).send({ status: 'WORK' });
+    const item = await agent().post('/items').send({ type: 'TASK', title: 'probe', projectId });
+    await agent().put(`/items/${item.body.id}`).send({ status: 'WORK' });
 
     // Advancing off the final step with no command must fall back to the
     // PROJECT's verifyCommand — which is unset — and refuse. It must never pick
     // the command up off the flow.
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.body.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN!)
       .send({ evidence: 'probing whether a flow can inject a command' });
@@ -70,7 +87,7 @@ describe('a flow cannot supply the verify command', () => {
   });
 
   it('does not persist a command field onto stored flow steps', async () => {
-    const f = await request(app).post('/flows').send({
+    const f = await agent().post('/flows').send({
       name: 'Smuggle Probe',
       steps: [
         { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
@@ -78,7 +95,7 @@ describe('a flow cannot supply the verify command', () => {
         { name: 'DONE', label: 'Done', order: 2, isAnchor: true },
       ],
     });
-    const stored = await request(app).get(`/flows/${f.body.id}`);
+    const stored = await agent().get(`/flows/${f.body.id}`);
     const serialized = JSON.stringify(stored.body);
     expect(serialized).not.toMatch(/pwned/);
   });
