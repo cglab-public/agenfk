@@ -1382,3 +1382,275 @@ describe('right-clicking a card in the projects tree', () => {
     await waitFor(() => expect(screen.queryByRole('menu', { name: /actions for/i })).toBeNull());
   });
 });
+
+/**
+ * The projects tree in the new drawing, and the WORK group above it (CGLAB-164).
+ *
+ * Three separate claims, and they are worth keeping separate:
+ *
+ *  1. The row got bigger and gained a second line. The type was 11px and the
+ *     branch was nowhere, which meant the one fact that tells two cards in the
+ *     same step apart was invisible in the list built to scan them.
+ *  2. The row carries exactly ONE dot, and it is about the AGENT, never the
+ *     flow step. The app has a Sessions rail as well as this tree, and two
+ *     lists repeating one status is the failure mode the design avoids.
+ *  3. View selection moved into the sidebar as a WORK group. The tab strip is
+ *     still there — retiring it is a separate card with its own test churn —
+ *     so what matters here is that the new route works and that reaching it
+ *     does not unmount anything.
+ */
+describe('the projects tree row in the new drawing (CGLAB-164)', () => {
+  const CARDS = [
+    { id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS', branchName: 'feat/CGLAB-1_some-work' },
+    { id: 'i2', projectId: 'p2', type: 'BUG', title: 'Other work', status: 'REVIEW' },
+  ];
+
+  const openTheFolder = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(CARDS as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /expand horizon-lab/i }));
+    return screen.findByTitle('Some work');
+  };
+
+  /** The px in a Tailwind arbitrary text size — the only size jsdom can see. */
+  const sizeOf = (el: Element): number => {
+    const found = /text-\[(\d+(?:\.\d+)?)px\]/.exec(el.className);
+    expect(found, `no arbitrary text size on ${el.getAttribute('data-testid')}`).not.toBeNull();
+    return Number(found![1]);
+  };
+
+  it('shows the branch on a second line, under the title', async () => {
+    const row = await openTheFolder();
+    const branch = within(row).getByTestId('card-branch');
+    expect(branch.textContent).toBe('feat/CGLAB-1_some-work');
+    // Under it, not beside it: the title is its own element and the branch
+    // follows it in the row.
+    const title = within(row).getByTestId('card-title');
+    expect(title.compareDocumentPosition(branch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('says a card has no branch rather than leaving the line blank', async () => {
+    // A blank second line reads as a rendering bug, and the absence of a
+    // branch is itself worth knowing — it is the card nobody has started.
+    await openTheFolder();
+    const row = await screen.findByTitle('Other work');
+    expect(within(row).getByTestId('card-branch').textContent).toMatch(/no branch yet/i);
+  });
+
+  it('keeps a real branch readable to assistive tech but does not repeat the placeholder', async () => {
+    /*
+     * Review found this change arguing both sides of one rule. The dot
+     * suppresses its "nothing running" label precisely because saying it on
+     * every row of a thirty-card list is noise — and then the branch line
+     * announced "no branch yet" on every branchless row for the same reason it
+     * should not have.
+     *
+     * A REAL branch is the opposite case: it is the single thing that tells
+     * two cards sitting in the same step apart, so it stays in the row's
+     * accessible name. Only the placeholder is hidden.
+     */
+    await openTheFolder();
+    const withBranch = await screen.findByTitle('Some work');
+    const without = await screen.findByTitle('Other work');
+
+    expect(within(withBranch).getByTestId('card-branch').getAttribute('aria-hidden')).toBeNull();
+    expect(within(without).getByTestId('card-branch').getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('draws the branch in mono, dimmer and smaller than the title', async () => {
+    // A branch name is an identifier. Proportional type makes l/1 and rn/m
+    // ambiguous in exactly the strings you have to compare by eye.
+    const row = await openTheFolder();
+    const branch = within(row).getByTestId('card-branch');
+    expect(branch.className).toMatch(/font-mono/);
+    expect(sizeOf(branch)).toBeLessThan(sizeOf(within(row).getByTestId('card-title')));
+  });
+
+  it('sets the card title bigger than the 11px it used to be', async () => {
+    // The literal ask. The rows were 11px and cramped.
+    const row = await openTheFolder();
+    expect(sizeOf(within(row).getByTestId('card-title'))).toBeGreaterThan(11);
+  });
+
+  it('orders the row type: title, then branch, then step', async () => {
+    // One hierarchy, three sizes. The step is the smallest because it is the
+    // thing you filter by, not the thing you read.
+    const row = await openTheFolder();
+    const title = sizeOf(within(row).getByTestId('card-title'));
+    const branch = sizeOf(within(row).getByTestId('card-branch'));
+    const step = sizeOf(within(row).getByTestId('card-step'));
+    expect(title).toBeGreaterThan(branch);
+    expect(branch).toBeGreaterThan(step);
+  });
+
+  it('keeps the flow step as right-aligned text, and gives it no colour of its own', async () => {
+    /*
+     * Both halves of the name, asserted. The first version checked
+     * `textContent` and that the class list said `uppercase`, which left the
+     * test passing with the step rendered in bright red — the one thing the
+     * design forbids — and asserting nothing whatsoever about alignment.
+     */
+    const row = await openTheFolder();
+    const step = within(row).getByTestId('card-step');
+    expect(step.textContent).toBe('IN_PROGRESS');
+
+    // Right-aligned: it is the last column of the row's grid, pushed to the
+    // end of it. Both halves matter — a last column that stretches is not
+    // right-aligned.
+    expect(row.className, 'the row is not a grid with a content-sized last column')
+      .toMatch(/grid-cols-\[7px_minmax\(0,1fr\)_auto\]/);
+    expect(step.className).toMatch(/justify-self-end/);
+
+    // No colour: it must carry no background, no hue-bearing text class, and
+    // no state attribute. The dot is the only thing on this row allowed to
+    // mean something in colour, and the step is not a second copy of it.
+    expect(step.getAttribute('data-card-state'), 'the step became a state mark').toBeNull();
+    expect(step.className, 'the step was given a colour of its own')
+      .not.toMatch(/(^|\s)(bg-|text-[a-z]+-\d)/);
+  });
+
+  it('draws exactly one state dot per row', async () => {
+    // ONE. The row is 224px wide and a second signal is a second thing to
+    // learn; the point of the redesign is that the tree says one thing well.
+    const row = await openTheFolder();
+    expect(row.querySelectorAll('[data-card-state]')).toHaveLength(1);
+  });
+
+  it('gives two cards in different flow steps the same dot when neither is running', async () => {
+    /*
+     * The decision the user took, deliberately, against the first version of
+     * the study: the dot does NOT carry the flow step's colour. IN_PROGRESS
+     * and REVIEW are different steps; with no agent on either card they are
+     * the same dot, because the dot is about agents.
+     */
+    await openTheFolder();
+    const inProgress = await screen.findByTitle('Some work');
+    const inReview = await screen.findByTitle('Other work');
+    const dot = (row: HTMLElement) => row.querySelector('[data-card-state]') as HTMLElement;
+    expect(dot(inProgress).getAttribute('data-card-state')).toBe('quiet');
+    expect(dot(inReview).getAttribute('data-card-state')).toBe('quiet');
+    expect(dot(inProgress).className).toBe(dot(inReview).className);
+  });
+
+  it('turns the dot to working for the card an agent is actually on', async () => {
+    const row = await openTheFolder();
+    expect(row.querySelector('[data-card-state]')!.getAttribute('data-card-state')).toBe('quiet');
+
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(() =>
+      expect(row.querySelector('[data-card-state]')!.getAttribute('data-card-state')).toBe('working'));
+    // And only that card.
+    const other = await screen.findByTitle('Other work');
+    expect(other.querySelector('[data-card-state]')!.getAttribute('data-card-state')).toBe('quiet');
+  });
+});
+
+describe('the WORK group in the sidebar (CGLAB-164)', () => {
+  const workNav = () => screen.getByRole('navigation', { name: /work/i });
+  const workRow = (name: RegExp) => within(workNav()).getByRole('button', { name });
+
+  it('sits above Projects, with Tasks, Inbox and Agents', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+
+    const work = screen.getByRole('heading', { name: /^work$/i });
+    const projects = screen.getByRole('heading', { name: /^projects$/i });
+    expect(work.compareDocumentPosition(projects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    expect(workRow(/tasks/i)).toBeDefined();
+    expect(workRow(/inbox/i)).toBeDefined();
+    expect(workRow(/agents/i)).toBeDefined();
+  });
+
+  it('shows the board when Tasks is picked', async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
+    expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
+
+    fireEvent.click(workRow(/tasks/i));
+    expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(false);
+  });
+
+  it('marks which WORK view you are on, and only that one', async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+    expect(workRow(/tasks/i).getAttribute('aria-current')).toBe('page');
+
+    fireEvent.click(workRow(/inbox/i));
+    expect(workRow(/inbox/i).getAttribute('aria-current')).toBe('page');
+    expect(workRow(/tasks/i).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('gives Inbox and Agents somewhere to land instead of a blank pane', async () => {
+    // Placeholders on purpose — the real Inbox and the real run feed are
+    // separate cards. A nav row that lands on nothing reads as a broken app.
+    renderShell();
+    await screen.findByText('agenfk');
+
+    fireEvent.click(workRow(/inbox/i));
+    const inbox = document.getElementById('panel-inbox')!;
+    expect(inbox.hasAttribute('hidden')).toBe(false);
+    expect(inbox.textContent!.trim().length).toBeGreaterThan(0);
+
+    fireEvent.click(workRow(/agents/i));
+    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(false);
+    expect(inbox.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('hides the board for Inbox and Agents — never unmounts it', async () => {
+    /*
+     * The invariant AppShell is built on. Conditional rendering here would
+     * throw away the board's filters and anything half-typed, and the same
+     * mistake on the terminal panel kills a live agent and its scrollback.
+     * Asserted by the board's own React state surviving the round trip, not
+     * by reading a class.
+     */
+    renderShell();
+    await screen.findByText('agenfk');
+    const input = screen.getByLabelText('board-state') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'unsaved work' } });
+    const mountsBefore = boardMounts;
+
+    fireEvent.click(workRow(/inbox/i));
+    expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
+    expect(screen.getByText('THE BOARD')).toBeDefined();
+
+    fireEvent.click(workRow(/agents/i));
+    fireEvent.click(workRow(/tasks/i));
+
+    expect(boardMounts).toBe(mountsBefore);
+    expect((screen.getByLabelText('board-state') as HTMLInputElement).value).toBe('unsaved work');
+  });
+
+  it('leaves a live terminal alone when a WORK view is selected', async () => {
+    // Unmounting the terminal panel kills the agent running in it. The tab
+    // strip already guarantees this; the sidebar is a second route to the same
+    // switch and has to guarantee it too.
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Some work'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() =>
+      expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
+
+    fireEvent.click(workRow(/agents/i));
+    const terminal = document.getElementById('panel-terminal');
+    expect(terminal, 'the terminal panel was unmounted, which kills the agent').not.toBeNull();
+    expect(terminal!.hasAttribute('hidden')).toBe(true);
+    expect(terminal!.childElementCount, 'the terminal pane itself was torn down').toBeGreaterThan(0);
+  });
+
+  it('is gone with the sidebar when it is collapsed, and comes back with it', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
+    expect(screen.queryByRole('navigation', { name: /work/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
+    expect(screen.getByRole('navigation', { name: /work/i })).toBeDefined();
+  });
+});

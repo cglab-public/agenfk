@@ -22,7 +22,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings } from 'lucide-react';
+import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Inbox, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
@@ -49,8 +49,10 @@ import { WhatsNewModal } from './WhatsNewModal';
 import { moveTab } from '../tabReorder';
 import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
+import { CardStateDot } from './CardStateDot';
+import { cardState, itemsNeedingAPerson } from '../cardState';
 
-type TabId = 'kanban' | 'terminal' | 'runs' | 'settings';
+type TabId = 'kanban' | 'terminal' | 'runs' | 'settings' | 'inbox' | 'agents';
 
 interface Tab {
   id: TabId;
@@ -68,6 +70,27 @@ const TABS: Tab[] = [
   { id: 'kanban', label: 'Kanban' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'runs', label: 'Runs' },
+];
+
+/**
+ * The WORK group at the top of the sidebar (CGLAB-164).
+ *
+ * Navigation belongs beside the thing being navigated, not in a strip floating
+ * over the content — so picking a view moved here. `Tasks` is the board, which
+ * is the view that is always there; `Inbox` and `Agents` are placeholders that
+ * land on a stated empty state, because a nav row that lands on nothing reads
+ * as a broken app. Both are owned by their own cards: the GitHub issues Inbox,
+ * and the run feed that replaces the empty Runs panel.
+ *
+ * Deliberately NOT the same list as `TABS`, and deliberately not exported. The
+ * content-level tab strip still exists — retiring it is a separate, larger
+ * change — so for now there are two routes to the board, both of which set the
+ * same `active` view. What must never differ is the panel they select.
+ */
+const WORK_VIEWS: Array<{ id: TabId; label: string; Icon: LucideIcon }> = [
+  { id: 'kanban', label: 'Tasks', Icon: LayoutGrid },
+  { id: 'inbox', label: 'Inbox', Icon: Inbox },
+  { id: 'agents', label: 'Agents', Icon: Activity },
 ];
 
 type Connection = 'connecting' | 'connected' | 'offline';
@@ -941,6 +964,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           stopSession={stopSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
           revealOnBoard={revealOnBoard}
+          activeView={active}
+          onSelectView={setActive}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -1199,6 +1224,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
+          <WorkPlaceholder
+            view="inbox"
+            active={active}
+            label="Inbox"
+            title="The Inbox is not wired up yet"
+            body="Issues and pull requests that have no card yet will land here, so they can be turned into work without leaving the app."
+          />
+
+          <WorkPlaceholder
+            view="agents"
+            active={active}
+            label="Agents"
+            /* Its own words, not the Runs panel's. Both said "No agent runs
+               open", and with Runs docked at the bottom the user got the same
+               sentence twice on one screen, 200px apart — which reads as a
+               rendering fault and tells a reader nothing about why there are
+               two destinations. */
+            title="The full-height run feed is not here yet"
+            body="Every agent you have running will get a row here, with its log. For now the Sessions rail in the sidebar is the live view."
+          />
+
           <div
             role="tabpanel"
             id="panel-runs"
@@ -1400,9 +1446,13 @@ interface SidebarProps {
   revealOnBoard: (row: { itemId: string; projectId?: string }) => void;
   /** Opens the settings screen. Pinned, so it is reachable at any list length. */
   openSettings: () => void;
+  /** Which view the main pane is showing, so WORK can mark it. */
+  activeView: TabId;
+  /** Picking a WORK row. The shell owns `active`; the sidebar only asks. */
+  onSelectView: (view: TabId) => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard, activeView, onSelectView }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -1432,6 +1482,15 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
   // refetches its own queries on connect; this one is keyed differently and
   // was not covered by that.
   useSocketEvent('connect', () => queryClient.invalidateQueries({ queryKey: ['active-items'] }));
+
+  /**
+   * The cards a human has to answer.
+   *
+   * Derived from the rows the sidebar is ALREADY given rather than from a new
+   * query: the rail and the tree would otherwise disagree about the same
+   * sessions, which is how the two lists drifted apart earlier in this epic.
+   */
+  const needsPerson = React.useMemo(() => itemsNeedingAPerson(sessionRows), [sessionRows]);
 
   const inFlightByProject = React.useMemo(() => {
     const byProject = new Map<string, AgEnFKItem[]>();
@@ -1484,19 +1543,24 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
           region swallows pointer events. */}
       {isMac && <div data-app-region="drag" className="h-9 shrink-0" />}
 
+      {/* The toggle's OWN row, and the only thing in it.
+          It used to share this row with the Projects label and its two
+          actions, which is no longer where Projects starts — WORK sits above
+          it now, so the label moved down to the tree it names.
+
+          The property that must survive is the toggle keeping keyboard focus
+          across a collapse, which the test at "keeps keyboard focus on the
+          toggle across a collapse" pins: the button has to stay at the same
+          position under the same parent in both modes, or React destroys and
+          recreates it and focus falls to <body>. It did before this change
+          (a falsy `{open && …}` child still holds its slot) and it does now,
+          for the simpler reason that this row has exactly one child. */}
       <div
         className={clsx(
           'flex shrink-0 items-center',
-          open ? 'justify-between px-2 pr-1' : 'justify-center pt-2',
+          open ? 'justify-end px-2 pr-1' : 'justify-center pt-2',
         )}
       >
-        {open && <SidebarLabel>Projects</SidebarLabel>}
-        {open && (
-          <div className="ml-auto flex items-center">
-            <SortMenu value={sort} onChange={next => setSort(writeProjectSort(next))} />
-            <NewProjectButton onCreated={id => setActiveProjectId(id)} />
-          </div>
-        )}
         <button
           onClick={onToggle}
           aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
@@ -1509,7 +1573,49 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
 
       {!open ? null : (
       <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
-      <div data-testid="projects-section" className="flex min-h-0 flex-1 flex-col">
+
+      {/* WORK, above PROJECTS (CGLAB-164). Where you GO, over what you have.
+          A <nav> rather than a list of buttons in a div: this is the shell's
+          primary navigation, and it is the landmark a screen-reader user jumps
+          to. */}
+      <nav aria-label="Work" className="shrink-0">
+        <SidebarLabel>Work</SidebarLabel>
+        <ul className="mt-0.5 flex flex-col gap-px">
+          {WORK_VIEWS.map(({ id, label, Icon }) => (
+            <li key={id}>
+              <button
+                type="button"
+                onClick={() => onSelectView(id)}
+                // `page`, not `true`: these are destinations, and a screen
+                // reader should say "current page" rather than the generic
+                // "current". Absent — not `false` — on the others, so exactly
+                // one row in the group ever carries it.
+                aria-current={activeView === id ? 'page' : undefined}
+                className={clsx(
+                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
+                  activeView === id
+                    ? 'bg-canvas font-semibold text-ink'
+                    : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
+                )}
+              >
+                {/* Decorative: the label beside it is the accessible name, and
+                    a second one here would make it say everything twice. */}
+                <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
+                {label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div data-testid="projects-section" className="mt-3 flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center pr-1">
+        <SidebarLabel>Projects</SidebarLabel>
+        <div className="ml-auto flex items-center">
+          <SortMenu value={sort} onChange={next => setSort(writeProjectSort(next))} />
+          <NewProjectButton onCreated={id => setActiveProjectId(id)} />
+        </div>
+      </div>
       <ul
         data-testid="project-list"
         className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim"
@@ -1648,6 +1754,21 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           the thing you want from work in flight is a shell in
                           it. The board is still reachable from its own tab;
                           this row is the shortcut to the actual work. */}
+                      {/* THREE parts, on a grid rather than a flex row
+                          (CGLAB-164): a fixed column for the dot, a
+                          `minmax(0,1fr)` column for the title and branch
+                          stacked, and one sized to the step.
+
+                          The middle column is the reason. The row now holds
+                          TWO lines that each have to truncate independently
+                          inside a shared shrinking box, and `minmax(0,1fr)`
+                          is what lets it shrink below its content's intrinsic
+                          width so `truncate` can do anything at all. (The old
+                          flex row was not the problem it is sometimes written
+                          up as: each row was its own flex container and the
+                          step was `ml-auto shrink-0`, so its width was already
+                          per-row rather than set by the longest status in the
+                          list.) */}
                       <button
                         onClick={() => requestTerminal(item)}
                         // The SECONDARY action, on a secondary gesture. The
@@ -1659,41 +1780,68 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           setCardMenu({ item, x: e.clientX, y: e.clientY });
                         }}
                         title={item.title}
-                        className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
+                        className="grid w-full grid-cols-[7px_minmax(0,1fr)_auto] items-start gap-x-1.5 rounded px-1 py-1 text-left text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
                       >
-                        {/* Only when an agent is actually working on it.
-                            Before, every row got the same dot in the same
-                            colour — it distinguished nothing, which makes it
-                            decoration rather than information. If nothing is
-                            happening, nothing is drawn: the absence is the
-                            answer, and the step label on the right already
-                            says where the card is sitting. */}
-                        {/* The SLOT is always there; only the dot inside it
-                            comes and goes. Rendering nothing removed 6px of
-                            dot and 6px of gap, which left a ragged left edge
-                            in any list mixing live and quiet cards — and made
-                            the title jump sideways and re-truncate on its own
-                            when the dot appeared on an event or went out on
-                            the TTL, with no user action behind it. */}
+                        {/* ONE dot, three states, and none of them the flow
+                            step — see cardState.ts. The rail below already
+                            carries per-session colour; a tree that repeated it
+                            would give the same screen two colour vocabularies
+                            for one fact. */}
+                        <CardStateDot state={cardState(item.id, liveItems, needsPerson)} />
+
+                        <span className="min-w-0">
+                          <span
+                            data-testid="card-title"
+                            className="block truncate text-[12px] leading-[17px] text-ink-secondary"
+                          >
+                            {item.title}
+                          </span>
+                          {/* The branch, under the title. Two cards sitting in
+                              the same step are told apart by exactly one thing,
+                              and it was not on screen at all. Mono because a
+                              branch is an identifier: proportional type makes
+                              l/1 and rn/m ambiguous in the strings you have to
+                              compare by eye. */}
+                          <span
+                            data-testid="card-branch"
+                            /*
+                             * The PLACEHOLDER is hidden from assistive tech;
+                             * a real branch name is not. Review caught the
+                             * inconsistency: this row suppresses the dot's
+                             * "nothing running" label precisely because
+                             * repeating it down a thirty-card list is noise,
+                             * and then announced "no branch yet" thirty times
+                             * for the same reason it should not have. A real
+                             * branch is the opposite case — it is the one
+                             * thing that tells two cards in the same step
+                             * apart, so it stays in the accessible name.
+                             */
+                            aria-hidden={item.branchName ? undefined : 'true'}
+                            className={clsx(
+                              'block truncate font-mono text-[10px] leading-[14px] text-ink-tertiary',
+                              // Said, not left blank: an empty second line
+                              // reads as a rendering fault, and "nobody has
+                              // started this" is itself worth knowing.
+                              !item.branchName && 'italic opacity-70',
+                            )}
+                          >
+                            {item.branchName || 'no branch yet'}
+                          </span>
+                        </span>
+
+                        {/* The step is the thing that says where it is stuck —
+                            and it stays TEXT. */}
                         <span
-                          data-testid={liveItems.has(item.id) ? 'live-dot' : undefined}
-                          className={clsx(
-                            'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-                            liveItems.has(item.id)
-                              ? 'animate-pulse bg-emerald-500 motion-reduce:animate-none'
-                              : 'invisible',
-                          )}
-                        />
-                        {liveItems.has(item.id) && (
-                          // Said in words for anyone not looking at colour: a
-                          // 6px dot with a `title` is a mouse-only fact, and
-                          // the title on a non-focusable span never reaches
-                          // assistive tech at all.
-                          <span className="sr-only">An agent is working on this now</span>
-                        )}
-                        <span className="truncate text-ink-secondary">{item.title}</span>
-                        {/* The step is the thing that says where it is stuck. */}
-                        <span className="ml-auto shrink-0 font-mono text-[9px] uppercase tracking-wide">
+                          data-testid="card-step"
+                          // 8px, and that is the mockup's number rather than a
+                          // guess. The step column is sized to its content, so
+                          // every pixel it takes comes off the title — and a
+                          // flow can name a step CREATE_UNIT_TESTS. At 9px
+                          // that one step left about 90px for a card title in
+                          // a 224px rail, which truncated real titles to two
+                          // words.
+                          className="justify-self-end font-mono text-[8px] uppercase leading-[17px] tracking-wide"
+                        >
                           {item.status}
                         </span>
                       </button>
@@ -1888,6 +2036,43 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A WORK view that exists in the sidebar before it exists as a feature
+ * (CGLAB-164).
+ *
+ * Both of these are scaffolding with an owner: the GitHub issues Inbox, and
+ * the run feed that takes over from the empty Runs panel. They are here so the
+ * nav row lands somewhere that says what it will be, rather than on a blank
+ * pane that reads as a broken app.
+ *
+ * A REGION, not a tabpanel, for the same reason Settings is one: nothing
+ * carries `aria-controls` for them — they are reached from the sidebar, not
+ * from the tablist — and a tabpanel with no owning tab reports a tablist with
+ * nothing selected.
+ *
+ * Hidden rather than conditionally mounted, like every other panel in this
+ * file. They hold nothing today, but the rule belongs to the panel set and not
+ * to each panel: the moment one grows a filter or a tailing log, a conditional
+ * mount starts throwing it away silently.
+ */
+function WorkPlaceholder(
+  { view, active, label, title, body }:
+  { view: TabId; active: TabId; label: string; title: string; body: string },
+): React.ReactElement {
+  return (
+    <div
+      role="region"
+      id={`panel-${view}`}
+      aria-label={label}
+      tabIndex={0}
+      hidden={active !== view}
+      className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6"
+    >
+      <EmptyState title={title} body={body} />
     </div>
   );
 }
