@@ -11,6 +11,22 @@ import { API_URL } from './apiUrl';
  * repeatedly produced a value in one place and consumed it in another with the
  * shape restated by hand — and the restatements drifted every time.
  */
+/**
+ * A terminal to put back.
+ *
+ * `agentSessionId` absent means the tab can be reopened but the conversation
+ * cannot be resumed — true of codex, which cannot be told its own id. Absent
+ * has to read as "fresh start", never as a missing record.
+ */
+export interface TerminalSessionDto {
+  id: string;
+  itemId: string;
+  projectId?: string;
+  agentId: string;
+  agentSessionId?: string;
+  openedAt: string;
+}
+
 export interface AppSettingsDto {
   tmuxByDefault: boolean;
 }
@@ -125,6 +141,43 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Terminals to put back, and the conversations they held.
+   *
+   * The server filters out sessions whose card is gone or trashed, so what
+   * comes back here is what can actually be opened.
+   */
+  listTerminalSessions: async (projectId?: string): Promise<TerminalSessionDto[]> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/terminal-sessions`, {
+        params: projectId ? { projectId } : undefined,
+      });
+      return data;
+    } catch (e) {
+      console.error('API Error reading terminal sessions:', e);
+      throw e;
+    }
+  },
+  recordTerminalSession: async (session: {
+    itemId: string; projectId?: string; agentId: string; agentSessionId?: string;
+  }): Promise<TerminalSessionDto> => {
+    try {
+      const { data } = await axios.post(`${API_URL}/terminal-sessions`, session);
+      return data;
+    } catch (e) {
+      console.error('API Error recording terminal session:', e);
+      throw e;
+    }
+  },
+  forgetTerminalSession: async (id: string): Promise<void> => {
+    try {
+      await axios.delete(`${API_URL}/terminal-sessions/${id}`);
+    } catch (e) {
+      console.error(`API Error forgetting terminal session ${id}:`, e);
+      throw e;
+    }
+  },
+
   /**
    * Installation-wide settings. Global, not per project.
    *

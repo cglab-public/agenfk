@@ -242,8 +242,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (open) closeSessionRef.current(open.id);
   }, [sessions]);
 
+  /**
+   * Remember a terminal, once the agent has told us which conversation it got.
+   *
+   * Written here and not in the pane: the shell owns what is remembered, and a
+   * component that both runs a terminal and writes records is two jobs in one
+   * place. Fire and forget — remembering is a nicety, and failing at it must
+   * never disturb a terminal the user is already using.
+   */
+  const rememberSession = React.useCallback(
+    (sessionId: string, agentSessionId: string | undefined): void => {
+      // Read from a ref, never from inside a state updater. An updater must be
+      // pure: React invokes it twice in development, which would have written
+      // the record twice and left a duplicate terminal to put back.
+      const session = sessionsRef.current.find(s => s.id === sessionId);
+      // Nothing to do for a tab that was PUT BACK: it already has a row, and
+      // recording it again would double the remembered terminals on every
+      // launch until the tenth one opens a wall of them.
+      if (!session || session.resume || session.recordId) return;
+      void api.recordTerminalSession({
+        itemId: session.itemId,
+        projectId: session.projectId,
+        agentId: session.agentId,
+        // Absent for an agent that cannot be told its own id (codex). The tab
+        // is still worth putting back; the conversation is not recoverable,
+        // and the record must not claim an id it never had.
+        agentSessionId,
+      })
+        .then(row => {
+          setSessions(cur => cur.map(s => (s.id === sessionId ? { ...s, recordId: row.id, agentSessionId } : s)));
+        })
+        .catch(() => { /* the terminal is open and working; this is bookkeeping */ });
+    },
+    [],
+  );
+
+  // Mirrors `sessions` for callbacks that must not read stale state and must
+  // not run inside a state updater.
+  const sessionsRef = React.useRef(sessions);
+  sessionsRef.current = sessions;
+
   const closeSessionRef = React.useRef<(id: string) => void>(() => {});
   const closeSession = React.useCallback((id: string): void => {
+    // Read from the ref and act BEFORE the updater, for the same reason as
+    // rememberSession: an updater must be pure, and React invokes it twice in
+    // development.
+    //
+    // Closing a tab is the user saying they are done with it. Putting it back
+    // on the next launch would be the app arguing with them.
+    const closing = sessionsRef.current.find(s => s.id === id);
+    if (closing?.recordId) void api.forgetTerminalSession(closing.recordId).catch(() => {});
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
       // Fall to the LAST remaining tab — not an adjacent one, despite what
@@ -257,6 +305,51 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // stopSession is declared above closeSession and needs to reach it; a ref
   // avoids reordering two callbacks that each read state the other does not.
   closeSessionRef.current = closeSession;
+
+  /**
+   * Terminals from last time, put back with their conversations.
+   *
+   * The server has already dropped any whose card is gone or trashed, so
+   * everything here is something that can actually be opened.
+   */
+  const { data: rememberedSessions } = useQuery({
+    queryKey: ['terminal-sessions'],
+    queryFn: () => api.listTerminalSessions(),
+    // A restore, not a live view. Refetching would re-run the effect below
+    // against rows we have already put back.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+
+  // Exactly once per launch. The guard is a ref rather than state because a
+  // second run would open a SECOND agent in the same worktree, both editing
+  // the same files — the failure this whole component is arranged to avoid.
+  const restored = React.useRef(false);
+  React.useEffect(() => {
+    if (restored.current || !rememberedSessions?.length) return;
+    restored.current = true;
+    const putBack = rememberedSessions.map(row => {
+      sessionSeq.current += 1;
+      return {
+        id: `${row.itemId}#restored-${sessionSeq.current}`,
+        itemId: row.itemId,
+        projectId: row.projectId,
+        title: row.itemId,
+        agentId: row.agentId,
+        autoApprove: false,
+        persist: false,
+        agentSessionId: row.agentSessionId,
+        // Only where there is a conversation to resume. For codex there is
+        // not, and asking anyway would either fail the launch or resume
+        // somebody else's session.
+        resume: Boolean(row.agentSessionId),
+        recordId: row.id,
+      };
+    });
+    setSessions(prev => [...prev, ...putBack]);
+    setActiveSession(cur => cur ?? putBack[0]?.id ?? null);
+    setTerminalOpened(true);
+  }, [rememberedSessions]);
 
   const socket = useSocket();
   // Seeded from the socket rather than assumed: mounting onto an already-
@@ -455,6 +548,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}
+                onSpawned={rememberSession}
                 onNew={() => {
                   const current = sessions.find(s => s.id === activeSession);
                   if (current) {

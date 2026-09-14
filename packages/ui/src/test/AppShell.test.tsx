@@ -129,7 +129,11 @@ const setBridge = (platform: string, prefs: { autoApprove: boolean } = { autoApp
           // one session's itemId to every pane would otherwise leave every
           // test in this file green.
           ptyCalls.requests.push(req);
-          return id;
+          // Both ids, as the real bridge does: the pty handle addresses a live
+          // process, the conversation id addresses a conversation. A bare
+          // string was ambiguous enough that the handle could be sent to
+          // `--resume` and silently start a fresh conversation.
+          return { sessionId: id, agentSessionId: `conv-${ptySeq}` };
         },
         write: async () => true,
         resize: async () => true,

@@ -93,7 +93,10 @@ beforeEach(() => {
   exitSubscribers = [];
   unsubscribes = 0;
   bridge = {
-    spawn: vi.fn(async () => 'sess-1'),
+    // spawn returns BOTH ids now: the pty handle and the agent's conversation
+    // id. They are different things, and a bare string was ambiguous enough
+    // that a handle could be sent to `--resume`.
+    spawn: vi.fn(async () => ({ sessionId: 'sess-1', agentSessionId: undefined })),
     write: vi.fn(async () => true),
     resize: vi.fn(async () => true),
     kill: vi.fn(async () => true),

@@ -24,7 +24,8 @@ export interface TerminalBridge {
   spawn(req: {
     itemId: string; agentId: string; cols: number; rows: number;
     autoApprove?: boolean; persist?: boolean;
-  }): Promise<string>;
+    agentSessionId?: string; resume?: boolean;
+  }): Promise<{ sessionId: string; agentSessionId?: string }>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
@@ -41,8 +42,23 @@ export interface TerminalPaneProps {
   readonly agentId: string;
   /** Run the agent with its own permission prompts disabled. */
   readonly autoApprove?: boolean;
-  /** Resolved in the dialog, not re-derived here: the user asked AND tmux exists. */
+  /**
+   * Whether this session runs inside tmux.
+   *
+   * A resolved decision from Settings, combined with the machine's capability
+   * in the main process — this component neither re-derives it nor checks it.
+   */
   readonly persist?: boolean;
+  /** The conversation to resume. Absent on a fresh terminal; main mints one. */
+  readonly agentSessionId?: string;
+  readonly resume?: boolean;
+  /**
+   * The conversation id the agent actually got.
+   *
+   * Reported upward because the SHELL is what stores it, and it is only known
+   * once the spawn answers. Absent for agents that cannot be told their own id.
+   */
+  readonly onSpawned?: (agentSessionId: string | undefined) => void;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -56,6 +72,9 @@ export function TerminalPane({
   agentId,
   autoApprove,
   persist,
+  agentSessionId,
+  resume,
+  onSpawned,
   createTerminal,
   createFitAddon,
   bridge,
@@ -161,16 +180,22 @@ export function TerminalPane({
       itemId, agentId,
       autoApprove: autoApprove === true,
       persist: persist === true,
+      // Only when there is one AND we mean to resume it. Asking to resume
+      // nothing either fails the launch or picks somebody else's session.
+      ...(resume && agentSessionId ? { agentSessionId, resume: true } : {}),
       cols: term.cols || 80, rows: term.rows || 24,
     })
-      .then(sessionId => {
+      .then(result => {
         if (cancelled) {
           // The effect was torn down while the spawn was in flight. The main
           // process has a live shell now and nobody is holding it.
-          void api.kill(sessionId);
+          void api.kill(result.sessionId);
           return;
         }
-        sessionRef.current = sessionId;
+        sessionRef.current = result.sessionId;
+        // After the handle is stored, so a throw in the shell's bookkeeping
+        // cannot leave a live process nobody can kill.
+        onSpawned?.(result.agentSessionId);
       })
       .catch((e: Error) => {
         if (cancelled) return;
@@ -190,7 +215,10 @@ export function TerminalPane({
       term.dispose();
       termRef.current = null;
     };
-  }, [itemId, agentId, autoApprove, persist, bridge, createTerminal, createFitAddon]);
+    // onSpawned is deliberately NOT a dependency: it is a reporting channel,
+    // and an unstable identity would tear the terminal down and start a second
+    // agent in the same worktree.
+  }, [itemId, agentId, autoApprove, persist, agentSessionId, resume, bridge, createTerminal, createFitAddon]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#14181b]">

@@ -35,6 +35,14 @@ export interface TerminalSession {
    * and the setting looked wired end to end while doing nothing.
    */
   readonly persist: boolean;
+  /** Carried so the remembered row can be scoped to a project on restore. */
+  readonly projectId?: string;
+  /** The conversation this tab holds, when the agent can be told one. */
+  readonly agentSessionId?: string;
+  /** True only for a tab being PUT BACK, never for one the user just opened. */
+  readonly resume?: boolean;
+  /** The server row remembering this tab, once it has been written. */
+  readonly recordId?: string;
   /** The branch this card's worktree is on. */
   readonly branchName?: string | null;
   /** Shown as the breadcrumb root, so you know which repo you are in. */
@@ -48,6 +56,14 @@ export interface TerminalTabProps {
   readonly onClose: (id: string) => void;
   /** Opens the dialog for another terminal. */
   readonly onNew: () => void;
+  /**
+   * A pane reporting the conversation id its agent actually got.
+   *
+   * Routed through here rather than the pane talking to the server directly:
+   * the shell owns what is remembered, and a component that both runs a
+   * terminal and writes records is two jobs in one place.
+   */
+  readonly onSpawned?: (sessionId: string, agentSessionId: string | undefined) => void;
 }
 
 export function TerminalTab({
@@ -56,6 +72,7 @@ export function TerminalTab({
   onSelect,
   onClose,
   onNew,
+  onSpawned,
 }: TerminalTabProps): React.ReactElement {
   if (sessions.length === 0) {
     return (
@@ -157,6 +174,9 @@ export function TerminalTab({
             agentId={session.agentId}
             autoApprove={session.autoApprove}
             persist={session.persist}
+            agentSessionId={session.agentSessionId}
+            resume={session.resume}
+            onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
           />
         </div>
       ))}
