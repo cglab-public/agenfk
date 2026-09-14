@@ -60,8 +60,61 @@ export function orderForPicker(
   return [...current, ...items.filter(i => i.id !== currentItemId)];
 }
 
+/**
+ * Narrow the list by project and by what was typed.
+ *
+ * Pure and beside `orderForPicker` rather than inside the component, for the
+ * same reason that one is: it is a rule about two indices and a string, and it
+ * can be written down without a DOM.
+ *
+ * Matching is accent- and case-insensitive. Card titles here are written by
+ * people in Portuguese as often as in English — requiring someone to type
+ * "manutenção" exactly, accent and all, to find their own card is a search box
+ * that punishes you for using it.
+ */
+export function filterForPicker(
+  items: readonly AgEnFKItem[],
+  opts: { projectId?: string; query?: string } = {},
+): AgEnFKItem[] {
+  const needle = fold(opts.query ?? '');
+  return items.filter(item => {
+    if (opts.projectId && item.projectId !== opts.projectId) return false;
+    if (!needle) return true;
+    return fold(item.title).includes(needle);
+  });
+}
+
+/** Lowercase, accents stripped. `NFD` splits a letter from its mark so the mark can go. */
+function fold(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
 export function CardPicker({ items, currentItemId, projectNames, onPick, onClose }: CardPickerProps) {
-  const ordered = React.useMemo(() => orderForPicker(items, currentItemId), [items, currentItemId]);
+  const [query, setQuery] = React.useState('');
+  const [projectId, setProjectId] = React.useState<string>('');
+
+  /*
+   * Filter FIRST, then order. The other way round would sort a list that is
+   * about to shrink, and the current card's place at the top only means
+   * anything among the cards actually on offer.
+   */
+  const ordered = React.useMemo(
+    () => orderForPicker(filterForPicker(items, { projectId, query }), currentItemId),
+    [items, currentItemId, projectId, query],
+  );
+
+  /*
+   * Projects taken from the cards themselves, not from the full project list:
+   * offering a project with nothing in flight is a filter that can only ever
+   * empty the list.
+   */
+  const projectOptions = React.useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const item of items) {
+      if (!seen.has(item.projectId)) seen.set(item.projectId, projectNames?.get(item.projectId) ?? item.projectId);
+    }
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [items, projectNames]);
 
   return (
     <div className="fixed inset-0 z-50 flex animate-[fadeIn_120ms_ease-out] items-center justify-center bg-black/50 p-4 motion-reduce:animate-none">
@@ -97,8 +150,48 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
           </button>
         </div>
 
+        {/* Only when there is something to narrow. A search box over three
+            cards is furniture, and a project filter with one project in it can
+            only ever do nothing. */}
+        {(items.length > 6 || projectOptions.length > 1) && (
+          <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2">
+            <input
+              type="search"
+              value={query}
+              autoFocus
+              onChange={e => setQuery(e.target.value)}
+              aria-label="Search cards by name"
+              placeholder="Search cards…"
+              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-border-brand focus:outline-none"
+            />
+            {projectOptions.length > 1 && (
+              <select
+                value={projectId}
+                onChange={e => setProjectId(e.target.value)}
+                aria-label="Filter by project"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+              >
+                <option value="">All projects</option>
+                {projectOptions.map(([id, name]) => (
+                  <option key={id} value={id}>{name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-          {ordered.length === 0 ? (
+          {ordered.length === 0 && (query || projectId) ? (
+            /*
+             * A search that found nothing is NOT "no work in flight". Saying
+             * the latter here would tell the user their board is empty when
+             * they simply mistyped, which is the kind of confident wrong
+             * answer that makes people stop trusting a filter.
+             */
+            <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
+              No card matches that. Clear the search or pick another project.
+            </p>
+          ) : ordered.length === 0 ? (
             /*
              * A sentence, not an empty box. Reachable when every card has left
              * the active-work list while a terminal outlives it, and "nothing
