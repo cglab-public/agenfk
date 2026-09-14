@@ -75,6 +75,22 @@ export interface TerminalTabProps {
   readonly onSpawned?: (sessionId: string, agentSessionId: string | undefined) => void;
   /** A pane reporting that its terminal is producing output. */
   readonly onOutput?: (itemId: string) => void;
+  /**
+   * Editors installed on this machine, if any.
+   *
+   * Empty means no button at all: one that opens nothing and explains nothing
+   * is worse than none, and the worktree path is already on screen in the
+   * header for anyone who wants it.
+   */
+  readonly editors?: ReadonlyArray<{ id: string; label: string }>;
+  /**
+   * Open this CARD's worktree in that editor.
+   *
+   * A card and an editor id — never a path. The directory comes from the
+   * server's record of which worktree the card owns, and the schemes the OS
+   * can be asked to launch are a closed list in the main process.
+   */
+  readonly onOpenInEditor?: (itemId: string, editorId: string) => void;
 }
 
 export function TerminalTab({
@@ -85,6 +101,8 @@ export function TerminalTab({
   onNew,
   onSpawned,
   onOutput,
+  editors,
+  onOpenInEditor,
 }: TerminalTabProps): React.ReactElement {
   if (sessions.length === 0) {
     return (
@@ -123,6 +141,19 @@ export function TerminalTab({
           // not been created, and that is worth knowing BEFORE you type.
           <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-tertiary">no branch yet</span>
         )}
+
+        {/* Here because this is where the user already is when they want it:
+            looking at what the agent just did and wanting to see the files. */}
+        {current && editors?.map(editor => (
+          <button
+            key={editor.id}
+            type="button"
+            onClick={() => onOpenInEditor?.(current.itemId, editor.id)}
+            className="shrink-0 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-brand hover:text-ink"
+          >
+            Open in {editor.label}
+          </button>
+        ))}
       </div>
 
       <div role="tablist" aria-label="Open terminals" className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">

@@ -23,6 +23,7 @@ import { resolveWorktree } from './worktree.js';
 import { httpPost } from './httpPost.js';
 import { captureLoginPath } from './ptyEnv.js';
 import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
+import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath } from './detectAgents.js';
 
@@ -221,8 +222,19 @@ function openExternally(raw: string): void {
   } catch {
     return;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    console.warn(`[DESKTOP] Refused to open non-web URL: ${parsed.protocol}`);
+  /*
+   * http(s), plus the editor schemes from the closed list — and nothing else.
+   *
+   * The guard is narrow because `shell.openExternal` hands the string to
+   * whatever handler the OS registered for the scheme, so every scheme allowed
+   * here is a local program this app can be made to launch. The editor list is
+   * fixed at compile time (main/editors.ts) precisely so that set cannot grow
+   * at runtime, and the path inside the URL is encoded there before it gets
+   * this far.
+   */
+  const allowed = new Set(['http:', 'https:', ...EDITORS.map(e => `${e.scheme}:`)]);
+  if (!allowed.has(parsed.protocol)) {
+    console.warn(`[DESKTOP] Refused to open URL with scheme: ${parsed.protocol}`);
     return;
   }
   void shell.openExternal(parsed.href);
@@ -319,7 +331,16 @@ async function boot(): Promise<void> {
       // userData, not the AgEnFK database: the database is shared with the
       // CLI and the server, and these preferences exist precisely to be out of
       // reach of anything that talks to the server. See main/prefs.ts.
-      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus, () => app.getPath('userData'));
+      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus, () => app.getPath('userData'), {
+        // whichOnPath answers with the resolved path or null; the editor
+        // probe only asks whether it is there.
+        which: async command => Boolean(await whichOnPath(command)),
+        // Routed through the same guard as every other external URL, which
+        // now permits the editor schemes from the closed list and nothing
+        // else — see openExternally.
+        openExternal: async url => { openExternally(url); },
+        resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+      });
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
     }

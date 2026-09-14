@@ -36,7 +36,10 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
-import { listAgentsFromBridge, readPrefsFromBridge } from './agentBridge';
+import {
+  listAgentsFromBridge, readPrefsFromBridge,
+  listEditorsFromBridge, openInEditorFromBridge,
+} from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
 import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
@@ -87,6 +90,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same query key the settings screen uses, so a change there is reflected
   // here without a reload. Auto-approve is desktop-owned, not on the server.
   const { data: desktopPrefs } = useQuery({ queryKey: ['desktop-prefs'], queryFn: readPrefsFromBridge });
+  // Which editors this machine has. A fact about the machine, so it is asked
+  // once rather than on every focus.
+  const { data: editors = [] } = useQuery({
+    queryKey: ['editors'],
+    queryFn: listEditorsFromBridge,
+    staleTime: 60_000,
+  });
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
     { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
@@ -657,6 +667,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}
+                editors={editors}
+                onOpenInEditor={(itemId, editorId) => {
+                  // Fire and forget: failing to open an editor must not
+                  // disturb the terminal the user is working in.
+                  void openInEditorFromBridge(itemId, editorId).catch(() => {});
+                }}
                 onSpawned={rememberSession}
                 // Our own terminals have no AgentRun and therefore no run
                 // events, so their output is what tells the rail they are

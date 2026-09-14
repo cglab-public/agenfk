@@ -23,6 +23,7 @@
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
 import { readPrefs, writePref, PREF_KEYS } from './prefs';
+import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
@@ -66,6 +67,17 @@ export function registerPtyIpc(
    * app object and so the storage location is one decision made in one place.
    */
   prefsDir: () => string = () => '.',
+  /**
+   * Everything the editor handlers need, injected.
+   *
+   * Absent in a build that cannot open one — the handlers then answer "no
+   * editors" and refuse to open, which is a real answer rather than a crash.
+   */
+  editors?: {
+    which: (command: string) => Promise<boolean>;
+    openExternal: (url: string) => Promise<void>;
+    resolveCwd: (itemId: string) => Promise<{ cwd: string }>;
+  },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
@@ -136,6 +148,28 @@ export function registerPtyIpc(
    * agent spawned afterwards. See main/prefs.ts.
    */
   ipc.handle('prefs:get', async () => readPrefs(prefsDir()));
+
+  /*
+   * Editors. The renderer names a CARD and an editor ID — never a path and
+   * never a URL — so the set of programs the OS can be asked to launch stays
+   * fixed at compile time and the directory comes from the server's record of
+   * which worktree the card owns.
+   */
+  ipc.handle('editors:list', async () => (editors ? detectEditors(editors) : []));
+
+  ipc.handle('editors:open', async (_event, raw) => {
+    if (!editors) throw new Error('Opening an editor is not available in this build.');
+    const req = (raw ?? {}) as Record<string, unknown>;
+    const itemId = asString(req.itemId, 'itemId');
+    const editorId = asString(req.editorId, 'editorId');
+    // The DIRECTORY comes from the server's record of which worktree this card
+    // owns — never from the renderer, which names only a card and an editor.
+    const { cwd } = await editors.resolveCwd(itemId);
+    // Throws for an unknown editor or a path that is not absolute, before
+    // anything reaches the OS.
+    await editors.openExternal(editorUrlFor(editorId as never, cwd));
+    return { opened: true, path: cwd };
+  });
 
   ipc.handle('prefs:set', async (_event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;

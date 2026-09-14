@@ -79,6 +79,20 @@ export interface AgenfkTerminalApi {
  *
  * Named operations, one key at a time. There is no "save this object".
  */
+/**
+ * Opening a card's worktree in an editor.
+ *
+ * Named operations taking a CARD and an editor ID — never a path and never a
+ * URL. The directory comes from the server's record of which worktree the card
+ * owns, and the set of schemes the OS can be asked to launch is a closed list
+ * in the main process. Handing the renderer a URL here would turn an XSS into
+ * "run a local program with this argument".
+ */
+export interface AgenfkEditorsApi {
+  list(): Promise<Array<{ id: string; label: string }>>;
+  open(itemId: string, editorId: string): Promise<{ opened: boolean; path: string }>;
+}
+
 export interface AgenfkPrefsApi {
   get(): Promise<{ autoApprove: boolean }>;
   setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
@@ -95,6 +109,7 @@ export interface AgenfkDesktopApi {
   };
   readonly terminal: AgenfkTerminalApi;
   readonly prefs: AgenfkPrefsApi;
+  readonly editors: AgenfkEditorsApi;
 }
 
 /**
@@ -129,10 +144,16 @@ const prefs: AgenfkPrefsApi = {
   setAutoApprove: value => ipcRenderer.invoke('prefs:set', { key: 'autoApprove', value: value === true }),
 };
 
+const editors: AgenfkEditorsApi = {
+  list: () => ipcRenderer.invoke('editors:list'),
+  open: (itemId, editorId) => ipcRenderer.invoke('editors:open', { itemId, editorId }),
+};
+
 const api: AgenfkDesktopApi = {
   isDesktop: true,
   terminal,
   prefs,
+  editors,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

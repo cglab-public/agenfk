@@ -152,6 +152,10 @@ describe('the channels that exist', () => {
       // afterwards.
       'prefs:get',
       'prefs:set',
+      // Opening a worktree in an editor. The renderer names a CARD and an
+      // editor ID, never a path and never a URL.
+      'editors:list',
+      'editors:open',
     ].sort());
   });
 });

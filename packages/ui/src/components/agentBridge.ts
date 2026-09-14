@@ -85,3 +85,34 @@ export const sessionPersistenceFromBridge = (): Promise<{
   if (typeof terminal?.sessionPersistence !== 'function') return Promise.resolve({ available: false });
   return terminal.sessionPersistence();
 };
+
+/**
+ * Editors installed on this machine, and opening a card's worktree in one.
+ *
+ * Empty in a browser, which is the truth rather than a fallback: there is no
+ * worktree on a page. `typeof` rather than `?.` because an older preload can
+ * expose the object without the method.
+ */
+interface EditorsBridgeApi {
+  list?(): Promise<Array<{ id: string; label: string }>>;
+  open?(itemId: string, editorId: string): Promise<{ opened: boolean; path: string }>;
+}
+
+const editorsBridge = (): EditorsBridgeApi | null =>
+  (window as unknown as { agenfkDesktop?: { editors?: EditorsBridgeApi } }).agenfkDesktop?.editors ?? null;
+
+export const listEditorsFromBridge = (): Promise<Array<{ id: string; label: string }>> => {
+  const editors = editorsBridge();
+  if (typeof editors?.list !== 'function') return Promise.resolve([]);
+  return editors.list();
+};
+
+export const openInEditorFromBridge = (itemId: string, editorId: string): Promise<unknown> => {
+  const editors = editorsBridge();
+  if (typeof editors?.open !== 'function') {
+    // Refused loudly: a click that silently does nothing is the failure this
+    // whole feature is supposed to replace.
+    return Promise.reject(new Error('This build cannot open an editor.'));
+  }
+  return editors.open(itemId, editorId);
+};
