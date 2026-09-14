@@ -106,11 +106,34 @@ const openModal = async () => {
   return screen.findByRole('dialog');
 };
 
+/**
+ * The day the fixture is about, pinned.
+ *
+ * These tests were written against a hardcoded 2026-08-13 while the grid's
+ * columns are built from the REAL clock — `fromIsoForRange`/`buildAxis` take
+ * `now` and walk back `rangeToDays(range)` days, 30 by default. So the fixture
+ * sat inside the window when it was written and fell out of it 30 days later,
+ * and all four tests began failing on a day nobody touched this package.
+ *
+ * That is a time bomb rather than flakiness: it does not fail intermittently,
+ * it starts failing permanently on a date, and it cannot be caught by review or
+ * by CI on the day it is written.
+ *
+ * Pinning the clock is the same move the repo already makes for HOME — a test
+ * must not depend on ambient state, and here the ambient state is the calendar.
+ * One day after the fixture, so the column is the most recent one.
+ */
+const FIXTURE_DAY = '2026-08-13';
+const PINNED_NOW = new Date(`${FIXTURE_DAY}T12:00:00Z`);
+
 beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(PINNED_NOW);
   get.mockReset();
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   get.mockReset();
 });
