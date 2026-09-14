@@ -5,6 +5,7 @@ import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -1779,6 +1780,60 @@ program
       }
     } else {
       console.log(chalk.gray('N/A (Opencode not detected)'));
+    }
+
+    /*
+     * Enforcement, for the clients that actually have it.
+     *
+     * This was missing entirely, which meant health could report "All systems
+     * healthy" on a machine where nothing gated an edit. The rules are still
+     * READ in that state, so the agent believes it is enforced — health saying
+     * fine turns a missing safeguard into a confirmed one.
+     *
+     * Silent when a client is not installed at all: a machine without pi is
+     * not a machine with broken pi enforcement, and a check that complains
+     * about absent software trains people to ignore it.
+     */
+    const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (fs.existsSync(claudeSettingsPath)) {
+      process.stdout.write('Checking Claude Code enforcement... ');
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8')); } catch { parsed = null; }
+      const result = checkClaudeCodeEnforcement(
+        parsed,
+        hook => ['', '.cmd', '.mjs'].some(ext =>
+          fs.existsSync(path.join(os.homedir(), '.local', 'bin', `${hook}${ext}`))),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('INCOMPLETE'));
+        // Named, not counted. "2 hooks missing" sends the user hunting.
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Not registered: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Registered but not installed: ${result.missingBinaries.join(', ')}`));
+        }
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
+    }
+
+    const piDir = path.join(os.homedir(), '.pi');
+    if (fs.existsSync(piDir)) {
+      process.stdout.write('Checking pi enforcement... ');
+      const result = checkPiEnforcement(
+        fs.existsSync(path.join(piDir, 'agent', 'extensions', 'agenfk.ts')),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('MISSING'));
+        console.log(chalk.yellow(`   - Absent: ${result.missing.join(', ')}`));
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
     }
 
     // 4. Skills Check
