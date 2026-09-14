@@ -558,3 +558,97 @@ describe('the login PATH arriving late', () => {
     expect(spawned).toHaveLength(1);
   });
 });
+
+/**
+ * A resume that finds nothing must not leave a dead tab (CGLAB-188).
+ *
+ * Reported with a screenshot: a restored terminal showing "Session exited (1)."
+ * and, in red, "No conversation found to continue".
+ *
+ * `claude --continue` means "the most recent conversation IN THIS DIRECTORY",
+ * and nothing can know whether one exists until it runs. A worktree created
+ * moments ago has never had the agent in it; and the agent only persists a
+ * conversation after an exchange, so opening a terminal, saying nothing and
+ * closing it records a session row with no conversation behind it. Both are
+ * ordinary.
+ *
+ * This was already swapped once — `--resume <id>` failed by ID for the same
+ * underlying reason — so the lesson is that the flag is not the problem.
+ * Resuming is a courtesy; starting fresh is correct when there is nothing to
+ * resume, and the failure must not be terminal.
+ */
+describe('a resume that finds nothing to continue', () => {
+  const openResumed = async (agentId = 'claude-code') => {
+    spawned = [];
+    const emitted: Array<{ channel: string; payload: any }> = [];
+    const reg = new PtyRegistry({
+      spawn: makeSpawner() as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      emit: (_w, channel, payload) => { emitted.push({ channel, payload }); },
+    });
+    const { sessionId } = await reg.spawn({
+      itemId: 'i1', agentId, windowId: 1, cols: 80, rows: 24, resume: true,
+    } as never);
+    return { reg, emitted, sessionId };
+  };
+
+  it('starts a fresh session instead of dying', async () => {
+    const { emitted } = await openResumed();
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].args, 'the first attempt should have been a resume').toContain('--continue');
+
+    spawned[0].pty.emitExit!(1);
+    expect(spawned, 'nothing was started after the failed resume').toHaveLength(2);
+    expect(spawned[1].args).not.toContain('--continue');
+    // And no exit was reported, because the tab is still alive.
+    expect(emitted.some(e => e.channel === 'pty:exit')).toBe(false);
+  });
+
+  it('keeps the same session id, so the tab still addresses a live process', async () => {
+    // The renderer is bound to the id it was given. A new one would leave the
+    // tab talking to a process that does not exist.
+    const { reg, sessionId } = await openResumed();
+    spawned[0].pty.emitExit!(1);
+    expect(() => reg.write(sessionId, 1, 'hello')).not.toThrow();
+    expect(spawned[1].pty.written).toContain('hello');
+  });
+
+  it('says it started fresh, rather than swapping in silence', async () => {
+    // Silently replacing a resumed session would leave the user believing they
+    // still have the context.
+    const { emitted } = await openResumed();
+    spawned[0].pty.emitExit!(1);
+    const said = emitted.filter(e => e.channel === 'pty:data').map(e => String(e.payload.data)).join('');
+    expect(said).toMatch(/starting a new session/i);
+  });
+
+  it('does not do it twice, so a command that always fails is not a loop', async () => {
+    await openResumed();
+    spawned[0].pty.emitExit!(1);
+    spawned[1].pty.emitExit!(1);
+    expect(spawned).toHaveLength(2);
+  });
+
+  it('leaves a plain session alone when it exits', async () => {
+    // A session that was never resuming exiting is just an exit.
+    spawned = [];
+    const emitted: Array<{ channel: string }> = [];
+    const reg = new PtyRegistry({
+      spawn: makeSpawner() as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
+      emit: (_w, channel) => { emitted.push({ channel }); },
+    });
+    await reg.spawn({ itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 });
+    spawned[0].pty.emitExit!(1);
+    expect(spawned).toHaveLength(1);
+    expect(emitted.some(e => e.channel === 'pty:exit')).toBe(true);
+  });
+
+  it('leaves a resumed session alone when it exits cleanly', async () => {
+    // Code 0 is the user typing `exit` on a session that resumed fine.
+    const { emitted } = await openResumed();
+    spawned[0].pty.emitExit!(0);
+    expect(spawned).toHaveLength(1);
+    expect(emitted.some(e => e.channel === 'pty:exit')).toBe(true);
+  });
+});

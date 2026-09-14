@@ -73,6 +73,17 @@ export interface PtyRegistryDeps {
  * processes without limit. `countForWindow` was written as the cap and never
  * given a caller.
  */
+/**
+ * How quickly a resume has to die to count as "could not find it".
+ *
+ * Generous on purpose. An agent that refuses to start prints its message and
+ * exits in well under a second; one that actually resumed is still running
+ * minutes later. Anything in between is rare, and erring long only costs a
+ * needless fresh session — erring short would leave the dead tab this exists
+ * to prevent.
+ */
+const RESUME_FAILURE_MS = 5_000;
+
 export const MAX_SESSIONS_PER_WINDOW = 30;
 
 export interface SpawnResult {
@@ -162,6 +173,19 @@ export class PtyRegistry {
     // the agent, so reopening ATTACHES to the one still running rather than
     // starting a second agent beside it in the same worktree.
     // Both: the machine can, AND the project asked. Either alone is not enough.
+    /*
+     * The same command, asked for fresh rather than resumed.
+     *
+     * Rebuilt from the descriptor rather than by stripping a flag off `args`:
+     * the modes are argv TEMPLATES, not a base plus a switch — codex's resume
+     * is a SUBCOMMAND (`codex resume <id>`), so there is no flag to remove.
+     */
+    const freshCommand = resolveAgentCommand(req.agentId, {
+      autoApprove: req.autoApprove === true,
+      agentSessionId,
+      resume: false,
+    });
+
     const useTmux = this.deps.tmux?.available === true && req.persist === true;
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
@@ -177,34 +201,80 @@ export class PtyRegistry {
         )]
       : command.args;
 
-    const pty = this.deps.spawn(file, args, {
-      cwd,
-      cols: req.cols,
-      rows: req.rows,
-      // Never process.env directly. It carries launchd's minimal PATH, no TERM
-      // at all, and every variable describing how Electron was launched.
-      env: buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null),
-    });
+    const env = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
 
     // Opaque and unguessable, and deliberately not derived from the item id:
     // a session id travels to the renderer, and one built from a card id would
     // let a window address a session it never opened just by knowing the card.
     const sessionId = randomUUID();
-    this.sessions.set(sessionId, { pty, windowId: req.windowId });
 
-    pty.onData(data => {
-      // Only to the owner. Broadcasting would put one card's shell output —
-      // including whatever the agent prints — into every open window.
-      this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
-    });
+    /**
+     * Start a pty and wire it under `sessionId`.
+     *
+     * Extracted so a failed RESUME can be replaced by a fresh session UNDER THE
+     * SAME ID. The renderer is bound to that id — a new one would leave the tab
+     * addressing a process that does not exist.
+     */
+    const launch = (launchArgs: readonly string[], resuming: boolean): void => {
+      const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
+      this.sessions.set(sessionId, { pty, windowId: req.windowId });
+      const startedAt = Date.now();
 
-    pty.onExit(({ exitCode }) => {
-      // The user typed `exit`, or the agent died. Drop the entry first so a
-      // later write cannot reach a dead pty, then tell the window, or the tab
-      // simply stops responding and looks hung.
-      this.sessions.delete(sessionId);
-      this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
-    });
+      pty.onData(data => {
+        // Only to the owner. Broadcasting would put one card's shell output —
+        // including whatever the agent prints — into every open window.
+        this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+      });
+
+      pty.onExit(({ exitCode }) => {
+        /*
+         * A RESUME that died on the spot could not find what it was asked to
+         * continue. Start fresh instead of leaving a dead tab.
+         *
+         * `claude --continue` means "the most recent conversation IN THIS
+         * DIRECTORY", and nothing can know whether one exists until it runs:
+         * a worktree created moments ago has never had the agent in it, and
+         * the agent only persists a conversation after an exchange — so
+         * opening a terminal, saying nothing and closing it records a session
+         * row with no conversation behind it. Both are ordinary, and both left
+         * "No conversation found to continue" and an exit code 1 on screen.
+         *
+         * Resuming is a courtesy. Starting fresh is the correct behaviour when
+         * there is nothing to resume, so the failure must not be terminal.
+         *
+         * Narrow on purpose:
+         *  - only a resume, because a plain session exiting is just an exit;
+         *  - only an EARLY exit, because an agent that ran for ten minutes and
+         *    then exited finished work rather than failed to start;
+         *  - only ONCE, or a command that always fails becomes a spawn loop.
+         */
+        const diedOnTheSpot = Date.now() - startedAt < RESUME_FAILURE_MS;
+        if (resuming && exitCode !== 0 && diedOnTheSpot) {
+          // Said out loud. Silently swapping a resumed session for a fresh one
+          // would leave the user believing they still have the context.
+          this.deps.emit(req.windowId, 'pty:data', {
+            sessionId,
+            data: '\r\n\x1b[33mNothing to resume here — starting a new session.\x1b[0m\r\n',
+          });
+          launch(freshArgs, false);
+          return;
+        }
+        // The user typed `exit`, or the agent died. Drop the entry first so a
+        // later write cannot reach a dead pty, then tell the window, or the tab
+        // simply stops responding and looks hung.
+        this.sessions.delete(sessionId);
+        this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
+      });
+    };
+
+    /*
+     * Not under tmux. There the agent runs INSIDE a tmux session and our pty is
+     * a view attached to it, so an exit here means the view detached — the
+     * agent is still alive, and respawning would start a SECOND one beside it
+     * in the same worktree.
+     */
+    const freshArgs = freshCommand.args;
+    launch(args, req.resume === true && !useTmux);
 
     // Two ids, and they are not the same kind of thing. `sessionId` addresses
     // a live process for write/resize/kill and dies with it; `agentSessionId`
