@@ -11,6 +11,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { drainApp } from './helpers/drainApp';
+
+/**
+ * The app the most recent test built.
+ *
+ * These specs construct one per test rather than once per file, so there is no
+ * module-scope `app` to drain. Without draining, a response still writing when
+ * the DB closes has its socket reset, and the ECONNRESET surfaces on whichever
+ * spec runs NEXT — which is why the failures rotated.
+ */
+let lastApp: { closeIdleConnections?: () => void; closeAllConnections?: () => void } | null = null;
 import { createHubApp } from '../server';
 
 const dbFor = (label: string) =>
@@ -30,6 +41,7 @@ const boot = async (dbPath: string) => {
     sessionSecret: 'test-session-secret-min-32-bytes-please',
     defaultOrgId: 'org',
   });
+  lastApp = out.app;
   const row = await out.ctx.db.get<{ token: string }>('SELECT token FROM bootstrap_tokens LIMIT 1');
   return { ...out, token: row?.token ?? null };
 };
@@ -43,7 +55,11 @@ describe('POST /setup/initial-admin — token gate', () => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts.
+    // Without it a response still writing when the DB closes resets its socket,
+    // and the ECONNRESET lands on whichever spec runs NEXT.
+    if (lastApp) await drainApp(lastApp);
     logSpy.mockRestore();
     cleanup(dbPath);
   });

@@ -3,6 +3,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
+
+/**
+ * The app the most recent test built.
+ *
+ * These specs construct one per test rather than once per file, so there is no
+ * module-scope `app` to drain. Without draining, a response still writing when
+ * the DB closes has its socket reset, and the ECONNRESET surfaces on whichever
+ * spec runs NEXT — which is why the failures rotated.
+ */
+let lastApp: { closeIdleConnections?: () => void; closeAllConnections?: () => void } | null = null;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-skel-test-${process.pid}.sqlite`);
 const cleanup = () => {
@@ -16,7 +27,14 @@ describe('createHubApp', () => {
   let teardown: () => Promise<void> = async () => {};
 
   beforeEach(() => cleanup());
-  afterEach(async () => { await teardown(); cleanup(); teardown = async () => {}; });
+  afterEach(async () => {
+    // See helpers/drainApp.ts: a response still draining when the DB closes
+    // resets its socket, and the ECONNRESET surfaces on the NEXT spec.
+    if (lastApp) await drainApp(lastApp);
+    await teardown();
+    cleanup();
+    teardown = async () => {};
+  });
 
   it('initializes schema and seeds default org+auth_config', async () => {
     const { ctx } = await createHubApp({
@@ -47,6 +65,7 @@ describe('createHubApp', () => {
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
+    lastApp = app;
     teardown = async () => { await ctx.db.close(); };
 
     // Use http via supertest for a clean assertion
@@ -104,6 +123,7 @@ describe('createHubApp', () => {
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
+    lastApp = app;
     teardown = async () => { try { await ctx.db.close(); } catch { /* */ } delete process.env.AGENFK_HUB_UI_DIR; fs.rmSync(tmp, { recursive: true, force: true }); };
 
     const supertest = (await import('supertest')).default;
@@ -125,6 +145,7 @@ describe('createHubApp', () => {
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
+    lastApp = app;
     teardown = async () => { await ctx.db.close(); };
 
     const supertest = (await import('supertest')).default;
@@ -143,6 +164,7 @@ describe('createHubApp', () => {
       sessionSecret: 'sess',
       defaultOrgId: 'org',
     });
+    lastApp = app;
     teardown = async () => { await ctx.db.close(); };
 
     const expectedVersion = (

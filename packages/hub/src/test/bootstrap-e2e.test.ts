@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { openPgMemDb } from '../db/postgres';
 import type { HubDb } from '../db/types';
 
@@ -87,6 +88,9 @@ for (const harness of [sqliteHarness, pgHarness]) {
     });
 
     afterEach(async () => {
+      // Drain in-flight responses before closing the DB — see helpers/drainApp.ts.
+      // The harness owns the app here, so drain the one it built.
+      if (h?.app) await drainApp(h.app);
       logSpy.mockRestore();
       await h.teardown();
     });

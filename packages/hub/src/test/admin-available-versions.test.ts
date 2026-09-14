@@ -12,6 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { createPasswordUser } from '../auth/password';
 import { __resetAgenfkReleaseCache, __setReleaseFetcher } from '../services/githubReleases';
 
@@ -69,6 +70,8 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
   });
 
   afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
     await ctx.db.close();
     cleanup();
     __resetAgenfkReleaseCache();

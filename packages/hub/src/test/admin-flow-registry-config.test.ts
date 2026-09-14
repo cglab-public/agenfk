@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { openSqliteDb } from '../db/sqlite';
 import { createPasswordUser } from '../auth/password';
 import { decryptSecret } from '../crypto';
@@ -158,6 +159,8 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   });
 
   afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(app);
     await db.close();
     vi.unstubAllGlobals();
   });
