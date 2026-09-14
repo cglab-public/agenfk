@@ -71,6 +71,30 @@ type Connection = 'connecting' | 'connected' | 'offline';
 
 const SIDEBAR_KEY = 'agenfk_shell_sidebar';
 const TABS_KEY = 'agenfk_shell_tabs';
+const RUNS_DOCK_KEY = 'agenfk_runs_dock';
+
+/**
+ * Where the Runs view sits.
+ *
+ * A CLOSED set, and that is the design rather than a limitation. Free layout
+ * becomes window management: state that is hard to persist and easy to leave
+ * unusable, for flexibility nobody asked for. Two positions give nearly all of
+ * the perceived freedom at a fraction of that cost.
+ *
+ * `bottom` exists because live logs are something you follow WHILE looking at
+ * the board, and a sibling tab makes that a choice between them.
+ */
+type RunsDock = 'tab' | 'bottom';
+const RUNS_DOCKS: RunsDock[] = ['tab', 'bottom'];
+
+function readRunsDock(): RunsDock {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RUNS_DOCK_KEY) ?? 'null');
+    // An unrecognised zone — another version, or a hand-edited value — must
+    // not put the view nowhere.
+    return RUNS_DOCKS.includes(stored) ? stored : 'tab';
+  } catch { return 'tab'; }
+}
 
 /**
  * The tab bar's order, remembered.
@@ -113,9 +137,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // The bar's order, seeded from storage in the initializer so there is no
   // first paint in an order the user already changed away from.
   const [tabOrder, setTabOrder] = React.useState<TabId[]>(() => readTabOrder());
+  const [runsDock, setRunsDock] = React.useState<RunsDock>(() => readRunsDock());
+  const moveRunsTo = React.useCallback((dock: RunsDock) => {
+    setRunsDock(dock);
+    try { localStorage.setItem(RUNS_DOCK_KEY, JSON.stringify(dock)); } catch { /* a lost preference */ }
+    // Leaving the tab while it is the selected one would show an empty main
+    // area; the board is the only view that is always there.
+    if (dock === 'bottom') setActive(cur => (cur === 'runs' ? 'kanban' : cur));
+  }, []);
   const orderedTabs = React.useMemo(
-    () => tabOrder.map(id => TABS.find(t => t.id === id)!).filter(Boolean),
-    [tabOrder],
+    () => tabOrder
+      .map(id => TABS.find(t => t.id === id)!)
+      .filter(Boolean)
+      // Docked below, it is not a tab. Two places to reach one view is how the
+      // rail and the terminal came to disagree earlier in this epic.
+      .filter(tab => !(tab.id === 'runs' && runsDock === 'bottom')),
+    [tabOrder, runsDock],
   );
   const moveTabLeft = React.useCallback((id: TabId) => {
     setTabOrder(prev => {
@@ -679,8 +716,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               )}
               </div>
             ))}
+
+            {/* A BUTTON, not a drag target. Keyboard parity is in the card,
+                and a drag-only affordance is unreachable without a pointer.
+                Only while Runs IS a tab: once it is docked, the way back lives
+                on the strip itself, where the user is already looking. Two
+                controls for one action is two things to keep in step. */}
+            {runsDock === 'tab' && (
+              <button
+                data-app-region="no-drag"
+                onClick={() => moveRunsTo('bottom')}
+                aria-label="Dock Runs below the board"
+                title="Dock Runs below the board"
+                className="ml-auto self-center rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
+              >
+                Runs ↓
+              </button>
+            )}
           </div>
 
+          {/* The panels and the Runs strip share this column. The board stays
+              exactly where it is in the tree whichever position Runs is in —
+              moving `children` to a different parent would unmount and remount
+              it, losing scroll position, open menus and anything half-typed,
+              which is the one cost this feature must not have. */}
           {/* Rendered, not conditionally mounted — see rule 1 above. */}
           <div
             role="tabpanel"
@@ -778,6 +837,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               body="Runs started from a card appear here. Open a card and start work to see its live log."
             />
           </div>
+
+          {/* Below the board, in the same column, so both are visible at once —
+              which is the whole reason the card calls a sibling tab the wrong
+              place for a live log. */}
+          {runsDock === 'bottom' && (
+            <section
+              data-testid="runs-dock"
+              aria-label="Runs"
+              className="flex h-48 shrink-0 flex-col border-t border-border-soft bg-nav-surface"
+            >
+              <header className="flex items-center gap-2 border-b border-border-soft px-3 py-1.5">
+                <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
+                  Runs
+                </h2>
+                <button
+                  onClick={() => moveRunsTo('tab')}
+                  aria-label="Put Runs back to a tab"
+                  className="ml-auto rounded px-1.5 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
+                >
+                  ↑
+                </button>
+              </header>
+              <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-4">
+                <EmptyState
+                  title="No agent runs open"
+                  body="Runs started from a card appear here."
+                />
+              </div>
+            </section>
+          )}
         </main>
       </div>
 

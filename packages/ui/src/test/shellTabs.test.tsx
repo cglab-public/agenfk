@@ -153,3 +153,84 @@ describe('rearranging', () => {
     expect(within(tabs[0].parentElement!).queryByRole('button', { name: /move .* left/i })).toBeNull();
   });
 });
+
+/**
+ * Where the Runs view lives (CGLAB-176).
+ *
+ * As a sibling tab of Kanban it is in the wrong place, and the card says why:
+ * live logs are something you follow WHILE looking at the board. A tab makes
+ * that a choice between them.
+ *
+ * The destinations are a CLOSED set on purpose. Free layout becomes window
+ * management — state that is hard to persist and easy to leave unusable — and
+ * a couple of fixed positions give nearly all the perceived flexibility for a
+ * fraction of that.
+ *
+ * The constraint that shapes the implementation: moving it must not REMOUNT
+ * the board. The board is `children`, and moving a subtree to a different DOM
+ * parent unmounts and remounts it — losing scroll position, open menus and any
+ * edit in flight. So the board stays where it is and the strip appears beneath
+ * it, in the same column.
+ */
+describe('docking the Runs view', () => {
+  it('is a tab by default, which is where it has always been', async () => {
+    renderShell();
+    const labels = (await shellTabs()).map(t => t.textContent);
+    expect(labels.join(' ')).toMatch(/runs/i);
+  });
+
+  it('moves to a strip under the board, and leaves the tab bar', async () => {
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /dock runs below/i }));
+    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
+    const labels = (await shellTabs()).map(t => t.textContent);
+    expect(labels.join(' ')).not.toMatch(/runs/i);
+  });
+
+  it('does not remount the board when it moves', async () => {
+    // The one thing this must not cost. The board is `children`; moving a
+    // subtree to a different DOM parent unmounts and remounts it, losing
+    // scroll position, open menus and anything half-typed.
+    renderShell();
+    const before = await screen.findByText('board');
+    fireEvent.click(await screen.findByRole('button', { name: /dock runs below/i }));
+    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
+    // The SAME node, not an equal one: a remount produces a new element.
+    expect(screen.getByText('board')).toBe(before);
+  });
+
+  it('remembers where it was put', async () => {
+    localStorage.setItem('agenfk_runs_dock', '"bottom"');
+    renderShell();
+    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
+  });
+
+  it('ignores a stored position it does not recognise', async () => {
+    // Written by another version, or edited by hand. An unknown zone must not
+    // put the view nowhere.
+    localStorage.setItem('agenfk_runs_dock', '"floating-over-everything"');
+    renderShell();
+    const labels = (await shellTabs()).map(t => t.textContent);
+    expect(labels.join(' ')).toMatch(/runs/i);
+  });
+
+  it('can be put back, without hunting for how', async () => {
+    // A move with no way back is a trap, and the way back has to be visible
+    // from the state it left you in.
+    localStorage.setItem('agenfk_runs_dock', '"bottom"');
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /back to a tab/i }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('runs-dock')).toBeNull();
+    });
+  });
+
+  it('is moved by a button, not only by dragging', async () => {
+    // Keyboard parity is in the card, and it is the reason this is a control
+    // rather than a drag target: a drag-only affordance is unreachable without
+    // a pointer.
+    renderShell();
+    const control = await screen.findByRole('button', { name: /dock runs below/i });
+    expect(control.tagName).toBe('BUTTON');
+  });
+});
