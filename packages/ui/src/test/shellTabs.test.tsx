@@ -45,7 +45,6 @@ vi.mock('../api', () => ({
     recordTerminalSession: vi.fn(async () => ({ id: 'row-1' })),
     forgetTerminalSession: vi.fn(async () => {}),
     getGitStatus: vi.fn(async () => ({ changed: 0, staged: 0, files: [] })),
-    listWorktreeFiles: vi.fn(async () => ({ path: '', entries: [] })),
   },
 }));
 vi.mock('socket.io-client', () => ({
