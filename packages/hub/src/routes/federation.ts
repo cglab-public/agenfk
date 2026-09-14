@@ -7,6 +7,7 @@ import { semverOrNull } from '../util/semver.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.js';
 export { CHILD_HUB_LIVE_WINDOW_HOURS } from '../util/childHubRow.js';
 
 // Hub federation, parent side (CGLAB-181). A child hub enrolls by redeeming an
@@ -16,7 +17,6 @@ export { CHILD_HUB_LIVE_WINDOW_HOURS } from '../util/childHubRow.js';
 // (next to the installation invite) while the child-facing API lives under
 // /v1 like every other machine-to-machine route.
 
-const MAX_NAME_LEN = 120;
 // An invite is ~200 chars. Cap the input before it reaches createHmac so an
 // unauthenticated caller cannot make the hub HMAC megabytes per request.
 const MAX_INVITE_TOKEN_LEN = 4096;
@@ -67,9 +67,14 @@ export function federationRouter(ctx: HubServerContext): Router {
       if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
 
       const rawName = req.body?.childHub?.name;
-      const name = typeof rawName === 'string' ? rawName.trim() : '';
-      if (!name) { res.status(400).json({ error: 'childHub.name required' }); return; }
-      if (name.length > MAX_NAME_LEN) { res.status(400).json({ error: `childHub.name exceeds ${MAX_NAME_LEN} characters` }); return; }
+      const name = validChildHubName(rawName);
+      if (!name) {
+        const tooLong = typeof rawName === 'string' && rawName.trim().length > MAX_CHILD_HUB_NAME_LEN;
+        res.status(400).json({
+          error: tooLong ? `childHub.name exceeds ${MAX_CHILD_HUB_NAME_LEN} characters` : 'childHub.name required',
+        });
+        return;
+      }
       const hubVersion = semverOrNull(req.body?.childHub?.hubVersion);
 
       const childHubId = randomUUID();

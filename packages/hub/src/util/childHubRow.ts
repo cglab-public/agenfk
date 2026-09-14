@@ -9,6 +9,21 @@
  */
 export const CHILD_HUB_LIVE_WINDOW_HOURS = 24;
 
+/**
+ * Longest accepted child hub name. Shared by enrolment and rename on purpose:
+ * were they to drift, a name accepted at enrolment could be rejected when an
+ * admin tried to save it back unchanged.
+ */
+export const MAX_CHILD_HUB_NAME_LEN = 120;
+
+/** Trimmed name when it is within bounds, otherwise null. */
+export function validChildHubName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const name = raw.trim();
+  if (!name || name.length > MAX_CHILD_HUB_NAME_LEN) return null;
+  return name;
+}
+
 export interface ChildHubDbRow {
   id: string;
   name: string;

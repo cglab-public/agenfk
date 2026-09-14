@@ -15,7 +15,7 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
-import { toChildHubDto } from '../util/childHubRow.js';
+import { toChildHubDto, validChildHubName, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import {
@@ -2167,8 +2167,6 @@ export function adminRouter(ctx: HubServerContext): Router {
   // hub — but no way to reach it. These are the routes that make a child hub's
   // credential revocable through the product rather than through psql.
 
-  const MAX_CHILD_HUB_NAME_LEN = 120;
-
   async function findChildHub(orgId: string, id: string) {
     return ctx.db.get<{ id: string; name: string; detached_at: string | null }>(
       'SELECT id, name, detached_at FROM child_hubs WHERE id = ? AND org_id = ?',
@@ -2203,10 +2201,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     try {
       const orgId = req.session!.orgId;
       const raw = req.body?.name;
-      const name = typeof raw === 'string' ? raw.trim() : '';
-      if (!name) { res.status(400).json({ error: 'name required' }); return; }
-      if (name.length > MAX_CHILD_HUB_NAME_LEN) {
-        res.status(400).json({ error: `name exceeds ${MAX_CHILD_HUB_NAME_LEN} characters` });
+      const name = validChildHubName(raw);
+      if (!name) {
+        const tooLong = typeof raw === 'string' && raw.trim().length > MAX_CHILD_HUB_NAME_LEN;
+        res.status(400).json({
+          error: tooLong ? `name exceeds ${MAX_CHILD_HUB_NAME_LEN} characters` : 'name required',
+        });
         return;
       }
       if (!(await findChildHub(orgId, req.params.id))) {
