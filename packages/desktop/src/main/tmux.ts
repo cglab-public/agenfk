@@ -71,11 +71,25 @@ const PREFIX = 'agenfk-';
  * longer be found by `has-session`, so the old session is orphaned and a new
  * one spawns beside it on every launch.
  */
-export function tmuxSessionName(itemId: string, agentId: string): string {
+export function tmuxSessionName(
+  itemId: string,
+  agentId: string,
+  /**
+   * What the session was created WITH.
+   *
+   * Part of the identity, not decoration. A tmux session outlives the app, and
+   * reattaching runs no new command line — so a session created with
+   * permission prompts disabled keeps running that way forever, including
+   * after the user turns the setting back off. Folding the decision into the
+   * name means a changed setting produces a different session instead of
+   * silently reattaching to the old one.
+   */
+  opts: { autoApprove?: boolean } = {},
+): string {
   // Not crypto — this is a collision-avoidance label, and a dependency-free
   // hash keeps this module importable from anywhere in main.
   let hash = 5381;
-  const input = `${itemId}:${agentId}`;
+  const input = `${itemId}:${agentId}:${opts.autoApprove === true ? 'auto' : 'ask'}`;
   for (let i = 0; i < input.length; i += 1) {
     hash = ((hash << 5) + hash + input.charCodeAt(i)) >>> 0;
   }
@@ -107,7 +121,12 @@ export function buildTmuxShellCommand(
   // Throws for anything outside the closed set — the same gate the direct
   // spawn path uses, so this route cannot become a way around it.
   const command = resolveAgentCommand(agentId);
-  const agentLine = [command.file, ...command.args, ...extraArgs].map(quote).join(' ');
+  // `extraArgs` is the caller's ALREADY-RESOLVED argument list, so
+  // command.args must not be added again: doing so emitted every base argument
+  // twice (`bash -l -l` today, and silently doubling for whichever agent gains
+  // a base argument next). resolveAgentCommand is still called above, for the
+  // closed-set gate and for the executable name.
+  const agentLine = [command.file, ...extraArgs].map(quote).join(' ');
 
   // `=` forces an EXACT match. Without it tmux matches by prefix, so a session
   // named `agenfk-ab` would be attached for `agenfk-abc123` — putting the user

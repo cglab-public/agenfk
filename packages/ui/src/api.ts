@@ -13,7 +13,6 @@ import { API_URL } from './apiUrl';
  */
 export interface AppSettingsDto {
   tmuxByDefault: boolean;
-  autoApproveByDefault: boolean;
 }
 
 export const api = {

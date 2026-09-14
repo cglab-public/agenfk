@@ -33,13 +33,24 @@ export const Switch = React.forwardRef<
     ref={ref}
     className={clsx(
       'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full',
-      'border border-transparent transition-colors',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1',
+      'border border-transparent transition-colors motion-reduce:transition-none',
+      // No ring-offset: Tailwind's offset colour is white everywhere in this
+      // bundle, which draws a white band between the track and the ring on the
+      // dark theme.
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
       // Not merely dimmed: a switch that looks pressable and does nothing is
       // worse than one that reads as unavailable.
       'disabled:cursor-not-allowed disabled:opacity-60',
-      'data-[state=checked]:bg-emerald-500',
-      'data-[state=unchecked]:border-border-soft data-[state=unchecked]:bg-canvas',
+      // bg-brand, not a palette literal. Both switches this replaced used the
+      // brand teal; emerald-500 put the one control that says "on" out of step
+      // with every other affordance in the app — while the docblock above
+      // claimed the colours came from tokens.
+      'data-[state=checked]:bg-brand',
+      // The off state has to be VISIBLE. bg-canvas equals the card it sits on
+      // in both themes, and border-soft against it is about 1.1:1 — an off
+      // switch read as blank space, so the user could not see there was a
+      // control at all.
+      'data-[state=unchecked]:border-ink-tertiary/40 data-[state=unchecked]:bg-ink-tertiary/15',
       className,
     )}
     {...props}

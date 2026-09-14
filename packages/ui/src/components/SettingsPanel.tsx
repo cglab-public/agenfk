@@ -25,12 +25,14 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
-import { sessionPersistenceFromBridge, listAgentsFromBridge } from './agentBridge';
+import {
+  sessionPersistenceFromBridge, listAgentsFromBridge,
+  readPrefsFromBridge, setAutoApproveOnBridge,
+} from './agentBridge';
 import { api } from '../api';
 
 export interface AppSettings {
   tmuxByDefault: boolean;
-  autoApproveByDefault: boolean;
 }
 
 /**
@@ -51,6 +53,11 @@ function SettingRow({
   /** Why this setting cannot take effect here, when that is the case. */
   note?: React.ReactNode;
 }): React.ReactElement {
+  // Ties the description and the caveat to the switch. Without it a screen
+  // reader announcing the most dangerous control on the page says only
+  // "Auto-approve by default, switch, off" — never what it lets happen, and
+  // never which agents ignore it.
+  const rowId = React.useId();
   return (
     <div
       data-testid="setting-row"
@@ -58,11 +65,26 @@ function SettingRow({
     >
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-semibold text-ink">{title}</p>
-        <p className="mt-0.5 text-[12px] leading-snug text-ink-tertiary">{description}</p>
-        {note && <p className="mt-1.5 text-[12px] leading-snug text-amber-400/90">{note}</p>}
+        <p id={`${rowId}-desc`} className="mt-0.5 text-[12px] leading-snug text-ink-tertiary">
+          {description}
+        </p>
+        {note && (
+          // A light/dark PAIR, like every other warning in this app.
+          // text-amber-400 alone is roughly 1.6:1 on the light theme's
+          // near-white card, which made the one message that says "sessions
+          // will not survive quitting" unreadable for light-theme users.
+          <p
+            data-testid="setting-note"
+            id={`${rowId}-note`}
+            className="mt-1.5 text-[12px] leading-snug text-amber-600 dark:text-amber-400"
+          >
+            {note}
+          </p>
+        )}
       </div>
       <Switch
         aria-label={title}
+        aria-describedby={note ? `${rowId}-desc ${rowId}-note` : `${rowId}-desc`}
         checked={checked}
         disabled={busy}
         onCheckedChange={onChange}
@@ -85,9 +107,15 @@ interface SettingsSection {
   readonly rows: React.ReactNode;
 }
 
+/** "a", "a and b", "a, b and c" — `join(' and ')` gives "a and b and c". */
+function listAnd(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 export function SettingsPanel(): React.ReactElement {
   const queryClient = useQueryClient();
-  const { data: settings } = useQuery<AppSettings>({
+  const { data: settings, isError: readFailed } = useQuery<AppSettings>({
     queryKey: ['settings'],
     queryFn: api.getSettings,
   });
@@ -100,6 +128,10 @@ export function SettingsPanel(): React.ReactElement {
     // No rollback needed: nothing was written optimistically, so the switch is
     // still showing the stored value. Refetching makes that explicit in case
     // another client changed it in the meantime.
+    // Nothing was written optimistically, so there is nothing to roll back —
+    // the switch never moved. Which is exactly the problem: a failed save is
+    // indistinguishable from a missed click unless it SAYS so. The refetch is
+    // to pick up a change another client made in the meantime.
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['settings'] }); },
   });
 
@@ -120,9 +152,10 @@ export function SettingsPanel(): React.ReactElement {
   const { data: persistence } = useQuery({
     queryKey: ['session-persistence'],
     queryFn: sessionPersistenceFromBridge,
-    // A fact about the machine, not about the app's state. Re-asking on every
-    // focus would spawn a `which tmux` for nothing.
-    staleTime: Infinity,
+    // A minute, not Infinity. This panel is never unmounted, so Infinity meant
+    // a user who read the warning, ran `brew install tmux` and came back was
+    // still told it was unavailable for the rest of the app's lifetime.
+    staleTime: 60_000,
   });
 
   /**
@@ -141,10 +174,35 @@ export function SettingsPanel(): React.ReactElement {
     queryFn: listAgentsFromBridge,
     staleTime: Infinity,
   });
-  const ignoring = agents.filter(a => a.installed && !a.supportsAutoApprove).map(a => a.label);
+  // `shell` is excluded, and not as a special case for its own sake: it has no
+  // permission prompts to skip, so saying it "will ignore this" and "always
+  // asks" is nonsense about a login shell. It is also ALWAYS_AVAILABLE, so
+  // including it put a permanent caveat on screen for every user — and a
+  // caveat that is always there stops being read, which is the failure this
+  // line exists to avoid.
+  const ignoring = agents
+    .filter(a => a.installed && !a.supportsAutoApprove && a.id !== 'shell')
+    .map(a => a.label);
 
   const tmuxByDefault = settings?.tmuxByDefault ?? false;
-  const autoApproveByDefault = settings?.autoApproveByDefault ?? false;
+  /**
+   * Auto-approve comes from the DESKTOP, not from the server.
+   *
+   * It disables an agent's permission prompts, and the server's settings route
+   * is unauthenticated — an agent granted one localhost call could have
+   * disarmed every future session. It lives behind the preload IPC instead, so
+   * the only caller is code running in this app.
+   */
+  const { data: prefs, isError: prefsFailed } = useQuery({
+    queryKey: ['desktop-prefs'],
+    queryFn: readPrefsFromBridge,
+  });
+  const saveAutoApprove = useMutation({
+    mutationFn: (value: boolean) => setAutoApproveOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  const autoApproveByDefault = prefs?.autoApprove ?? false;
 
   const sections: SettingsSection[] = [
     {
@@ -157,7 +215,7 @@ export function SettingsPanel(): React.ReactElement {
              is still learns exactly what changes for them. */
           description="Run agent sessions and terminals inside tmux, so they keep running when you quit the app. Requires tmux to be installed."
           checked={tmuxByDefault}
-          busy={save.isPending}
+          busy={save.isPending && save.variables !== undefined && 'tmuxByDefault' in save.variables}
           onChange={next => save.mutate({ tmuxByDefault: next })}
           note={persistence && !persistence.available ? (
             persistence.warning === 'tmux_unsupported_on_windows' ? (
@@ -196,13 +254,13 @@ export function SettingsPanel(): React.ReactElement {
              flipping it, not discover it afterwards. */
           description="Start agents with their own permission prompts disabled, so they edit, delete and run commands without asking. Applies to every terminal you open, including ones you open without thinking about it."
           checked={autoApproveByDefault}
-          busy={save.isPending}
-          onChange={next => save.mutate({ autoApproveByDefault: next })}
+          busy={saveAutoApprove.isPending}
+          onChange={next => saveAutoApprove.mutate(next)}
           /* Only the ones that will ignore it. Listing every agent would be a
              list of nothing, leaving the reader to work out which half
              matters. */
           note={ignoring.length > 0
-            ? `${ignoring.join(' and ')} will ignore this: they have no flag for it and always ask.`
+            ? `${listAnd(ignoring)} will ignore this: ${ignoring.length === 1 ? 'it has' : 'they have'} no flag for it and always ask.`
             : undefined}
         />
       ),
@@ -252,6 +310,31 @@ export function SettingsPanel(): React.ReactElement {
               These apply to every project on this installation.
             </p>
           </header>
+
+          {/* Read failure is NOT "everything is off". Rendering the defaults
+              over an unread store makes the screen assert a state it never
+              verified — and for auto-approve that is asserting a safety
+              property. */}
+          {(readFailed || prefsFailed) && (
+            <div
+              role="alert"
+              className="mt-6 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-300"
+            >
+              Could not read your settings, so the switches below may not reflect
+              what is stored. Check that AgEnFK is running.
+            </div>
+          )}
+
+          {/* A save that fails has to be visible. The switch does not move on
+              its own, so silence here reads as "I missed the button". */}
+          {(save.isError || saveAutoApprove.isError) && (
+            <div
+              role="alert"
+              className="mt-6 rounded-lg border border-rose-600/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300"
+            >
+              Could not save that change; it was not applied.
+            </div>
+          )}
 
           <section data-testid="settings-section" className="mt-8">
             <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">

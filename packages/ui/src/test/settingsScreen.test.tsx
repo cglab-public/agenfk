@@ -118,7 +118,9 @@ describe('getting to it', () => {
     // edit for the sake of looking at a checkbox.
     renderShell();
     await openSettings();
-    const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+    // A region, not a tabpanel: nothing in the tablist owns this panel, and an
+    // orphan tabpanel reports a tablist with nothing selected.
+    const panel = await screen.findByRole('region', { name: /settings/i });
     expect(panel).toBeVisible();
     expect(screen.getByText('board')).toBeInTheDocument();
   });
@@ -175,7 +177,7 @@ describe('what it offers', () => {
     // and the user goes looking for it twice.
     renderShell();
     await openSettings();
-    const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+    const panel = await screen.findByRole('region', { name: /settings/i });
     const sections = panel.querySelectorAll('[data-testid="settings-section"]');
     expect(sections.length).toBeGreaterThan(0);
     sections.forEach(section => {
@@ -242,7 +244,7 @@ describe('the shape of it', () => {
     expect(labels.length).toBeGreaterThan(0);
     for (const label of labels) {
       fireEvent.click(within(rail).getByRole('button', { name: label! }));
-      const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+      const panel = await screen.findByRole('region', { name: /settings/i });
       const rows = panel.querySelectorAll('[data-testid="setting-row"]');
       expect(rows.length, `section "${label}" has no settings in it`).toBeGreaterThan(0);
     }
@@ -253,7 +255,7 @@ describe('the shape of it', () => {
     // classic two-column failure.
     renderShell();
     await openSettings();
-    const panel = await screen.findByRole('tabpanel', { name: /settings/i });
+    const panel = await screen.findByRole('region', { name: /settings/i });
     expect(panel.className).not.toMatch(/overflow-x-auto|overflow-x-scroll/);
     expect(panel.querySelector('[data-testid="settings-body"]')?.className)
       .toMatch(/min-w-0/);
@@ -436,5 +438,120 @@ describe('when the machine cannot be asked', () => {
     const row = (await screen.findByText(/enable tmux/i))
       .closest<HTMLElement>('[data-testid="setting-row"]')!;
     expect(row).not.toHaveTextContent(/not available/i);
+  });
+});
+
+/**
+ * Reachability, which is the difference between a settings screen and none.
+ *
+ * An adversarial review found the entry rendered INSIDE the sidebar's
+ * `open` guard, so collapsing the sidebar removed the only route to Settings —
+ * and the sidebar state is persisted, so that was permanent across launches.
+ * With both dialog toggles gone, that left a user with no way to change tmux or
+ * auto-approve at all, ever.
+ *
+ * Worse than the bug was the shape of it: the button carried an icon-only
+ * collapsed variant, written for a state it could never be rendered in. The
+ * code looked like it handled the case it was breaking.
+ */
+describe('reachability', () => {
+  it('is still reachable with the sidebar collapsed', async () => {
+    // The persisted-collapsed user. This is not an edge case: the sidebar
+    // remembers, so one click a month ago decides every launch since.
+    // 'collapsed' is the stored value; anything else reads as open. Writing
+    // 'false' here left the sidebar OPEN and the test passed without ever
+    // exercising the case it is named for.
+    localStorage.setItem('agenfk_shell_sidebar', 'collapsed');
+    renderShell();
+    expect(await screen.findByRole('button', { name: /^settings$/i })).toBeInTheDocument();
+  });
+
+  it('opens from the collapsed sidebar too, not just renders', async () => {
+    // 'collapsed' is the stored value; anything else reads as open. Writing
+    // 'false' here left the sidebar OPEN and the test passed without ever
+    // exercising the case it is named for.
+    localStorage.setItem('agenfk_shell_sidebar', 'collapsed');
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /^settings$/i }));
+    expect(await screen.findByText(/enable tmux/i)).toBeInTheDocument();
+  });
+});
+
+describe('the warning has to be readable in both themes', () => {
+  it('pairs the light and dark colour, like every other warning in this app', async () => {
+    // text-amber-400 alone is ~1.6:1 on the light theme's near-white card. The
+    // one message that says "sessions will not survive quitting" was the least
+    // affordable thing on the screen to render illegible. Every other
+    // amber text in this codebase is written as a light/dark pair.
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [],
+        sessionPersistence: async () => ({ available: false, hint: 'brew install tmux' }),
+      },
+    };
+    renderShell();
+    await openSettings();
+    const note = await screen.findByTestId('setting-note');
+    expect(note.className).toMatch(/text-amber-600/);
+    expect(note.className).toMatch(/dark:text-amber-400/);
+  });
+});
+
+describe('a save that fails has to say so', () => {
+  it('shows a message rather than a switch that quietly did not move', async () => {
+    // Nothing is written optimistically, so a failed save does not "revert" —
+    // it does nothing at all, which is indistinguishable from missing the hit
+    // target. The old test asserted aria-checked stayed false, which is also
+    // what a missed click produces, so it could not tell the two apart.
+    vi.mocked(api.updateSettings).mockRejectedValue(new Error('server down'));
+    renderShell();
+    await openSettings();
+    const row = (await screen.findByText(/enable tmux/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    fireEvent.click(within(row).getByRole('switch'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not|failed|not saved/i);
+  });
+
+  it('does not claim a setting is off when it could not be read', async () => {
+    // `settings?.x ?? false` renders both switches OFF on a failed read. For
+    // tmux that means the app spawns non-persistent terminals for someone whose
+    // stored preference is on; for auto-approve it means the screen asserts a
+    // safety property it never verified.
+    vi.mocked(api.getSettings).mockRejectedValue(new Error('offline'));
+    renderShell();
+    await openSettings();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not|failed|unavailable/i);
+  });
+});
+
+describe('the shell is not an agent that "ignores" auto-approve', () => {
+  it('never lists it, since it has no permission prompts to skip', async () => {
+    // `shell` is ALWAYS_AVAILABLE and has no autoApproveArgs, so the naive
+    // filter named it for every user, permanently — and said it "always asks",
+    // which is nonsense about a login shell. The previous test passed only
+    // because its fixture left shell out: a shape the real producer never
+    // emits.
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [
+          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+          { id: 'shell', label: 'Shell', installed: true, supportsAutoApprove: false },
+        ],
+        sessionPersistence: async () => ({ available: true }),
+      },
+    };
+    renderShell();
+    await openSettings();
+    fireEvent.click(within(
+      await screen.findByRole('navigation', { name: /settings sections/i }),
+    ).getByRole('button', { name: /agents/i }));
+    const row = (await screen.findByText(/auto-approve/i))
+      .closest<HTMLElement>('[data-testid="setting-row"]')!;
+    await waitFor(() => expect(row).toHaveTextContent(/auto-approve/i));
+    expect(row).not.toHaveTextContent(/Shell/);
   });
 });

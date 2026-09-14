@@ -28,6 +28,45 @@ const bridge = (): TerminalBridgeApi | null =>
   (window as unknown as { agenfkDesktop?: { terminal?: TerminalBridgeApi } })
     .agenfkDesktop?.terminal ?? null;
 
+/**
+ * Desktop-owned preferences.
+ *
+ * Deliberately not part of the server's settings: `autoApprove` disables an
+ * agent's permission prompts, and the server's settings route is
+ * unauthenticated and reachable by anything on the machine. Here the only
+ * caller is code running in this app's renderer.
+ */
+interface PrefsBridgeApi {
+  get(): Promise<{ autoApprove: boolean }>;
+  setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
+}
+
+const prefsBridge = (): PrefsBridgeApi | null =>
+  (window as unknown as { agenfkDesktop?: { prefs?: PrefsBridgeApi } }).agenfkDesktop?.prefs ?? null;
+
+/**
+ * `false` where there is no desktop host, and that is the truth rather than a
+ * fallback: a browser has no terminals for the setting to apply to.
+ *
+ * `typeof`, not `?.` — the object can be present while the method is not, which
+ * is what an older preload looks like after an upgrade.
+ */
+export const readPrefsFromBridge = (): Promise<{ autoApprove: boolean }> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.get !== 'function') return Promise.resolve({ autoApprove: false });
+  return prefs.get();
+};
+
+export const setAutoApproveOnBridge = (value: boolean): Promise<{ autoApprove: boolean }> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setAutoApprove !== 'function') {
+    // Refused loudly rather than silently doing nothing: the settings screen
+    // must be able to tell the user the change did not land.
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setAutoApprove(value);
+};
+
 /** Empty in a browser: there are no local CLIs to offer a page. */
 export const listAgentsFromBridge = (): Promise<AgentInfo[]> =>
   bridge()?.listAgents() ?? Promise.resolve([]);

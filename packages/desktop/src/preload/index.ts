@@ -57,6 +57,21 @@ export interface AgenfkTerminalApi {
   sessionPersistence(): Promise<{ available: boolean; hint?: string; warning?: string }>;
 }
 
+/**
+ * Preferences the desktop owns.
+ *
+ * Separate from the server's settings on purpose. `autoApprove` disables an
+ * agent's permission prompts, and the server's settings route is
+ * unauthenticated — so this one is reachable only through here, where the
+ * caller has to be code running in this app's renderer.
+ *
+ * Named operations, one key at a time. There is no "save this object".
+ */
+export interface AgenfkPrefsApi {
+  get(): Promise<{ autoApprove: boolean }>;
+  setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
+}
+
 export interface AgenfkDesktopApi {
   /** Marks this as the desktop shell. Checked by the UI at startup. */
   readonly isDesktop: true;
@@ -67,6 +82,7 @@ export interface AgenfkDesktopApi {
     readonly node: string;
   };
   readonly terminal: AgenfkTerminalApi;
+  readonly prefs: AgenfkPrefsApi;
 }
 
 /**
@@ -94,9 +110,17 @@ const terminal: AgenfkTerminalApi = {
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),
 };
 
+const prefs: AgenfkPrefsApi = {
+  get: () => ipcRenderer.invoke('prefs:get'),
+  // The value is normalised to a real boolean here as well as in main: the
+  // renderer is our own bundle, but it is also the part an XSS would control.
+  setAutoApprove: value => ipcRenderer.invoke('prefs:set', { key: 'autoApprove', value: value === true }),
+};
+
 const api: AgenfkDesktopApi = {
   isDesktop: true,
   terminal,
+  prefs,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

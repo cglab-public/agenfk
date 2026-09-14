@@ -44,7 +44,7 @@ describe('installation-wide settings', () => {
     // promise that upgrading changes nothing for an existing user.
     const res = await request(app).get('/settings');
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ tmuxByDefault: false, autoApproveByDefault: false });
+    expect(res.body).toMatchObject({ tmuxByDefault: false });
   });
 
   it('keeps what it is given', async () => {
@@ -111,24 +111,21 @@ describe('installation-wide settings', () => {
 describe('what settings deliberately do NOT hold', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('holds auto-approve, but never on by default', async () => {
-    // It was refused here on purpose until the user asked for the terminal
-    // dialog to stop asking, which left it nowhere else to live. What survives
-    // that move is the DEFAULT: a fresh install, and every existing one, still
-    // starts agents with their permission prompts intact. The setting can only
-    // become true because somebody went and turned it on.
-    expect((await request(app).get('/settings')).body.autoApproveByDefault).toBe(false);
+  it('is not where auto-approve lives, and refuses it outright', async () => {
+    // It was here for one commit. An adversarial review pointed out what that
+    // meant: this route is unauthenticated and accepts requests with no Origin
+    // header, while the setting changes the argv of every agent spawned
+    // afterwards — the same class as verifyCommand, which has sat behind
+    // VERIFY_TOKEN in this server precisely for that reason.
+    //
+    // The escalation that matters here: an agent running WITH prompts on,
+    // granted approval for one localhost call, could permanently remove the
+    // prompts for every future session. It now lives in the desktop app behind
+    // the preload IPC, where no HTTP route reaches it at all — see
+    // packages/desktop/src/main/prefs.ts.
     const res = await request(app).put('/settings').send({ autoApproveByDefault: true });
-    expect(res.status).toBe(200);
-    expect(res.body.autoApproveByDefault).toBe(true);
-  });
-
-  it('refuses a non-boolean auto-approve, like every other setting', async () => {
-    // The setting that can cost the most gets the same guard as the rest: a
-    // truthy string must not be able to take the rails off.
-    await request(app).put('/settings').send({ autoApproveByDefault: false });
-    expect((await request(app).put('/settings').send({ autoApproveByDefault: 'yes' })).status).toBe(400);
-    expect((await request(app).get('/settings')).body.autoApproveByDefault).toBe(false);
+    expect(res.status).toBe(400);
+    expect((await request(app).get('/settings'))).not.toHaveProperty('body.autoApproveByDefault');
   });
 
   it('is not where a project keeps its worktree preference', async () => {

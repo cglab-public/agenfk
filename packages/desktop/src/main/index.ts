@@ -255,7 +255,10 @@ async function boot(): Promise<void> {
             ?.webContents.send(channel, payload);
         },
       });
-      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus);
+      // userData, not the AgEnFK database: the database is shared with the
+      // CLI and the server, and these preferences exist precisely to be out of
+      // reach of anything that talks to the server. See main/prefs.ts.
+      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus, () => app.getPath('userData'));
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
     }

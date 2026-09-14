@@ -15,6 +15,7 @@ import {
   IngestionState,
   AppSettings,
   DEFAULT_APP_SETTINGS,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
@@ -120,6 +121,16 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
         ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        agent_id TEXT NOT NULL,
+        agent_session_id TEXT,
+        opened_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_item ON terminal_sessions(item_id);
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id);
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -749,10 +760,49 @@ export class SQLiteStorageProvider implements StorageProvider {
    * bare text is how a preference comes back as a truthy string and inverts
    * itself.
    */
+  async listTerminalSessions(projectId?: string): Promise<TerminalSession[]> {
+    const rows = (projectId
+      ? this.database.prepare(
+          'SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY opened_at'
+        ).all(projectId)
+      : this.database.prepare('SELECT * FROM terminal_sessions ORDER BY opened_at').all()
+    ) as Array<Record<string, string | null>>;
+    return rows.map(r => ({
+      id: r.id as string,
+      itemId: r.item_id as string,
+      projectId: r.project_id ?? undefined,
+      agentId: r.agent_id as string,
+      // null and undefined both mean "cannot resume this one"; normalised here
+      // so no caller has to know which of the two it got back.
+      agentSessionId: r.agent_session_id ?? undefined,
+      openedAt: r.opened_at as string,
+    }));
+  }
+
+  async recordTerminalSession(session: TerminalSession): Promise<TerminalSession> {
+    this.database.prepare(
+      'INSERT INTO terminal_sessions (id, item_id, project_id, agent_id, agent_session_id, opened_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      session.id, session.itemId, session.projectId ?? null,
+      session.agentId, session.agentSessionId ?? null, session.openedAt,
+    );
+    return session;
+  }
+
+  async forgetTerminalSession(id: string): Promise<void> {
+    this.database.prepare('DELETE FROM terminal_sessions WHERE id = ?').run(id);
+  }
+
   async getSettings(): Promise<AppSettings> {
     const rows = this.database.prepare('SELECT key, value FROM app_settings')
       .all() as Array<{ key: string; value: string }>;
-    const stored: Record<string, unknown> = {};
+    // Object.create(null), not {}: a row keyed '__proto__' would otherwise set
+    // the prototype instead of an own property, and the later lookups would
+    // resolve THROUGH it — turning a stored row into a way to flip settings
+    // this function claims to ignore. Needs direct database access to exploit,
+    // but the claim in the comment above should be true, not nearly true.
+    const stored: Record<string, unknown> = Object.create(null);
     for (const row of rows) {
       // A corrupt row must not take the whole settings read down with it; the
       // default is a safe answer and the user can set it again.

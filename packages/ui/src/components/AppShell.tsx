@@ -35,7 +35,7 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
-import { listAgentsFromBridge } from './agentBridge';
+import { listAgentsFromBridge, readPrefsFromBridge } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
 import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
@@ -83,6 +83,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * reflected here without a reload: one cache entry, one source of truth.
    */
   const { data: appSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  // Same query key the settings screen uses, so a change there is reflected
+  // here without a reload. Auto-approve is desktop-owned, not on the server.
+  const { data: desktopPrefs } = useQuery({ queryKey: ['desktop-prefs'], queryFn: readPrefsFromBridge });
   /** The card a terminal is being opened FOR, while the dialog is up. */
   const [pending, setPending] = React.useState<
     { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
@@ -377,7 +380,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 // Roving tabindex: one stop for the whole tablist, then arrows
                 // move between tabs. Without it Tab walks every tab one by one,
                 // which is the behaviour the ARIA pattern exists to avoid.
-                tabIndex={active === tab.id ? 0 : -1}
+                /* When Settings is active, no member of TABS matches — which gave every
+                 tab tabIndex -1 and dropped the whole tablist out of the keyboard
+                 order, with no way back to the board without a mouse. The first tab
+                 holds the stop in that case. */
+              tabIndex={active === tab.id || (!TABS.some(t => t.id === active) && tab.id === TABS[0].id) ? 0 : -1}
                 // Opt back out: a drag region swallows pointer events.
                 data-app-region="no-drag"
                 onClick={() => setActive(tab.id)}
@@ -410,7 +417,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               an edit in flight. It holds no process, so nothing worse than
               that is at stake here. */}
           <div
-            role="tabpanel"
+            /* A region, not a tabpanel. No button carries
+               aria-controls="panel-settings" — it is reached from the sidebar,
+               not from the tablist — and a tabpanel with no owning tab is an
+               ARIA authoring error that reports a tablist with nothing
+               selected. */
+            role="region"
             id="panel-settings"
             aria-label="Settings"
             tabIndex={0}
@@ -517,7 +529,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // preferences, answered the same way every time, and a dialog in
             // the path of a frequent action should only ask what actually
             // varies — which agent.
-            const autoApprove = appSettings?.autoApproveByDefault === true;
+            const autoApprove = desktopPrefs?.autoApprove === true;
             const persist = appSettings?.tmuxByDefault === true;
             // Latch and switch BEFORE clearing `pending`, so the panel exists
             // by the time the dialog goes away — otherwise the user watches an
@@ -841,10 +853,20 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerm
         </div>
       </div>
 
-      {/* Pinned, and that is the whole point of it being here rather than in
-          the list above. Projects grows without limit; anything that scrolls
-          with it is unreachable on the day a user has thirty cards in flight.
-          shrink-0 and no scroll container of its own. */}
+      </div>
+      )}
+
+      {/* OUTSIDE the `open` guard, and that is the entire point.
+          It was inside it, which meant collapsing the sidebar removed the only
+          route to Settings — permanently, because the sidebar state is
+          persisted. With both dialog toggles gone, that left no way to change
+          tmux or auto-approve at all. The icon-only branch below was written
+          for a state the component could never be rendered in: code that looked
+          like it handled the case it was breaking.
+
+          Pinned for the original reason too: Projects grows without limit, and
+          anything that scrolls with it is unreachable on the day a user has
+          thirty cards in flight. */}
       <div
         data-testid="shell-nav"
         className="shrink-0 border-t border-border-soft px-1.5 py-1.5"
@@ -852,14 +874,18 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerm
         <button
           type="button"
           onClick={openSettings}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink"
+          title="Settings"
+          className={clsx(
+            'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[12px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink',
+            open ? 'px-2' : 'justify-center px-0',
+          )}
         >
           <Settings size={13} className="shrink-0" />
-          {open && <span className="flex-1">Settings</span>}
+          {/* The label goes, the button stays. `title` and the accessible name
+              below keep it identifiable when only the icon is showing. */}
+          {open ? <span className="flex-1">Settings</span> : <span className="sr-only">Settings</span>}
         </button>
       </div>
-      </div>
-      )}
     </aside>
   );
 }

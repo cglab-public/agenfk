@@ -208,3 +208,16 @@ describe('auto-approve, the flag that turns off the agent\'s own safety rails', 
     expect(byId.get('shell')?.supportsAutoApprove).toBe(false);
   });
 });
+
+describe('the agent list has exactly one source of truth', () => {
+  it('matches the ids the server validates against', async () => {
+    // Two lists exist on purpose: the ids are shared (core) because the server
+    // must validate a recorded session against them, while the COMMANDS stay
+    // here, in the package that is the security boundary for what gets
+    // spawned. What must never happen is the two drifting — an id the server
+    // accepts but this package cannot launch fails at restore, and an id this
+    // package launches but the server rejects cannot be recorded at all.
+    const { TERMINAL_AGENT_IDS } = await import('@agenfk/core');
+    expect([...AGENT_IDS].sort()).toEqual([...TERMINAL_AGENT_IDS].sort());
+  });
+});

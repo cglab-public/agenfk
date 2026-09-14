@@ -163,3 +163,52 @@ describe('the shell line that attaches', () => {
     expect(withFlag).toMatch(/--dangerously-skip-permissions/);
   });
 });
+
+/**
+ * Findings from an adversarial review of CGLAB-169/170.
+ *
+ * Both are about the same thing: a tmux session OUTLIVES the app, so anything
+ * baked into it at creation is still true long after the user changed their
+ * mind — and reattaching hides that completely.
+ */
+describe('a tmux session must not outlive the decision that created it', () => {
+  it('gives an auto-approved session a different name from a normal one', () => {
+    // The failure: open a terminal with auto-approve ON, then turn it OFF in
+    // Settings, then reopen the card. `has-session` hits, tmux attaches, and
+    // the agent inside is the SAME PROCESS still running with permissions
+    // skipped. The session survives quitting, so it persists until reboot.
+    // Nothing on screen says so, because attaching produces no new command
+    // line to inspect.
+    const guarded = tmuxSessionName('item-1', 'claude-code');
+    const unguarded = tmuxSessionName('item-1', 'claude-code', { autoApprove: true });
+    expect(unguarded).not.toBe(guarded);
+  });
+
+  it('still gives the same name for the same decision', () => {
+    // Otherwise reattaching never works and the feature is pointless.
+    expect(tmuxSessionName('item-1', 'claude-code', { autoApprove: true }))
+      .toBe(tmuxSessionName('item-1', 'claude-code', { autoApprove: true }));
+    expect(tmuxSessionName('item-1', 'claude-code')).toBe(tmuxSessionName('item-1', 'claude-code'));
+  });
+
+  it('keeps the name safe whichever decision it encodes', () => {
+    for (const autoApprove of [true, false]) {
+      const name = tmuxSessionName('item/../1', 'claude-code', { autoApprove });
+      expect(name).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(name.length).toBeLessThanOrEqual(48);
+    }
+  });
+});
+
+describe('the agent line is built once, not twice', () => {
+  it('does not repeat the agent\'s own base arguments', () => {
+    // `extraArgs` IS the caller's already-resolved argument list. Concatenating
+    // it onto the agent's base args emitted every base argument twice —
+    // harmless today because only `shell` has any (`bash -l -l`), and silently
+    // doubling for whichever agent gains one next.
+    const line = buildTmuxShellCommand(tmuxSessionName('i', 'shell'), 'shell', ['-l']);
+    // The QUOTED argument, not the substring: `history-limit` in the configure
+    // step contains "-l" and made a naive count report two either way.
+    expect(line.match(/'-l'/g) ?? []).toHaveLength(1);
+  });
+});

@@ -32,8 +32,8 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
-    getSettings: vi.fn(async () => ({ tmuxByDefault: false, autoApproveByDefault: false })),
-    updateSettings: vi.fn(async () => ({ tmuxByDefault: false, autoApproveByDefault: false })),
+    getSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    updateSettings: vi.fn(async () => ({ tmuxByDefault: false })),
     listRuns: vi.fn(async () => []),
   },
 }));
@@ -110,12 +110,16 @@ let ptySeq = 0;
  * only available in the desktop app" — so spawn and kill are never called and a
  * test claiming a session stayed alive is really only reading tab labels.
  */
-const setBridge = (platform: string) => {
+const setBridge = (platform: string, prefs: { autoApprove: boolean } = { autoApprove: false }) => {
   Object.defineProperty(window, 'agenfkDesktop', {
     value: {
       isDesktop: true,
       platform,
       versions: { electron: '40.10.6', chrome: '130', node: '24' },
+      prefs: {
+        get: async () => prefs,
+        setAutoApprove: async (value: boolean) => ({ autoApprove: value }),
+      },
       terminal: {
         spawn: async (req: unknown) => {
           ptySeq += 1;
@@ -551,10 +555,12 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     // in another, each tested against its own fixture and agreeing with
     // nobody; a stored setting nothing reads is that bug wearing a column.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.getSettings).mockResolvedValue({
-      tmuxByDefault: true, autoApproveByDefault: true,
-    } as never);
-    setBridge('darwin');
+    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: true } as never);
+    // Auto-approve is DESKTOP-owned, not a server setting: it disables an
+    // agent's permission prompts, and the server's settings route is
+    // unauthenticated. So the fixture has to come through the bridge, which is
+    // also the only place the real app reads it from.
+    setBridge('darwin', { autoApprove: true });
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Something in agenfk'));
@@ -568,10 +574,8 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     // start agents with their permission prompts intact, and terminals that
     // behave the way they always did.
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
-    vi.mocked(api.getSettings).mockResolvedValue({
-      tmuxByDefault: false, autoApproveByDefault: false,
-    } as never);
-    setBridge('darwin');
+    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: false } as never);
+    setBridge('darwin', { autoApprove: false });
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Something in agenfk'));

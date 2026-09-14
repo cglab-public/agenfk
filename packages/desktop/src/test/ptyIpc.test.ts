@@ -12,13 +12,17 @@
  * EVENT and never from the payload. Ownership in PtyRegistry is worthless if a
  * caller can simply claim to be a different window.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { registerPtyIpc, senderWindowId } from '../main/ptyIpc';
 import { PtyRegistry } from '../main/ptyRegistry';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
 let handlers: Record<string, Handler>;
+let prefsDir: string;
 let registry: PtyRegistry;
 let spawnCalls: Array<Record<string, unknown>>;
 
@@ -27,6 +31,9 @@ const fakeEvent = (windowId: number) => ({ sender: { id: windowId } });
 beforeEach(() => {
   handlers = {};
   spawnCalls = [];
+  // A real directory: prefs are a file on disk, and a fake would let a bug in
+  // the read/write path pass unnoticed here and fail in the app.
+  prefsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ipc-prefs-'));
   registry = {
     spawn: vi.fn(async (req: Record<string, unknown>) => { spawnCalls.push(req); return 'session-1'; }),
     write: vi.fn(),
@@ -41,7 +48,7 @@ beforeEach(() => {
       // differently from production for exactly the inputs they care about.
       handlers[channel] = (event, ...args) => Promise.resolve().then(() => (listener as Handler)(event, ...args));
     },
-  });
+  }, () => ({ available: false }), () => prefsDir);
 });
 
 describe('the window id is taken from the sender, never the payload', () => {
@@ -138,6 +145,37 @@ describe('the channels that exist', () => {
       'pty:resize',
       'pty:spawn',
       'pty:write',
+      // Desktop-owned preferences, closed key list. Here rather than on the
+      // server's /settings because that route is unauthenticated and this one
+      // carries autoApprove, which changes the argv of every agent spawned
+      // afterwards.
+      'prefs:get',
+      'prefs:set',
     ].sort());
+  });
+});
+
+afterEach(() => { fs.rmSync(prefsDir, { recursive: true, force: true }); });
+
+describe('prefs over IPC', () => {
+  it('refuses a key outside the closed list', async () => {
+    // A "save this object" surface into a file the main process trusts is the
+    // shape this deliberately is not.
+    await expect(handlers['prefs:set']({} as never, { key: 'somethingElse', value: true }))
+      .rejects.toThrow(/unknown preference/i);
+  });
+
+  it('treats anything that is not exactly true as false', async () => {
+    // Same rule as pty:spawn's autoApprove: this switch takes an agent's
+    // safety prompts away, so a truthy string must not be enough.
+    for (const truthy of ['true', 1, {}, []]) {
+      const result = await handlers['prefs:set']({} as never, { key: 'autoApprove', value: truthy });
+      expect(result.autoApprove).toBe(false);
+    }
+  });
+
+  it('round-trips a real boolean', async () => {
+    await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
+    expect((await handlers['prefs:get']({} as never, undefined)).autoApprove).toBe(true);
   });
 });

@@ -22,6 +22,7 @@
  */
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
+import { readPrefs, writePref, PREF_KEYS } from './prefs';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
@@ -58,6 +59,13 @@ export function registerPtyIpc(
   registry: PtyRegistry,
   ipc: IpcLike = ipcMain,
   tmuxStatus: () => unknown = () => ({ available: false }),
+  /**
+   * Where desktop-owned preferences live.
+   *
+   * Passed in rather than reached for, so the tests do not need an Electron
+   * app object and so the storage location is one decision made in one place.
+   */
+  prefsDir: () => string = () => '.',
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
@@ -107,6 +115,25 @@ export function registerPtyIpc(
   // rather than silently assumed: a persistence feature that quietly does
   // nothing is the defect review caught in the auto-approve chain.
   ipc.handle('sessions:persistence', async () => tmuxStatus());
+
+  /*
+   * Preferences the desktop owns. Deliberately NOT on the server's /settings:
+   * that route is unauthenticated, and `autoApprove` changes the argv of every
+   * agent spawned afterwards. See main/prefs.ts.
+   */
+  ipc.handle('prefs:get', async () => readPrefs(prefsDir()));
+
+  ipc.handle('prefs:set', async (_event, raw) => {
+    const req = (raw ?? {}) as Record<string, unknown>;
+    const key = asString(req.key, 'key');
+    if (!(PREF_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`Unknown preference "${key}". Expected one of: ${PREF_KEYS.join(', ')}`);
+    }
+    // Strict === true, like pty:spawn's autoApprove and for the same reason:
+    // this is the switch that takes an agent's safety prompts away, so a
+    // truthy string must not be enough to flip it.
+    return writePref(prefsDir(), key as 'autoApprove', req.value === true);
+  });
 
   // After the user installs a CLI, so the picker updates without an app
   // restart. Also takes no input.
