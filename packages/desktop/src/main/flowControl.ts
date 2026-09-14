@@ -3,12 +3,15 @@
  *
  * There was none. node-pty read at tty speed, every chunk was forwarded to the
  * renderer the moment it arrived, and xterm absorbed the whole difference as
- * retained memory. Its `WriteBuffer` holds up to 50 MB of unparsed output
- * before it begins discarding, and its own source says it "gets unresponsive
- * with a 100 times lower number (>500 kB)". At this app's cap of thirty
- * terminals that is a ceiling over a gigabyte — but the window locks up long
- * before it gets there, which is the worse outcome, because a freeze reads as
- * a hang rather than as the memory problem it is.
+ * retained memory. Its `WriteBuffer` holds up to 50 MB of unparsed output and
+ * then THROWS — `write data discarded, use flow control to avoid losing data`
+ * (WriteBuffer.ts:105), not a silent truncation, and nothing on our side
+ * catches it, so the ceiling was reached as an uncaught exception inside an
+ * ipcRenderer listener. Long before that its own source says it "gets
+ * unresponsive with a 100 times lower number (>500 kB)". At this app's cap of
+ * thirty terminals the ceiling is over a gigabyte — but the window locks up
+ * well before it, which is the worse outcome, because a freeze reads as a hang
+ * rather than as the memory problem it is.
  *
  * The producer can be stopped: node-pty exposes `pause()`/`resume()` for
  * exactly this. What was missing is knowing WHEN, and that is all this file
@@ -73,11 +76,17 @@ export class FlowControl {
   private outstanding = 0;
   private paused = false;
   private valve: ReturnType<typeof setTimeout> | null = null;
+  /** Set by dispose. The session is gone; nothing here applies to it. */
+  private done = false;
 
   constructor(private readonly deps: FlowControlDeps) {}
 
   /** Bytes were just forwarded to the renderer. */
   sent(bytes: number): void {
+    // node-pty's own comment: "Sometimes a data event is emitted after exit."
+    // Re-pausing a dead pty and arming a ten second timer for it is waste, and
+    // it contradicts what dispose claims to do.
+    if (this.done) return;
     this.outstanding += bytes;
     if (this.paused || this.outstanding <= HIGH_WATERMARK) return;
     this.paused = true;
@@ -108,8 +117,21 @@ export class FlowControl {
   /** The session is gone. */
   dispose(): void {
     this.clearValve();
-    this.paused = false;
     this.outstanding = 0;
+    this.done = true;
+    /*
+     * Hand the socket back before letting go of it.
+     *
+     * A paused node-pty socket LOSES DATA on destroy: the exit path waits for
+     * the socket to close and, failing that, destroys it after 200ms — and
+     * destroying a paused stream discards its read buffer. So a child that
+     * exits while flow control has it paused loses whatever it wrote last, a
+     * window that did not exist before backpressure and which opens precisely
+     * in the high-throughput case this exists for.
+     */
+    if (!this.paused) return;
+    this.paused = false;
+    this.deps.resume();
   }
 
   private release(): void {
@@ -121,10 +143,28 @@ export class FlowControl {
   private armValve(): void {
     this.clearValve();
     this.valve = setTimeout(() => {
-      // Nothing has been drawn for the whole window. Prefer a terminal that
-      // stutters, or even one that drops behind, over an agent that is frozen.
+      /*
+       * Nothing has been drawn for the whole window, so give up on the count
+       * as well as the pause.
+       *
+       * Releasing alone is not enough, and believing it was is the defect this
+       * replaces. The outstanding bytes survive the release, so if the ack
+       * path is genuinely broken — an older preload with no `ack` at all is
+       * the real pairing — the count never falls below the low mark again.
+       * The next chunk re-pauses, this fires again ten seconds later, and the
+       * pty crawls forward one chunk per grace period, forever. Measured: a
+       * 40 KB permanent drift took throughput from ~8 MB/s to ~18 KB/s. That
+       * is not a stuttering terminal, it is a frozen agent that looks alive.
+       *
+       * Those bytes were either drawn or lost with the renderer. Either way
+       * nobody is going to ack them, and a count nobody decrements poisons
+       * every later measurement. Forgetting costs one window of imprecision;
+       * keeping it costs the feature.
+       */
       this.valve = null;
-      if (this.paused) this.release();
+      if (!this.paused) return;
+      this.outstanding = 0;
+      this.release();
     }, STUCK_MS);
     // Never hold the process open for this. It is a recovery timer for a
     // session that is already in trouble, not work of its own.

@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { registerPtyIpc, senderWindowId } from '../main/ptyIpc';
 import { PtyRegistry } from '../main/ptyRegistry';
+import { HIGH_WATERMARK } from '../main/flowControl';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 
@@ -39,6 +40,7 @@ beforeEach(() => {
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(),
+    ack: vi.fn(),
   } as unknown as PtyRegistry;
   registerPtyIpc(registry, {
     handle: (channel, listener) => {
@@ -226,5 +228,44 @@ describe('auto-approve is decided by main, not by the caller', () => {
       itemId: 'i1', agentId: 'shell', cols: 80, rows: 24, autoApprove: false,
     });
     expect(spawnCalls[0].autoApprove).toBe(true);
+  });
+});
+
+/**
+ * The ack is renderer input like any other (review follow-up).
+ *
+ * It carries a number rather than anything that becomes a command, which is
+ * why it is allowed to exist at all — but the number decides whether
+ * backpressure keeps working. This module's own header threat-models an XSS in
+ * the renderer bundle, and under that threat an unbounded ack is a one-call
+ * switch for turning the 50 MB ceiling back on.
+ */
+describe('the ack from the renderer', () => {
+  const ack = (bytes: unknown) => handlers['pty:ack'](fakeEvent(1), { sessionId: 's1', bytes });
+
+  it('refuses an enormous count', async () => {
+    // The gap the guard's own comment claimed to cover and did not. Main stops
+    // reading past the high mark, so nothing larger can ever be honest.
+    await ack(1e15);
+    const [, , bytes] = vi.mocked(registry.ack).mock.calls.at(-1)!;
+    expect(bytes).toBeLessThanOrEqual(HIGH_WATERMARK * 2);
+  });
+
+  it('refuses a negative count', async () => {
+    await ack(-5_000);
+    expect(vi.mocked(registry.ack).mock.calls.at(-1)![2]).toBe(0);
+  });
+
+  it('treats a non-number as nothing drawn', async () => {
+    for (const junk of ['1000', null, undefined, NaN, Infinity, {}]) {
+      await ack(junk);
+      expect(vi.mocked(registry.ack).mock.calls.at(-1)![2], String(junk)).toBe(0);
+    }
+  });
+
+  it('passes an ordinary count straight through', async () => {
+    // The guard must not be so keen that it breaks the feature.
+    await ack(4_096);
+    expect(vi.mocked(registry.ack).mock.calls.at(-1)![2]).toBe(4_096);
   });
 });

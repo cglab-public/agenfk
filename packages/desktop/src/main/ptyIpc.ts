@@ -25,6 +25,7 @@ import { PtyRegistry } from './ptyRegistry.js';
 import { readPrefs, writePref, PREF_KEYS } from './prefs';
 import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
+import { HIGH_WATERMARK } from './flowControl.js';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
 export interface IpcLike {
@@ -138,8 +139,14 @@ export function registerPtyIpc(
    */
   ipc.handle('pty:ack', (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
+    // Clamped at BOTH ends. Negative was handled and huge was not, while the
+    // comment above claimed otherwise: a single `{bytes: 1e15}` zeroes the
+    // in-flight count on every call and switches backpressure off for the life
+    // of the session — silently, which is the documented failure this guard
+    // exists to prevent. The ceiling is the largest ack that can ever be
+    // legitimate, since main stops reading past the high mark.
     const bytes = typeof req.bytes === 'number' && Number.isFinite(req.bytes)
-      ? Math.max(0, Math.floor(req.bytes))
+      ? Math.min(HIGH_WATERMARK * 2, Math.max(0, Math.floor(req.bytes)))
       : 0;
     registry.ack(asString(req.sessionId, 'sessionId'), senderWindowId(event), bytes);
     return true;

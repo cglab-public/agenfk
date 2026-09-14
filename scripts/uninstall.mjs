@@ -523,7 +523,7 @@ async function run() {
     await step('Claude settings.json hooks', shouldRun('claude'), async () => {
         console.log(`${GREEN}[10] Removing Pre/PostToolUse hooks from ~/.claude/settings.json...${NC}`);
         const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-        const changed = await stripHooksFromJsonFile(settingsPath, ['hooks.PreToolUse', 'hooks.PostToolUse']);
+        const changed = await stripHooksFromJsonFile(settingsPath, ['hooks.PreToolUse', 'hooks.PostToolUse', 'hooks.SessionEnd', 'hooks.Stop']);
         if (changed) console.log(`  Removed AgenFK hooks from ${settingsPath}`);
         return changed;
     });

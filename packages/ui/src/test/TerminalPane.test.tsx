@@ -349,11 +349,21 @@ describe('acking drawn output', () => {
      * Only the callback means they were parsed, so acking on the call instead
      * of the callback would report a terminal as keeping up while it fell
      * further behind — flow control that measures the wrong thing.
+     *
+     * The first version of this test could not tell those apart. It asserted
+     * "not yet" synchronously, and the flush is a microtask, so acking on the
+     * call rather than the callback passed it just as happily. The assertion
+     * has to wait long enough for a wrongly-placed ack to have arrived.
      */
     renderPane({});
     await waitFor(() => expect(dataSubscribers.length).toBeGreaterThan(0));
     dataSubscribers[0]({ sessionId: 'sess-1', data: 'hello' });
+
+    // Past the microtask queue and one macrotask. An ack computed at call time
+    // would be here by now; one waiting on xterm cannot be.
+    await new Promise(r => setTimeout(r, 0));
     expect(bridge.ack).not.toHaveBeenCalled();
+    expect(terms[0].pendingWrites).toHaveLength(1);
 
     terms[0].drain();
     await waitFor(() => expect(bridge.ack).toHaveBeenCalledWith('sess-1', 5));

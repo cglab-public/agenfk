@@ -65,9 +65,15 @@ describe('the watermarks', () => {
      * the moment it drops below the HIGH mark would put it straight back over
      * on the next chunk — pause, resume, pause, resume, at the rate output
      * arrives, which costs more than having no flow control at all.
+     *
+     * The ack must land the count squarely BETWEEN the two marks, and the
+     * first version of this test did not: it acked 9 000 of HIGH + 10 000,
+     * leaving the count above both. Nothing in the file ever occupied the gap,
+     * so the second watermark — the headline design decision — had no test at
+     * all, and deleting it kept every test green.
      */
     fc.sent(HIGH_WATERMARK + 10_000);
-    fc.acked(9_000);
+    fc.acked(HIGH_WATERMARK - LOW_WATERMARK);      // now between LOW and HIGH
     expect(resumed).toBe(0);
   });
 
@@ -117,13 +123,18 @@ describe('when the renderer stops answering', () => {
   });
 
   it('stops watching once it resumes on its own', () => {
-    // The timer must not outlive the pause it was guarding, or it fires
-    // against a session that recovered and calls resume on a live socket.
+    /*
+     * Asserted on the TIMER, not on the resume count, and that is the whole
+     * difference between this test and the decorative one it replaces. A
+     * stale valve firing against a released session is a no-op — the guard
+     * inside it sees `paused` is false — so the leak is invisible through the
+     * pause/resume callbacks. What it is not invisible to is the timer itself:
+     * one left pending per recovered session, each holding ten seconds.
+     */
     fc.sent(HIGH_WATERMARK + 1);
     fc.acked(HIGH_WATERMARK + 1);
     expect(resumed).toBe(1);
-    vi.advanceTimersByTime(STUCK_MS * 3);
-    expect(resumed).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -158,10 +169,13 @@ describe('arithmetic that has to survive a real stream', () => {
 
 describe('shutting down', () => {
   it('drops its timer, so a dead session cannot fire one', () => {
+    // Same correction: the count is what proves it. A disposed session that
+    // left its valve armed holds a ten second timer for a process that no
+    // longer exists, and nothing in the callbacks would ever show it.
     fc.sent(HIGH_WATERMARK + 1);
+    expect(vi.getTimerCount()).toBe(1);
     fc.dispose();
-    vi.advanceTimersByTime(STUCK_MS * 2);
-    expect(resumed).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('is safe to dispose twice', () => {
@@ -185,5 +199,107 @@ describe('the constants themselves', () => {
     // Too close together and the hysteresis above is decorative: it would
     // flap on a single chunk.
     expect(LOW_WATERMARK).toBeLessThan(HIGH_WATERMARK / 2);
+  });
+});
+
+/**
+ * Drift, and why the valve alone is not enough (review follow-up).
+ *
+ * The accounting can acquire a permanent floor: bytes main counted that the
+ * renderer will never ack. The obvious source is an older preload with no
+ * `ack` method at all, paired with a newer bundle — a real pairing after a
+ * partial install, and one the pane deliberately tolerates rather than
+ * throwing, because a blank terminal is worse than no backpressure.
+ *
+ * Once that floor exceeds LOW_WATERMARK the session cannot recover by acking,
+ * and the valve does NOT save it: releasing leaves the count above HIGH, so
+ * the very next chunk re-pauses and re-arms. Measured against this class, a
+ * 40 KB floor took throughput from ~8 MB/s to ~18 KB/s — one chunk every ten
+ * seconds, forever. "A stuttering terminal is a nuisance" was the wrong
+ * description of that; it is a frozen agent that still looks alive.
+ *
+ * So the valve firing has to mean more than "release once". It is the signal
+ * that the ack path is not working, and a count nobody is decrementing is
+ * worse than no count at all.
+ */
+describe('when the acks never come back at all', () => {
+  it('does not fall into a pause-per-chunk crawl', () => {
+    /*
+     * The regression test for the cliff. A renderer that acks NOTHING is the
+     * worst case; if throughput survives that, it survives any partial drift.
+     * Twenty bursts, each far over the high mark, and the valve given time to
+     * fire between them: the count must not be carrying the whole history.
+     */
+    for (let i = 0; i < 20; i += 1) {
+      fc.sent(HIGH_WATERMARK + 1);
+      vi.advanceTimersByTime(STUCK_MS + 10);
+    }
+    // One pause and one release per burst, rather than a permanently paused
+    // pty crawling forward one chunk per grace period.
+    expect(resumed).toBe(20);
+    expect(paused).toBe(20);
+  });
+
+  it('forgets the backlog when it gives up on it', () => {
+    /*
+     * The mechanism that makes the above true, stated directly. After the
+     * valve fires, the outstanding count is known to be untrustworthy — those
+     * bytes were drawn, or they were lost with the renderer, and either way
+     * nobody is going to ack them. Keeping them would poison every future
+     * measurement, which is exactly the cliff.
+     *
+     * Checked from the outside: a single further chunk, far below the high
+     * mark, must not re-pause. It would if the old backlog were still counted.
+     */
+    fc.sent(HIGH_WATERMARK * 4);
+    vi.advanceTimersByTime(STUCK_MS + 10);
+    expect(resumed).toBe(1);
+
+    fc.sent(1_000);
+    expect(paused).toBe(1);
+  });
+
+  it('still pauses again for a genuinely new backlog', () => {
+    // Forgetting must not disable the feature. After the reset, a fresh burst
+    // over the mark pauses as it always would.
+    fc.sent(HIGH_WATERMARK + 1);
+    vi.advanceTimersByTime(STUCK_MS + 10);
+    fc.sent(HIGH_WATERMARK + 1);
+    expect(paused).toBe(2);
+  });
+});
+
+describe('letting go of a session', () => {
+  it('unpauses the pty on the way out', () => {
+    /*
+     * A paused node-pty socket loses data on destroy: the exit path waits for
+     * the socket to close and, failing that, destroys it after 200ms — and
+     * destroy on a paused stream discards the read buffer. So a child that
+     * exits while paused loses whatever it wrote last, a window that did not
+     * exist before flow control. Disposing has to hand the socket back first.
+     */
+    fc.sent(HIGH_WATERMARK + 1);
+    expect(paused).toBe(1);
+    fc.dispose();
+    expect(resumed).toBe(1);
+  });
+
+  it('does not resume a session that was never paused', () => {
+    fc.sent(1_000);
+    fc.dispose();
+    expect(resumed).toBe(0);
+  });
+
+  it('stays quiet if data arrives after it is gone', () => {
+    /*
+     * node-pty's own comment: "Sometimes a data event is emitted after exit."
+     * Re-pausing a dead pty and arming a ten second timer for it is pure
+     * waste, and it contradicts what dispose says it does.
+     */
+    fc.dispose();
+    fc.sent(HIGH_WATERMARK * 3);
+    expect(paused).toBe(0);
+    vi.advanceTimersByTime(STUCK_MS * 2);
+    expect(resumed).toBe(0);
   });
 });

@@ -1640,7 +1640,14 @@ process.exit(0);
             entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
         );
         settings.hooks.SessionEnd.push({
-            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
+            // An explicit timeout, and it is NOT belt-and-braces. SessionEnd
+            // hooks are given a far tighter budget than every other event —
+            // 1.5 seconds against ten minutes — and the per-hook `timeout`
+            // field (in seconds) is the only way to raise it. Without this the
+            // close has to finish node startup and a PATCH inside 1.5s, and a
+            // slow local server eats the whole budget silently, which is the
+            // exact failure closing on SessionEnd was meant to fix.
+            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code`, timeout: 10 }]
         });
         // Remove the old registration from anyone who installed before the fix,
         // or the per-turn close keeps happening beside the correct one.

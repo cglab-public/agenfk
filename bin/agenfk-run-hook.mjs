@@ -183,21 +183,6 @@ async function main() {
     return; // not our shape; say nothing
   }
 
-  // The mapper decides what is worth recording and strips anything sensitive.
-  // Resolved by path rather than package name: bin/ and packages/ are siblings
-  // in both a source checkout and the extracted install, and a bare specifier
-  // would depend on a node_modules layout the hook cannot count on.
-  const distDir = ['../packages/server/dist/agent-runs', '../../packages/server/dist/agent-runs']
-    .map(rel => resolve(HERE, rel))
-    .find(dir => existsSync(join(dir, 'claude-events.js')));
-  if (!distDir) return;
-
-  const [{ toRunEvent }, { readActiveWorkForSession: readActiveWork }] = await Promise.all([
-    import(pathToFileURL(join(distDir, 'claude-events.js')).href),
-    import(pathToFileURL(join(distDir, 'activeWork.js')).href),
-  ]).catch(() => [{}, {}]);
-  if (!toRunEvent || !readActiveWork) return;
-
   /*
    * The session ended: close the run.
    *
@@ -213,17 +198,44 @@ async function main() {
    * The cache entry goes too. A closed run must not receive events if the
    * session somehow emits more — and see `closesRun` for why that sentence is
    * the reason getting the EVENT right matters so much.
+   *
+   * FIRST, before the dist imports below, and the ordering is the point.
+   * SessionEnd hooks are given a far tighter budget than every other event —
+   * 1.5 seconds against ten minutes — so this path has to spend it on the work
+   * and nothing else. It needs neither the event mapper nor the active-work
+   * reader, and resolving two dynamic imports ahead of it spent the budget on
+   * modules it does not use. A close that misses its deadline is lost in
+   * silence, which is the failure this whole change exists to remove.
+   *
+   * Concurrent, for the same reason: one PATCH per cached key, each with its
+   * own deadline, meant a single slow request could eat the budget for all of
+   * them. There is no ordering between runs.
    */
   if (closesRun(payload.hook_event_name)) {
     const map = readRunMap();
     const prefix = `${payload.session_id || 'nosession'}::`;
-    for (const [key, runId] of Object.entries(map)) {
-      if (!key.startsWith(prefix)) continue;
+    const mine = Object.entries(map).filter(([key]) => key.startsWith(prefix));
+    await Promise.all(mine.map(async ([key, runId]) => {
       await api(`/agent-runs/${runId}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) });
       forgetRun(key);
-    }
+    }));
     return;
   }
+
+  // The mapper decides what is worth recording and strips anything sensitive.
+  // Resolved by path rather than package name: bin/ and packages/ are siblings
+  // in both a source checkout and the extracted install, and a bare specifier
+  // would depend on a node_modules layout the hook cannot count on.
+  const distDir = ['../packages/server/dist/agent-runs', '../../packages/server/dist/agent-runs']
+    .map(rel => resolve(HERE, rel))
+    .find(dir => existsSync(join(dir, 'claude-events.js')));
+  if (!distDir) return;
+
+  const [{ toRunEvent }, { readActiveWorkForSession: readActiveWork }] = await Promise.all([
+    import(pathToFileURL(join(distDir, 'claude-events.js')).href),
+    import(pathToFileURL(join(distDir, 'activeWork.js')).href),
+  ]).catch(() => [{}, {}]);
+  if (!toRunEvent || !readActiveWork) return;
 
   const event = toRunEvent(payload);
   if (!event) return;

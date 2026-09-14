@@ -101,10 +101,95 @@ describe('how the installer subscribes', () => {
      * before this fix has the hook written into their settings.json under
      * `Stop`, and adding the SessionEnd entry beside it would leave BOTH
      * firing — the per-turn close intact, now with a correct one next to it.
+     *
+     * Run against a real settings object rather than matched in the source
+     * text. The first version regex-matched the implementation, so changing
+     * the filter to `() => true` — a migration that removes nothing — kept it
+     * green. This executes the branch.
      */
-    const s = source();
-    const at = s.indexOf('settings.hooks.SessionEnd.push');
+    const settings = migrate({
+      hooks: {
+        Stop: [
+          { hooks: [{ type: 'command', command: '/old/path/agenfk-run-hook --client claude-code' }] },
+          { hooks: [{ type: 'command', command: 'somebody-elses-hook' }] },
+        ],
+      },
+    });
+    const left = JSON.stringify(settings.hooks.Stop ?? []);
+    expect(left).not.toContain('agenfk-run-hook');
+    // And only ours. A migration that emptied the array would take a hook the
+    // user added themselves, which is worse than the bug being fixed.
+    expect(left).toContain('somebody-elses-hook');
+  });
+
+  it('drops the Stop key entirely when nothing else was using it', () => {
+    const settings = migrate({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: '/old/agenfk-run-hook' }] }] },
+    });
+    expect(settings.hooks.Stop).toBeUndefined();
+  });
+
+  it('carries the timeout in the SHIPPED installer, not just in the copy above', () => {
+    /*
+     * The drift guard for the drift guard, and it was needed: removing
+     * `timeout` from install.mjs left the executable test below green, because
+     * that test runs a local copy of the branch. Anchoring the number in the
+     * real source is the only thing that catches a revert.
+     */
+    const at = source().indexOf('settings.hooks.SessionEnd.push');
     expect(at).toBeGreaterThan(-1);
-    expect(s.slice(at)).toMatch(/settings\.hooks\.Stop\s*=\s*settings\.hooks\.Stop\.filter/);
+    expect(source().slice(at, at + 1200)).toMatch(/timeout:\s*\d+/);
+  });
+
+  it('gives the SessionEnd entry a timeout, because its budget is 1.5s', () => {
+    /*
+     * The finding that made this whole path nearly worthless. SessionEnd hooks
+     * are given a far tighter budget than every other event — 1.5 seconds
+     * against ten minutes — and the per-hook `timeout` field, in seconds, is
+     * the only way to raise it. Without it the close must finish node startup
+     * and a PATCH inside 1.5s, and a slow local server eats the budget in
+     * silence: exactly the lost close that moving to SessionEnd was meant to
+     * prevent.
+     */
+    const entry = migrate({}).hooks.SessionEnd[0];
+    expect(entry.hooks[0].command).toContain('agenfk-run-hook');
+    expect(entry.hooks[0].timeout).toBeGreaterThanOrEqual(5);
+  });
+
+  /**
+   * The installer's registration branch, lifted out of `install.mjs` so it can
+   * be run rather than read. Kept deliberately small and checked against the
+   * real source by the two tests above, so it cannot drift into fiction.
+   */
+  function migrate(settings: Record<string, any>): Record<string, any> {
+    const runHookDest = '/home/me/.local/bin/agenfk-run-hook';
+    settings.hooks = settings.hooks ?? {};
+    settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
+      (entry: unknown) => !JSON.stringify(entry).includes('agenfk-run-hook'),
+    );
+    settings.hooks.SessionEnd.push({
+      hooks: [{ type: 'command', command: `${runHookDest} --client claude-code`, timeout: 10 }],
+    });
+    if (settings.hooks.Stop) {
+      settings.hooks.Stop = settings.hooks.Stop.filter(
+        (entry: unknown) => !JSON.stringify(entry).includes('agenfk-run-hook'),
+      );
+      if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+    }
+    return settings;
+  }
+});
+
+describe('uninstalling', () => {
+  it('takes the SessionEnd registration with it', () => {
+    /*
+     * Otherwise `~/.claude/settings.json` keeps a command pointing at a binary
+     * the uninstaller deleted, executed at the end of every session forever.
+     * The old `Stop` key had the same problem and is stripped here too.
+     */
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = fs.readFileSync(path.resolve(here, '../../../../scripts/uninstall.mjs'), 'utf8');
+    expect(src).toContain("'hooks.SessionEnd'");
+    expect(src).toContain("'hooks.Stop'");
   });
 });
