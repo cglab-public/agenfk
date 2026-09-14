@@ -34,3 +34,6 @@ stryker.log
 
 # Stryker default HTML report dir (JSON reports land in /reports/ above)
 mutation-testing/
+
+# TypeScript incremental build state — local, never shared.
+*.tsbuildinfo

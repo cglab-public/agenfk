@@ -1,1 +1,0 @@
-{"root":["./src/main/agents.ts","./src/main/detectagents.ts","./src/main/httppost.ts","./src/main/index.ts","./src/main/paths.ts","./src/main/probes.ts","./src/main/ptyenv.ts","./src/main/ptyipc.ts","./src/main/ptyregistry.ts","./src/main/serverenv.ts","./src/main/serverlifecycle.ts","./src/main/worktree.ts","./src/preload/index.ts"],"version":"5.9.3"}

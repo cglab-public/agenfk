@@ -87,7 +87,17 @@ const manyProjects = (n: number) =>
   }));
 
 /** Sessions the fake bridge has been asked to open, and which were killed. */
-const ptyCalls: { spawned: string[]; killed: string[] } = { spawned: [], killed: [] };
+const ptyCalls: { spawned: string[]; killed: string[]; requests: unknown[] } = {
+  spawned: [], killed: [], requests: [],
+};
+
+/**
+ * Module scope, deliberately. Scoped inside setBridge, every test would reuse
+ * `sess-1` — and a spawn still in flight when cleanup runs resolves into the
+ * pane's cancelled-branch kill, which could land AFTER the next test's reset.
+ * Colliding ids would then fail that test for something the previous one did.
+ */
+let ptySeq = 0;
 
 /**
  * The preload bridge, which is what tells the UI it is in the desktop app.
@@ -98,14 +108,22 @@ const ptyCalls: { spawned: string[]; killed: string[] } = { spawned: [], killed:
  * test claiming a session stayed alive is really only reading tab labels.
  */
 const setBridge = (platform: string) => {
-  let seq = 0;
   Object.defineProperty(window, 'agenfkDesktop', {
     value: {
       isDesktop: true,
       platform,
       versions: { electron: '40.10.6', chrome: '130', node: '24' },
       terminal: {
-        spawn: async () => { seq += 1; const id = `sess-${seq}`; ptyCalls.spawned.push(id); return id; },
+        spawn: async (req: unknown) => {
+          ptySeq += 1;
+          const id = `sess-${ptySeq}`;
+          ptyCalls.spawned.push(id);
+          // Recorded so the multi-session wiring is checkable: a bug passing
+          // one session's itemId to every pane would otherwise leave every
+          // test in this file green.
+          ptyCalls.requests.push(req);
+          return id;
+        },
         write: async () => true,
         resize: async () => true,
         kill: async (id: string) => { ptyCalls.killed.push(id); return true; },
@@ -125,6 +143,10 @@ const setBridge = (platform: string) => {
 beforeEach(() => {
   ptyCalls.spawned = [];
   ptyCalls.killed = [];
+  ptyCalls.requests = [];
+  // Call history accumulates across the file otherwise, so an assertion can
+  // pass on a call another test made.
+  vi.mocked(api.updateItem).mockClear();
   setBridge('darwin');
   localStorage.clear();
   vi.mocked(api.getVersion).mockResolvedValue({ version: '1.1.18' });
@@ -836,6 +858,21 @@ describe('several terminals at once (CGLAB-169)', () => {
     await waitFor(() => expect(ptyCalls.spawned).toHaveLength(2));
 
     expect(ptyCalls.killed, 'the first card’s agent was killed by opening a second').not.toContain(first);
+  });
+
+  it('gives each pane its OWN card, not the first one twice', async () => {
+    // NIT from review, and a real hole: the fake spawn discarded its request,
+    // so a bug passing sessions[0].itemId to every pane would have left every
+    // test in this block green.
+    vi.mocked(api.listActiveItems).mockResolvedValue(TWO as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await openTerminalOn('First card');
+    await openTerminalOn('Second card');
+    await waitFor(() => expect(ptyCalls.requests).toHaveLength(2));
+
+    const items = ptyCalls.requests.map(r => (r as { itemId: string }).itemId);
+    expect(items).toEqual(['i1', 'i2']);
   });
 
   it('kills only the session whose tab was closed', async () => {

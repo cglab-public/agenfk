@@ -115,8 +115,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const closeSession = React.useCallback((id: string): void => {
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
-      // Move to a neighbour rather than leaving the panel blank with tabs
-      // still showing.
+      // Fall to the LAST remaining tab — not an adjacent one, despite what
+      // "neighbour" would suggest. Either is defensible; what is not is
+      // leaving the panel blank with tabs still showing, which reads as a
+      // crash.
       setActiveSession(cur => (cur === id ? (next.at(-1)?.id ?? null) : cur));
       return next;
     });
@@ -376,10 +378,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // Remember the choice ON THE CARD, where it belongs: the server
             // keeps it in the item's own record, so it follows the card across
             // machines and clients instead of living in one browser's storage.
+            // No try/catch and no cast. updateItem is async, so it cannot throw
+            // synchronously — the catch only ever swallowed a TypeError from a
+            // mock missing the method, which is exactly how this seam stayed
+            // unverified for a round. And `as never` was suppressing the one
+            // compile-time check that would catch a field rename.
             if (agentId !== pending.agentId) {
-              try {
-                void api.updateItem(pending.itemId, { agentId } as never)?.catch?.(() => {});
-              } catch { /* a lost preference is not worth a failed launch */ }
+              void api.updateItem(pending.itemId, { agentId }).catch(() => {});
             }
           }}
         />

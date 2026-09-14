@@ -5,10 +5,13 @@
  * external hosts, and a packaged app has no network guarantee — a remote logo
  * would be a blank square on exactly the machines this app is for.
  *
- * The path data is the real thing, lifted from @lobehub/icons (an icon set for
- * AI providers) and from simple-icons. It is inlined rather than imported: that
- * package pulls ~469 transitive dependencies, which is an absurd price for four
- * glyphs in a desktop app, and none of them would tree-shake down to this.
+ * The path data is the real thing, lifted from @lobehub/icons, an icon set for
+ * AI providers. It is inlined rather than imported: that package pulls ~469
+ * transitive dependencies, an absurd price for five glyphs in a desktop app,
+ * and none of them would tree-shake down to this.
+ *
+ * Pi's mark is genuinely two short rectangles — that is what the vendor's mark
+ * IS, not a stand-in. Judging fidelity by path length is the wrong instinct.
  *
  * Marks are drawn in the vendor's brand colour where one is published. They are
  * also distinguishable by SHAPE, not only hue: these render at 14-18px, where
