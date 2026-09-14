@@ -1000,19 +1000,26 @@ describe('a session that says what it is doing', () => {
     await waitFor(() => expect(runningCount()).toBe(1));
   });
 
-  it('still falls back to output for an agent that publishes nothing', async () => {
-    // pi and gemini set no title. Their silence must not read as rest — the
-    // old behaviour is wrong in the familiar direction, but it is not a lie in
-    // the new one.
+  it('falls back to output only for an agent nothing can read', async () => {
+    /*
+     * The fallback shrank, and this test shrank with it. pi used to land here;
+     * it now has screen rules, so it reports idle from what is drawn rather
+     * than lighting up on any byte.
+     *
+     * `shell` is the honest remaining case: it is not an agent, publishes no
+     * title and has no screen rules, so output recency is all there is. Wrong
+     * in the familiar direction, but it is a plain shell — there is nothing
+     * better to know.
+     */
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
     vi.mocked(api.listTerminalSessions).mockResolvedValue([{
-      id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'pi',
+      id: 'row-3', itemId: 'i1', projectId: 'p1', agentId: 'shell',
       itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
     }] as never);
     renderShell();
     await waitFor(() => expect(spawnCalls.length).toBe(1));
 
-    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'working\r\n' })); });
+    act(() => { dataHandlers.forEach(h => h({ sessionId: 'pty-1', data: 'output\r\n' })); });
     await waitFor(() => expect(runningCount()).toBe(1));
   });
 

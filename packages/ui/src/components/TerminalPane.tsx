@@ -137,6 +137,8 @@ export function TerminalPane({
    */
   const agentIdRef = React.useRef(agentId);
   agentIdRef.current = agentId;
+  /** Pending trailing scan, so the frame that says "finished" is never lost. */
+  const trailingScan = React.useRef<number | undefined>(undefined);
 
   // Everything the cleanup needs, held in refs rather than state: the teardown
   // must run with whatever exists at that moment, and a state update would be
@@ -172,6 +174,23 @@ export function TerminalPane({
     // Subscribe BEFORE spawning: output can arrive between the session being
     // created in the main process and the promise resolving here, and a
     // terminal that silently drops its first lines looks like it hung.
+    /** Read the visible tail and report a change. */
+    const scanScreen = (): void => {
+      if (!onScreenActivity) return;
+      const buf = term.buffer.active;
+      const bottom = buf.baseY + buf.cursorY;
+      const tail: string[] = [];
+      for (let i = Math.max(0, bottom - TAIL_LINES); i <= bottom; i += 1) {
+        tail.push(buf.getLine(i)?.translateToString(true) ?? '');
+      }
+      const seen = activityFromScreen(agentIdRef.current, tail);
+      // `unknown` only ever means "no rules for this agent" now, so it is the
+      // one answer that must not overwrite anything.
+      if (seen === 'unknown' || seen === lastScreen.current) return;
+      lastScreen.current = seen;
+      onScreenActivity(seen);
+    };
+
     cleanups.push(api.onData(({ sessionId, data }) => {
       // Every open terminal listens on this one channel, so the filter is what
       // keeps one card's output out of every other card's tab.
@@ -204,17 +223,19 @@ export function TerminalPane({
        * partial redraw and a scrolled line are indistinguishable from new
        * content. The buffer is the one place the text is actually true.
        */
-      if (reportedNow && onScreenActivity && SCREEN_RULES[agentIdRef.current]) {
-        const buf = term.buffer.active;
-        const tail: string[] = [];
-        for (let i = Math.max(0, buf.baseY + buf.cursorY - TAIL_LINES); i <= buf.baseY + buf.cursorY; i += 1) {
-          tail.push(buf.getLine(i)?.translateToString(true) ?? '');
-        }
-        const seen = activityFromScreen(agentIdRef.current, tail);
-        if (seen !== 'unknown' && seen !== lastScreen.current) {
-          lastScreen.current = seen;
-          onScreenActivity(seen);
-        }
+      if (onScreenActivity && SCREEN_RULES[agentIdRef.current]) {
+        if (reportedNow) scanScreen();
+        /*
+         * And once more shortly after the output stops.
+         *
+         * The frame that says an agent FINISHED is its last one — pi replaces
+         * the Working border with the prompt and then goes quiet. If that
+         * redraw lands inside the throttle window it is skipped, no further
+         * output ever arrives to trigger a rescan, and the row stays lit
+         * forever: the same bug, reached by a different route.
+         */
+        window.clearTimeout(trailingScan.current);
+        trailingScan.current = window.setTimeout(scanScreen, OUTPUT_REPORT_MS);
       }
     }));
 
@@ -315,6 +336,9 @@ export function TerminalPane({
 
     return () => {
       cancelled = true;
+      // Before anything else: a trailing scan that fires after teardown would
+      // read a disposed terminal and report state for a tab that is gone.
+      window.clearTimeout(trailingScan.current);
       for (const off of cleanups) off();
       const session = sessionRef.current;
       sessionRef.current = null;

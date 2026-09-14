@@ -74,10 +74,19 @@ export const SCREEN_RULES_CHECKED = '2026-09-14';
 /**
  * Read a state off the last lines of the screen.
  *
- * Returns `unknown` when no rule matched AND when the agent has no rules at
- * all. Those are different situations with the same honest answer: we do not
- * know. Calling either of them "idle" is the confident wrong claim this whole
- * line of work exists to stop making.
+ * `unknown` means ONLY "this agent has no rules" — claude-code and codex, which
+ * are read from the title instead. An agent that HAS rules and matches none is
+ * `idle`, and the difference is the whole reason this function is not the title
+ * one:
+ *
+ *   - a missing TITLE is the agent not publishing. Absence of evidence.
+ *   - a missing marker on the CURRENT SCREEN is evidence. pi redraws its
+ *     "Working" border while it works and replaces it with the prompt when it
+ *     stops, so the border not being there is the agent saying it finished.
+ *
+ * Carrying the title rule over here was a real defect: pi has only working
+ * rules, so `unknown` on no-match meant it could light up and never go dark —
+ * precisely the bug this was built to fix.
  */
 export function activityFromScreen(agentId: string, tail: readonly string[]): ScreenActivity {
   const rules = SCREEN_RULES[agentId];
@@ -96,5 +105,7 @@ export function activityFromScreen(agentId: string, tail: readonly string[]): Sc
       || rule.lineRegex?.some(re => lines.some(line => re.test(line.trimEnd())));
     if (hit) best = rule;
   }
-  return best?.state ?? 'unknown';
+  // No marker on the screen we are looking at right now. For these agents that
+  // is the answer, not the absence of one.
+  return best?.state ?? 'idle';
 }

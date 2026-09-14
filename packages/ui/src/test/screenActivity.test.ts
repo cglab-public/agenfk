@@ -20,17 +20,24 @@ describe('pi', () => {
     expect(activityFromScreen('pi', lines('Working...'))).toBe('working');
   });
 
-  it('is unknown at a plain prompt', () => {
-    // Not idle. Absence of a working marker is absence of evidence, and the
-    // failure being replaced was a confident claim in the other direction.
-    expect(activityFromScreen('pi', lines('❯ '))).toBe('unknown');
+  it('is IDLE at a plain prompt, not unknown', () => {
+    /*
+     * The correction that mattered. I first wrote this as `unknown`, carrying
+     * the title path's rule over — and pi has only working rules, so it would
+     * have lit up and NEVER gone dark, which is the exact bug this replaces.
+     *
+     * The two paths are not the same. A missing title is the agent not
+     * publishing; a missing marker on the CURRENT screen is the agent showing
+     * you it finished. pi replaces its Working border with the prompt.
+     */
+    expect(activityFromScreen('pi', lines('❯ '))).toBe('idle');
   });
 
   it('does not take a border that is not the working one', () => {
     // pi draws other boxes. A rule that matched any border would read every
     // frame as work.
-    expect(activityFromScreen('pi', lines('── ⠹ Thinking ───────────'))).toBe('unknown');
-    expect(activityFromScreen('pi', lines('─────────────────────────'))).toBe('unknown');
+    expect(activityFromScreen('pi', lines('── ⠹ Thinking ───────────'))).toBe('idle');
+    expect(activityFromScreen('pi', lines('─────────────────────────'))).toBe('idle');
   });
 });
 
@@ -62,7 +69,7 @@ describe('gemini', () => {
 });
 
 describe('what it refuses to claim', () => {
-  it('has no opinion about an agent with no rules', () => {
+  it('keeps unknown for the case it genuinely means: no rules at all', () => {
     // claude-code and codex are read from the OSC title instead; inventing
     // screen rules for them would be a second, weaker source disagreeing with
     // the first.
@@ -80,7 +87,7 @@ describe('what it refuses to claim', () => {
      */
     const ancient = 'do you want to proceed?';
     const since = Array.from({ length: TAIL_LINES + 4 }, (_, i) => `output line ${i}`);
-    expect(activityFromScreen('gemini', [ancient, ...since])).toBe('unknown');
+    expect(activityFromScreen('gemini', [ancient, ...since])).toBe('idle');
   });
 
   it('still sees a marker that is just inside the tail', () => {
@@ -91,7 +98,8 @@ describe('what it refuses to claim', () => {
   });
 
   it('copes with an empty screen', () => {
-    expect(activityFromScreen('pi', [])).toBe('unknown');
+    // Nothing drawn is nothing happening, for an agent we CAN read.
+    expect(activityFromScreen('pi', [])).toBe('idle');
   });
 
   it('covers only the agents that publish nothing on OSC', () => {
