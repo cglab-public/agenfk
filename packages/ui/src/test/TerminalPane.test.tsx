@@ -110,7 +110,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 const renderPane = (props: Partial<React.ComponentProps<typeof TerminalPane>> = {}) =>
-  render(<TerminalPane itemId="i1" agentId="claude" {...deps()} {...props} />);
+  render(<TerminalPane itemId="i1" agentId="claude-code" {...deps()} {...props} />);
 
 describe('opening a terminal for a card', () => {
   it('asks the main process for a session for THIS card and agent', async () => {
@@ -118,7 +118,7 @@ describe('opening a terminal for a card', () => {
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     const req = bridge.spawn.mock.calls[0][0];
     expect(req.itemId).toBe('i1');
-    expect(req.agentId).toBe('claude');
+    expect(req.agentId).toBe('claude-code');
   });
 
   it('never sends a directory or a command', async () => {
@@ -141,7 +141,7 @@ describe('opening a terminal for a card', () => {
     bridge.spawn = vi.fn(async () => { spawnCount += 1; return `sess-${spawnCount}`; });
     render(
       <React.StrictMode>
-        <TerminalPane itemId="i1" agentId="claude" {...deps()} />
+        <TerminalPane itemId="i1" agentId="claude-code" {...deps()} />
       </React.StrictMode>,
     );
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());

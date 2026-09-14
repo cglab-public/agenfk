@@ -20,7 +20,7 @@ import React from 'react';
 import { NewTerminalDialog } from '../components/NewTerminalDialog';
 
 const AGENTS = [
-  { id: 'claude', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+  { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
   { id: 'codex', label: 'Codex', installed: false, supportsAutoApprove: true },
   { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
   { id: 'shell', label: 'Shell', installed: true, supportsAutoApprove: false },
@@ -78,14 +78,14 @@ describe('creating', () => {
     const { onCreate } = renderDialog();
     fireEvent.click(await screen.findByRole('switch', { name: /skip permissions/i }));
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude', autoApprove: true }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: true }));
   });
 
   it('defaults to not skipping permissions when the toggle is untouched', async () => {
     const { onCreate } = renderDialog();
     await screen.findByRole('switch', { name: /skip permissions/i });
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude', autoApprove: false }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: false }));
   });
 
   it('creates on the keyboard shortcut', async () => {

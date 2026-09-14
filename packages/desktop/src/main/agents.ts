@@ -72,7 +72,13 @@ interface AgentEntry {
 
 const AGENTS: ReadonlyArray<AgentEntry> = [
   {
-    id: 'claude',
+    // 'claude-code', not 'claude'. This is the SAME vocabulary the server's
+    // client enum uses (server/index.ts) and that the hub already speaks in
+    // pr.opened and token events. A parallel set of ids is what produced
+    // "Unknown agent \"claude-code\"" the first time a run's harness reached
+    // a spawn — and a mapping table between two lists in different packages
+    // would have drifted again.
+    id: 'claude-code',
     label: 'Claude Code',
     command: { file: 'claude', args: [] },
     autoApproveArgs: ['--dangerously-skip-permissions'],

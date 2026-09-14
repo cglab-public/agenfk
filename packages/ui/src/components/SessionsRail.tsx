@@ -1,0 +1,216 @@
+/**
+ * Every agent you have running, in one rail (CGLAB-170).
+ *
+ * Replaces a hardcoded sentence in the sidebar footer. The design is the
+ * CGLAB-170 artifact; what follows are the parts that are load-bearing rather
+ * than decorative.
+ *
+ * **State is in the SHAPE, not only the colour.** These are 8px dots. Colour
+ * alone fails outright for a colour-blind reader and in any greyscale
+ * screenshot, so running is filled, waiting is a ring, idle is a thin ring, and
+ * each also carries an aria-label.
+ *
+ * **Waiting sorts to the top.** It means a permission prompt is on screen and
+ * nothing moves until the user answers — the one state that is costing them
+ * time right now. Buried under three running agents, it is worse than absent,
+ * because the rail implies it is showing you what needs you.
+ *
+ * **Failures stay until dismissed.** A failure that disappears is a failure
+ * nobody sees.
+ */
+import React from 'react';
+import { clsx } from 'clsx';
+import { AgentIcon } from './AgentIcon';
+
+export type SessionState = 'running' | 'waiting' | 'failed' | 'idle';
+
+export interface SessionRow {
+  readonly runId: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly agentId: string;
+  readonly agentLabel: string;
+  readonly state: SessionState;
+  /** The last run event, rendered as "Bash · npx vitest run". */
+  readonly lastAction?: string;
+  readonly startedAt: string;
+  /**
+   * Whether this app owns a PTY for it.
+   *
+   * False for a run recorded by the Claude Code hook: it has a transcript but
+   * no terminal here, so the caller opens the read-only Runs view rather than
+   * pretending to attach to a shell that does not exist.
+   */
+  readonly hasTerminal: boolean;
+}
+
+export interface SessionsRailProps {
+  readonly rows: readonly SessionRow[];
+  readonly onOpen: (row: SessionRow) => void;
+  readonly onStop: (runId: string) => void;
+}
+
+/** Waiting first — it is the only state actively costing the user time. */
+const ORDER: Record<SessionState, number> = { waiting: 0, running: 1, failed: 2, idle: 3 };
+
+/**
+ * A spinner for running, a dot for everything else.
+ *
+ * A static dot only says "a session exists". The question the rail is there to
+ * answer is "is it thinking right now" — and a spinner answers it at a glance,
+ * which is the difference between looking at the sidebar and having to open the
+ * terminal. Braille dots because they are a single character, so the row does
+ * not reflow between states.
+ */
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+function Spinner(): React.ReactElement {
+  const [frame, setFrame] = React.useState(0);
+  React.useEffect(() => {
+    // 80ms is the conventional cadence; slower reads as stuttering.
+    const id = setInterval(() => setFrame(f => (f + 1) % SPINNER_FRAMES.length), 80);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <span
+      data-testid="session-spinner"
+      aria-hidden="true"
+      className="mt-0.5 w-2 shrink-0 text-center font-mono text-[11px] leading-none text-emerald-400 motion-reduce:animate-none"
+    >
+      {/* Reduced motion gets a still frame rather than nothing: the row must
+          not shift, and the state is still carried by data-state and the
+          dot's aria-label. */}
+      <span className="motion-reduce:hidden">{SPINNER_FRAMES[frame]}</span>
+      <span className="hidden motion-reduce:inline">{SPINNER_FRAMES[0]}</span>
+    </span>
+  );
+}
+
+const DOT: Record<SessionState, string> = {
+  running: 'bg-emerald-400',
+  // A ring, not a fill: the shape is what survives greyscale.
+  waiting: 'border-2 border-amber-400',
+  failed: 'bg-rose-400',
+  idle: 'border border-ink-tertiary',
+};
+
+const STATE_LABEL: Record<SessionState, string> = {
+  running: 'Running',
+  waiting: 'Waiting on you',
+  failed: 'Failed',
+  idle: 'Idle',
+};
+
+/** Compact elapsed time. Seconds below a minute, then minutes, then hours. */
+export function elapsedSince(iso: string, now = Date.now()): string {
+  const ms = Math.max(0, now - new Date(iso).getTime());
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
+}
+
+export function SessionsRail({ rows, onOpen, onStop }: SessionsRailProps): React.ReactElement {
+  const ordered = React.useMemo(
+    () => [...rows].sort((a, b) => ORDER[a.state] - ORDER[b.state]),
+    [rows],
+  );
+  const runningCount = rows.filter(r => r.state === 'running').length;
+
+  if (rows.length === 0) {
+    return (
+      <p className="px-2 pb-1 text-[11px] leading-snug text-ink-tertiary">
+        None running. Starting an agent on a card shows it here.
+      </p>
+    );
+  }
+
+  return (
+    <>
+      {runningCount > 0 && (
+        <div
+          data-testid="sessions-count"
+          className="px-2 pb-1 font-mono text-[9px] font-semibold tracking-wide text-brand"
+        >
+          {runningCount} running
+        </div>
+      )}
+      <ul className="flex flex-col gap-px px-1.5 pb-2">
+        {ordered.map(row => (
+          <li key={row.runId} className="group relative">
+            <button
+              onClick={() => onOpen(row)}
+              title={row.title}
+              className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-canvas"
+            >
+              {row.state === 'running' ? (
+                <>
+                  <Spinner />
+                  {/* State still lives on a static node, so assistive tech and
+                      any test can read it without depending on animation. */}
+                  <span
+                    data-testid="session-dot"
+                    data-state="running"
+                    aria-label={STATE_LABEL.running}
+                    role="img"
+                    className="sr-only"
+                  />
+                </>
+              ) : (
+                <span
+                  data-testid="session-dot"
+                  data-state={row.state}
+                  aria-label={STATE_LABEL[row.state]}
+                  role="img"
+                  className={clsx('mt-1 h-2 w-2 shrink-0 rounded-full', DOT[row.state])}
+                />
+              )}
+              <span className="min-w-0 flex-1">
+                <span
+                  data-testid="session-title"
+                  className="block truncate text-[12px] leading-tight text-ink-secondary"
+                >
+                  {row.title}
+                </span>
+                <span className="mt-0.5 flex items-center gap-1.5 overflow-hidden font-mono text-[9.5px] text-ink-tertiary">
+                  <AgentIcon agentId={row.agentId} size={10} />
+                  <span className="shrink-0 font-semibold text-ink-secondary">{row.agentLabel}</span>
+                  {row.lastAction && (
+                    <>
+                      <span className="opacity-40">·</span>
+                      {/* What it is doing right now. The difference between a
+                          status light and knowing whether to step in. */}
+                      <span className="truncate">{row.lastAction}</span>
+                    </>
+                  )}
+                </span>
+              </span>
+              <span className="flex shrink-0 flex-col items-end gap-0.5">
+                <span data-testid="session-elapsed" className="font-mono text-[9.5px] tabular-nums text-ink-tertiary">
+                  {elapsedSince(row.startedAt)}
+                </span>
+              </span>
+            </button>
+
+            {(row.state === 'running' || row.state === 'waiting') && (
+              <button
+                onClick={event => {
+                  // Without this the click also reaches the row behind, so
+                  // stopping an agent would navigate you into the terminal you
+                  // just killed.
+                  event.stopPropagation();
+                  onStop(row.runId);
+                }}
+                aria-label={`Stop ${row.title}`}
+                className="absolute bottom-1.5 right-2 font-mono text-[9px] tracking-wide text-ink-tertiary opacity-0 transition-opacity hover:text-rose-400 focus:opacity-100 group-hover:opacity-100"
+              >
+                STOP
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}

@@ -24,6 +24,8 @@ interface ActiveProjectValue {
    * id compares equal to the last one, so the board would ignore the second
    * click and never scroll back to it.
    */
+  /** Record real work in a project, for the sidebar's "Last used" ordering. */
+  markProjectWorked: (projectId: string) => void;
   focusedItemId: string | null;
   /** Go to a card: switch to its project if needed, then point the board at it. */
   focusItem: (itemId: string, projectId?: string) => void;
@@ -67,24 +69,16 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // by you" means — and rewrite up to 50 storage entries each time.
   const currentIdRef = useRef<string | null>(activeProjectId);
 
-  // The project restored from storage at launch is never passed through
-  // setActiveProjectId, so it would carry no local rank at all: on the first
-  // run the project you are literally looking at falls back to updatedAt and
-  // may not even sort first. Stamp it once on mount.
-  useEffect(() => {
-    if (activeProjectId) touchProjectUsed(activeProjectId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const setActiveProjectId = useCallback((id: string | null) => {
     const changed = id !== currentIdRef.current;
     currentIdRef.current = id;
     setState(id);
-    // Opening a project is the only signal anywhere that a project was USED.
-    // The server's Project.updatedAt moves when someone renames or
-    // reconfigures a project, never when work happens in it, so without this
-    // the sidebar's "Last used" sort is indistinguishable from "Created at".
-    if (id && changed) touchProjectUsed(id);
+    // Deliberately NOT stamped here. Opening a project is navigation, and
+    // stamping it made "last used" mean "last looked at": clicking through
+    // three projects to see what was in them reordered all three under the
+    // cursor, and the ordering stopped saying where the user actually works.
+    // The stamp belongs on ACTIONS — see markProjectWorked below.
+    void changed;
     try {
       if (id) localStorage.setItem(STORAGE_KEY, id);
       else localStorage.removeItem(STORAGE_KEY);
@@ -92,6 +86,18 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
       // Private mode or a full quota — losing the memory of which project was
       // open is a papercut, not a reason to fail the switch.
     }
+  }, []);
+
+  /**
+   * Record that real work happened in a project.
+   *
+   * Actions only: creating a card, advancing a step, opening a terminal on a
+   * card. Never navigation — see setActiveProjectId. The server's
+   * Project.updatedAt cannot serve here because it moves on rename and
+   * reconfigure and not on work, which is why this is local in the first place.
+   */
+  const markProjectWorked = useCallback((projectId: string) => {
+    if (projectId) touchProjectUsed(projectId);
   }, []);
 
   const focusItem = useCallback((itemId: string, projectId?: string) => {
@@ -103,6 +109,8 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   }, [setActiveProjectId]);
 
   const requestNewItem = useCallback((projectId: string) => {
+    // Asking for a card in a project is work, so it stamps — unlike opening it.
+    if (projectId) touchProjectUsed(projectId);
     // The draft belongs to the project whose row was clicked, not to whichever
     // one happened to be selected.
     setActiveProjectId(projectId);
@@ -113,8 +121,8 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // Memoised because KanbanBoard is a very large consumer: a fresh object each
   // render would re-render the whole board on any parent update.
   const value = useMemo(
-    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem }),
-    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem],
+    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked }),
+    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked],
   );
 
   return (

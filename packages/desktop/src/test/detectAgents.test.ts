@@ -20,7 +20,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { detectAgents, __resetAgentDetectionCache } from '../main/detectAgents';
-import { AGENT_IDS } from '../main/agents';
+import { AGENT_IDS, resolveAgentCommand } from '../main/agents';
 
 /** A `which`-alike: resolves to a path for names the test says exist. */
 const whichFinding = (...found: string[]) =>
@@ -32,7 +32,7 @@ describe('detecting installed agents', () => {
   it('marks an agent found on PATH as installed', async () => {
     const which = whichFinding('claude');
     const agents = await detectAgents({ which, loginPath: async () => null });
-    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
   });
 
   it('marks an agent that is not there as not installed', async () => {
@@ -56,14 +56,25 @@ describe('detecting installed agents', () => {
     expect(agents.find(a => a.id === 'shell')?.installed).toBe(true);
   });
 
-  it('only ever probes ids from the closed set', async () => {
+  it('probes the EXECUTABLE, not the agent id', async () => {
+    // They are deliberately different: the id is 'claude-code' (the harness
+    // vocabulary the server and hub already speak) while the binary on PATH is
+    // `claude`. Probing the id reported Claude Code as not installed on a
+    // machine that plainly had it, and offered an install command for
+    // something already there.
+    const which = whichFinding('claude');
+    const agents = await detectAgents({ which, loginPath: async () => null });
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
+  });
+
+  it('only ever probes executables from the closed set', async () => {
     // Detection asks the OS about a name. If that name could come from the
     // renderer it is a probe primitive first and an execution one soon after.
     const which = whichFinding();
     await detectAgents({ which, loginPath: async () => null });
-    const probed = which.mock.calls.map(c => c[0]);
-    for (const name of probed) {
-      expect(AGENT_IDS, `probed "${name}", which is not an agent id`).toContain(name);
+    const allowed = new Set(AGENT_IDS.map(id => resolveAgentCommand(id).file));
+    for (const [name] of which.mock.calls) {
+      expect(allowed, `probed "${name}", which no agent resolves to`).toContain(name);
     }
   });
 });
@@ -75,6 +86,8 @@ describe('the Finder PATH problem', () => {
     // nvm or asdf in it — so everything reports missing on a machine that
     // plainly has them.
     const which = vi.fn(async (file: string, pathOverride?: string) =>
+      // `claude`, not `claude-code`: the probe asks about the EXECUTABLE,
+      // which is deliberately a different string from the agent id.
       pathOverride?.includes('/Users/me/.local/bin') && file === 'claude'
         ? '/Users/me/.local/bin/claude'
         : null);
@@ -82,13 +95,13 @@ describe('the Finder PATH problem', () => {
 
     const agents = await detectAgents({ which, loginPath });
     expect(loginPath).toHaveBeenCalled();
-    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
   });
 
   it('does not pay for the login shell when the inherited PATH already works', async () => {
     // Spawning a login shell is slow and runs the user's rc files. Not worth
     // it when the answer is already in hand.
-    const which = whichFinding(...AGENT_IDS);
+    const which = whichFinding(...AGENT_IDS.map(id => resolveAgentCommand(id).file));
     const loginPath = vi.fn(async () => '/usr/bin');
     await detectAgents({ which, loginPath });
     expect(loginPath).not.toHaveBeenCalled();
@@ -101,7 +114,7 @@ describe('the Finder PATH problem', () => {
       loginPath: async () => { throw new Error('rc file exploded'); },
     });
     expect(agents.length).toBe(AGENT_IDS.length);
-    expect(agents.find(a => a.id === 'claude')?.installed).toBe(false);
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(false);
   });
 });
 
@@ -150,7 +163,7 @@ describe('caching', () => {
 
     const working = whichFinding('claude');
     const agents = await detectAgents({ which: working, loginPath: async () => null });
-    expect(agents.find(a => a.id === 'claude')?.installed).toBe(true);
+    expect(agents.find(a => a.id === 'claude-code')?.installed).toBe(true);
   });
 });
 
@@ -178,7 +191,7 @@ describe('the shape that actually crosses the IPC border', () => {
     // present — cannot pass.
     const agents = await detectAgents({ which: whichFinding('claude'), loginPath: async () => null });
     const byId = new Map(agents.map(a => [a.id, a]));
-    expect(byId.get('claude')?.supportsAutoApprove).toBe(true);
+    expect(byId.get('claude-code')?.supportsAutoApprove).toBe(true);
     expect(byId.get('shell')?.supportsAutoApprove).toBe(false);
   });
 

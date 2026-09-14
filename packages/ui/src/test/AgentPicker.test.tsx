@@ -20,7 +20,7 @@ import { AgentPicker } from '../components/AgentPicker';
 
 // Both groups populated, because the grouping is what this file is about.
 const AGENTS = [
-  { id: 'claude', label: 'Claude Code', installed: true },
+  { id: 'claude-code', label: 'Claude Code', installed: true },
   { id: 'codex', label: 'Codex', installed: false },
   { id: 'gemini', label: 'Gemini CLI', installed: true },
   { id: 'pi', label: 'Pi', installed: false },
@@ -30,7 +30,7 @@ const AGENTS = [
 const renderPicker = (props: Partial<React.ComponentProps<typeof AgentPicker>> = {}) =>
   render(
     <AgentPicker
-      value="claude"
+      value="claude-code"
       onChange={() => {}}
       listAgents={async () => AGENTS}
       {...props}
@@ -253,7 +253,7 @@ describe('agent marks', () => {
     renderPicker();
     const menu = await openMenu();
     const claude = within(menu).getByRole('option', { name: /claude code/i })
-      .querySelector('[data-agent-mark="claude"]')!;
+      .querySelector('[data-agent-mark="claude-code"]')!;
     // A filled brand path, not stroked geometry. `currentColor` counts: the
     // OpenAI mark is monochrome by design and inherits the text colour, so
     // requiring a hex here would force a wrong answer in light mode.

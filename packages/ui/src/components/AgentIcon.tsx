@@ -33,7 +33,7 @@ interface Mark {
 }
 
 const MARKS: Record<string, Mark> = {
-  claude: {
+  'claude-code': {
     color: '#D97757',
     node: (
       <>

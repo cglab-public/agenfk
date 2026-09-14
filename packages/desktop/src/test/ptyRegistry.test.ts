@@ -149,6 +149,60 @@ describe('the environment the shell is born into', () => {
   });
 });
 
+describe('surviving the app closing', () => {
+  // A PTY we spawn is a child of this app: close the app and the agent dies.
+  // Running the agent INSIDE a tmux session breaks that link — tmux owns the
+  // process and our PTY is only a view attached to it.
+
+  const withTmux = (available: boolean) => new PtyRegistry({
+    spawn: spawner as never,
+    resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: null }),
+    emit: () => {},
+    tmux: { available },
+  });
+
+  it('runs the agent inside tmux when it is available', async () => {
+    await withTmux(true).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    const [file, args] = [spawned[0].file, spawned[0].args];
+    expect(file).toMatch(/sh$/);
+    expect(args.join(' ')).toMatch(/tmux/);
+    expect(args.join(' ')).toMatch(/attach-session/);
+  });
+
+  it('spawns the agent directly when tmux is absent', async () => {
+    // Degrades to a working terminal without persistence, rather than failing.
+    await withTmux(false).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].args.join(' ')).not.toMatch(/tmux/);
+  });
+
+  it('reuses the same tmux session for the same card and agent', async () => {
+    // The point of the whole thing: reopening must ATTACH to the session that
+    // is still running, not start a second agent beside it.
+    const reg = withTmux(true);
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    const names = spawned.map(s => /=(agenfk-[A-Za-z0-9_-]+)/.exec(s.args.join(' '))?.[1]);
+    expect(names[0]).toBe(names[1]);
+  });
+
+  it('gives a different card its own session', async () => {
+    const reg = withTmux(true);
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    await reg.spawn({ itemId: 'i2', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    const names = spawned.map(s => /=(agenfk-[A-Za-z0-9_-]+)/.exec(s.args.join(' '))?.[1]);
+    expect(names[0]).not.toBe(names[1]);
+  });
+
+  it('still carries the auto-approve flag into the tmux session', async () => {
+    // The flag has to reach the AGENT, which is now nested one level deeper.
+    // Losing it here would silently re-enable prompts the user turned off.
+    await withTmux(true).spawn({
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24, autoApprove: true,
+    });
+    expect(spawned[0].args.join(' ')).toMatch(/--dangerously-skip-permissions/);
+  });
+});
+
 describe('ownership — a window may only touch its own sessions', () => {
   it('refuses a write from another window', async () => {
     const id = await open(registry, 1);

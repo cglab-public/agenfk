@@ -187,50 +187,48 @@ describe('creating a card from the sidebar', () => {
   });
 });
 
-describe('opening a project records that it was used', () => {
-  it('stamps the project so the sidebar can order by last used', () => {
-    // Nothing else in the app records project SELECTION — the server's
-    // updatedAt only moves when a project is renamed or reconfigured. If this
-    // stamp is not written here, the sidebar's default sort silently degrades
-    // into "Created at".
+describe('what counts as USING a project', () => {
+  // Corrected after use. The stamp used to happen on setActiveProjectId, which
+  // fires when you merely OPEN a project — so "last used" meant "last looked
+  // at", and clicking through three projects to see what was in them reordered
+  // all three under the cursor.
+  //
+  // Worse than the jumpiness: if everything you glance at rises, the ordering
+  // stops telling you where you WORK, which is the only reason it exists.
+
+  it('does not stamp a project just for opening it', () => {
     renderProbe();
     act(() => { fireEvent.click(screen.getByText('pick p2')); });
+    expect(readLastUsed()['p2'], 'merely opening a project moved it up the list').toBeUndefined();
+  });
+
+  it('does not stamp the project restored at launch', () => {
+    // Restoring a session is not working in it either.
+    localStorage.setItem('agenfk_project_id', 'p-remembered');
+    renderProbe();
+    expect(readLastUsed()['p-remembered']).toBeUndefined();
+  });
+
+  it('stamps when a card is created in it', () => {
+    // An action, not navigation.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
     expect(readLastUsed()['p2']).toBeDefined();
   });
 
-  it('ranks a newly opened project above the one before it', () => {
+  it('still switches project when a card is created there', () => {
     renderProbe();
-    act(() => { fireEvent.click(screen.getByText('pick p2')); });
-    const p2Rank = readLastUsed()['p2'];
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    expect(screen.getByTestId('active').textContent).toBe('p2');
+  });
+
+  it('ranks by the most recent ACTION, not the most recent look', () => {
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    const worked = readLastUsed()['p2'];
+    // Looking at another project afterwards must not outrank the one worked in.
     act(() => { fireEvent.click(screen.getByText('pick p3')); });
-    expect(readLastUsed()['p3']).toBeGreaterThan(p2Rank);
-  });
-
-  it('does not re-stamp the project that is already open', () => {
-    // `project_switched` fires on every agent write and calls
-    // setActiveProjectId unconditionally, usually with the project already
-    // open. Stamping on those would let an AGENT reorder the user's sidebar —
-    // the opposite of "last used by you" — and rewrite up to 50 storage
-    // entries per event. Writing this assertion is what caught that: the
-    // earlier version used toBeGreaterThanOrEqual and passed either way.
-    renderProbe();
-    act(() => { fireEvent.click(screen.getByText('pick p2')); });
-    const before = readLastUsed()['p2'];
-    act(() => { fireEvent.click(screen.getByText('pick p2')); });
-    expect(readLastUsed()['p2']).toBe(before);
-  });
-
-  it('stamps the project restored from last launch, without a click', () => {
-    // Otherwise the project you are actually looking at on startup has no rank
-    // and the default sort falls back to the server's updatedAt for it.
-    localStorage.setItem('agenfk_project_id', 'p-remembered');
-    renderProbe();
-    expect(readLastUsed()['p-remembered']).toBeDefined();
-  });
-
-  it('does not stamp anything when the project is cleared', () => {
-    renderProbe();
-    act(() => { fireEvent.click(screen.getByText('clear project')); });
-    expect(Object.keys(readLastUsed())).toHaveLength(0);
+    expect(readLastUsed()['p3']).toBeUndefined();
+    expect(readLastUsed()['p2']).toBe(worked);
   });
 });

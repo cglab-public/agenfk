@@ -32,6 +32,7 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
+    listRuns: vi.fn(async () => []),
   },
 }));
 
@@ -130,7 +131,7 @@ const setBridge = (platform: string) => {
         onData: () => () => {},
         onExit: () => () => {},
         listAgents: async () => [
-          { id: 'claude', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+          { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
           { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
         ],
         refreshAgents: async () => [],
@@ -479,8 +480,12 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
 
     expect(await screen.findByText('Fix the login redirect')).toBeDefined();
     expect(screen.getByText('Port the deploy workflow')).toBeDefined();
-    // agenfk's item belongs to a different folder and must stay hidden.
-    expect(screen.queryByText('Something in agenfk')).toBeNull();
+    // agenfk's item belongs to a different folder. Its rows exist in the DOM
+    // (the folders animate, so they are collapsed rather than unmounted), but
+    // that folder must be closed and not exposed.
+    const otherFolder = document.getElementById('work-p1')!;
+    expect(otherFolder.getAttribute('aria-hidden')).toBe('true');
+    expect(otherFolder.parentElement!.className).toMatch(/grid-rows-\[0fr\]/);
   });
 
   it('remembers which folders were open, per project', async () => {
@@ -512,7 +517,13 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
     await screen.findByText('Fix the login redirect');
 
     fireEvent.click(within(row).getByRole('button', { name: /collapse horizon-lab/i }));
-    expect(screen.queryByText('Fix the login redirect')).toBeNull();
+    // The rows stay in the DOM now, because the folder ANIMATES closed —
+    // removing them would make the collapse instant and defeat the point. What
+    // must be true is that they take no space and are not exposed: the grid
+    // row collapses to 0fr and the list is aria-hidden.
+    const list = document.getElementById('work-p2')!;
+    expect(list.getAttribute('aria-hidden')).toBe('true');
+    expect(list.parentElement!.className).toMatch(/grid-rows-\[0fr\]/);
   });
 
   it('opens a terminal on the card when its row is clicked', async () => {
@@ -978,5 +989,140 @@ describe('several terminals at once (CGLAB-169)', () => {
 
     // Two hosts in the DOM, one of them hidden — not one host being reused.
     expect(screen.getAllByTestId('terminal-host')).toHaveLength(2);
+  });
+});
+
+describe('the Sessions rail (CGLAB-170)', () => {
+  it('replaces the hardcoded placeholder with real runs', async () => {
+    // The footer used to be one sentence in JSX. If this regresses, the rail
+    // silently becomes decoration again.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    expect(await screen.findByTestId('session-dot')).toBeDefined();
+  });
+
+  it('shows nothing running as a sentence, not an empty box', async () => {
+    vi.mocked(api.listRuns).mockResolvedValue([] as never);
+    renderShell();
+    expect(await screen.findByText(/none running/i)).toBeDefined();
+  });
+
+  it('lights a row when a run event arrives for its card', async () => {
+    // Liveness is recency of run:event, never AgentRun.status — the hook never
+    // closes a run, so status would light every card that ever had one.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findByTestId('session-dot');
+    expect(screen.getByTestId('session-dot').getAttribute('data-state')).toBe('idle');
+
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(() =>
+      expect(screen.getByTestId('session-dot').getAttribute('data-state')).toBe('running'));
+  });
+
+  it('takes you to the terminal, never to a log', async () => {
+    // Corrected after use: an earlier version sent rows with no PTY of ours to
+    // the read-only Runs view. Technically defensible, wrong in practice —
+    // you clicked a running agent and landed on a log. Clicking an agent means
+    // take me to it, so the destination is always a terminal.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByTestId('session-title'));
+
+    // No terminal exists for that card yet, so it offers to open one there
+    // rather than doing nothing.
+    expect(await screen.findByRole('dialog')).toBeDefined();
+    expect(document.getElementById('panel-runs')!.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('shows how many terminals are open beside the Sessions header', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'First card', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'Second card', status: 'IN_PROGRESS' },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+
+    // Nothing open yet: no badge at all rather than a zero.
+    expect(screen.queryByTestId('open-terminal-count')).toBeNull();
+
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    fireEvent.click(await within(list).findByTitle('First card'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(screen.getByTestId('open-terminal-count').textContent).toBe('1'));
+
+    fireEvent.click(await within(list).findByTitle('Second card'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(screen.getByTestId('open-terminal-count').textContent).toBe('2'));
+  });
+
+  it('counts terminals open, not agents running — they are different numbers', async () => {
+    // A run can exist with no terminal of ours (recorded by the hook), and a
+    // terminal can sit open with nothing working in it. Conflating them would
+    // make the badge lie in both directions.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findByTestId('session-dot');
+    expect(screen.queryByTestId('open-terminal-count'), 'a run with no terminal was counted as one').toBeNull();
+  });
+
+  it('shows a terminal you just opened, even with no run recorded', async () => {
+    // The gap the user hit: the rail was fed only by GET /agent-runs, and those
+    // are written by the Claude Code hook. Opening a terminal here creates a
+    // PTY and no run at all, so the session the user had just started was
+    // invisible in the panel named Sessions.
+    vi.mocked(api.listRuns).mockResolvedValue([] as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'First card', status: 'IN_PROGRESS' },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    expect(screen.queryByTestId('session-dot')).toBeNull();
+
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    fireEvent.click(await within(list).findByTitle('First card'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getAllByTestId('session-dot').length).toBeGreaterThan(0));
+    expect(screen.getByTestId('session-title').textContent).toBe('First card');
+  });
+
+  it('shows a card once when it has both a terminal and a recorded run', async () => {
+    // Two sources, one card. Listing it twice would make the rail look like
+    // two agents are working where there is one.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'First card', status: 'IN_PROGRESS' },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    fireEvent.click(await within(list).findByTitle('First card'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+
+    await waitFor(() => expect(screen.getAllByTestId('session-dot')).toHaveLength(1));
+    // And the terminal wins, because that is the one the user can be taken to.
+    expect(screen.getByTestId('session-title').textContent).toBe('First card');
+  });
+
+  it('ignores an event for a card it is not showing', async () => {
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findByTestId('session-dot');
+    act(() => { socketHandlers['run:event']?.({ itemId: 'someone-else' }); });
+    expect(screen.getByTestId('session-dot').getAttribute('data-state')).toBe('idle');
   });
 });

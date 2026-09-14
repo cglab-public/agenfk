@@ -48,19 +48,24 @@ describe('what belongs in the agent list', () => {
     // if this repo integrates with it. Reads the tree, so adding an agent
     // without shipping anything for it fails.
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    // The bundle directory drops the vendor suffix: claude-code ships
+    // clauderules/, gemini ships geminirules/. One entry, not a second map —
+    // parallel lists are exactly what this whole change removes.
+    const bundleFor = (id: string) => id.replace(/-code$|-cli$/, '');
     for (const id of AGENT_IDS) {
       if (id === 'shell') continue;
-      const hasRules = fs.existsSync(path.join(repoRoot, `${id}rules`));
-      const hasExtension = fs.existsSync(path.join(repoRoot, 'bin', `agenfk-${id}-extension.ts`));
+      const stem = bundleFor(id);
+      const hasRules = fs.existsSync(path.join(repoRoot, `${stem}rules`));
+      const hasExtension = fs.existsSync(path.join(repoRoot, 'bin', `agenfk-${stem}-extension.ts`));
       expect(
         hasRules || hasExtension,
-        `"${id}" is offered but this repo ships neither ${id}rules/ nor bin/agenfk-${id}-extension.ts`,
+        `"${id}" is offered but this repo ships neither ${stem}rules/ nor bin/agenfk-${stem}-extension.ts`,
       ).toBe(true);
     }
   });
 
   it('offers the agents AgEnFK ships an integration for', () => {
-    for (const id of ['claude', 'codex', 'gemini', 'pi']) {
+    for (const id of ['claude-code', 'codex', 'gemini', 'pi']) {
       expect(AGENT_IDS).toContain(id);
     }
   });
@@ -92,7 +97,7 @@ describe('what belongs in the agent list', () => {
   });
 
   it('defaults to Claude Code', () => {
-    expect(AGENT_IDS[0]).toBe('claude');
+    expect(AGENT_IDS[0]).toBe('claude-code');
   });
 
   it('offers a plain shell as the last resort', () => {
@@ -104,7 +109,9 @@ describe('what belongs in the agent list', () => {
 
 describe('resolving an id to a command', () => {
   it('maps a known id to a command the main process chose', () => {
-    const resolved = resolveAgentCommand('claude');
+    const resolved = resolveAgentCommand('claude-code');
+    // The ID is the harness vocabulary; the EXECUTABLE is still `claude`.
+    // Those are allowed to differ — what must not is having two id sets.
     expect(resolved.file).toBe('claude');
     expect(Array.isArray(resolved.args)).toBe(true);
   });
@@ -168,11 +175,11 @@ describe('auto-approve, the flag that turns off the agent\'s own safety rails', 
     // The default has to be the safe one. An agent running with permissions
     // skipped can edit, delete and push without asking, so this must never be
     // something a caller gets by forgetting a parameter.
-    expect(resolveAgentCommand('claude').args).not.toContain('--dangerously-skip-permissions');
+    expect(resolveAgentCommand('claude-code').args).not.toContain('--dangerously-skip-permissions');
   });
 
   it('adds the real flag for an agent that has one', () => {
-    const args = resolveAgentCommand('claude', { autoApprove: true }).args;
+    const args = resolveAgentCommand('claude-code', { autoApprove: true }).args;
     expect(args).toContain('--dangerously-skip-permissions');
   });
 
@@ -196,7 +203,7 @@ describe('auto-approve, the flag that turns off the agent\'s own safety rails', 
     // So the UI can disable the toggle with a reason instead of offering a
     // control that quietly does nothing.
     const byId = new Map(listAgents().map(a => [a.id, a]));
-    expect(byId.get('claude')?.supportsAutoApprove).toBe(true);
+    expect(byId.get('claude-code')?.supportsAutoApprove).toBe(true);
     expect(byId.get('gemini')?.supportsAutoApprove).toBe(false);
     expect(byId.get('shell')?.supportsAutoApprove).toBe(false);
   });

@@ -40,7 +40,7 @@ export interface AgentPickerProps {
 /** How to get each agent. Shown on the rows the user cannot pick. */
 const INSTALL_HINT: Record<string, string> = {
   pi: 'Install from pi.dev',
-  claude: 'Install with: npm i -g @anthropic-ai/claude-code',
+  'claude-code': 'Install with: npm i -g @anthropic-ai/claude-code',
   codex: 'Install with: npm i -g @openai/codex',
   gemini: 'Install with: npm i -g @google/gemini-cli',
 };
@@ -55,7 +55,7 @@ const INSTALL_HINT: Record<string, string> = {
  * process, and these strings are never sent anywhere.
  */
 const FALLBACK_LABELS: Record<string, string> = {
-  claude: 'Claude Code',
+  'claude-code': 'Claude Code',
   codex: 'Codex',
   gemini: 'Gemini CLI',
   pi: 'Pi',
@@ -178,7 +178,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           ref={menuRef}
           role="listbox"
           onKeyDown={onMenuKeyDown}
-          className="absolute z-20 mt-1.5 max-h-[22rem] w-full overflow-y-auto rounded-xl border border-border-soft bg-nav-surface p-2 shadow-2xl scrollbar-slim"
+          className="absolute z-20 mt-1.5 max-h-[22rem] w-full origin-top animate-[popIn_120ms_cubic-bezier(0.2,0,0,1)] overflow-y-auto rounded-xl border border-border-soft bg-nav-surface p-2 shadow-2xl scrollbar-slim motion-reduce:animate-none"
         >
           <div className="relative mb-2">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary" />

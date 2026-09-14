@@ -51,7 +51,7 @@ export function NewTerminalDialog({
 }: NewTerminalDialogProps): React.ReactElement {
   // Claude Code only as the first-run default, when the card has never been
   // worked. After that the card itself is the source of truth.
-  const [agentId, setAgentId] = React.useState<string>(defaultAgentId || 'claude');
+  const [agentId, setAgentId] = React.useState<string>(defaultAgentId || 'claude-code');
   // Never restored from storage. Unlike the agent, this is not a preference —
   // it is a per-run decision to take the safety rails off, and one the user
   // should have to make again each time.
@@ -113,13 +113,13 @@ export function NewTerminalDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-50 flex animate-[fadeIn_120ms_ease-out] items-center justify-center bg-black/50 p-4 motion-reduce:animate-none">
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Open a terminal on ${cardTitle}`}
         onKeyDown={onKeyDown}
-        className="w-full max-w-md rounded-2xl border border-border-soft bg-nav-surface shadow-2xl"
+        className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-nav-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">

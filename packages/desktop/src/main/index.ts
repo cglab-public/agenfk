@@ -20,6 +20,8 @@ import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { httpPost } from './httpPost.js';
 import { captureLoginPath } from './ptyEnv.js';
+import { detectTmux, type TmuxStatus } from './tmux.js';
+import { whichOnPath } from './detectAgents.js';
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -37,6 +39,14 @@ let ptyRegistry: PtyRegistry | null = null;
  * "use the inherited PATH".
  */
 let loginPath: string | null = null;
+/**
+ * Whether sessions can survive the app closing.
+ *
+ * Detected once. On Windows this is a fact about the platform rather than a
+ * missing install — there is no tmux port — so it carries a named warning the
+ * UI can explain instead of an install command that would be a lie.
+ */
+let tmuxStatus: TmuxStatus = { available: false };
 let serverChild: UtilityProcess | null = null;
 let server: ResolvedServer | null = null;
 // Two distinct facts, deliberately not one flag. `tearingDown` means we are
@@ -225,6 +235,10 @@ async function boot(): Promise<void> {
       // and awaited here because the registry is built with it. A broken rc
       // file resolves to null rather than blocking the app.
       loginPath = await captureLoginPath();
+      tmuxStatus = await detectTmux({ platform: process.platform, which: whichOnPath });
+      if (!tmuxStatus.available) {
+        console.log(`[DESKTOP] Terminal sessions will NOT survive quitting: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
+      }
 
       const { spawn: spawnPty } = await import('@lydell/node-pty');
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
@@ -232,6 +246,7 @@ async function boot(): Promise<void> {
         spawn: spawnPty as never,
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
         loginPath: () => loginPath,
+        tmux: { available: tmuxStatus.available },
         emit: (windowId, channel, payload) => {
           // To that window only. Broadcasting would put one card's shell
           // output into every open window.
@@ -240,7 +255,7 @@ async function boot(): Promise<void> {
             ?.webContents.send(channel, payload);
         },
       });
-      registerPtyIpc(ptyRegistry);
+      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus);
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);
     }

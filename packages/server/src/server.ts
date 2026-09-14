@@ -1529,6 +1529,56 @@ app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {
   res.json(runs);
 }));
 
+/**
+ * Runs across every project (CGLAB-170).
+ *
+ * The per-card route above answers "what happened on this card". The Sessions
+ * rail asks a different question — "what is running anywhere" — and answering
+ * it from the renderer would mean one request per project on every event.
+ *
+ * It deliberately does NOT decide what is live. AgentRun.status stays
+ * 'running' forever because the hook never issues the closing PATCH (BUG
+ * df4b3343), so a server-side liveness filter would report every run this
+ * machine has ever started. The server reports what it stored; the client
+ * derives liveness from the recency of `run:event`.
+ */
+// RUN_STATUSES is declared once, above with the other run constants — a second
+// copy here would be the same three strings until the day someone adds a
+// fourth to only one of them.
+const RUNS_DEFAULT_LIMIT = 25;
+const RUNS_MAX_LIMIT = 200;
+
+app.get("/agent-runs", asyncHandler(async (req: any, res: any) => {
+  const { status, projectId, itemId } = req.query ?? {};
+
+  // Validated, not passed through: the value reaches a storage query, and a
+  // filter that forwards arbitrary input is how one becomes an injection point.
+  if (status !== undefined && !RUN_STATUSES.has(String(status))) {
+    return res.status(400).json({
+      error: `Unknown run status "${status}". Expected one of: ${[...RUN_STATUSES].join(', ')}`,
+    });
+  }
+
+  let limit = RUNS_DEFAULT_LIMIT;
+  if (req.query?.limit !== undefined) {
+    const asked = Number(req.query.limit);
+    // Bounded on purpose. A machine that has been running agents for months
+    // would otherwise send its whole history to render a sidebar.
+    if (!Number.isInteger(asked) || asked < 1 || asked > RUNS_MAX_LIMIT) {
+      return res.status(400).json({ error: `limit must be an integer between 1 and ${RUNS_MAX_LIMIT}` });
+    }
+    limit = asked;
+  }
+
+  const runs = await storage.listAgentRuns({
+    ...(status !== undefined ? { status: String(status) as any } : {}),
+    ...(projectId !== undefined ? { projectId: String(projectId) } : {}),
+    ...(itemId !== undefined ? { itemId: String(itemId) } : {}),
+    limit,
+  });
+  res.json(runs);
+}));
+
 // ── Worktrees (CGLAB-166) ────────────────────────────────────────────────────
 // One git worktree per item, so several agents can work at once without
 // fighting over a single working tree.

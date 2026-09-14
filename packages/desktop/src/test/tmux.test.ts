@@ -86,38 +86,38 @@ describe('detecting tmux', () => {
 
 describe('the session name', () => {
   it('is stable for the same card and agent', () => {
-    expect(tmuxSessionName('item-1', 'claude')).toBe(tmuxSessionName('item-1', 'claude'));
+    expect(tmuxSessionName('item-1', 'claude-code')).toBe(tmuxSessionName('item-1', 'claude-code'));
   });
 
   it('differs per card, so two cards never share a session', () => {
-    expect(tmuxSessionName('item-1', 'claude')).not.toBe(tmuxSessionName('item-2', 'claude'));
+    expect(tmuxSessionName('item-1', 'claude-code')).not.toBe(tmuxSessionName('item-2', 'claude-code'));
   });
 
   it('differs per agent on the same card', () => {
-    expect(tmuxSessionName('item-1', 'claude')).not.toBe(tmuxSessionName('item-1', 'codex'));
+    expect(tmuxSessionName('item-1', 'claude-code')).not.toBe(tmuxSessionName('item-1', 'codex'));
   });
 
   it('fits tmux’s name limit', () => {
     // tmux truncates long names, and a truncated name is one that has-session
     // can no longer match — so the session is orphaned and a new one spawns
     // beside it every launch.
-    const name = tmuxSessionName('a'.repeat(400), 'claude');
+    const name = tmuxSessionName('a'.repeat(400), 'claude-code');
     expect(name.length).toBeLessThanOrEqual(48);
   });
 
   it('contains nothing that needs quoting', () => {
     // It is interpolated into a shell line. Anything exotic here is a quoting
     // bug waiting to happen, so the name is constrained at the source.
-    expect(tmuxSessionName('weird id: $(rm -rf /) `x` ;', 'claude')).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(tmuxSessionName('weird id: $(rm -rf /) `x` ;', 'claude-code')).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
   it('stays readable — a person has to recognise it in `tmux ls`', () => {
-    expect(tmuxSessionName('item-1', 'claude')).toMatch(/agenfk/);
+    expect(tmuxSessionName('item-1', 'claude-code')).toMatch(/agenfk/);
   });
 });
 
 describe('the shell line that attaches', () => {
-  const line = () => buildTmuxShellCommand('agenfk-abc123', 'claude', []);
+  const line = () => buildTmuxShellCommand('agenfk-abc123', 'claude-code', []);
 
   it('attaches to an existing session instead of starting a second one', () => {
     expect(line()).toMatch(/has-session/);
@@ -149,9 +149,9 @@ describe('the shell line that attaches', () => {
   it('refuses a session name it did not generate', () => {
     // The name reaches a shell line. Accepting an arbitrary one would be a
     // command injection with extra steps.
-    expect(() => buildTmuxShellCommand('a; rm -rf /', 'claude', [])).toThrow(/session name/i);
-    expect(() => buildTmuxShellCommand('$(whoami)', 'claude', [])).toThrow(/session name/i);
-    expect(() => buildTmuxShellCommand('', 'claude', [])).toThrow(/session name/i);
+    expect(() => buildTmuxShellCommand('a; rm -rf /', 'claude-code', [])).toThrow(/session name/i);
+    expect(() => buildTmuxShellCommand('$(whoami)', 'claude-code', [])).toThrow(/session name/i);
+    expect(() => buildTmuxShellCommand('', 'claude-code', [])).toThrow(/session name/i);
   });
 
   it('refuses an agent command it did not resolve', () => {
@@ -159,7 +159,7 @@ describe('the shell line that attaches', () => {
   });
 
   it('carries the agent’s own arguments through', () => {
-    const withFlag = buildTmuxShellCommand('agenfk-abc123', 'claude', ['--dangerously-skip-permissions']);
+    const withFlag = buildTmuxShellCommand('agenfk-abc123', 'claude-code', ['--dangerously-skip-permissions']);
     expect(withFlag).toMatch(/--dangerously-skip-permissions/);
   });
 });

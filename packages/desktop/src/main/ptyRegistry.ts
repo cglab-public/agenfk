@@ -18,6 +18,7 @@
 import { randomUUID } from 'crypto';
 import { resolveAgentCommand } from './agents.js';
 import { buildPtyEnv } from './ptyEnv.js';
+import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 
 /** The slice of node-pty this module uses. Kept narrow so tests can stand in. */
 export interface PtyLike {
@@ -49,6 +50,15 @@ export interface PtyRegistryDeps {
    * another is how a picker that says "Installed" produces ENOENT.
    */
   readonly loginPath?: () => string | null;
+  /**
+   * Whether sessions should survive the app closing.
+   *
+   * When tmux is available the agent runs INSIDE a tmux session and our PTY is
+   * only a view attached to it, so closing the app detaches instead of killing.
+   * When it is not, the agent is spawned directly — a working terminal without
+   * persistence, rather than a failure.
+   */
+  readonly tmux?: { readonly available: boolean };
 }
 
 export interface SpawnRequest {
@@ -93,7 +103,22 @@ export class PtyRegistry {
     // when the real problem was that the worktree could not be made.
     const { cwd } = await this.deps.resolveCwd(req.itemId);
 
-    const pty = this.deps.spawn(command.file, command.args, {
+    // Inside tmux when we can. The session name is derived from the card and
+    // the agent, so reopening ATTACHES to the one still running rather than
+    // starting a second agent beside it in the same worktree.
+    const useTmux = this.deps.tmux?.available === true;
+    const file = useTmux ? '/bin/sh' : command.file;
+    const args = useTmux
+      ? ['-c', buildTmuxShellCommand(
+          tmuxSessionName(req.itemId, req.agentId),
+          req.agentId,
+          // The agent is nested a level deeper now; losing this here would
+          // silently re-enable prompts the user turned off.
+          command.args,
+        )]
+      : command.args;
+
+    const pty = this.deps.spawn(file, args, {
       cwd,
       cols: req.cols,
       rows: req.rows,

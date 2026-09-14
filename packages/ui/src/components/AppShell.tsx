@@ -36,6 +36,8 @@ import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import { listAgentsFromBridge } from './agentBridge';
+import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
+import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { WhatsNewModal } from './WhatsNewModal';
@@ -112,6 +114,121 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
   }, [setActiveProjectId, sessions]);
 
+  /**
+   * What the Sessions rail shows.
+   *
+   * Liveness comes from the RECENCY of run events, never from AgentRun.status:
+   * the hook never issues the closing PATCH (BUG df4b3343), so status stays
+   * 'running' forever and a rail trusting it would list every run this machine
+   * has ever started.
+   */
+  const shellQueryClient = useQueryClient();
+  const live = React.useRef(new LiveAgents()).current;
+  const [liveTick, setLiveTick] = React.useState(0);
+  React.useEffect(() => {
+    const off = live.subscribe(() => setLiveTick(t => t + 1));
+    return () => { off(); live.dispose(); };
+  }, [live]);
+
+  const { data: runs = [] } = useQuery({
+    queryKey: ['runs'],
+    queryFn: () => api.listRuns({ status: 'running' }),
+  });
+  useSocketEvent('run:event', (payload: { itemId?: string }) => {
+    if (payload?.itemId) live.touch(payload.itemId);
+  });
+  useSocketEvent('run:updated', () => shellQueryClient.invalidateQueries({ queryKey: ['runs'] }));
+
+  /**
+   * Two sources, deliberately merged.
+   *
+   * `GET /agent-runs` lists AgentRun records, which are written by the Claude
+   * Code hook — opening a terminal here creates a PTY and no run at all, so a
+   * rail fed only by runs stayed empty for the sessions the user had just
+   * started. That is what "Sessions" means to someone looking at it: the
+   * terminals they have open, plus whatever else is running.
+   *
+   * Keyed by card, so a card with both a terminal and a recorded run appears
+   * once — the terminal wins, because that is the one you can be taken to.
+   */
+  /**
+   * Two sources, merged by card.
+   *
+   * `GET /agent-runs` lists AgentRun records, which the Claude Code hook
+   * writes. Opening a terminal here creates a PTY and NO run at all — so a rail
+   * fed only by runs stayed empty for the session the user had just started,
+   * in a panel called Sessions. Both belong.
+   *
+   * Keyed by card so one card appears once: listing it twice would read as two
+   * agents working where there is one. An open terminal wins over a recorded
+   * run, because that is the one the user can actually be taken to.
+   */
+  const sessionRows: SessionRow[] = React.useMemo(() => {
+    // liveTick is a dependency on purpose: going dark is driven by a clock, not
+    // by new data, so without it the dots would only ever turn off when
+    // something else happened to re-render.
+    void liveTick;
+    const byItem = new Map<string, SessionRow>();
+
+    for (const run of runs as Array<Record<string, string>>) {
+      byItem.set(run.itemId, {
+        runId: run.id,
+        itemId: run.itemId,
+        title: run.itemId.slice(0, 8),
+        // No mapping: a run's `harness` IS an agent id. They used to be two
+        // vocabularies — 'claude-code' against 'claude' — which is what
+        // produced "Unknown agent" the first time one reached a spawn.
+        agentId: run.harness ?? 'claude-code',
+        agentLabel: run.harness ?? 'agent',
+        state: live.isLive(run.itemId) ? 'running' : 'idle',
+        startedAt: run.startedAt,
+        // A run from the hook has a transcript but no terminal this app owns,
+        // so clicking must not pretend to attach to one.
+        hasTerminal: false,
+      });
+    }
+
+    for (const open of sessions) {
+      byItem.set(open.itemId, {
+        runId: open.id,
+        itemId: open.itemId,
+        title: open.title,
+        agentId: open.agentId,
+        agentLabel: open.agentId,
+        state: live.isLive(open.itemId) ? 'running' : 'idle',
+        startedAt: byItem.get(open.itemId)?.startedAt ?? new Date().toISOString(),
+        hasTerminal: true,
+      });
+    }
+
+    return [...byItem.values()];
+  }, [runs, sessions, live, liveTick]);
+
+  const openSession = React.useCallback((row: SessionRow): void => {
+    // Always the terminal. The rail lists AGENTS, and clicking an agent means
+    // "take me to it" — an earlier version sent rows with no PTY to the
+    // read-only Runs view, which is technically defensible and wrong in use:
+    // you clicked a running agent and landed on a log.
+    const open = sessions.find(s => s.itemId === row.itemId);
+    if (open) {
+      setActiveSession(open.id);
+      setTerminalOpened(true);
+      setActive('terminal');
+      return;
+    }
+    // No terminal of ours for this card — a run recorded by the hook, or one
+    // from a previous launch. Offer to open one ON THAT CARD rather than
+    // silently doing nothing; the dialog names the card so it is clear this
+    // starts a session rather than resuming the one that is running.
+    setPending({ itemId: row.itemId, title: row.title, agentId: row.agentId });
+  }, [sessions]);
+
+  const stopSession = React.useCallback((runId: string): void => {
+    const open = sessions.find(s => s.id === runId || s.itemId === runId);
+    if (open) closeSessionRef.current(open.id);
+  }, [sessions]);
+
+  const closeSessionRef = React.useRef<(id: string) => void>(() => {});
   const closeSession = React.useCallback((id: string): void => {
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id);
@@ -123,6 +240,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+  // stopSession is declared above closeSession and needs to reach it; a ref
+  // avoids reordering two callbacks that each read state the other does not.
+  closeSessionRef.current = closeSession;
+
   const socket = useSocket();
   // Seeded from the socket rather than assumed: mounting onto an already-
   // connected socket would otherwise sit on "Connecting…" until a reconnect
@@ -204,7 +325,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           the traffic-light strip, so the window reads as two columns rather
           than a banner stacked on a split — and the board gets that row back. */}
       <div className="flex min-h-0 flex-1">
-        <Sidebar open={sidebarOpen} onToggle={toggleSidebar} isMac={isMac} requestTerminal={requestTerminal} />
+        <Sidebar
+          open={sidebarOpen}
+          onToggle={toggleSidebar}
+          isMac={isMac}
+          requestTerminal={requestTerminal}
+          sessionRows={sessionRows}
+          openTerminalCount={sessions.length}
+          openSession={openSession}
+          stopSession={stopSession}
+        />
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div
@@ -400,11 +530,15 @@ interface SidebarProps {
   open: boolean;
   onToggle: () => void;
   isMac: boolean;
+  sessionRows: SessionRow[];
+  openTerminalCount: number;
+  openSession: (row: SessionRow) => void;
+  stopSession: (runId: string) => void;
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, openTerminalCount, openSession, stopSession }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -462,6 +596,11 @@ function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
     <aside
       className={clsx(
         'flex shrink-0 flex-col border-r border-border-soft bg-nav-surface',
+        // 160ms: long enough for the eye to follow the edge, short enough not
+        // to feel slow on something toggled dozens of times a day. Width, not
+        // transform — the sidebar has to make ROOM, and a transform would
+        // slide it over the board instead of pushing it.
+        'transition-[width] duration-150 ease-out motion-reduce:transition-none',
         open ? 'w-56' : 'w-10 items-center',
       )}
     >
@@ -591,8 +730,23 @@ function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
               </button>
               </div>
 
-              {work.length > 0 && isOpen && (
-                <ul id={`work-${project.id}`} className="mb-1 ml-2 border-l border-border-soft pl-2">
+              {work.length > 0 && (
+                // grid-template-rows 0fr→1fr animates to the content's own
+                // height without measuring it, and needs no max-height guess
+                // that would clip a long list or stall a short one. The inner
+                // overflow-hidden is what makes the collapsed state actually
+                // take no space.
+                <div
+                  className={clsx(
+                    'grid transition-[grid-template-rows] duration-150 ease-out motion-reduce:transition-none',
+                    isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+                  )}
+                >
+                <ul
+                  id={`work-${project.id}`}
+                  aria-hidden={!isOpen}
+                  className="mb-1 ml-2 overflow-hidden border-l border-border-soft pl-2 transition-[grid-template-rows] motion-reduce:transition-none"
+                >
                   {work.map(item => (
                     <li key={item.id}>
                       {/* Clicking opens a terminal on the card, in that card's
@@ -615,6 +769,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
                     </li>
                   ))}
                 </ul>
+                </div>
               )}
             </li>
           );
@@ -623,13 +778,28 @@ function Sidebar({ open, onToggle, isMac, requestTerminal }: SidebarProps) {
 
       </div>
 
-      {/* A footer, not a peer. Projects is what you scan all day; this holds
-          one line until CGLAB-170 gives it real sessions. */}
-      <div data-testid="sessions-section" className="shrink-0 border-t border-border-soft pt-1">
-        <SidebarLabel>Sessions</SidebarLabel>
-        <p className="px-2 pb-1 text-[11px] leading-snug text-ink-tertiary">
-          None running. Starting an agent on a card shows it here.
-        </p>
+      {/* A footer, not a peer. Projects is what you scan all day; this is
+          where the agents you have running report in (CGLAB-170). */}
+      <div data-testid="sessions-section" className="flex min-h-0 shrink-0 flex-col border-t border-border-soft pt-1">
+        <div className="flex items-center gap-2 px-2 pt-2">
+          <h2 className="text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">Sessions</h2>
+          {openTerminalCount > 0 && (
+            // How many terminals you have OPEN, which is a different number
+            // from how many agents are running: a card can have a terminal
+            // with nothing working in it, and a run can exist with no terminal
+            // of ours at all.
+            <span
+              data-testid="open-terminal-count"
+              title={`${openTerminalCount} terminal${openTerminalCount === 1 ? '' : 's'} open`}
+              className="rounded-full bg-canvas px-1.5 font-mono text-[9px] font-semibold text-ink-secondary"
+            >
+              {openTerminalCount}
+            </span>
+          )}
+        </div>
+        <div className="min-h-0 overflow-y-auto scrollbar-slim">
+          <SessionsRail rows={sessionRows} onOpen={openSession} onStop={stopSession} />
+        </div>
       </div>
       </div>
       )}

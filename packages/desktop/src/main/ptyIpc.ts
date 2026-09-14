@@ -54,7 +54,11 @@ const asSize = (value: unknown, field: string): number => {
  */
 export const senderWindowId = (event: { sender: Pick<WebContents, 'id'> }): number => event.sender.id;
 
-export function registerPtyIpc(registry: PtyRegistry, ipc: IpcLike = ipcMain): void {
+export function registerPtyIpc(
+  registry: PtyRegistry,
+  ipc: IpcLike = ipcMain,
+  tmuxStatus: () => unknown = () => ({ available: false }),
+): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
     return registry.spawn({
@@ -95,6 +99,11 @@ export function registerPtyIpc(registry: PtyRegistry, ipc: IpcLike = ipcMain): v
   // Read-only: the list of agents and whether each is installed. Nothing here
   // takes renderer input, because the set of things to probe is closed.
   ipc.handle('agents:list', async () => detectAgents());
+
+  // Whether sessions survive quitting, and why not when they do not. Surfaced
+  // rather than silently assumed: a persistence feature that quietly does
+  // nothing is the defect review caught in the auto-approve chain.
+  ipc.handle('sessions:persistence', async () => tmuxStatus());
 
   // After the user installs a CLI, so the picker updates without an app
   // restart. Also takes no input.

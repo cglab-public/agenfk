@@ -14,6 +14,23 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Runs across every project (CGLAB-170).
+   *
+   * Distinct from listAgentRuns, which is per card. The Sessions rail asks
+   * "what is running anywhere", and asking that per project from here would be
+   * one request per project on every socket event.
+   */
+  listRuns: async (params: { status?: string; limit?: number } = {}) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/agent-runs`, { params });
+      return data;
+    } catch (e) {
+      console.error('API Error listing runs:', e);
+      return [];
+    }
+  },
+
   listAgentRuns: async (itemId: string) => {
     try {
       const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);

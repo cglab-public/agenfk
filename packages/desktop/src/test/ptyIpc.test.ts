@@ -46,14 +46,14 @@ beforeEach(() => {
 
 describe('the window id is taken from the sender, never the payload', () => {
   it('attributes a spawn to the window that sent it', async () => {
-    await handlers['pty:spawn'](fakeEvent(7), { itemId: 'i1', agentId: 'claude', cols: 80, rows: 24 });
+    await handlers['pty:spawn'](fakeEvent(7), { itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24 });
     expect(spawnCalls[0].windowId).toBe(7);
   });
 
   it('ignores a windowId the renderer puts in the payload', async () => {
     // The attack ownership exists to stop: claim to be window 1 and write into
     // its shell. The payload value must be inert.
-    await handlers['pty:spawn'](fakeEvent(7), { itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, windowId: 1 });
+    await handlers['pty:spawn'](fakeEvent(7), { itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, windowId: 1 });
     expect(spawnCalls[0].windowId).toBe(7);
   });
 
@@ -80,9 +80,9 @@ describe('arguments are validated before anything is done with them', () => {
   });
 
   it('rejects a non-string itemId', async () => {
-    await expect(spawn({ itemId: { toString: () => 'x' }, agentId: 'claude', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
-    await expect(spawn({ itemId: 42, agentId: 'claude', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
-    await expect(spawn({ itemId: '', agentId: 'claude', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
+    await expect(spawn({ itemId: { toString: () => 'x' }, agentId: 'claude-code', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
+    await expect(spawn({ itemId: 42, agentId: 'claude-code', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
+    await expect(spawn({ itemId: '', agentId: 'claude-code', cols: 80, rows: 24 })).rejects.toThrow(/itemId/);
   });
 
   it('rejects a missing agentId rather than picking a default', async () => {
@@ -94,16 +94,16 @@ describe('arguments are validated before anything is done with them', () => {
     // It disables the agent's own safety prompts. A stray truthy value from a
     // renderer bug — a string, a 1, an object — must not be enough to turn the
     // rails off.
-    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: 'yes' });
+    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: 'yes' });
     expect(spawnCalls[0].autoApprove).toBe(false);
-    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: 1 });
+    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: 1 });
     expect(spawnCalls[1].autoApprove).toBe(false);
-    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24, autoApprove: true });
+    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24, autoApprove: true });
     expect(spawnCalls[2].autoApprove).toBe(true);
   });
 
   it('defaults auto-approve to off when it is not mentioned', async () => {
-    await spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: 24 });
+    await spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: 24 });
     expect(spawnCalls[0].autoApprove).toBe(false);
   });
 
@@ -111,13 +111,13 @@ describe('arguments are validated before anything is done with them', () => {
     // These reach ioctl. Negative, zero, fractional and absurd values are at
     // best a broken terminal.
     for (const bad of [0, -1, 1.5, 99999, '80', null, undefined]) {
-      await expect(spawn({ itemId: 'i1', agentId: 'claude', cols: bad, rows: 24 })).rejects.toThrow(/cols/);
+      await expect(spawn({ itemId: 'i1', agentId: 'claude-code', cols: bad, rows: 24 })).rejects.toThrow(/cols/);
     }
-    await expect(spawn({ itemId: 'i1', agentId: 'claude', cols: 80, rows: -3 })).rejects.toThrow(/rows/);
+    await expect(spawn({ itemId: 'i1', agentId: 'claude-code', cols: 80, rows: -3 })).rejects.toThrow(/rows/);
   });
 
   it('never lets a bad argument reach the registry', async () => {
-    await expect(spawn({ itemId: 'i1', agentId: 'claude', cols: -1, rows: 24 })).rejects.toThrow();
+    await expect(spawn({ itemId: 'i1', agentId: 'claude-code', cols: -1, rows: 24 })).rejects.toThrow();
     await expect(handlers['pty:write'](fakeEvent(1), { sessionId: 's' })).rejects.toThrow(/data/);
     expect(registry.spawn).not.toHaveBeenCalled();
     expect(registry.write).not.toHaveBeenCalled();
@@ -131,10 +131,13 @@ describe('the channels that exist', () => {
     expect(Object.keys(handlers).sort()).toEqual([
       'agents:list',
       'agents:refresh',
+      // Read-only, takes no renderer input: whether sessions survive quitting,
+      // and why not when they do not.
+      'sessions:persistence',
       'pty:kill',
       'pty:resize',
       'pty:spawn',
       'pty:write',
-    ]);
+    ].sort());
   });
 });

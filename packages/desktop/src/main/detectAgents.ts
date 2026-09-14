@@ -15,7 +15,7 @@
  * files and is slow.
  */
 import { execFile } from 'child_process';
-import { AGENT_IDS, listAgents } from './agents.js';
+import { AGENT_IDS, listAgents, resolveAgentCommand } from './agents.js';
 import { captureLoginPath } from './ptyEnv.js';
 
 export interface DetectedAgent {
@@ -93,7 +93,13 @@ export async function detectAgents(deps: DetectDeps = { which: whichOnPath, logi
   const probe = async (id: string, pathOverride?: string): Promise<boolean> => {
     if (ALWAYS_AVAILABLE.has(id)) return true;
     try {
-      return Boolean(await deps.which(id, pathOverride));
+      // The EXECUTABLE, not the id. They are deliberately different — the id
+      // is 'claude-code', the harness vocabulary the server and hub speak,
+      // while the binary on PATH is `claude`. Probing the id reported Claude
+      // Code as missing on a machine that had it, and offered an install
+      // command for something already installed.
+      const { file } = resolveAgentCommand(id);
+      return Boolean(await deps.which(file, pathOverride));
     } catch {
       // A failed probe is "not found", never a thrown detection.
       return false;
