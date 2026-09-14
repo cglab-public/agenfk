@@ -161,17 +161,26 @@ describe('surviving the app closing', () => {
     tmux: { available },
   });
 
-  it('runs the agent inside tmux when it is available', async () => {
+  it('does NOT use tmux unless asked, even where it is available', async () => {
+    // Off by default. Running inside tmux changes the terminal the agent lives
+    // in — the tmux prefix starts competing with the agent's own shortcuts —
+    // and that is a change to opt into, not to discover. Sessions that predate
+    // the feature also kept working without it.
     await withTmux(true).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    expect(spawned[0].args.join(' ')).not.toMatch(/tmux/);
+  });
+
+  it('runs the agent inside tmux when it is available AND asked for', async () => {
+    await withTmux(true).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
     const [file, args] = [spawned[0].file, spawned[0].args];
     expect(file).toMatch(/sh$/);
     expect(args.join(' ')).toMatch(/tmux/);
     expect(args.join(' ')).toMatch(/attach-session/);
   });
 
-  it('spawns the agent directly when tmux is absent', async () => {
+  it('spawns the agent directly when asked but tmux is absent', async () => {
     // Degrades to a working terminal without persistence, rather than failing.
-    await withTmux(false).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    await withTmux(false).spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
     expect(spawned[0].args.join(' ')).not.toMatch(/tmux/);
   });
 
@@ -179,16 +188,16 @@ describe('surviving the app closing', () => {
     // The point of the whole thing: reopening must ATTACH to the session that
     // is still running, not start a second agent beside it.
     const reg = withTmux(true);
-    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
-    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
     const names = spawned.map(s => /=(agenfk-[A-Za-z0-9_-]+)/.exec(s.args.join(' '))?.[1]);
     expect(names[0]).toBe(names[1]);
   });
 
   it('gives a different card its own session', async () => {
     const reg = withTmux(true);
-    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
-    await reg.spawn({ itemId: 'i2', agentId: 'shell', windowId: 1, cols: 80, rows: 24 });
+    await reg.spawn({ itemId: 'i1', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
+    await reg.spawn({ itemId: 'i2', agentId: 'shell', windowId: 1, cols: 80, rows: 24, persist: true });
     const names = spawned.map(s => /=(agenfk-[A-Za-z0-9_-]+)/.exec(s.args.join(' '))?.[1]);
     expect(names[0]).not.toBe(names[1]);
   });
@@ -197,7 +206,7 @@ describe('surviving the app closing', () => {
     // The flag has to reach the AGENT, which is now nested one level deeper.
     // Losing it here would silently re-enable prompts the user turned off.
     await withTmux(true).spawn({
-      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24, autoApprove: true,
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24, autoApprove: true, persist: true,
     });
     expect(spawned[0].args.join(' ')).toMatch(/--dangerously-skip-permissions/);
   });

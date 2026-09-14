@@ -69,6 +69,15 @@ export interface SpawnRequest {
   readonly rows: number;
   /** Run the agent with its own permission prompts disabled. Off by default. */
   readonly autoApprove?: boolean;
+  /**
+   * Keep the session alive after the app quits, by running it inside tmux.
+   *
+   * Off by default, and only honoured where tmux exists. Running inside tmux
+   * changes the terminal the agent lives in — the tmux prefix competes with
+   * the agent's own shortcuts — which is a change to opt into rather than
+   * discover, and sessions that predate the feature kept working without it.
+   */
+  readonly persist?: boolean;
 }
 
 interface Session {
@@ -106,7 +115,8 @@ export class PtyRegistry {
     // Inside tmux when we can. The session name is derived from the card and
     // the agent, so reopening ATTACHES to the one still running rather than
     // starting a second agent beside it in the same worktree.
-    const useTmux = this.deps.tmux?.available === true;
+    // Both: the machine can, AND the project asked. Either alone is not enough.
+    const useTmux = this.deps.tmux?.available === true && req.persist === true;
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
       ? ['-c', buildTmuxShellCommand(

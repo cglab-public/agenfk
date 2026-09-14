@@ -70,6 +70,9 @@ export function registerPtyIpc(
       // Strict === true, not truthiness. This disables the agent's own safety
       // prompts, so a stray string, a 1, or an object must not be enough.
       autoApprove: req.autoApprove === true,
+      // Strict, like autoApprove above. Anything truthy-but-not-true arriving
+      // from the renderer must not silently opt a session into tmux.
+      persist: req.persist === true,
     });
   });
 

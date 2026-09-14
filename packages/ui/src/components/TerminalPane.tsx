@@ -21,7 +21,10 @@ import '@xterm/xterm/css/xterm.css';
 
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
-  spawn(req: { itemId: string; agentId: string; cols: number; rows: number; autoApprove?: boolean }): Promise<string>;
+  spawn(req: {
+    itemId: string; agentId: string; cols: number; rows: number;
+    autoApprove?: boolean; persist?: boolean;
+  }): Promise<string>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
@@ -38,6 +41,8 @@ export interface TerminalPaneProps {
   readonly agentId: string;
   /** Run the agent with its own permission prompts disabled. */
   readonly autoApprove?: boolean;
+  /** Resolved in the dialog, not re-derived here: the user asked AND tmux exists. */
+  readonly persist?: boolean;
   readonly createTerminal?: () => Terminal;
   readonly createFitAddon?: () => FitLike;
   readonly bridge?: TerminalBridge;
@@ -50,6 +55,7 @@ export function TerminalPane({
   itemId,
   agentId,
   autoApprove,
+  persist,
   createTerminal,
   createFitAddon,
   bridge,
@@ -151,7 +157,12 @@ export function TerminalPane({
 
     // The renderer sends an item and an agent, never a path and never a
     // command. Keep it that way.
-    api.spawn({ itemId, agentId, autoApprove: autoApprove === true, cols: term.cols || 80, rows: term.rows || 24 })
+    api.spawn({
+      itemId, agentId,
+      autoApprove: autoApprove === true,
+      persist: persist === true,
+      cols: term.cols || 80, rows: term.rows || 24,
+    })
       .then(sessionId => {
         if (cancelled) {
           // The effect was torn down while the spawn was in flight. The main
@@ -179,7 +190,7 @@ export function TerminalPane({
       term.dispose();
       termRef.current = null;
     };
-  }, [itemId, agentId, autoApprove, bridge, createTerminal, createFitAddon]);
+  }, [itemId, agentId, autoApprove, persist, bridge, createTerminal, createFitAddon]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#14181b]">

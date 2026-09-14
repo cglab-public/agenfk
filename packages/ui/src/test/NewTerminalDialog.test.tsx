@@ -78,14 +78,14 @@ describe('creating', () => {
     const { onCreate } = renderDialog();
     fireEvent.click(await screen.findByRole('switch', { name: /skip permissions/i }));
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: true }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: true, persist: false }));
   });
 
   it('defaults to not skipping permissions when the toggle is untouched', async () => {
     const { onCreate } = renderDialog();
     await screen.findByRole('switch', { name: /skip permissions/i });
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: false }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code', autoApprove: false, persist: false }));
   });
 
   it('creates on the keyboard shortcut', async () => {
@@ -175,7 +175,7 @@ describe('the auto-approve toggle', () => {
     fireEvent.click(screen.getByRole('button', { name: /claude code/i }));
     fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
     fireEvent.click(createButton());
-    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'gemini', autoApprove: false }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'gemini', autoApprove: false, persist: false }));
   });
 });
 

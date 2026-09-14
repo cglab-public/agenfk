@@ -35,7 +35,7 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { NewTerminalDialog } from './NewTerminalDialog';
-import { listAgentsFromBridge } from './agentBridge';
+import { listAgentsFromBridge, sessionPersistenceFromBridge } from './agentBridge';
 import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
@@ -481,8 +481,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           cardTitle={pending.title}
           defaultAgentId={pending.agentId}
           listAgents={listAgentsFromBridge}
+          sessionPersistence={sessionPersistenceFromBridge}
           onClose={() => setPending(null)}
-          onCreate={async ({ agentId, autoApprove }) => {
+          onCreate={async ({ agentId, autoApprove, persist }) => {
             // Latch and switch BEFORE clearing `pending`, so the panel exists
             // by the time the dialog goes away — otherwise the user watches an
             // empty tab for a frame while the pane mounts.
@@ -498,6 +499,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               title: pending.title,
               agentId,
               autoApprove,
+              persist,
               branchName: pending.branchName,
             }]);
             setActiveSession(id);

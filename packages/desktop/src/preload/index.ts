@@ -33,7 +33,12 @@ export interface AgentInfo {
  * worktree a card owns and the second from a closed list.
  */
 export interface AgenfkTerminalApi {
-  spawn(req: { itemId: string; agentId: string; cols: number; rows: number; autoApprove?: boolean }): Promise<string>;
+  spawn(req: {
+    itemId: string; agentId: string; cols: number; rows: number;
+    autoApprove?: boolean;
+    /** Keep the agent alive after the app quits, by running it inside tmux. */
+    persist?: boolean;
+  }): Promise<string>;
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   kill(sessionId: string): Promise<boolean>;
@@ -42,6 +47,14 @@ export interface AgenfkTerminalApi {
   onExit(cb: (e: { sessionId: string; exitCode: number }) => void): () => void;
   listAgents(): Promise<AgentInfo[]>;
   refreshAgents(): Promise<AgentInfo[]>;
+  /**
+   * Whether a session survives quitting, and why not when it does not.
+   *
+   * Surfaced rather than assumed. A persistence feature that quietly does
+   * nothing is indistinguishable from one that works until the day the user
+   * closes the app and loses an agent mid-run.
+   */
+  sessionPersistence(): Promise<{ available: boolean; hint?: string; warning?: string }>;
 }
 
 export interface AgenfkDesktopApi {
@@ -77,6 +90,7 @@ const terminal: AgenfkTerminalApi = {
   onData: cb => subscribe('pty:data', cb),
   onExit: cb => subscribe('pty:exit', cb),
   listAgents: () => ipcRenderer.invoke('agents:list'),
+  sessionPersistence: () => ipcRenderer.invoke('sessions:persistence'),
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),
 };
 

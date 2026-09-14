@@ -127,7 +127,7 @@ describe('opening a terminal for a card', () => {
     renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     const req = bridge.spawn.mock.calls[0][0];
-    expect(Object.keys(req).sort()).toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'rows']);
+    expect(Object.keys(req).sort()).toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'persist', 'rows']);
   });
 
   it('leaves exactly one live shell under StrictMode double-mount', async () => {

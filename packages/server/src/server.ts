@@ -1039,10 +1039,21 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // no execution semantics: the worst a caller can do is turn worktree
   // creation on or off. projectRoot and verifyCommand stay out — those are a
   // cwd and a shell string.
-  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean; tmuxByDefault: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
   if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
+  // Whether this project's terminals run inside tmux, so they survive quitting.
+  // A boolean preference with no execution semantics, like autoWorktree — the
+  // desktop app decides what to do with it, and only where tmux exists.
+  //
+  // Stored regardless of whether tmux is available anywhere: the preference is
+  // a decision, availability is a fact about one machine, and collapsing the
+  // two would erase a choice made on a Mac the moment the project is opened on
+  // Windows. `typeof === 'boolean'` and not a coercion: 'false' is a truthy
+  // string and would switch the feature ON for a client meaning to switch it
+  // off.
+  if (typeof req.body?.tmuxByDefault === 'boolean') updates.tmuxByDefault = req.body.tmuxByDefault;
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
