@@ -569,6 +569,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // is still worth putting back; the conversation is not recoverable,
         // and the record must not claim an id it never had.
         agentSessionId,
+        /*
+         * The session's IDENTITY, and the reason restore could never find a
+         * surviving tmux session (BUG 63fcf702).
+         *
+         * `persist` decides whether the terminal lives inside tmux at all, and
+         * `autoApprove` is baked into its tmux NAME. Recording neither meant
+         * every restored tab came back outside tmux, orphaning the session
+         * that was still running and starting a second agent beside it in the
+         * same worktree — and since the replacement did not persist either,
+         * nothing survived the next close.
+         */
+        persist: session.persist,
+        autoApprove: session.autoApprove,
       })
         .then(row => {
           // The tab may already be gone: the user can close it while the POST
@@ -714,8 +727,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // belongs — on the tab, and in the header above it.
         title: row.itemTitle ?? row.itemId,
         agentId: row.agentId,
-        autoApprove: false,
-        persist: false,
+        /*
+         * From the RECORD, not hardcoded. These two were `false` here, which
+         * is what kept every restore outside tmux however the session was
+         * created. Older rows have no such fields and default to false, which
+         * is the conservative answer for a session whose identity was never
+         * written down — not a guess dressed up as data.
+         */
+        autoApprove: row.autoApprove === true,
+        persist: row.persist === true,
         agentSessionId: row.agentSessionId,
         openedAt: row.openedAt,
         // Only where there is a conversation to resume. For codex there is

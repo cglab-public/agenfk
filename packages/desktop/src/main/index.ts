@@ -365,7 +365,22 @@ async function boot(): Promise<void> {
       };
 
       setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath });
-      tmuxStatus = await detectTmux({ platform: process.platform, which: whichOnPath });
+      /*
+       * Probed against the LOGIN PATH, like agent detection one line above.
+       *
+       * This used the raw `whichOnPath`, and the consequence was quiet and
+       * total: launchd hands an app opened from the Finder a minimal PATH with
+       * no /opt/homebrew/bin in it, so tmux reported ABSENT on machines that
+       * have it. `useTmux` was then false whatever the user chose, nothing
+       * persisted, and every restore fell through to the weaker path.
+       *
+       * I fixed half of this PATH problem for agent detection and left the
+       * other half sitting one line below it.
+       */
+      tmuxStatus = await detectTmux({
+        platform: process.platform,
+        which: async file => whichOnPath(file, (await currentLoginPath()) ?? undefined),
+      });
       if (!tmuxStatus.available) {
         console.log(`[DESKTOP] Terminal sessions will NOT survive quitting: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
       }

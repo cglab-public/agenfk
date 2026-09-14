@@ -895,3 +895,55 @@ describe('a terminal whose process ended', () => {
     await waitFor(() => expect(runningCount()).toBe(1));
   });
 });
+
+
+/**
+ * A restored tab goes back where it came from (CGLAB-191).
+ *
+ * The restore hardcoded `persist: false` and `autoApprove: false`, so every tab
+ * came back OUTSIDE tmux however it was created. The session that survived was
+ * orphaned, a second agent started beside it in the same worktree, and since
+ * the replacement did not persist either, nothing survived the next close.
+ */
+describe('restoring a session that lived in tmux', () => {
+  const persisted = [{
+    id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+    agentSessionId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    itemTitle: 'Something in agenfk',
+    persist: true, autoApprove: true,
+    openedAt: new Date().toISOString(),
+  }];
+
+  it('asks for tmux again, instead of dropping out of it', async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(persisted as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+    expect(spawnCalls[0].persist, 'the tab came back outside tmux').toBe(true);
+  });
+
+  it('asks for it with the same permissions it was created with', async () => {
+    // autoApprove is baked into the tmux session NAME, so restoring with the
+    // wrong one looks for a session that does not exist and starts a second
+    // agent beside the one still running.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(persisted as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+    expect(spawnCalls[0].autoApprove).toBe(true);
+  });
+
+  it('does not invent tmux for a row that never had it', async () => {
+    // Older rows carry neither field. False is the conservative answer for a
+    // session whose identity was never written down.
+    vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue([{
+      id: 'row-2', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+    }] as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+    expect(spawnCalls[0].persist).toBe(false);
+    expect(spawnCalls[0].autoApprove).toBe(false);
+  });
+});

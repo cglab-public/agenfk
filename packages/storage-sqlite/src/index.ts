@@ -127,6 +127,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         project_id TEXT,
         agent_id TEXT NOT NULL,
         agent_session_id TEXT,
+        -- Part of the session IDENTITY, not decoration (BUG 63fcf702).
+        --
+        -- persist decides whether the terminal runs inside tmux, and
+        -- auto_approve is baked into the tmux session NAME, so a restore that
+        -- does not know them cannot find the session that survived: it looked
+        -- for the ask variant of a session created as auto, found nothing, and
+        -- started a second agent beside the one still running.
+        persist INTEGER NOT NULL DEFAULT 0,
+        auto_approve INTEGER NOT NULL DEFAULT 0,
         opened_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_terminal_sessions_item ON terminal_sessions(item_id);
@@ -186,6 +195,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
     `);
     this.migrateFlowsTable();
+    this.migrateTerminalSessionsTable();
   }
 
   // ── Hub outbox helpers ─────────────────────────────────────────────────────
@@ -326,6 +336,27 @@ export class SQLiteStorageProvider implements StorageProvider {
       "UPDATE hub_outbox SET payload = json_set(payload, '$.orgId', ?) WHERE json_valid(payload) = 1 AND json_extract(payload, '$.orgId') = ?"
     ).run(to, from);
     return Number(result.changes ?? 0);
+  }
+
+  /**
+   * Add `persist` / `auto_approve` to `terminal_sessions` when an older
+   * database lacks them (BUG 63fcf702).
+   *
+   * Plain ALTER with a default rather than a rebuild: both are new columns
+   * with a safe zero value, and rows written before this existed genuinely do
+   * not know their session's identity — defaulting them to "not persisted,
+   * prompts on" is the conservative answer, not a guess dressed up as data.
+   */
+  private migrateTerminalSessionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(terminal_sessions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('persist')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.includes('auto_approve')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
@@ -843,17 +874,24 @@ export class SQLiteStorageProvider implements StorageProvider {
       // null and undefined both mean "cannot resume this one"; normalised here
       // so no caller has to know which of the two it got back.
       agentSessionId: r.agent_session_id ?? undefined,
+      // SQLite has no boolean. Compared against 1 rather than coerced, so the
+      // string "0" a legacy row might hold cannot come back as true.
+      persist: Number(r.persist) === 1,
+      autoApprove: Number(r.auto_approve) === 1,
       openedAt: r.opened_at as string,
     }));
   }
 
   async recordTerminalSession(session: TerminalSession): Promise<TerminalSession> {
     this.database.prepare(
-      'INSERT INTO terminal_sessions (id, item_id, project_id, agent_id, agent_session_id, opened_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO terminal_sessions ' +
+      '(id, item_id, project_id, agent_id, agent_session_id, persist, auto_approve, opened_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       session.id, session.itemId, session.projectId ?? null,
-      session.agentId, session.agentSessionId ?? null, session.openedAt,
+      session.agentId, session.agentSessionId ?? null,
+      session.persist ? 1 : 0, session.autoApprove ? 1 : 0,
+      session.openedAt,
     );
     return session;
   }

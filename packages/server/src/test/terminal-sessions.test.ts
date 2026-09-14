@@ -242,3 +242,75 @@ describe('cleaning up', () => {
     expect((await open(p.body.id)).body).toEqual([]);
   });
 });
+
+/**
+ * What identifies a session, and why it has to be written down (CGLAB-191).
+ *
+ * Restoring a terminal never re-entered tmux, and the reason was here: the
+ * record kept the card, the project, the agent and the conversation id — and
+ * neither of the two fields that decide WHICH session is being restored.
+ *
+ * `persist` decides whether the terminal lives inside tmux at all, and
+ * `autoApprove` is baked into the tmux session NAME. Without them a restore
+ * put every tab back outside tmux, orphaning the session still running and
+ * starting a second agent beside it in the same worktree — and since the
+ * replacement did not persist either, nothing survived the next close. Each
+ * launch could leave another abandoned daemon.
+ */
+describe('the fields that identify a session', () => {
+  let projectId: string;
+  let itemId: string;
+  beforeEach(async () => {
+    await initStorage();
+    const p = await agent().post('/projects').send({ name: 'ident' });
+    projectId = p.body.id;
+    const i = await agent().post('/items').send({ title: 'Work', type: 'TASK', projectId });
+    itemId = i.body.id;
+  });
+
+  it('remembers that a session was persisted', async () => {
+    const res = await agent().post('/terminal-sessions')
+      .send({ itemId, projectId, agentId: 'claude-code', persist: true, autoApprove: false });
+    expect(res.status).toBe(201);
+    const listed = await agent().get(`/terminal-sessions?projectId=${projectId}`);
+    expect(listed.body[0].persist).toBe(true);
+    expect(listed.body[0].autoApprove).toBe(false);
+  });
+
+  it('remembers what it was created with', async () => {
+    // Not a preference. A restore that assumes prompts-on resolves to the
+    // "ask" variant of the tmux name and misses the "auto" session that is
+    // actually running.
+    await agent().post('/terminal-sessions')
+      .send({ itemId, projectId, agentId: 'claude-code', persist: true, autoApprove: true });
+    const listed = await agent().get(`/terminal-sessions?projectId=${projectId}`);
+    expect(listed.body[0].autoApprove).toBe(true);
+  });
+
+  it('survives a restart, which is the whole point', async () => {
+    await agent().post('/terminal-sessions')
+      .send({ itemId, projectId, agentId: 'claude-code', persist: true, autoApprove: true });
+    await initStorage();
+    const after = await agent().get(`/terminal-sessions?projectId=${projectId}`);
+    expect(after.body[0].persist).toBe(true);
+    expect(after.body[0].autoApprove).toBe(true);
+  });
+
+  it('defaults both to false when nothing said otherwise', async () => {
+    // The conservative answer for a session whose identity was never written
+    // down — not a guess dressed up as data.
+    await agent().post('/terminal-sessions').send({ itemId, projectId, agentId: 'claude-code' });
+    const listed = await agent().get(`/terminal-sessions?projectId=${projectId}`);
+    expect(listed.body[0].persist).toBe(false);
+    expect(listed.body[0].autoApprove).toBe(false);
+  });
+
+  it('is not fooled by a truthy string', async () => {
+    // These reach a session NAME and a spawn decision, and "false" is truthy.
+    await agent().post('/terminal-sessions')
+      .send({ itemId, projectId, agentId: 'claude-code', persist: 'false', autoApprove: 'false' });
+    const listed = await agent().get(`/terminal-sessions?projectId=${projectId}`);
+    expect(listed.body[0].persist).toBe(false);
+    expect(listed.body[0].autoApprove).toBe(false);
+  });
+});

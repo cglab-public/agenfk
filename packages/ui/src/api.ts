@@ -24,6 +24,10 @@ export interface TerminalSessionDto {
   projectId?: string;
   agentId: string;
   agentSessionId?: string;
+  /** Whether the session lives inside tmux. Identity — see BUG 63fcf702. */
+  persist?: boolean;
+  /** What it was created with. Baked into the tmux session name. */
+  autoApprove?: boolean;
   /** The card's title, so a restored tab has a name and not a uuid. */
   itemTitle?: string;
   openedAt: string;
@@ -183,6 +187,12 @@ export const api = {
   },
   recordTerminalSession: async (session: {
     itemId: string; projectId?: string; agentId: string; agentSessionId?: string;
+    /*
+     * Identity, not preference. Without these the restore cannot rebuild the
+     * tmux session name, so it never finds the session that survived — see
+     * BUG 63fcf702.
+     */
+    persist?: boolean; autoApprove?: boolean;
   }): Promise<TerminalSessionDto> => {
     try {
       const { data } = await axios.post(`${API_URL}/terminal-sessions`, session);

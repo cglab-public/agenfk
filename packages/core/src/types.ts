@@ -72,6 +72,24 @@ export interface TerminalSession {
    * missing row.
    */
   agentSessionId?: string;
+  /**
+   * Whether the terminal was created INSIDE tmux.
+   *
+   * Identity, not a preference (BUG 63fcf702). A restore that does not know
+   * this puts every tab back outside tmux, so the session that survived is
+   * orphaned and a second agent starts beside it in the same worktree — and
+   * since the replacement tab does not persist either, nothing survives the
+   * next close. Each launch could leave another abandoned daemon.
+   */
+  persist?: boolean;
+  /**
+   * What the session was created WITH.
+   *
+   * Also identity, because it is baked into the tmux session NAME. Recording
+   * `persist` alone is not enough: a restore assuming prompts-on resolves to
+   * the "ask" variant and misses the "auto" session that is actually running.
+   */
+  autoApprove?: boolean;
   openedAt: string;
 }
 

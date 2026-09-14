@@ -1255,7 +1255,7 @@ app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.post("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
-  const { itemId, projectId, agentId, agentSessionId } = req.body ?? {};
+  const { itemId, projectId, agentId, agentSessionId, persist, autoApprove } = req.body ?? {};
   if (typeof itemId !== 'string' || !itemId) {
     return res.status(400).json({ error: "itemId (string) required" });
   }
@@ -1287,6 +1287,20 @@ app.post("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
     projectId: typeof projectId === 'string' ? projectId : item.projectId,
     agentId,
     agentSessionId: typeof agentSessionId === 'string' ? agentSessionId : undefined,
+    /*
+     * Both are part of the session's IDENTITY, not preferences (BUG 63fcf702).
+     *
+     * `persist` decides whether the terminal lives inside tmux at all, and
+     * `autoApprove` is baked into the tmux session NAME. A restore that does
+     * not know them puts the tab back outside tmux, orphaning the session that
+     * survived — or looks for the "ask" variant of a session created as "auto"
+     * and finds nothing.
+     *
+     * `=== true` rather than truthy: these reach a session name and a spawn
+     * decision, and the string "false" is truthy.
+     */
+    persist: persist === true,
+    autoApprove: autoApprove === true,
     openedAt: new Date().toISOString(),
   });
   io.emit('items_updated');
