@@ -17,6 +17,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-model-mappings-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -53,20 +64,22 @@ describe('admin model mappings', () => {
   });
 
   const overview = async (qs = '') =>
-    (await supertest(app).get(`/v1/prs/overview${qs}`).set('Cookie', cookie)).body;
+    (await supertest(__server).get(`/v1/prs/overview${qs}`).set('Cookie', cookie)).body;
 
   beforeEach(async () => {
     cleanup();
     const out = await createHubApp({
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org',
     });
-    app = out.app; ctx = out.ctx;
+    app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0); ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
     const token = await issueApiKey(ctx.db, 'org', 'test');
     send = (events: any[]) =>
-      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
     // The same model under three spellings, plus one genuinely different model.
     await send([
@@ -79,7 +92,7 @@ describe('admin model mappings', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -95,7 +108,7 @@ describe('admin model mappings', () => {
 
   describe('GET /v1/admin/models', () => {
     it('lists observed model ids with their PR counts, unmapped by default', async () => {
-      const r = await supertest(app).get('/v1/admin/models').set('Cookie', cookie);
+      const r = await supertest(__server).get('/v1/admin/models').set('Cookie', cookie);
       expect(r.status).toBe(200);
       expect(r.body.mappings).toEqual([]);
       const q = r.body.observed.find((o: any) => o.model === 'qwen38-27b');
@@ -103,19 +116,19 @@ describe('admin model mappings', () => {
     });
 
     it('requires admin', async () => {
-      const r = await supertest(app).get('/v1/admin/models');
+      const r = await supertest(__server).get('/v1/admin/models');
       expect(r.status).toBe(401);
     });
   });
 
   describe('POST /v1/admin/models/mappings', () => {
     const post = (body: any) =>
-      supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie).send(body);
+      supertest(__server).post('/v1/admin/models/mappings').set('Cookie', cookie).send(body);
 
     it('creates a mapping and records who made it', async () => {
       const r = await post({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
       expect(r.status).toBe(201);
-      const list = await supertest(app).get('/v1/admin/models').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/models').set('Cookie', cookie);
       expect(list.body.mappings).toHaveLength(1);
       expect(list.body.mappings[0]).toMatchObject({
         aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b', createdByEmail: 'admin@x',
@@ -148,7 +161,7 @@ describe('admin model mappings', () => {
       expect(r.status).toBe(409);
       expect(r.body.error).toContain('qwen3.8:27b');
       // unchanged
-      const list = await supertest(app).get('/v1/admin/models').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/models').set('Cookie', cookie);
       expect(list.body.mappings[0].canonicalModel).toBe('qwen3.8:27b');
     });
 
@@ -156,7 +169,7 @@ describe('admin model mappings', () => {
       await post({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
       const r = await post({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
       expect(r.status).toBe(201);
-      const list = await supertest(app).get('/v1/admin/models').set('Cookie', cookie);
+      const list = await supertest(__server).get('/v1/admin/models').set('Cookie', cookie);
       expect(list.body.mappings).toHaveLength(1);
     });
 
@@ -170,7 +183,7 @@ describe('admin model mappings', () => {
 
   describe('effect on PR Overview', () => {
     beforeEach(async () => {
-      await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+      await supertest(__server).post('/v1/admin/models/mappings').set('Cookie', cookie)
         .send({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
     });
 
@@ -201,7 +214,7 @@ describe('admin model mappings', () => {
     });
 
     it('reverts when the mapping is deleted', async () => {
-      const d = await supertest(app)
+      const d = await supertest(__server)
         .delete('/v1/admin/models/mappings/qwen38-27b').set('Cookie', cookie);
       expect(d.status).toBe(200);
       expect(d.body.removed).toBe(true);
@@ -213,16 +226,16 @@ describe('admin model mappings', () => {
   it('is org-scoped: another org sees neither the mapping nor its effect', async () => {
     await ctx.db.run(`INSERT INTO orgs (id, name) VALUES ('org-b', 'org-b')`);
     await createPasswordUser(ctx.db, 'org-b', 'adminb@x', 'longenough1', 'admin');
-    const loginB = await supertest(app).post('/auth/login').send({ email: 'adminb@x', password: 'longenough1' });
+    const loginB = await supertest(__server).post('/auth/login').send({ email: 'adminb@x', password: 'longenough1' });
     const cookieB = loginB.headers['set-cookie']?.[0] ?? '';
 
-    await supertest(app).post('/v1/admin/models/mappings').set('Cookie', cookie)
+    await supertest(__server).post('/v1/admin/models/mappings').set('Cookie', cookie)
       .send({ aliasModel: 'qwen38-27b', canonicalModel: 'qwen3.8:27b' });
 
-    const listB = await supertest(app).get('/v1/admin/models').set('Cookie', cookieB);
+    const listB = await supertest(__server).get('/v1/admin/models').set('Cookie', cookieB);
     expect(listB.body.mappings).toEqual([]);
     // org-b has no events at all, so the overview is empty rather than shared.
-    const overviewB = await (await supertest(app).get('/v1/prs/overview').set('Cookie', cookieB)).body;
+    const overviewB = await (await supertest(__server).get('/v1/prs/overview').set('Cookie', cookieB)).body;
     expect(overviewB.totals.prs).toBe(0);
   });
 });

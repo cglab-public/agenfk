@@ -13,6 +13,17 @@ import { createPasswordUser } from '../auth/password';
 import { cookieSecure } from '../auth/session';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-security-test-${process.pid}.sqlite`);
 const cleanup = () => {
   for (const suffix of ['', '-wal', '-shm']) {
@@ -42,12 +53,14 @@ describe('hub security hardening', () => {
     cleanup();
     const out = await createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -58,19 +71,19 @@ describe('hub security hardening', () => {
       await createPasswordUser(ctx.db, 'org', 'victim@example.com', 'correct-horse', 'admin');
       // 5 wrong attempts → still 401, then locked
       for (let i = 0; i < 5; i++) {
-        const r = await supertest(app).post('/auth/login').send({ email: 'victim@example.com', password: 'wrong' });
+        const r = await supertest(__server).post('/auth/login').send({ email: 'victim@example.com', password: 'wrong' });
         expect(r.status).toBe(401);
       }
-      const locked = await supertest(app).post('/auth/login').send({ email: 'victim@example.com', password: 'wrong' });
+      const locked = await supertest(__server).post('/auth/login').send({ email: 'victim@example.com', password: 'wrong' });
       expect(locked.status).toBe(429);
       // Even the CORRECT password is refused while locked.
-      const lockedCorrect = await supertest(app).post('/auth/login').send({ email: 'victim@example.com', password: 'correct-horse' });
+      const lockedCorrect = await supertest(__server).post('/auth/login').send({ email: 'victim@example.com', password: 'correct-horse' });
       expect(lockedCorrect.status).toBe(429);
     });
 
     it('a fresh account with the right password logs in (control)', async () => {
       await createPasswordUser(ctx.db, 'org', 'good@example.com', 'correct-horse', 'admin');
-      const r = await supertest(app).post('/auth/login').send({ email: 'good@example.com', password: 'correct-horse' });
+      const r = await supertest(__server).post('/auth/login').send({ email: 'good@example.com', password: 'correct-horse' });
       expect(r.status).toBe(200);
       expect(r.headers['set-cookie']).toBeTruthy();
     });
@@ -80,7 +93,7 @@ describe('hub security hardening', () => {
   describe('bug a7a448dc: events bound to the key installation', () => {
     it('rejects events whose installationId differs from an installation-bound key', async () => {
       const token = await issueApiKey(ctx.db, 'org', 'bound', { installationId: 'inst-1' });
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${token}`)
         .send({ events: [sampleEvent({ installationId: 'inst-2', eventId: 'spoof' })] });
       expect(r.status).toBe(200);
@@ -90,7 +103,7 @@ describe('hub security hardening', () => {
 
     it('accepts events for the key own installation', async () => {
       const token = await issueApiKey(ctx.db, 'org', 'bound', { installationId: 'inst-1' });
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${token}`)
         .send({ events: [sampleEvent({ installationId: 'inst-1', eventId: 'own' })] });
       expect(r.body.ingested).toBe(1);
@@ -99,7 +112,7 @@ describe('hub security hardening', () => {
 
     it('legacy org-wide keys (no bound installation) keep working', async () => {
       const token = await issueApiKey(ctx.db, 'org', 'legacy');
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${token}`)
         .send({ events: [sampleEvent({ installationId: 'inst-9', eventId: 'legacy-ok' })] });
       expect(r.body.ingested).toBe(1);
@@ -111,7 +124,7 @@ describe('hub security hardening', () => {
     it('rejects a batch over the cap with 413', async () => {
       const token = await issueApiKey(ctx.db, 'org', 'capped');
       const events = Array.from({ length: 501 }, (_, i) => sampleEvent({ eventId: `big-${i}` }));
-      const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      const r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
       expect(r.status).toBe(413);
       const countRow = await ctx.db.get('SELECT COUNT(*) AS c FROM events') as { c: number };
       expect(countRow.c).toBe(0); // nothing written
@@ -120,7 +133,7 @@ describe('hub security hardening', () => {
     it('accepts a batch at the cap', async () => {
       const token = await issueApiKey(ctx.db, 'org', 'capped2');
       const events = Array.from({ length: 500 }, (_, i) => sampleEvent({ eventId: `ok-${i}` }));
-      const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      const r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
       expect(r.status).toBe(200);
       expect(r.body.ingested).toBe(500);
     });
@@ -136,7 +149,7 @@ describe('hub security hardening', () => {
       const before = await ctx.db.get('SELECT COUNT(*) AS c FROM device_codes') as { c: number };
       expect(before.c).toBe(1);
 
-      const r = await supertest(app).post('/hub/device/start').send({});
+      const r = await supertest(__server).post('/hub/device/start').send({});
       expect(r.status).toBe(200);
       expect(r.body.deviceCode).toBeTruthy();
 

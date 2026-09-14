@@ -9,6 +9,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-avail-sel-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -31,7 +42,7 @@ const sampleDef = (name: string) => ({
 });
 
 async function seedFlow(app: any, cookie: string, name: string): Promise<string> {
-  const r = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+  const r = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
     .send({ definition: sampleDef(name) });
   return r.body.id;
 }
@@ -39,11 +50,11 @@ async function seedFlow(app: any, cookie: string, name: string): Promise<string>
 async function assign(app: any, cookie: string, scope: string, targetId: string | null, flowId: string | null) {
   const body: any = { scope, flowId };
   if (targetId !== null) body.targetId = targetId;
-  return supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
+  return supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie).send(body);
 }
 
 async function markAvailable(app: any, cookie: string, flowId: string) {
-  return supertest(app)
+  return supertest(__server)
     .put(`/v1/admin/flows/${flowId}/availability`)
     .set('Cookie', cookie)
     .send({ available: true });
@@ -51,7 +62,7 @@ async function markAvailable(app: any, cookie: string, flowId: string) {
 
 async function seedProjectOwnership(app: any, ctx: any, orgId: string, installationId: string, projectId: string) {
   const seedKey = await issueApiKey(ctx.db, orgId, 'seed-' + installationId);
-  return supertest(app).post('/v1/events').set('Authorization', `Bearer ${seedKey}`).send({
+  return supertest(__server).post('/v1/events').set('Authorization', `Bearer ${seedKey}`).send({
     events: [{
       eventId: 'e-' + Math.random().toString(36).slice(2),
       installationId, orgId,
@@ -79,6 +90,8 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
 
     // org-a admin
@@ -105,7 +118,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -115,7 +128,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   // -----------------------------------------------------------------------
 
   it('requires api key', async () => {
-    const r = await supertest(app).get('/v1/flows/available');
+    const r = await supertest(__server).get('/v1/flows/available');
     expect(r.status).toBe(401);
   });
 
@@ -128,7 +141,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await markAvailable(app, cookie, flowA);
     await markAvailable(app, cookie, flowB);
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/flows/available')
       .set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(200);
@@ -148,7 +161,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     // Set flowA as org default
     await assign(app, cookie, 'org', null, flowA);
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/flows/available')
       .set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(200);
@@ -165,7 +178,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await markAvailable(app, cookie, flowA);
 
     // org-b client queries — should see nothing
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/flows/available')
       .set('Authorization', `Bearer ${tokenB}`);
     expect(r.status).toBe(200);
@@ -177,7 +190,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   // -----------------------------------------------------------------------
 
   it('requires api key', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .put('/v1/flows/selection')
       .send({ projectId: 'p1', flowId: 'x' });
     expect(r.status).toBe(401);
@@ -187,7 +200,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     const flowA = await seedFlow(app, cookie, 'Flow A');
     await markAvailable(app, cookie, flowA);
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${token}`)
       .send({ flowId: flowA });
@@ -199,14 +212,14 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await markAvailable(app, cookie, flowA);
 
     // Select flowA for proj-1
-    const sel = await supertest(app)
+    const sel = await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'proj-1', flowId: flowA });
     expect(sel.status).toBe(200);
 
     // Verify via active endpoint
-    const active = await supertest(app)
+    const active = await supertest(__server)
       .get('/v1/flows/active?projectId=proj-1')
       .set('Authorization', `Bearer ${token}`);
     expect(active.status).toBe(200);
@@ -218,7 +231,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     const flowC = await seedFlow(app, cookie, 'Flow C');
     // Do NOT mark flowC available
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'proj-1', flowId: flowC });
@@ -231,7 +244,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await markAvailable(app, cookie, flowA);
 
     // org-b client tries to select org-a's flow
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${tokenB}`)
       .send({ projectId: 'proj-1', flowId: flowA });
@@ -241,7 +254,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   it('selection requires an installation-bound api key', async () => {
     const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
     const noInst = await issueApiKey(ctx.db, 'org-a', 'noinst'); // no installation
-    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${noInst}`)
+    const r = await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${noInst}`)
       .send({ projectId: 'proj-x', flowId: A });
     expect(r.status).toBe(403);
   });
@@ -249,7 +262,7 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   it('rejects selecting for a project owned by another installation', async () => {
     const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
     await seedProjectOwnership(app, ctx, 'org-a', 'inst-other', 'owned-elsewhere');
-    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+    const r = await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'owned-elsewhere', flowId: A });
     expect(r.status).toBe(403);
   });
@@ -257,15 +270,15 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   it('allows selecting for a project owned by the caller installation', async () => {
     const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
     await seedProjectOwnership(app, ctx, 'org-a', 'inst-a', 'mine');
-    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+    const r = await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'mine', flowId: A });
     expect(r.status).toBe(200);
-    const active = await supertest(app).get('/v1/flows/active?projectId=mine').set('Authorization', `Bearer ${token}`);
+    const active = await supertest(__server).get('/v1/flows/active?projectId=mine').set('Authorization', `Bearer ${token}`);
     expect(active.body.flow.id).toBe(A);
   });
 
   it('rejects a non-string flowId', async () => {
-    const r = await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
+    const r = await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'p1', flowId: 123 });
     expect(r.status).toBe(400);
   });
@@ -273,9 +286,9 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
   it('a second selection overwrites the first', async () => {
     const A = await seedFlow(app, cookie, 'A'); await markAvailable(app, cookie, A);
     const B = await seedFlow(app, cookie, 'B'); await markAvailable(app, cookie, B);
-    await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: A });
-    await supertest(app).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: B });
-    const active = await supertest(app).get('/v1/flows/active?projectId=p2').set('Authorization', `Bearer ${token}`);
+    await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: A });
+    await supertest(__server).put('/v1/flows/selection').set('Authorization', `Bearer ${token}`).send({ projectId: 'p2', flowId: B });
+    const active = await supertest(__server).get('/v1/flows/active?projectId=p2').set('Authorization', `Bearer ${token}`);
     expect(active.body.flow.id).toBe(B);
   });
 
@@ -284,20 +297,20 @@ describe('GET /v1/flows/available & PUT /v1/flows/selection', () => {
     await markAvailable(app, cookie, flowA);
 
     // Select first
-    await supertest(app)
+    await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'proj-1', flowId: flowA });
 
     // Now clear
-    const clr = await supertest(app)
+    const clr = await supertest(__server)
       .put('/v1/flows/selection')
       .set('Authorization', `Bearer ${token}`)
       .send({ projectId: 'proj-1', flowId: null });
     expect(clr.status).toBe(200);
 
     // Verify no assignment remains (no org default set, so falls through to null)
-    const active = await supertest(app)
+    const active = await supertest(__server)
       .get('/v1/flows/active?projectId=proj-1')
       .set('Authorization', `Bearer ${token}`);
     expect(active.status).toBe(200);

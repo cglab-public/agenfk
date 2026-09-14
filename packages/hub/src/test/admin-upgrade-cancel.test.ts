@@ -22,6 +22,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-cancel-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -57,6 +68,8 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
       releaseExists: async (version: string) => version === '0.3.1' || version === '0.3.0-beta.22',
     } as any);
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -73,13 +86,13 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   async function issueDirectiveAll(): Promise<string> {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
@@ -89,7 +102,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('rejects non-admin viewer with 403', async () => {
     const directiveId = await issueDirectiveAll();
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieView)
       .send({});
@@ -98,12 +111,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('rejects unauthenticated requests with 401', async () => {
     const directiveId = await issueDirectiveAll();
-    const r = await supertest(app).post(`/v1/admin/upgrade/${directiveId}/cancel`).send({});
+    const r = await supertest(__server).post(`/v1/admin/upgrade/${directiveId}/cancel`).send({});
     expect(r.status).toBe(401);
   });
 
   it('returns 404 for an unknown directive id', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/admin/upgrade/00000000-0000-0000-0000-000000000000/cancel')
       .set('Cookie', cookieAdmin)
       .send({});
@@ -113,7 +126,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
   it('returns 404 when the directive belongs to a different org', async () => {
     const directiveId = await issueDirectiveAll();
     const cookieAdminB = await loginAs(app, 'admin-b@x', 'longenough1');
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdminB)
       .send({});
@@ -128,7 +141,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('flips every pending target to cancelled and reports the count', async () => {
     const directiveId = await issueDirectiveAll();
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
@@ -157,7 +170,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
       [directiveId, 'inst-2'],
     );
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
@@ -177,11 +190,11 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('is idempotent: a second cancel returns 200 with cancelledCount=0', async () => {
     const directiveId = await issueDirectiveAll();
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
@@ -192,18 +205,18 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
   it('drops the directive off the fleet poll once cancelled', async () => {
     const directiveId = await issueDirectiveAll();
     // Sanity: pending directive shows up before cancel.
-    const before = await supertest(app)
+    const before = await supertest(__server)
       .get('/v1/upgrade-directive')
       .set('Authorization', `Bearer ${fleetTokenInst1}`);
     expect(before.status).toBe(200);
     expect(before.body.directiveId).toBe(directiveId);
 
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
 
-    const after = await supertest(app)
+    const after = await supertest(__server)
       .get('/v1/upgrade-directive')
       .set('Authorization', `Bearer ${fleetTokenInst1}`);
     expect(after.status).toBe(204);
@@ -211,12 +224,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('cancelled targets do not block a fresh directive (single-pending guard treats them as terminal)', async () => {
     const directiveId = await issueDirectiveAll();
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
 
-    const fresh = await supertest(app)
+    const fresh = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'all' }, confirmDowngrade: true });
@@ -226,12 +239,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
 
   it('surfaces a `cancelled` count in GET /v1/admin/upgrade progress', async () => {
     const directiveId = await issueDirectiveAll();
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
 
-    const list = await supertest(app).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
+    const list = await supertest(__server).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
     expect(list.status).toBe(200);
     const d = list.body.directives.find((x: any) => x.directiveId === directiveId);
     expect(d).toBeTruthy();

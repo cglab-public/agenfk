@@ -21,6 +21,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-retire-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -88,6 +99,8 @@ describe('retire-installation admin API', () => {
       releaseExists: async (version: string) => version === '1.2.3',
     } as any);
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -98,31 +111,31 @@ describe('retire-installation admin API', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated requests', async () => {
-      expect((await supertest(app).post('/v1/admin/installations/inst-1/retire')).status).toBe(401);
-      expect((await supertest(app).delete('/v1/admin/installations/inst-1/retire')).status).toBe(401);
+      expect((await supertest(__server).post('/v1/admin/installations/inst-1/retire')).status).toBe(401);
+      expect((await supertest(__server).delete('/v1/admin/installations/inst-1/retire')).status).toBe(401);
     });
 
     it('rejects non-admin sessions', async () => {
-      expect((await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieView)).status).toBe(403);
-      expect((await supertest(app).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieView)).status).toBe(403);
     });
   });
 
   describe('POST retire', () => {
     it('retires the installation and records who did it', async () => {
-      const r = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body.id).toBe('inst-1');
       expect(r.body.retiredAt).toBeTruthy();
 
-      const list = await supertest(app)
+      const list = await supertest(__server)
         .get('/v1/admin/installations?includeRetired=1')
         .set('Cookie', cookieAdmin);
       const row = list.body.find((i: any) => i.id === 'inst-1');
@@ -134,7 +147,7 @@ describe('retire-installation admin API', () => {
       await seedApiKey(ctx.db, 'org-a', 'hash-a', 'inst-1');
       await seedApiKey(ctx.db, 'org-a', 'hash-b', 'inst-1');
 
-      const r = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(r.body.revokedApiKeys).toBe(2);
       expect(Number((await liveKeys(ctx.db, 'org-a', 'inst-1')).n)).toBe(0);
@@ -145,7 +158,7 @@ describe('retire-installation admin API', () => {
       await seedApiKey(ctx.db, 'org-a', 'hash-a', 'inst-1');
       await seedApiKey(ctx.db, 'org-a', 'hash-other', 'inst-2');
 
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(Number((await liveKeys(ctx.db, 'org-a', 'inst-2')).n)).toBe(1);
     });
@@ -153,7 +166,7 @@ describe('retire-installation admin API', () => {
     it('cancels pending upgrade-directive targets so campaign boards can drain', async () => {
       await seedDirective(ctx.db, 'org-a', 'dir-1', 'inst-1', 'pending');
 
-      const r = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(r.body.cancelledDirectiveTargets).toBe(1);
       expect((await targetState(ctx.db, 'dir-1', 'inst-1')).state).toBe('cancelled');
@@ -162,7 +175,7 @@ describe('retire-installation admin API', () => {
     it('does not rewrite already-finished directive targets', async () => {
       await seedDirective(ctx.db, 'org-a', 'dir-done', 'inst-1', 'succeeded');
 
-      const r = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(r.body.cancelledDirectiveTargets).toBe(0);
       expect((await targetState(ctx.db, 'dir-done', 'inst-1')).state).toBe('succeeded');
@@ -179,7 +192,7 @@ describe('retire-installation admin API', () => {
         ['org-a', 'dev@acme.com', '2026-05-02', 1],
       );
 
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       const ev = await ctx.db.get('SELECT installation_id, user_key FROM events WHERE event_id = ?', ['ev-1']);
       expect(ev.installation_id).toBe('inst-1'); // provenance is immutable
@@ -193,8 +206,8 @@ describe('retire-installation admin API', () => {
 
     it('is idempotent — retiring twice is not an error and does not double-count', async () => {
       await seedApiKey(ctx.db, 'org-a', 'hash-a', 'inst-1');
-      const first = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
-      const second = await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const first = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const second = await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(first.status).toBe(200);
       expect(second.status).toBe(200);
@@ -203,7 +216,7 @@ describe('retire-installation admin API', () => {
     });
 
     it('404s an unknown installation', async () => {
-      const r = await supertest(app).post('/v1/admin/installations/nope/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/nope/retire').set('Cookie', cookieAdmin);
       expect(r.status).toBe(404);
     });
 
@@ -211,7 +224,7 @@ describe('retire-installation admin API', () => {
       await ctx.db.run("INSERT INTO orgs (id, name) VALUES ('org-b', 'B')");
       await seedInstallation(ctx.db, 'org-b', 'inst-b', 'x@b.com');
 
-      const r = await supertest(app).post('/v1/admin/installations/inst-b/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post('/v1/admin/installations/inst-b/retire').set('Cookie', cookieAdmin);
 
       expect(r.status).toBe(404);
       const row = await ctx.db.get('SELECT retired_at FROM installations WHERE id = ?', ['inst-b']);
@@ -221,27 +234,27 @@ describe('retire-installation admin API', () => {
 
   describe('DELETE retire (unretire)', () => {
     it('clears the retired flag', async () => {
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      const r = await supertest(app).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body.retired).toBe(false);
 
-      const list = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
       expect(list.body.some((i: any) => i.id === 'inst-1')).toBe(true);
     });
 
     it('does NOT restore revoked api_keys — the person re-joins', async () => {
       await seedApiKey(ctx.db, 'org-a', 'hash-a', 'inst-1');
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      await supertest(app).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).delete('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
       expect(Number((await liveKeys(ctx.db, 'org-a', 'inst-1')).n)).toBe(0);
     });
 
     it('404s an unknown installation', async () => {
-      const r = await supertest(app).delete('/v1/admin/installations/nope/retire').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).delete('/v1/admin/installations/nope/retire').set('Cookie', cookieAdmin);
       expect(r.status).toBe(404);
     });
   });
@@ -251,9 +264,9 @@ describe('retire-installation admin API', () => {
       // Its keys were just revoked, so it can never poll or report — targeting
       // it hangs the upgrade board forever, the exact failure retire prevents.
       await seedInstallation(ctx.db, 'org-a', 'inst-2', 'other@acme.com');
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '1.2.3', scope: { type: 'all' } });
@@ -267,9 +280,9 @@ describe('retire-installation admin API', () => {
     });
 
     it('refuses to target a retired installation explicitly', async () => {
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade')
         .set('Cookie', cookieAdmin)
         .send({ targetVersion: '1.2.3', scope: { type: 'installation', installationId: 'inst-1' } });
@@ -281,17 +294,17 @@ describe('retire-installation admin API', () => {
   describe('GET /v1/admin/installations filtering', () => {
     it('excludes retired installations by default', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-2', 'other@acme.com');
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      const list = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
 
       expect(list.body.map((i: any) => i.id)).toEqual(['inst-2']);
     });
 
     it('includes them flagged when asked', async () => {
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
 
-      const list = await supertest(app).get('/v1/admin/installations?includeRetired=1').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/installations?includeRetired=1').set('Cookie', cookieAdmin);
 
       const row = list.body.find((i: any) => i.id === 'inst-1');
       expect(row).toBeTruthy();
@@ -299,7 +312,7 @@ describe('retire-installation admin API', () => {
     });
 
     it('reports retired:false for live installations', async () => {
-      const list = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
       expect(list.body.find((i: any) => i.id === 'inst-1').retired).toBe(false);
     });
   });

@@ -15,6 +15,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-hidden-users-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -56,6 +67,8 @@ describe('hidden-users admin API', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -65,34 +78,34 @@ describe('hidden-users admin API', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated requests', async () => {
-      expect((await supertest(app).get('/v1/admin/hidden-users')).status).toBe(401);
-      expect((await supertest(app).post('/v1/admin/hidden-users').send({ userKey: 'a@x' })).status).toBe(401);
-      expect((await supertest(app).delete('/v1/admin/hidden-users/a@x')).status).toBe(401);
+      expect((await supertest(__server).get('/v1/admin/hidden-users')).status).toBe(401);
+      expect((await supertest(__server).post('/v1/admin/hidden-users').send({ userKey: 'a@x' })).status).toBe(401);
+      expect((await supertest(__server).delete('/v1/admin/hidden-users/a@x')).status).toBe(401);
     });
 
     it('rejects non-admin sessions', async () => {
-      expect((await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieView)).status).toBe(403);
-      expect((await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieView).send({ userKey: 'a@x' })).status).toBe(403);
-      expect((await supertest(app).delete('/v1/admin/hidden-users/a@x').set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieView).send({ userKey: 'a@x' })).status).toBe(403);
+      expect((await supertest(__server).delete('/v1/admin/hidden-users/a@x').set('Cookie', cookieView)).status).toBe(403);
     });
   });
 
   describe('POST /v1/admin/hidden-users', () => {
     it('hides a person and lists them afterwards', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/hidden-users')
         .set('Cookie', cookieAdmin)
         .send({ userKey: 'departed@acme.com' });
       expect(r.status).toBe(201);
 
-      const list = await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
       expect(list.status).toBe(200);
       expect(list.body).toHaveLength(1);
       expect(list.body[0].userKey).toBe('departed@acme.com');
@@ -101,27 +114,27 @@ describe('hidden-users admin API', () => {
     });
 
     it('normalizes the user_key to lowercase + trim', async () => {
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/hidden-users')
         .set('Cookie', cookieAdmin)
         .send({ userKey: '  Departed@Acme.COM ' });
       expect(r.status).toBe(201);
-      const list = await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
       expect(list.body[0].userKey).toBe('departed@acme.com');
     });
 
     it('rejects a missing/invalid userKey', async () => {
       for (const body of [{}, { userKey: '' }, { userKey: '   ' }, { userKey: 42 }]) {
-        const r = await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send(body);
+        const r = await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send(body);
         expect(r.status).toBe(400);
       }
     });
 
     it('is idempotent — hiding an already-hidden person succeeds without duplicating', async () => {
-      await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
-      const r = await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
+      await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
+      const r = await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
       expect([200, 201]).toContain(r.status);
-      const list = await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
       expect(list.body).toHaveLength(1);
     });
 
@@ -134,7 +147,7 @@ describe('hidden-users admin API', () => {
       await seedApiKey(ctx.db, 'org-a', 'hash-active', 'inst-3');
       await seedApiKey(ctx.db, 'org-a', 'hash-unbound', null);
 
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/hidden-users')
         .set('Cookie', cookieAdmin)
         .send({ userKey: 'departed@acme.com' });
@@ -156,7 +169,7 @@ describe('hidden-users admin API', () => {
       await seedInstallation(ctx.db, 'org-b', 'inst-b', 'departed@acme.com');
       await seedApiKey(ctx.db, 'org-b', 'hash-org-b', 'inst-b');
 
-      await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
+      await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
 
       const key = await ctx.db.get<{ revoked_at: string | null }>(
         'SELECT revoked_at FROM api_keys WHERE token_hash = ?', ['hash-org-b'],
@@ -167,16 +180,16 @@ describe('hidden-users admin API', () => {
 
   describe('DELETE /v1/admin/hidden-users/:userKey', () => {
     it('unhides a hidden person (reversible)', async () => {
-      await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
-      const r = await supertest(app).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
+      const r = await supertest(__server).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       expect(r.body.unhidden).toBe(true);
-      const list = await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
       expect(list.body).toHaveLength(0);
     });
 
     it('returns 404 (or unhidden:false) when the person is not hidden', async () => {
-      const r = await supertest(app).delete('/v1/admin/hidden-users/nobody%40acme.com').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).delete('/v1/admin/hidden-users/nobody%40acme.com').set('Cookie', cookieAdmin);
       expect([404, 200]).toContain(r.status);
       if (r.status === 200) expect(r.body.unhidden).toBe(false);
     });
@@ -184,8 +197,8 @@ describe('hidden-users admin API', () => {
     it('does not restore revoked api_keys (revocation is permanent)', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', 'departed@acme.com');
       await seedApiKey(ctx.db, 'org-a', 'hash-departed-1', 'inst-1');
-      await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
-      await supertest(app).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'departed@acme.com' });
+      await supertest(__server).delete('/v1/admin/hidden-users/departed%40acme.com').set('Cookie', cookieAdmin);
       const key = await ctx.db.get<{ revoked_at: string | null }>(
         'SELECT revoked_at FROM api_keys WHERE token_hash = ?', ['hash-departed-1'],
       );
@@ -197,9 +210,9 @@ describe('hidden-users admin API', () => {
     it('returns hidden people scoped to the caller org only', async () => {
       await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
       await ctx.db.run(`INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)`, ['org-b', 'other@acme.com']);
-      await supertest(app).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'mine@acme.com' });
+      await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'mine@acme.com' });
 
-      const list = await supertest(app).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
+      const list = await supertest(__server).get('/v1/admin/hidden-users').set('Cookie', cookieAdmin);
       expect(list.body).toHaveLength(1);
       expect(list.body[0].userKey).toBe('mine@acme.com');
     });

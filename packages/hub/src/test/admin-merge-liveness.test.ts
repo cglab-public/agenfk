@@ -23,6 +23,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-mergelive-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -68,10 +79,10 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
     );
 
   const suggestions = () =>
-    supertest(app).get('/v1/admin/identity-suggestions').set('Cookie', cookie);
+    supertest(__server).get('/v1/admin/identity-suggestions').set('Cookie', cookie);
 
   const merge = (from: string, to: string) =>
-    supertest(app).post('/v1/admin/user-keys/merge').set('Cookie', cookie).send({ from, to });
+    supertest(__server).post('/v1/admin/user-keys/merge').set('Cookie', cookie).send({ from, to });
 
   const aliases = () =>
     ctx.db.all('SELECT alias_key, canonical_key, merge_id FROM user_key_aliases WHERE org_id = ? ORDER BY alias_key', ['org-a']);
@@ -82,16 +93,18 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    cookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
+    cookie = (await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
       .headers['set-cookie']?.[0] ?? '';
     ingestToken = await issueApiKey(ctx.db, 'org-a', 'ingest');
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -274,7 +287,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
       expect((await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com')).status).toBe(200);
 
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'woken-1',
@@ -306,7 +319,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await merge('osuser:dev@aaaaaaaa', 'old@cglab.com');
       await merge('old@cglab.com', 'new@cglab.com');
 
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'woken-2',
@@ -333,7 +346,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
       await ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org-a', 'dana@cglab.com']);
 
-      const r = await supertest(app).post('/v1/events')
+      const r = await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'woken-3',
@@ -414,7 +427,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       const m1 = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
       await merge('b@cglab.com', 'c@cglab.com');
 
-      const rev = await supertest(app)
+      const rev = await supertest(__server)
         .post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
@@ -429,10 +442,10 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
       const m1 = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
       await merge('b@cglab.com', 'c@cglab.com');
-      await supertest(app).post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
+      await supertest(__server).post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'woken-chain', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
@@ -455,7 +468,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
       expect((await merge('old@cglab.com', 'new@cglab.com')).status).toBe(200);
 
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'stale-email', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
@@ -474,7 +487,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await install('aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com', 'dev', hoursAgo(24 * 7));
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'old@cglab.com');
       await merge('old@cglab.com', 'new@cglab.com');
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'stale-email-2', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
@@ -517,7 +530,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       const first = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
       await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
 
-      const rev = await supertest(app)
+      const rev = await supertest(__server)
         .post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
       expect(rev.body.eventsRestored).toBe(1);
@@ -591,7 +604,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       );
       await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev');
 
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'cross-org', installationId: 'aaaaaaaa-1111-2222-3333-444455556666',
@@ -661,7 +674,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
          VALUES ('m-newer', 'e1', 'b@cglab.com')`,
       );
 
-      const rev = await supertest(app)
+      const rev = await supertest(__server)
         .post('/v1/admin/user-keys/merges/m-newer/revert')
         .set('Cookie', cookie).send({});
       expect(rev.status).toBe(200);
@@ -696,7 +709,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
          VALUES ('m-newer', 'e1', 'b@cglab.com')`,
       );
 
-      const rev = await supertest(app).post('/v1/admin/user-keys/merges/m-newer/revert')
+      const rev = await supertest(__server).post('/v1/admin/user-keys/merges/m-newer/revert')
         .set('Cookie', cookie).send({});
 
       expect(rev.body.aliasesRestored).toBe(1);
@@ -727,7 +740,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
         );
       }
 
-      const rev = await supertest(app).post('/v1/admin/user-keys/merges/m-newer/revert')
+      const rev = await supertest(__server).post('/v1/admin/user-keys/merges/m-newer/revert')
         .set('Cookie', cookie).send({});
 
       expect(rev.body.aliasesRemoved).toBe(2);
@@ -742,7 +755,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
       const only = await merge('osuser:dev@aaaaaaaa', 'b@cglab.com');
 
-      await supertest(app).post(`/v1/admin/user-keys/merges/${only.body.mergeId}/revert`)
+      await supertest(__server).post(`/v1/admin/user-keys/merges/${only.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
       expect(await aliases()).toEqual([]);
@@ -756,7 +769,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       const m = await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
       expect(await aliases()).toHaveLength(1);
 
-      const rev = await supertest(app)
+      const rev = await supertest(__server)
         .post(`/v1/admin/user-keys/merges/${m.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
       expect(rev.status).toBe(200);
@@ -772,7 +785,7 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       const first = await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
       await merge('osuser:ops@bbbbbbbb', 'oscar@cglab.com');
 
-      await supertest(app)
+      await supertest(__server)
         .post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
@@ -785,11 +798,11 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
       await install('aaaaaaaa-1111-2222-3333-444455556666', null, 'dev', hoursAgo(24 * 7));
       await event('e1', 'aaaaaaaa-1111-2222-3333-444455556666', 'osuser:dev@aaaaaaaa');
       const m = await merge('osuser:dev@aaaaaaaa', 'dana@cglab.com');
-      await supertest(app)
+      await supertest(__server)
         .post(`/v1/admin/user-keys/merges/${m.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
-      await supertest(app).post('/v1/events')
+      await supertest(__server).post('/v1/events')
         .set('Authorization', `Bearer ${ingestToken}`)
         .send({ events: [{
           eventId: 'woken-4',

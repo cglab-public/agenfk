@@ -8,6 +8,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flow-avail-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -44,6 +55,8 @@ describe('flow org_available — admin availability toggle', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
@@ -55,83 +68,83 @@ describe('flow org_available — admin availability toggle', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('newly created flow is not org-available by default', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('NewFlow') })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('NewFlow') })).body;
 
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     const found = list.body.find((flow: any) => flow.id === f.id);
     expect(found).toBeDefined();
     expect(found.orgAvailable).toBe(false);
   });
 
   it('PUT /v1/admin/flows/:id/availability { available: true } marks it available', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('AvailFlow') })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('AvailFlow') })).body;
 
-    const toggleR = await supertest(app)
+    const toggleR = await supertest(__server)
       .put(`/v1/admin/flows/${f.id}/availability`)
       .set('Cookie', cookieA)
       .send({ available: true });
     expect(toggleR.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     const found = list.body.find((flow: any) => flow.id === f.id);
     expect(found.orgAvailable).toBe(true);
   });
 
   it('availability can be turned off again', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('ToggleFlow') })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('ToggleFlow') })).body;
 
     // Turn on
-    await supertest(app)
+    await supertest(__server)
       .put(`/v1/admin/flows/${f.id}/availability`)
       .set('Cookie', cookieA)
       .send({ available: true });
 
     // Turn off
-    const toggleOff = await supertest(app)
+    const toggleOff = await supertest(__server)
       .put(`/v1/admin/flows/${f.id}/availability`)
       .set('Cookie', cookieA)
       .send({ available: false });
     expect(toggleOff.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     const found = list.body.find((flow: any) => flow.id === f.id);
     expect(found.orgAvailable).toBe(false);
   });
 
   it('setting a flow as the org default also makes it org-available', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('DefaultFlow') })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('DefaultFlow') })).body;
 
-    const assignR = await supertest(app)
+    const assignR = await supertest(__server)
       .put('/v1/admin/flow-assignments')
       .set('Cookie', cookieA)
       .send({ scope: 'org', flowId: f.id });
     expect(assignR.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     const found = list.body.find((flow: any) => flow.id === f.id);
     expect(found.orgAvailable).toBe(true);
   });
 
   it('multiple flows can be org-available simultaneously', async () => {
-    const f1 = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('FlowA') })).body;
-    const f2 = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('FlowB') })).body;
+    const f1 = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('FlowA') })).body;
+    const f2 = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('FlowB') })).body;
 
-    await supertest(app)
+    await supertest(__server)
       .put(`/v1/admin/flows/${f1.id}/availability`)
       .set('Cookie', cookieA)
       .send({ available: true });
-    await supertest(app)
+    await supertest(__server)
       .put(`/v1/admin/flows/${f2.id}/availability`)
       .set('Cookie', cookieA)
       .send({ available: true });
 
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     const found1 = list.body.find((flow: any) => flow.id === f1.id);
     const found2 = list.body.find((flow: any) => flow.id === f2.id);
     expect(found1.orgAvailable).toBe(true);
@@ -139,10 +152,10 @@ describe('flow org_available — admin availability toggle', () => {
   });
 
   it('availability toggle is org-isolated', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('OrgAFlow') })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('OrgAFlow') })).body;
 
     // org-b tries to toggle org-a's flow -> 404
-    const bad = await supertest(app)
+    const bad = await supertest(__server)
       .put(`/v1/admin/flows/${f.id}/availability`)
       .set('Cookie', cookieB)
       .send({ available: true });

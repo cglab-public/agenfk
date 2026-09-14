@@ -20,6 +20,17 @@ import { createPasswordUser } from '../auth/password';
 import { hashToken } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-devbind-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -50,14 +61,14 @@ describe('device-code onboarding binds the installation', () => {
 
   /** Walk the whole flow and hand back the issued token. */
   const onboard = async (identity: unknown) => {
-    const start = await supertest(app).post('/hub/device/start').send(
+    const start = await supertest(__server).post('/hub/device/start').send(
       identity === undefined ? {} : { installation: identity },
     );
     expect(start.status).toBe(200);
-    const approve = await supertest(app).post('/hub/device/approve')
+    const approve = await supertest(__server).post('/hub/device/approve')
       .set('Cookie', cookie).send({ userCode: start.body.userCode });
     expect(approve.status).toBe(200);
-    const poll = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    const poll = await supertest(__server).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
     expect(poll.body.status).toBe('approved');
     return { token: poll.body.token as string, userCode: start.body.userCode as string };
   };
@@ -71,15 +82,17 @@ describe('device-code onboarding binds the installation', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -127,7 +140,7 @@ describe('device-code onboarding binds the installation', () => {
        VALUES ('dir-1', 'inst-device-1', 'pending')`,
     );
 
-    const r = await supertest(app).get('/v1/upgrade-directive').set('Authorization', `Bearer ${token}`);
+    const r = await supertest(__server).get('/v1/upgrade-directive').set('Authorization', `Bearer ${token}`);
 
     expect(r.status).toBe(200);
     expect(r.body.targetVersion).toBe('1.2.3');
@@ -141,7 +154,7 @@ describe('device-code onboarding binds the installation', () => {
     expect(row.installation_id).toBeNull();
     expect(row.label).toBe(`device:${userCode}`);
     // And the key still authenticates.
-    expect((await supertest(app).get('/v1/ping').set('Authorization', `Bearer ${token}`)).status).toBe(200);
+    expect((await supertest(__server).get('/v1/ping').set('Authorization', `Bearer ${token}`)).status).toBe(200);
   });
 
   it('ignores non-string identity fields rather than storing junk', async () => {
@@ -155,9 +168,9 @@ describe('device-code onboarding binds the installation', () => {
   });
 
   it('shows the approving admin whose machine it is', async () => {
-    const start = await supertest(app).post('/hub/device/start').send({ installation: IDENTITY });
+    const start = await supertest(__server).post('/hub/device/start').send({ installation: IDENTITY });
 
-    const r = await supertest(app).post('/hub/device/approve')
+    const r = await supertest(__server).post('/hub/device/approve')
       .set('Cookie', cookie).send({ userCode: start.body.userCode });
 
     // Approving a bare code tells an admin nothing about what they just let in.
@@ -168,14 +181,14 @@ describe('device-code onboarding binds the installation', () => {
   });
 
   it('does not leak one pending code identity into another', async () => {
-    const a = await supertest(app).post('/hub/device/start').send({ installation: IDENTITY });
-    const b = await supertest(app).post('/hub/device/start').send({
+    const a = await supertest(__server).post('/hub/device/start').send({ installation: IDENTITY });
+    const b = await supertest(__server).post('/hub/device/start').send({
       installation: { ...IDENTITY, installationId: 'inst-device-2', gitEmail: 'other@cglab.com' },
     });
-    await supertest(app).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: b.body.userCode });
-    const pollB = await supertest(app).post('/hub/device/poll').send({ deviceCode: b.body.deviceCode });
-    await supertest(app).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: a.body.userCode });
-    const pollA = await supertest(app).post('/hub/device/poll').send({ deviceCode: a.body.deviceCode });
+    await supertest(__server).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: b.body.userCode });
+    const pollB = await supertest(__server).post('/hub/device/poll').send({ deviceCode: b.body.deviceCode });
+    await supertest(__server).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: a.body.userCode });
+    const pollA = await supertest(__server).post('/hub/device/poll').send({ deviceCode: a.body.deviceCode });
 
     expect((await keyRow(pollB.body.token)).installation_id).toBe('inst-device-2');
     expect((await keyRow(pollA.body.token)).installation_id).toBe('inst-device-1');

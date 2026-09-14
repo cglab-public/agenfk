@@ -8,6 +8,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -43,6 +54,8 @@ describe('admin flow routes', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     // Two orgs: org-a (default) and org-b for isolation tests.
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
@@ -57,7 +70,7 @@ describe('admin flow routes', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -65,18 +78,18 @@ describe('admin flow routes', () => {
   // ── auth gating ────────────────────────────────────────────────────────────
   it('rejects non-admin sessions on flows endpoints', async () => {
     const cookie = await loginAs(app, 'view-a@x', 'longenough1');
-    const r1 = await supertest(app).get('/v1/admin/flows').set('Cookie', cookie);
+    const r1 = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookie);
     expect(r1.status).toBe(403);
-    const r2 = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie).send({ definition: sampleDefinition() });
+    const r2 = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie).send({ definition: sampleDefinition() });
     expect(r2.status).toBe(403);
-    const r3 = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
+    const r3 = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookie);
     expect(r3.status).toBe(403);
   });
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
   it('creates a flow with source=hub and version=1', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const r = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDefinition() });
     expect(r.status).toBe(201);
     expect(r.body.id).toBeTruthy();
@@ -88,7 +101,7 @@ describe('admin flow routes', () => {
 
   it('rejects invalid definition (missing steps)', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const r = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const r = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: { name: 'Bad', steps: [] } });
     expect(r.status).toBe(400);
   });
@@ -96,42 +109,42 @@ describe('admin flow routes', () => {
   it('lists flows for the caller org only (org isolation)', async () => {
     const cookieA = await loginAs(app, 'admin-a@x', 'longenough1');
     const cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
-    await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA)
+    await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA)
       .send({ definition: { ...sampleDefinition(), name: 'A-Flow' } });
-    await supertest(app).post('/v1/admin/flows').set('Cookie', cookieB)
+    await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieB)
       .send({ definition: { ...sampleDefinition(), name: 'B-Flow' } });
 
-    const listA = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieA);
+    const listA = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieA);
     expect(listA.status).toBe(200);
     expect(listA.body.map((f: any) => f.name)).toEqual(['A-Flow']);
 
-    const listB = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieB);
+    const listB = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieB);
     expect(listB.body.map((f: any) => f.name)).toEqual(['B-Flow']);
   });
 
   it('GET :id returns the flow; 404 across orgs', async () => {
     const cookieA = await loginAs(app, 'admin-a@x', 'longenough1');
     const cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA)
       .send({ definition: sampleDefinition() });
     const id = created.body.id;
 
-    const ok = await supertest(app).get(`/v1/admin/flows/${id}`).set('Cookie', cookieA);
+    const ok = await supertest(__server).get(`/v1/admin/flows/${id}`).set('Cookie', cookieA);
     expect(ok.status).toBe(200);
     expect(ok.body.id).toBe(id);
 
-    const cross = await supertest(app).get(`/v1/admin/flows/${id}`).set('Cookie', cookieB);
+    const cross = await supertest(__server).get(`/v1/admin/flows/${id}`).set('Cookie', cookieB);
     expect(cross.status).toBe(404);
   });
 
   it('PUT bumps version and persists changes', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDefinition() });
     const id = created.body.id;
 
     const updated = { ...sampleDefinition(), name: 'Renamed' };
-    const r = await supertest(app).put(`/v1/admin/flows/${id}`).set('Cookie', cookie)
+    const r = await supertest(__server).put(`/v1/admin/flows/${id}`).set('Cookie', cookie)
       .send({ definition: updated });
     expect(r.status).toBe(200);
     expect(r.body.version).toBe(2);
@@ -141,62 +154,62 @@ describe('admin flow routes', () => {
   it('PUT cannot cross org boundaries (404)', async () => {
     const cookieA = await loginAs(app, 'admin-a@x', 'longenough1');
     const cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA)
       .send({ definition: sampleDefinition() });
     const id = created.body.id;
-    const r = await supertest(app).put(`/v1/admin/flows/${id}`).set('Cookie', cookieB)
+    const r = await supertest(__server).put(`/v1/admin/flows/${id}`).set('Cookie', cookieB)
       .send({ definition: { ...sampleDefinition(), name: 'pwn' } });
     expect(r.status).toBe(404);
   });
 
   it('DELETE removes the flow', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDefinition() });
     const id = created.body.id;
-    const del = await supertest(app).delete(`/v1/admin/flows/${id}`).set('Cookie', cookie);
+    const del = await supertest(__server).delete(`/v1/admin/flows/${id}`).set('Cookie', cookie);
     expect(del.status).toBe(200);
-    const after = await supertest(app).get(`/v1/admin/flows/${id}`).set('Cookie', cookie);
+    const after = await supertest(__server).get(`/v1/admin/flows/${id}`).set('Cookie', cookie);
     expect(after.status).toBe(404);
   });
 
   it('DELETE refuses if the flow is currently assigned to the org', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDefinition() });
     const id = created.body.id;
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: id });
-    const del = await supertest(app).delete(`/v1/admin/flows/${id}`).set('Cookie', cookie);
+    const del = await supertest(__server).delete(`/v1/admin/flows/${id}`).set('Cookie', cookie);
     expect(del.status).toBe(409);
   });
 
   // ── Assignments ────────────────────────────────────────────────────────────
   it('GET /flow-assignments returns an empty array when none set', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body).toEqual([]);
   });
 
   it('PUT /flow-assignments sets and overwrites the org default flow', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const f1 = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const f1 = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: { ...sampleDefinition(), name: 'F1' } });
-    const f2 = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const f2 = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: { ...sampleDefinition(), name: 'F2' } });
 
-    const a1 = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    const a1 = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: f1.body.id });
     expect(a1.status).toBe(200);
     expect(a1.body.flowId).toBe(f1.body.id);
 
-    const a2 = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    const a2 = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: f2.body.id });
     expect(a2.status).toBe(200);
     expect(a2.body.flowId).toBe(f2.body.id);
 
-    const get = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookie);
+    const get = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookie);
     const orgRow = get.body.find((a: any) => a.scope === 'org');
     expect(orgRow.flowId).toBe(f2.body.id);
   });
@@ -204,20 +217,20 @@ describe('admin flow routes', () => {
   it('PUT /flow-assignments rejects flowId from another org', async () => {
     const cookieA = await loginAs(app, 'admin-a@x', 'longenough1');
     const cookieB = await loginAs(app, 'admin-b@x', 'longenough1');
-    const fa = await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA)
+    const fa = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA)
       .send({ definition: sampleDefinition() });
-    const r = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieB)
+    const r = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieB)
       .send({ flowId: fa.body.id });
     expect(r.status).toBe(404);
   });
 
   it('PUT /flow-assignments accepts null to clear assignment', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const f = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const f = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDefinition() });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: f.body.id });
-    const cleared = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    const cleared = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: null });
     expect(cleared.status).toBe(200);
     expect(cleared.body.flowId).toBeNull();

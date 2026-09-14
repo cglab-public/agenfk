@@ -12,6 +12,15 @@ import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
 import type { HubDb } from '../db/types';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * drainApp calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and createHubApp returns an Express
+ * app, so with `?.` those calls vanished silently.
+ */
+let __server: any;
+
 const SECRET = 'a'.repeat(64);
 
 interface Fixture {
@@ -30,8 +39,10 @@ async function bootHubOnPg(): Promise<Fixture> {
     defaultOrgId: 'org',
     db,
   });
+  if (__server) await new Promise<void>(r => __server.close(() => r()));
+  __server = out.app.listen(0);
   await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
-  const login = await supertest(out.app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+  const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
   const cookie = login.headers['set-cookie']?.[0] ?? '';
   const token = await issueApiKey(db, 'org', 'parity');
   return { app: out.app, db, cookie, token };
