@@ -93,8 +93,20 @@ const dataQueryModel = () => {
   return null;
 };
 
-beforeEach(() => get.mockReset());
-afterEach(() => { cleanup(); get.mockReset(); });
+
+// Same fixed-date fixture as the drill-down suite, so the same clock coupling
+// applies: the page's axis is a window measured from the real `now`, and from
+// 2026-09-22 this fixture's period falls entirely outside a 30d window. These
+// assertions are data-driven today and so survive, but the fuse is identical —
+// pin the clock rather than wait for the next assertion to arm it. (CGLAB-186.)
+const FIXTURE_NOW = new Date('2026-08-14T12:00:00.000Z');
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXTURE_NOW);
+  get.mockReset();
+});
+afterEach(() => { cleanup(); vi.useRealTimers(); get.mockReset(); });
 
 describe('parseFiltersOpen', () => {
   it('is open by default — hiding filters on first visit would be a regression', () => {

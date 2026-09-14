@@ -106,16 +106,63 @@ const openModal = async () => {
   return screen.findByRole('dialog');
 };
 
+// The page builds its heatmap axis from the REAL clock —
+// `fromIsoForRange(new Date(), range)` with a 30d default — while this file's
+// fixture pins its PRs to fixed dates in August 2026. Left on the wall clock
+// the two drift apart: once "today" moved more than 30 days past the fixture,
+// 2026-08-13 fell outside the window, the drillable cell stopped rendering and
+// every test here failed — on every commit, which is what made it look like a
+// regression rather than a stale fixture. Pin the clock inside the fixture's
+// period so the axis is deterministic. (CGLAB-186.)
+// One day after the fixture's PR day, so the fixture day sits inside the
+// window for EVERY preset the page offers (7d as well as the 30d default) —
+// picking a date near the period's end left only 9 days of slack and would
+// have re-armed this the moment the default range changed.
+const FIXTURE_NOW = new Date('2026-08-14T12:00:00.000Z');
+
 beforeEach(() => {
+  // shouldAdvanceTime keeps timer-driven work (react-query, RTL's findBy*
+  // polling) running instead of deadlocking on a frozen clock.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXTURE_NOW);
   get.mockReset();
 });
 
 afterEach(() => {
+  // cleanup() first: unmounting under the fake clock lets components clear
+  // their own timers, instead of having them discarded by the uninstall.
   cleanup();
+  vi.useRealTimers();
   get.mockReset();
 });
 
 describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
+  it('asks for the window the axis is drawn from, and drops days outside it', async () => {
+    // The coupling that rotted (CGLAB-186), asserted directly: the heatmap
+    // axis is the REQUESTED window, so a fixture day only has a cell while the
+    // clock keeps it inside that window. Naming it "whatever the real date is"
+    // would be false — the pinned clock is exactly what makes it true.
+    renderPage();
+    await screen.findByRole('button', { name: '2 PRs by alice@acme.com on 2026-08-13 — open list' });
+
+    // the request carried the 30d default window ending at the pinned now
+    const url = get.mock.calls.map(c => String(c[0])).find(u => u.includes('/v1/prs/overview'))!;
+    const from = new URL(url, 'http://x').searchParams.get('from')!;
+    expect(from.slice(0, 10)).toBe('2026-07-15');
+
+    // roll the clock past the window and the same cell is gone — this is the
+    // failure CGLAB-186 produced, now pinned as expected behaviour rather than
+    // left to surface as four "unable to find role=button" errors.
+    cleanup();
+    get.mockReset();
+    vi.setSystemTime(new Date('2027-01-01T00:00:00.000Z'));
+    renderPage();
+    expect(await screen.findByText('Total PRs')).toBeInTheDocument();
+    expect(screen.queryByRole('button', {
+      name: '2 PRs by alice@acme.com on 2026-08-13 — open list',
+    })).toBeNull();
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);
