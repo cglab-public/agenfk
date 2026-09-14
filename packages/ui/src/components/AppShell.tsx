@@ -522,7 +522,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * scroll-to-and-highlight unreachable. This gives it one back without taking
    * the row's click away from the terminal.
    */
-  const revealOnBoard = React.useCallback((row: { itemId: string; projectId: string }): void => {
+  const revealOnBoard = React.useCallback((row: { itemId: string; projectId?: string }): void => {
     focusItem(row.itemId, row.projectId);
     setActive('kanban');
   }, [focusItem]);
@@ -1264,7 +1264,7 @@ interface SidebarProps {
    * SessionRow-shaped parameter would have forced the menu to invent fields it
    * has no business knowing about, or to duplicate the navigation.
    */
-  revealOnBoard: (row: { itemId: string; projectId: string }) => void;
+  revealOnBoard: (row: { itemId: string; projectId?: string }) => void;
   /** Opens the settings screen. Pinned, so it is reachable at any list length. */
   openSettings: () => void;
 }
