@@ -20,7 +20,18 @@
  * Registration is a separate function from the registry itself so the rules
  * above are unit-testable without Electron.
  */
-import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron';
+/*
+ * TYPE-ONLY, deliberately. This module's own docblock below says the IpcLike
+ * shape exists "so tests need no Electron" - and a VALUE import of `ipcMain`
+ * silently undid that: importing it loads node_modules/electron/index.js,
+ * which reads the downloaded binary's path and throws when there is none.
+ *
+ * Locally the binary is there because the app runs, so ptyIpc.test.ts passed
+ * on every machine and failed in CI, where the download is skipped. The seam
+ * was already designed; it was defeated by one line. The caller passes the real
+ * ipcMain now.
+ */
+import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
 import { readPrefs, writePref, PREF_KEYS } from './prefs';
 import { detectEditors, editorUrlFor } from './editors';
@@ -59,7 +70,12 @@ export const senderWindowId = (event: { sender: Pick<WebContents, 'id'> }): numb
 
 export function registerPtyIpc(
   registry: PtyRegistry,
-  ipc: IpcLike = ipcMain,
+  /*
+   * REQUIRED, not defaulted to ipcMain. A default would have to import it as a
+   * value, which is exactly what made this module untestable without an
+   * Electron binary installed.
+   */
+  ipc: IpcLike,
   tmuxStatus: () => unknown = () => ({ available: false }),
   /**
    * Where desktop-owned preferences live.

@@ -8,7 +8,7 @@
  * needs no special case for app:// or file://, and nothing about the web flow
  * has to change to support the desktop one.
  */
-import { app, BrowserWindow, dialog, shell, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess, type UtilityProcess } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import { readFileSync } from 'fs';
@@ -407,7 +407,7 @@ async function boot(): Promise<void> {
       // userData, not the AgEnFK database: the database is shared with the
       // CLI and the server, and these preferences exist precisely to be out of
       // reach of anything that talks to the server. See main/prefs.ts.
-      registerPtyIpc(ptyRegistry, undefined, () => tmuxStatus, () => app.getPath('userData'), {
+      registerPtyIpc(ptyRegistry, ipcMain, () => tmuxStatus, () => app.getPath('userData'), {
         // whichOnPath answers with the resolved path or null; the editor
         // probe only asks whether it is there.
         which: async command => Boolean(await whichOnPath(command)),
