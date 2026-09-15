@@ -62,6 +62,46 @@ describe('parent hub: dispatching a flow to child hubs', () => {
 
   afterEach(async () => { ctx.stopWorkers?.(); await drainApp(app); await ctx.db.close(); cleanup(); });
 
+  describe('a dispatch is a decision about CONTENT, not a pointer to it', () => {
+    it('serves what was dispatched, not what the flow says now', async () => {
+      // Reading the flow LIVE at poll time meant an edit made after the
+      // dispatch reached whichever children had not polled yet — carried under
+      // the dispatch's ORIGINAL version number, because the payload paired a
+      // snapshot version with a live definition. Two hubs then run different
+      // flows while both report the same version, and the child's monotonic
+      // guard can never converge them.
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      const d = await dispatch({ flowId, scope: 'all' });
+      expect(d.status).toBe(200);
+
+      const first = await poll(a.token);
+      expect(first.status).toBe(200);
+      expect(first.body.flow.definition.name).toBe('Group TDD');
+      const servedVersion = first.body.flow.version;
+
+      // The admin edits the flow afterwards. No new dispatch is made.
+      const edited = await supertest(app).put(`/v1/admin/flows/${flowId}`).set('Cookie', cookie)
+        .send({ definition: { name: 'Edited after the dispatch', steps: [{ id: 'todo', name: 'TODO', order: 0 }] } });
+      expect(edited.status).toBe(200);
+
+      const second = await poll(b.token);
+      expect(second.status).toBe(200);
+      expect(second.body.dispatchId).toBe(first.body.dispatchId);
+      // Same dispatch, same content, same version — for every child.
+      expect(second.body.flow.definition.name).toBe('Group TDD');
+      expect(second.body.flow.version).toBe(servedVersion);
+    });
+
+    it('pairs the served definition with the version it is actually at', async () => {
+      // The two numbers in the payload used to be able to disagree.
+      const a = await enroll('alpha');
+      await dispatch({ flowId, scope: 'all' });
+      const r = await poll(a.token);
+      expect(r.body.flow.version).toBe(r.body.flowVersion);
+    });
+  });
+
   describe('targeting', () => {
     it('reaches only the hubs named in a selected dispatch', async () => {
       const a = await enroll('alpha');

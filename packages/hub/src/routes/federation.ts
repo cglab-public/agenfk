@@ -574,7 +574,7 @@ export function federationRouter(ctx: HubServerContext): Router {
     try {
       const { childHubId, orgId } = req.hubFederation!;
       const row = await outstandingDispatch(
-        'flow_dispatches', 'flow_dispatch_targets', 'd.flow_id, d.flow_version', childHubId, orgId,
+        'flow_dispatches', 'flow_dispatch_targets', 'd.flow_id, d.flow_version, d.definition_json', childHubId, orgId,
       );
 
       // Group upgrades share this feed (CGLAB-183). A child takes ONE directive
@@ -669,6 +669,14 @@ export function federationRouter(ctx: HubServerContext): Router {
         [row.id, childHubId, new Date().toISOString()],
       );
 
+      // The definition AS DISPATCHED, and the version it was dispatched at —
+      // one consistent pair. Serving the flow's CURRENT definition under the
+      // dispatch's original version number meant an edit made after the
+      // dispatch reached whichever children had not polled yet, stored under
+      // the old number: two hubs running different flows that both report the
+      // same version, which the monotonic guard can then never converge.
+      // Older dispatch rows have no snapshot, so they fall back to live.
+      const definitionJson = row.definition_json ?? flow.definition_json;
       res.json({
         kind: 'flow.dispatch',
         dispatchId: row.id,
@@ -677,8 +685,8 @@ export function federationRouter(ctx: HubServerContext): Router {
           id: flow.id,
           name: flow.name,
           description: flow.description ?? null,
-          version: Number(flow.version),
-          definition: JSON.parse(flow.definition_json),
+          version: Number(row.flow_version),
+          definition: JSON.parse(definitionJson),
         },
       });
     } catch (err) { next(err); }

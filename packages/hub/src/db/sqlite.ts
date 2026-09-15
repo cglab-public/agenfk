@@ -158,6 +158,13 @@ const SCHEMA_SQLITE = `
     org_id TEXT NOT NULL,
     flow_id TEXT NOT NULL,
     flow_version INTEGER NOT NULL,
+    -- The definition AS DISPATCHED. A dispatch is a decision about specific
+    -- content, so it carries that content rather than a pointer: reading the
+    -- flow live at poll time meant an edit made after the dispatch reached
+    -- whichever children had not polled yet, stored under the OLD version
+    -- number — two hubs running different flows that both report the same
+    -- version, and a monotonic guard that can never converge them.
+    definition_json TEXT,
     scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
     created_by_user_id TEXT,
     created_by_email TEXT,
@@ -762,6 +769,7 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // parent that happens inside the /deliver transaction, taking the child's
   // whole delivery batch down with it.
   for (const [table, column, ddl] of [
+    ['flow_dispatches', 'definition_json', 'definition_json TEXT'],
     ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],

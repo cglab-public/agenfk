@@ -9,6 +9,7 @@ import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { eligibleInstallations } from '../services/fleetUpgrade.js';
+import { invalidFlowDefinition } from '../services/flowDefinition.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
@@ -1325,18 +1326,7 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   // Validate that a flow definition body has the minimal shape we expect.
   // Mirrors core's `Flow` type contract (name + non-empty steps[] with id/name/order).
-  const validateDefinition = (def: any): string | null => {
-    if (!def || typeof def !== 'object') return 'definition must be an object';
-    if (typeof def.name !== 'string' || !def.name.trim()) return 'definition.name is required';
-    if (!Array.isArray(def.steps) || def.steps.length === 0) return 'definition.steps must be a non-empty array';
-    for (const s of def.steps) {
-      if (!s || typeof s !== 'object') return 'each step must be an object';
-      if (typeof s.id !== 'string' || !s.id) return 'each step requires an id';
-      if (typeof s.name !== 'string' || !s.name) return 'each step requires a name';
-      if (typeof s.order !== 'number') return 'each step requires a numeric order';
-    }
-    return null;
-  };
+  const validateDefinition = (def: any): string | null => invalidFlowDefinition(def);
 
   /**
    * A flow this hub received from its parent hub is not this hub's to change
@@ -2163,8 +2153,8 @@ export function adminRouter(ctx: HubServerContext): Router {
 
       // The flow must be one this org owns — dispatching by id alone would let
       // an admin push another tenant's flow into their own group.
-      const flow = await ctx.db.get<{ id: string; version: number }>(
-        'SELECT id, version FROM flows WHERE id = ? AND org_id = ?', [flowId, orgId],
+      const flow = await ctx.db.get<{ id: string; version: number; definition_json: string }>(
+        'SELECT id, version, definition_json FROM flows WHERE id = ? AND org_id = ?', [flowId, orgId],
       );
       if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
@@ -2185,10 +2175,10 @@ export function adminRouter(ctx: HubServerContext): Router {
       );
       await ctx.db.transaction(async () => {
         await ctx.db.run(
-          `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type,
+          `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, definition_json, scope_type,
                                         created_by_user_id, created_by_email, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [dispatchId, orgId, flow.id, Number(flow.version), scope,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dispatchId, orgId, flow.id, Number(flow.version), flow.definition_json, scope,
            req.session!.userId ?? null, actor?.email ?? null, now],
         );
         if (scope === 'selected') {

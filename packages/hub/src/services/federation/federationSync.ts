@@ -5,6 +5,7 @@ import {
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
 import { releaseParentFlows } from './parentFlows.js';
+import { invalidFlowDefinition } from '../flowDefinition.js';
 import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
 import { applyUpgradeCancel, type UpgradeCancel, type UpgradeCancelResult } from './upgradeCancel.js';
 import { reportUpgradeProgress } from './upgradeProgress.js';
@@ -297,7 +298,11 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
   const flow = directive.flow;
   if (!flow || typeof flow.id !== 'string' || !flow.id) return false;
   if (typeof flow.name !== 'string' || !flow.name) return false;
-  if (!flow.definition || typeof flow.definition !== 'object') return false;
+  // The same structural check this hub applies to its own admins' input. The
+  // parent is a different hub, so this is a trust boundary — and `typeof []`
+  // is 'object', which is how an empty definition used to install cleanly and
+  // reach every installation in the org.
+  if (invalidFlowDefinition(flow.definition)) return false;
 
   const version = Number(directive.flowVersion ?? flow.version ?? 1);
   if (!Number.isFinite(version)) return false;
@@ -306,12 +311,22 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
     `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, org_available, updated_at)
      VALUES (?, ?, ?, ?, ?, 'parent', ?, 1, ?)
      ON CONFLICT(id) DO UPDATE SET
-       name = excluded.name,
-       description = excluded.description,
-       definition_json = excluded.definition_json,
+       -- Content moves only on a genuinely newer version. A reclaim (see the
+       -- WHERE below) returns OWNERSHIP without rolling the content back: a
+       -- flow released on detach is edited locally and its version climbs, so
+       -- the parent's copy is usually OLDER by the time the hub rejoins, and
+       -- overwriting it would silently destroy that work.
+       name = CASE WHEN excluded.version > flows.version THEN excluded.name ELSE flows.name END,
+       description = CASE WHEN excluded.version > flows.version THEN excluded.description ELSE flows.description END,
+       definition_json = CASE WHEN excluded.version > flows.version THEN excluded.definition_json ELSE flows.definition_json END,
+       version = CASE WHEN excluded.version > flows.version THEN excluded.version ELSE flows.version END,
        source = 'parent',
-       version = excluded.version,
-       org_available = 1,
+       -- NOT forced back on. Which flows this hub offers its own teams is the
+       -- child's choice — the availability toggle is deliberately left
+       -- unlocked on a parent-origin flow — so a version bump must not
+       -- re-publish something an admin took out of the picker. A flow arriving
+       -- for the FIRST time is still published, by the INSERT above.
+       org_available = flows.org_available,
        updated_at = excluded.updated_at
      WHERE excluded.version > flows.version OR flows.source <> 'parent'`,
     [flow.id, orgId, flow.name, flow.description ?? null,

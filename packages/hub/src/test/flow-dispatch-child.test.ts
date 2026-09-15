@@ -159,8 +159,64 @@ describe('a flow that was unlocked and is dispatched again', () => {
     expect((await relocked()).source).toBe('parent');
   });
 
-  it('is made available to the org again', async () => {
-    expect(Number((await relocked()).org_available)).toBe(1);
+  it('does NOT re-publish it to the org behind the admin\'s back', async () => {
+    // This used to assert the opposite. Which flows this hub offers its teams
+    // is the child's choice — that is exactly why the availability toggle is
+    // left unlocked on a parent-origin flow — so an admin who took it out of
+    // the picker must not find it back there because the parent bumped a
+    // version. A flow arriving for the FIRST time is still published; only an
+    // existing row's choice is respected.
+    expect(Number((await relocked()).org_available)).toBe(0);
+  });
+
+  it('reclaims a locally-edited flow WITHOUT walking its content backwards', async () => {
+    // The realistic re-join: the flow was released on detach, the child edited
+    // it, and its version climbed past the parent's. Re-locking must return
+    // ownership without silently rolling the content back — the guard that
+    // makes a reclaim possible is not a licence to regress.
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version, org_available)
+       VALUES (?, ?, ?, ?, 'hub', 7, 1)`,
+      ['flow-parent-1', ORG, 'Local edits',
+       JSON.stringify({ name: 'Local edits', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+    );
+    await tick(transport(dispatch({ flowVersion: 2, flow: { ...dispatch().flow, version: 2 } })));
+
+    const row = await db.get<any>('SELECT source, name, version FROM flows WHERE id = ?', ['flow-parent-1']);
+    expect(row.source).toBe('parent');
+    expect(row.name).toBe('Local edits');
+    expect(Number(row.version)).toBe(7);
+  });
+
+  it('and a genuinely newer parent version still wins', async () => {
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version, org_available)
+       VALUES (?, ?, ?, ?, 'hub', 7, 1)`,
+      ['flow-parent-1', ORG, 'Local edits',
+       JSON.stringify({ name: 'Local edits', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+    );
+    await tick(transport(dispatch({ flowVersion: 9, flow: { ...dispatch().flow, version: 9, name: 'Group TDD v9' } })));
+
+    const row = await db.get<any>('SELECT source, name, version FROM flows WHERE id = ?', ['flow-parent-1']);
+    expect(row.name).toBe('Group TDD v9');
+    expect(Number(row.version)).toBe(9);
+    expect(row.source).toBe('parent');
+  });
+});
+
+describe('a definition the parent sent that this hub cannot use', () => {
+  it('is refused, not installed — the parent is a different hub', async () => {
+    // A definition gets the same structural check this hub applies to its own
+    // admins' input. Without it a buggy parent puts a flow with no steps in
+    // front of every installation, and the child reports it installed.
+    for (const [i, bad] of [{}, [], { name: 'x' }, { name: 'x', steps: [] }, { name: 'x', steps: [{ id: 'a' }] }].entries()) {
+      const out = await tick(transport(dispatch({
+        dispatchId: `bad-${i}`,
+        flow: { id: `bad-flow-${i}`, name: 'X', version: 1, definition: bad },
+      })));
+      expect(out.ok, JSON.stringify(bad)).toBe(true);
+    }
+    expect(await db.all<any>("SELECT id FROM flows WHERE source = 'parent'")).toHaveLength(0);
   });
 });
 
