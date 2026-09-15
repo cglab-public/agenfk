@@ -19,6 +19,7 @@ import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
+import { parentFlowLock } from './parentFlowLock';
 import { useTheme } from '../ThemeContext';
 import {
   PUBLIC_REGISTRY_REPO,
@@ -354,15 +355,30 @@ function AssignmentsPanel({
 
   const orgRow = assignments.find(a => a.scope === 'org');
   const availability = availabilityRowState(flow.orgAvailable === true, !!orgRow);
+  // The definition belongs to the parent hub; the availability does not, so
+  // this deliberately gates Edit alone. See parentFlowLock.
+  const lock = parentFlowLock((flow as { source?: string | null }).source);
 
   return (
     <div className="px-4 pb-4 pt-1 bg-chip border-t border-border-soft space-y-3">
+      {lock.locked && (
+        <p className="pt-2 text-xs text-ink-tertiary" data-testid="admin-flow-parent-lock">
+          {lock.reason}
+        </p>
+      )}
       <div className="flex items-center justify-between pt-2">
         <h3 className="text-xs uppercase tracking-wide font-semibold text-ink-tertiary">Assignments</h3>
         <div className="flex items-center gap-1.5">
           <button
             onClick={onEdit}
-            className="px-2 py-1 rounded-md text-[11px] font-semibold text-ink-secondary hover:bg-chip inline-flex items-center gap-1"
+            disabled={lock.locked}
+            title={lock.reason ?? undefined}
+            className={
+              'px-2 py-1 rounded-md text-[11px] font-semibold inline-flex items-center gap-1 ' +
+              (lock.locked
+                ? 'text-ink-tertiary opacity-60 cursor-not-allowed'
+                : 'text-ink-secondary hover:bg-chip')
+            }
             data-testid="admin-flow-edit-btn"
           >
             <Pencil className="w-3 h-3" /> Edit flow

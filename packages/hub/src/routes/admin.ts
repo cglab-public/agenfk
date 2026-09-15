@@ -21,6 +21,7 @@ import {
   releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified, asIdentityPolicy,
 } from '../services/federation/parentBinding.js';
 import { outboxDepth } from '../services/federation/federationSync.js';
+import { releaseParentFlows } from '../services/federation/parentFlows.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
 import { publicHubUrl } from '../util/publicUrl.js';
@@ -1301,7 +1302,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     name: string;
     description: string | null;
     definition_json: string;
-    source: 'hub' | 'community';
+    source: 'hub' | 'community' | 'parent';
     version: number;
     created_at: string;
     updated_at: string;
@@ -1335,6 +1336,27 @@ export function adminRouter(ctx: HubServerContext): Router {
     }
     return null;
   };
+
+  /**
+   * A flow this hub received from its parent hub is not this hub's to change
+   * (CGLAB-182). The parent owns the definition and re-dispatches it; letting a
+   * child edit it would produce a flow that silently reverts on the next
+   * dispatch, and letting a child delete it would produce one that silently
+   * comes back.
+   *
+   * SERVER-side on purpose. hub-ui disables the controls and says why, but that
+   * is the explanation — this is the control, and it holds for the CLI, a
+   * script, or any other client talking to the API.
+   *
+   * Deliberately NOT applied to org-availability: the definition is the
+   * parent's, but which flows this hub offers its own teams is the child's own
+   * choice. And it is keyed on the ORIGIN, never the name — a flow the child
+   * authored that happens to share a dispatched flow's name is an ordinary
+   * local flow, which is exactly what the install-alongside rule produces.
+   */
+  const PARENT_FLOW_LOCKED =
+    'This flow was sent by the parent hub and is managed there. It stays if this hub leaves the group, and becomes editable then.';
+  const parentOwned = (row: { source?: string | null }) => row.source === 'parent';
 
   // ── Project discovery (for assignment UI pickers) ───────────────────────
   // Returns the distinct project ids ever ingested for this org, with the
@@ -1414,6 +1436,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.params.id, req.session!.orgId],
     );
     if (!existing) return res.status(404).json({ error: 'Flow not found' });
+    if (parentOwned(existing)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
     const definition = req.body?.definition;
     const err = validateDefinition(definition);
     if (err) return res.status(400).json({ error: err });
@@ -1448,6 +1471,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
+    const owned = await ctx.db.get<FlowRow>(
+      'SELECT source FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (owned && parentOwned(owned)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
     // Refuse to delete a flow that is currently assigned at any scope.
     const assignments = await ctx.db.all<{ scope: string; target_id: string }>(
       'SELECT scope, target_id FROM flow_assignments WHERE org_id = ? AND flow_id = ?',
@@ -2576,9 +2604,12 @@ export function adminRouter(ctx: HubServerContext): Router {
       // stored in clear and gates this route on its own.
       const { present, state } = await readBindingStateUnverified(ctx.db);
       if (!present) {
-        // Nothing usable to leave: an absent or unparseable row.
+        // Nothing usable to leave: an absent or unparseable row. Release the
+        // flows anyway — a hub with no readable binding is a hub with no
+        // parent, and leaving them locked would strand them permanently.
         await clearParentBinding(ctx.db);
         await setReleaseRequestedFlag(ctx.db, false);
+        await releaseParentFlows(ctx.db);
         res.json({ bound: false });
         return;
       }
@@ -2593,6 +2624,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       // data as a side effect of tidying up a relationship.
       await clearParentBinding(ctx.db);
       await setReleaseRequestedFlag(ctx.db, false);
+      // The flows the parent sent STAY, and become this hub's own — detaching
+      // must not take away what a team is working under.
+      await releaseParentFlows(ctx.db);
       res.json({ bound: false });
     } catch (err) { next(err); }
   });

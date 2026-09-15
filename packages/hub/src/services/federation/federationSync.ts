@@ -4,6 +4,7 @@ import {
   readParentBinding, markBindingRevoked, writeParentBinding, PARENT_BINDING_KEY,
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
+import { releaseParentFlows } from './parentFlows.js';
 
 /**
  * The child half of hub federation (CGLAB-181).
@@ -325,6 +326,11 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   } catch (err) {
     if (isRevocation(err)) {
       await markBindingRevoked(db, secretKey);
+      // The parent let this hub go. Its flows become ordinary local flows now,
+      // not whenever an admin next happens to click Leave — until then they
+      // would be locked to a parent that is no longer there. See
+      // releaseParentFlows.
+      await releaseParentFlows(db);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
