@@ -31,11 +31,14 @@ describe('msOf — comparing dispatch timestamps across backend row shapes', () 
     expect(msOf(older) < msOf(newer)).toBe(true);
   });
 
-  it('treats an unusable value as the beginning of time rather than throwing', () => {
-    // A malformed or null timestamp must not take the whole feed down; being
-    // sorted first is the harmless outcome.
-    expect(msOf(null)).toBe(0);
-    expect(msOf(undefined)).toBe(0);
-    expect(msOf('not a date')).toBe(0);
+  it('sorts an unusable value LAST, so it loses rather than wins', () => {
+    // A malformed or null timestamp must not take the feed down — but it must
+    // also not be treated as the oldest thing in the world, because oldest
+    // WINS here. Sorting it first would promote one broken row ahead of every
+    // correct one, permanently.
+    const valid = msOf('2026-09-15T10:00:00.000Z');
+    for (const bad of [null, undefined, 'not a date', {}, NaN]) {
+      expect(msOf(bad) > valid).toBe(true);
+    }
   });
 });

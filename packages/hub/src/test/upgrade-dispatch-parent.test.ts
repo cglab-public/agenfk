@@ -153,6 +153,46 @@ describe('parent hub: dispatching a group upgrade', () => {
     expect((await create({ targetVersion: '1.2.3', scope: 'selected', childHubIds: [] })).status).toBe(400);
   });
 
+  it('tolerates the same hub named twice instead of falling over', async () => {
+    // A multi-select sending a repeated id is an ordinary client bug, not a
+    // server error. Without de-duplication the second target insert violates
+    // the primary key, the transaction rolls back and nothing is created.
+    const a = await enroll('alpha');
+    const r = await create({
+      targetVersion: '1.2.3', scope: 'selected', childHubIds: [a.childHubId, a.childHubId],
+    });
+    expect(r.status).toBe(200);
+    const rows = await ctx.db.all<any>(
+      'SELECT child_hub_id FROM upgrade_dispatch_targets WHERE dispatch_id = ?', [r.body.id],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  it('refuses a selected dispatch naming a hub it cannot target, rather than creating a black hole', async () => {
+    // Silently skipping every bad id produced a dispatch with no targets that
+    // could never be served to anyone, returned 200, and was indistinguishable
+    // in the listing from an 'all' dispatch nobody had polled yet. POST
+    // /upgrade already refuses the whole batch and names what was missing.
+    const a = await enroll('alpha');
+    const r = await create({
+      targetVersion: '1.2.3', scope: 'selected', childHubIds: [a.childHubId, 'no-such-hub'],
+    });
+    expect(r.status).toBe(404);
+    expect(r.body.missing).toEqual(['no-such-hub']);
+    expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM upgrade_dispatches')).toMatchObject({ n: 0 });
+  });
+
+  it('refuses a selected dispatch naming a DETACHED hub', async () => {
+    const a = await enroll('alpha');
+    const b = await enroll('beta');
+    await supertest(app).post(`/v1/admin/child-hubs/${b.childHubId}/detach`).set('Cookie', cookie).send({});
+    const r = await create({
+      targetVersion: '1.2.3', scope: 'selected', childHubIds: [a.childHubId, b.childHubId],
+    });
+    expect(r.status).toBe(404);
+    expect(r.body.missing).toEqual([b.childHubId]);
+  });
+
   it('does not serve a cancelled dispatch', async () => {
     const a = await enroll('alpha');
     const d = await create({ targetVersion: '1.2.3', scope: 'all' });
@@ -174,6 +214,71 @@ describe('parent hub: dispatching a group upgrade', () => {
     expect(row.targets[0]).toMatchObject({ childHubId: a.childHubId, name: 'alpha', state: 'pending' });
   });
 
+  it('an older flow dispatch whose flow was DELETED does not block every upgrade', async () => {
+    // The feed picks the older kind first and only then resolves it. A flow
+    // dispatch whose flow has since been deleted can never be served and can
+    // never leave pending — no target row is ever created for it — so if it
+    // merely short-circuits the response, it starves every upgrade dispatch
+    // behind it, on every child, forever. And invisibly: the admin board shows
+    // the upgrade with an empty target list, which reads as "nobody polled".
+    const a = await enroll('alpha');
+    await ctx.db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['doomed', 'org', 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    const fd = await supertest(app).post('/v1/admin/flow-dispatches')
+      .set('Cookie', cookie).send({ flowId: 'doomed', scope: 'all' });
+    expect(fd.status).toBe(200);
+    await ctx.db.run('DELETE FROM flows WHERE id = ?', ['doomed']);
+
+    const d = await create({ targetVersion: '1.2.3', scope: 'all' });
+    const served = await directives(a.token);
+    expect(served.status).toBe(200);
+    expect(served.body.kind).toBe('upgrade.dispatch');
+    expect(served.body.dispatchId).toBe(d.body.id);
+  });
+
+  it('serves an upgrade issued BEFORE an outstanding flow dispatch', async () => {
+    // The direction the SQLite suite did not previously prove: with both kinds
+    // outstanding, the older upgrade must win. Timestamps are set explicitly
+    // because two rows created microseconds apart can land in the same
+    // millisecond, and a tie would make this pass whatever the comparison did.
+    const a = await enroll('alpha');
+    const d = await create({ targetVersion: '1.2.3', scope: 'all' });
+    await ctx.db.run('UPDATE upgrade_dispatches SET created_at = ? WHERE id = ?',
+      [new Date(Date.now() - 60_000).toISOString(), d.body.id]);
+
+    await ctx.db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['later', 'org', 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    expect((await supertest(app).post('/v1/admin/flow-dispatches')
+      .set('Cookie', cookie).send({ flowId: 'later', scope: 'all' })).status).toBe(200);
+
+    expect((await directives(a.token)).body.kind).toBe('upgrade.dispatch');
+  });
+
+  it('an upgrade with an unusable timestamp LOSES the tie-break rather than winning it', async () => {
+    // A null or malformed created_at must not promote a dispatch ahead of
+    // everything else for the rest of time. Sorting it last is the harmless
+    // direction; sorting it first inverts the whole rule.
+    const a = await enroll('alpha');
+    const d = await create({ targetVersion: '1.2.3', scope: 'all' });
+    await ctx.db.run('UPDATE upgrade_dispatches SET created_at = ? WHERE id = ?', ['not a date', d.body.id]);
+
+    await ctx.db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['f-ok', 'org', 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    expect((await supertest(app).post('/v1/admin/flow-dispatches')
+      .set('Cookie', cookie).send({ flowId: 'f-ok', scope: 'all' })).status).toBe(200);
+
+    expect((await directives(a.token)).body.kind).toBe('flow.dispatch');
+  });
+
   it('serves the OLDEST outstanding directive first, whichever kind it is', async () => {
     // Both kinds share one feed and a child takes one per poll. Oldest-first
     // keeps them in the order the admin actually issued them, instead of one
@@ -187,6 +292,10 @@ describe('parent hub: dispatching a group upgrade', () => {
     const flowDispatch = await supertest(app).post('/v1/admin/flow-dispatches')
       .set('Cookie', cookie).send({ flowId: 'f1', scope: 'all' });
     expect(flowDispatch.status).toBe(200);
+    // Explicit, because two rows created microseconds apart can share a
+    // millisecond and a tie would satisfy this assertion for the wrong reason.
+    await ctx.db.run('UPDATE flow_dispatches SET created_at = ? WHERE id = ?',
+      [new Date(Date.now() - 60_000).toISOString(), flowDispatch.body.id]);
     await create({ targetVersion: '1.2.3', scope: 'all' });
 
     expect((await directives(a.token)).body.kind).toBe('flow.dispatch');

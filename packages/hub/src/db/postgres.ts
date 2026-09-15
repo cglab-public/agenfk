@@ -203,7 +203,6 @@ const SCHEMA_PG = `
     child_hub_id TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     detail TEXT,
-    seq INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (dispatch_id, child_hub_id)
   );

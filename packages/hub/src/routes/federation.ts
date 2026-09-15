@@ -34,6 +34,10 @@ const MAX_DELIVER_ROWS = 500;
 /**
  * A created_at as milliseconds, whatever shape the backend handed back.
  *
+ * An unusable value sorts LAST, not first. Oldest WINS here, so mapping a null
+ * or malformed timestamp to 0 would promote that one broken row ahead of every
+ * correct one, on every poll, for the rest of the hub's life.
+ *
  * Postgres (and pg-mem) return a Date here; SQLite returns an ISO string.
  * Within ONE backend a bare `<` happens to be correct for both shapes — Dates
  * compare by valueOf, ISO strings compare lexicographically — so this is
@@ -45,7 +49,7 @@ const MAX_DELIVER_ROWS = 500;
 export function msOf(v: unknown): number {
   if (v instanceof Date) return v.getTime();
   const t = Date.parse(String(v ?? ''));
-  return Number.isNaN(t) ? 0 : t;
+  return Number.isNaN(t) ? Number.MAX_SAFE_INTEGER : t;
 }
 
 export function forwardedEventId(childHubId: string, eventId: string): string {
@@ -461,7 +465,21 @@ export function federationRouter(ctx: HubServerContext): Router {
         'upgrade_dispatches', 'upgrade_dispatch_targets', 'd.target_version, d.confirm_downgrade', childHubId, orgId,
       );
 
-      if (upgradeRow && (!row || msOf(upgradeRow.created_at) < msOf(row.created_at))) {
+      // Resolve the flow candidate FIRST. A dispatch whose flow has since been
+      // deleted can never be served and can never leave `pending` — no target
+      // row is ever created for it — so if it were merely allowed to win the
+      // pick and then 204, it would starve every upgrade behind it on every
+      // child, permanently and invisibly. Dropping it from the running instead
+      // means the feed keeps moving.
+      const flow = row
+        ? await ctx.db.get<any>(
+            'SELECT id, name, description, definition_json, version FROM flows WHERE id = ? AND org_id = ?',
+            [row.flow_id, orgId],
+          )
+        : null;
+      const flowCandidate = flow ? row : null;
+
+      if (upgradeRow && (!flowCandidate || msOf(upgradeRow.created_at) < msOf(flowCandidate.created_at))) {
         // Serving is not the upgrade landing: the row stays pending until the
         // child reports what its own installations actually did.
         await ctx.db.run(
@@ -478,15 +496,10 @@ export function federationRouter(ctx: HubServerContext): Router {
         return;
       }
 
-      if (!row) { res.status(204).end(); return; }
-
-      const flow = await ctx.db.get<any>(
-        'SELECT id, name, description, definition_json, version FROM flows WHERE id = ? AND org_id = ?',
-        [row.flow_id, orgId],
-      );
-      // The flow was deleted after the dispatch was made. Nothing to install,
-      // and serving a half-directive would just fail on the child.
-      if (!flow) { res.status(204).end(); return; }
+      // Nothing outstanding, or the only thing outstanding was a flow dispatch
+      // whose flow is gone — serving a half-directive would just fail on the
+      // child.
+      if (!flowCandidate || !flow) { res.status(204).end(); return; }
 
       // Record that this hub has now SEEN it. Still pending: serving is not
       // landing, and only a report from the child moves this off pending.
