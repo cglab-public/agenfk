@@ -24,7 +24,6 @@ import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
-import { AgenfkFlag } from './AgenfkFlag';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import {
@@ -1034,26 +1033,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* The strip is a ROW holding the mark and the tablist, not the
-              tablist itself. `role="tablist"` may only contain tabs, so the
-              flag cannot live inside it - and a mark floating outside the bar
-              would sit outside the drag region and leave a dead patch in the
-              title bar. Hence its own drag region: the whole top edge stays a
-              window handle. */}
-          <div className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">
-            <div
-              data-app-region={isMac ? 'drag' : undefined}
-              data-reserves-window-controls={reservesWindowControls ? 'true' : undefined}
-              className={clsx(
-                'flex items-center pt-2 pb-1.5 pr-2',
-                reservesWindowControls ? 'pl-12' : 'pl-3',
-              )}
-            >
-              {/* The mark alone. The wordmark is deliberately absent: the
-                  window already says what the app is, and spelling the name out
-                  on every screen is what a chrome bar has least room for. */}
-              <AgenfkFlag size={14} />
-            </div>
           <div
             role="tablist"
             aria-label="Views"
@@ -1066,7 +1045,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // lights occupy ~78px from the window edge. Without reserving the
             // difference the first tab renders UNDER the window buttons —
             // unclickable, with the OS window menu opening on top of it.
-            className="flex shrink-0 gap-1 pt-2 pr-3"
+            data-reserves-window-controls={reservesWindowControls ? 'true' : undefined}
+            className={clsx(
+              'flex shrink-0 gap-1 border-b border-border-soft bg-nav-surface pt-2 pr-3',
+              reservesWindowControls ? 'pl-12' : 'pl-3',
+            )}
           >
             {orderedTabs.map((tab, index) => (
               <div
@@ -1187,7 +1170,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Runs ↓
               </button>
             )}
-          </div>
           </div>
 
           {/* Outside the tablist: a live region inside it would be a child of
@@ -1652,7 +1634,21 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
           this on Windows or Linux would add dead space under a real title bar.
           Dragging the window lives here; it holds no controls, because a drag
           region swallows pointer events. */}
-      {isMac && <div data-app-region="drag" className="h-9 shrink-0" />}
+      {/* The product name where macOS puts an app's name: level with the
+          traffic lights, which is the first place anyone looks to find out
+          what window they are in. On Windows and Linux there are no lights to
+          clear, so it sits at the normal inset and the row is not a drag
+          handle - those platforms draw their own title bar. */}
+      <div
+        data-app-region={isMac ? 'drag' : undefined}
+        className={clsx('flex h-9 shrink-0 items-center', isMac ? 'pl-[76px]' : 'pl-3')}
+      >
+        {open && (
+          <span className="select-none font-sans text-[13px] font-extrabold tracking-tight text-ink">
+            Ag<span className="text-brand">En</span>FK
+          </span>
+        )}
+      </div>
 
       {/* The toggle's OWN row, and the only thing in it.
           It used to share this row with the Projects label and its two

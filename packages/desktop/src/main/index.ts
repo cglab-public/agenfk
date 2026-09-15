@@ -431,6 +431,20 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  /*
+   * The Dock icon in DEVELOPMENT. Packaged, electron-builder stamps the app
+   * bundle and this does nothing; run straight from `electron dist/main`, the
+   * Dock shows the Electron binary's own atom, so the brand mark is invisible
+   * exactly where it is being worked on. Best effort: a missing file here must
+   * not stop the app from starting.
+   */
+  void app.whenReady().then(() => {
+    if (process.platform !== 'darwin' || app.isPackaged) return;
+    try {
+      app.dock?.setIcon(path.join(__dirname, '../../build/icon.png'));
+    } catch { /* an icon is not worth a failed launch */ }
+  });
+
   void app.whenReady().then(boot);
 
   app.on('activate', () => {
