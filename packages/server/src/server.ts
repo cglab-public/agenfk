@@ -820,22 +820,54 @@ const findProjectRoot = (startDir: string): string => {
  *
  * Exported for the test; nothing else outside this module should call it.
  */
+/** What the close commit actually did. Every state the agent must be told apart. */
+export type AutoGitCommitOutcome = 'committed' | 'nothing-staged' | 'declined' | 'failed';
+
 export interface AutoGitCommitResult {
+  outcome: AutoGitCommitOutcome;
+  /** Nothing went wrong that the operator needs to act on. */
   success: boolean;
-  /** False when the index was empty — nothing to commit is not a failure. */
   committed: boolean;
   output: string;
   /** Paths git can see changes in that the author did not stage. */
   unstaged: string[];
-  error?: string;
+  /** Why, for every outcome but 'committed'. */
+  detail?: string;
 }
 
-const gitOut = (cmd: string, cwd: string): Promise<string> =>
-  new Promise((resolve) => exec(cmd, { cwd }, (err, stdout) => resolve(err ? '' : stdout)));
+const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
+  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+    resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
+
+/** A merge, rebase, cherry-pick or revert the author has not finished. */
+const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
 
 export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<AutoGitCommitResult> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
-  const timestamp = () => new Date().toISOString();
+  const stamp = () => new Date().toISOString();
+  const done = (r: AutoGitCommitResult): AutoGitCommitResult => {
+    const line = r.outcome === 'committed' ? `Committed: "${message}"` : `${r.outcome}: ${r.detail ?? ''}`;
+    console.log(`[${stamp()}] [AUTO_GIT] ${line}`);
+    return r;
+  };
+  const no = (outcome: AutoGitCommitOutcome, detail: string, unstaged: string[] = []): AutoGitCommitResult =>
+    done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged, detail });
+
+  // A server started outside a repository, or pointed at one by a stale
+  // projectRoot, used to report every close as "nothing staged" forever.
+  // Swallowing git's own refusal is how that stayed invisible.
+  const repo = await git('git rev-parse --git-dir', projectRoot);
+  if (!repo.ok) return no('failed', `not a git repository: ${projectRoot}`);
+
+  // An unfinished merge leaves MERGE_HEAD set and the index full of somebody
+  // else's resolution. Committing it produces a two-parent merge commit titled
+  // after this item — the same provenance theft this whole fix is about, in a
+  // shape no staging rule can catch.
+  for (const head of IN_PROGRESS_HEADS) {
+    if ((await git(`git rev-parse -q --verify ${head}`, projectRoot)).ok) {
+      return no('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
+    }
+  }
 
   // Porcelain v1 with -z: `XY PATH\0`, and for a rename or copy a second
   // `\0OLDPATH` that must be consumed with it. X is the index status, Y the
@@ -845,41 +877,37 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Prom
   // -z is not a detail: without it git QUOTES any path containing a space or a
   // non-ASCII byte, so `with space.txt` comes back wrapped in quotes and an
   // accented filename as "uni-caf\303\251.txt" — an escape sequence presented
-  // to the reader as the name of their own file.
+  // to the reader as the name of their own file. It also collapses a rename to
+  // the single pseudo-path `old -> new`, which nobody can `git add`.
   const unstaged: string[] = [];
-  const entries = (await gitOut('git status --porcelain -z', projectRoot)).split('\0');
+  const status = await git('git status --porcelain -z', projectRoot);
+  const entries = status.out.split('\0');
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     if (entry.length < 4) continue;
     const [x, y] = [entry[0], entry[1]];
     const path = entry.slice(3);
-    // A rename/copy carries its source in the following field either way.
-    if (x === 'R' || x === 'C') i++;
+    if (x === 'R' || x === 'C') i++; // consume the source path
     if (entry.startsWith('??') || y !== ' ') unstaged.push(path);
   }
 
-  const staged = (await gitOut('git diff --cached --name-only', projectRoot))
-    .split('\n').map(l => l.trim()).filter(Boolean);
-  if (!staged.length) {
+  const cached = await git('git diff --cached --name-only', projectRoot);
+  if (!cached.ok) return no('failed', cached.err || 'could not read the index', unstaged);
+  if (!cached.out.split('\n').some(l => l.trim())) {
     // Not a failure, and it must not be logged as one: an author who committed
     // their own work first is the well-behaved case, and crying wolf on every
     // clean close teaches everyone to ignore the line that matters.
-    console.log(`[${timestamp()}] [AUTO_GIT] Nothing staged; no close commit made.`);
-    return { success: true, committed: false, output: '', unstaged };
+    return no('nothing-staged', 'the index was empty', unstaged);
   }
 
-  return new Promise((resolve) => {
-    exec(`git commit -m ${JSON.stringify(message)}`, { cwd: projectRoot }, (err, stdout, stderr) => {
-      if (err) {
-        const errMsg = err.message.trim();
-        console.log(`[${timestamp()}] [AUTO_GIT] Commit failed: ${errMsg}`);
-        resolve({ success: false, committed: false, output: stderr || stdout, unstaged, error: errMsg });
-      } else {
-        console.log(`[${timestamp()}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
-        resolve({ success: true, committed: true, output: stdout.trim(), unstaged });
-      }
-    });
-  });
+  const commit = await git(`git commit -m ${JSON.stringify(message)}`, projectRoot);
+  if (!commit.ok) {
+    // Conflicted files, a rejecting pre-commit hook, an unset user.email, a
+    // failing gpg sign. Reporting these as "nothing was staged" told the agent
+    // its work was never there and sent it off to push an empty branch.
+    return no('failed', commit.err || 'git commit refused', unstaged);
+  }
+  return done({ outcome: 'committed', success: true, committed: true, output: commit.out.trim(), unstaged });
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -2976,7 +3004,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
           const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         }
       }
     } catch (e) {
@@ -3176,7 +3209,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
           const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         } else {
           console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
         }
@@ -3361,21 +3399,29 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * which stopped being true the moment the close commit stopped staging for
    * you (BUG 315edc11): a file the author never staged does not land, and an
    * agent told otherwise pushes and leaves it behind. Built from what the
-   * commit ACTUALLY did, and it names anything left behind.
+   * commit ACTUALLY did — including, load-bearingly, the case where it FAILED,
+   * which an earlier version reported as "nothing was staged" and thereby sent
+   * the agent to push a branch with none of its work on it.
    */
-  const describePush = (git?: AutoGitCommitResult): string => {
+  const UNSTAGED_SHOWN = 20;
+  const describePush = (result?: AutoGitCommitResult): string => {
     if (nextStatus !== Status.DONE) return '';
-    const left = git?.unstaged?.length
-      ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n${git.unstaged.map(f => `- \`${f}\``).join('\n')}\nStage and commit them yourself if they belong to this item.`
+    const paths = result?.unstaged ?? [];
+    const shown = paths.slice(0, UNSTAGED_SHOWN);
+    const left = paths.length
+      ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n`
+        + shown.map(f => `- \`${f}\``).join('\n')
+        + (paths.length > shown.length ? `\n- …and ${paths.length - shown.length} more` : '')
+        + `\nStage and commit them yourself if they belong to this item.`
       : '';
-    const made = git
-      ? (git.committed
-        ? 'The server committed what you had staged.'
-        : 'Nothing was staged, so the server made no close commit.')
-      : 'The server commits whatever you have staged.';
+    const made = !result
+      ? 'The server commits whatever you have staged.'
+      : result.outcome === 'committed' ? 'The server committed what you had staged.'
+      : result.outcome === 'nothing-staged' ? 'Nothing was staged, so the server made no close commit.'
+      : result.outcome === 'declined' ? `The server made NO close commit: ${result.detail}. Commit your work yourself.`
+      : `❌ The close commit FAILED: ${result.detail}. Nothing was committed — fix this before pushing.`;
     return `${left}\n\n🚀 **Push your branch**: ${made} Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``;
   };
-  const pushInstruction = describePush();
 
   // A command is only required for the final step (→ DONE). For intermediate
   // steps the command is optional — omitting it advances without running anything.
@@ -3562,8 +3608,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // Advisory: a git-commit failure must not report a PASSED validation
         // (whose transition already landed) as failed to the run follower. The
         // catch is belt-and-braces — autoGitCommit resolves rather than throws,
-        // returning success:false — but exec's callback is not the only way
-        // this can go wrong, and the transition must survive all of them.
+        // reporting a refusal as outcome 'failed' — but exec's callback is not
+        // the only way this can go wrong, and the transition must survive all
+        // of them.
         try { gitResult = await autoGitCommit(updated, projectRoot); }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }

@@ -65,6 +65,14 @@ Working the flow:
 - `agenfk flow show --project <id> --json` — load the full flow with all steps and exit criteria at session start. Your working contract for the session.
 - `agenfk verify <id> --evidence "<evidence>" ["<command>"]` — step-completion gate. `--evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions** (including TODO → first working step). The command is optional: if omitted, uses `project.verifyCommand` on the final step. If verify reports `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retry. Only ask the developer as a last resort.
 
+**Staging is yours, on the final step.** Landing DONE makes a `close(<type>)` commit of the
+git INDEX and stages nothing for you, so `git add` the files belonging to THIS item before
+that last `agenfk verify` — new files especially, since they are the ones most often left
+behind. Deliberately narrow: the server cannot tell your work from a colleague's, and it
+used to sweep the whole working tree, committing other tasks' work under your item's name.
+The DONE response says what it committed, names anything left unstaged, and says so plainly
+if the commit FAILED or was declined because a merge is in progress — do not push on a failure.
+
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY

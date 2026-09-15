@@ -11,7 +11,7 @@ This document describes the complete development lifecycle enforced by the AgenF
 **Hard Block Rules**:
 1. **NO TASK = NO CODE**: If no task is in one of the flow's working steps, stop immediately and create one. Find it with `list_items({ active: true })` / `agenfk list --active`, not by looking for a step named `IN_PROGRESS`.
 2. **NO GATE = NO CODE**: Call `workflow_gatekeeper` before the first edit of every session.
-3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `validate_progress`.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `validate_progress`. This forbids using git to SKIP the gate — it does not excuse you from git: staging the work that belongs to the item is still yours to do, because the DONE commit takes the index and nothing else.
 4. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker. Agents do not (and cannot) self-report it.
 
 Bypassing these rules is a critical operational failure and degrades the project's measurability and reliability.
@@ -111,7 +111,7 @@ validate_progress({ itemId, command: "npm run build" })
 
 - `command` is optional. If omitted, the project's `verifyCommand` is used.
 - The **agent picks the command** for intermediate steps (build, lint, type-check, etc.).
-- On the **final intermediate step** (the last step before DONE), `verifyCommand` is enforced and an auto-git-commit is triggered on success.
+- On the **final intermediate step** (the last step before DONE), `verifyCommand` is enforced and, on success, the server makes a `close(<type>)` commit **of whatever you have staged**. It stages nothing for you: `git add` the work that belongs to this item before verifying, or it will not land. The DONE response names anything it left behind.
 - If the command passes (exit code 0): item advances to the next flow step.
 - If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
 - A comment is logged with the command output.
@@ -239,7 +239,8 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
    → Passes → item moves to the next step in the flow
 10. validate_progress({ itemId })
    → Runs project verifyCommand (npm run build && npm test)
-   → Passes → item moves to DONE, auto-git-commit triggered
+   → Passes → item moves to DONE; the server commits what is STAGED
+   → (stage first: git add -A -- <the files this item touched>)
 11. [Developer] git push -u origin fix/login-crash-on-empty-email
 12. [Developer] gh pr create (or /agenfk-pr)
 13. [Developer reviews and merges PR]

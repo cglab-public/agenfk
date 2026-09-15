@@ -93,10 +93,11 @@ describe('the close commit carries what the author staged', () => {
   });
 
   it('carries BOTH halves of a rename', async () => {
-    // The case that rules `git add -u` out outright: it stages the deletion
-    // (tracked) and skips the addition (untracked), producing a commit whose
-    // remaining files import a path that no longer exists. Not an incomplete
-    // commit — one that does not build, pushed under the item's name.
+    // Documents the contract; it does NOT discriminate — it stages with
+    // `git add -A` itself, so every candidate implementation passes. The test
+    // that actually rules `git add -u` out is the UNSTAGED rename below, where
+    // -u stages the deletion and skips the addition, producing a commit whose
+    // surviving files import a path that no longer exists.
     const { dir, git, tree } = repo();
     try {
       fs.writeFileSync(path.join(dir, 'old.ts'), 'export const x = 1;\n');
@@ -208,6 +209,67 @@ describe('an empty index is not a failure', () => {
       const r = await close(dir);
       expect(r.committed).toBe(false);
       expect(r.unstaged).toEqual(expect.arrayContaining(['forgot-to-add.ts', 'tracked.txt']));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('it never claims a commit it did not make', () => {
+  // The branch an earlier version had no case for: a FAILED commit reported
+  // committed:false, so the agent was told "nothing was staged" — its work had
+  // been there all along — and went off to push a branch without it.
+  it('says the commit FAILED, not that nothing was staged', async () => {
+    const { dir, git } = repo();
+    try {
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'v2\n');
+      git('add tracked.txt');
+      // A pre-commit hook that refuses, which is an ordinary CI-adjacent setup.
+      const hooks = path.join(dir, '.git', 'hooks');
+      fs.mkdirSync(hooks, { recursive: true });
+      fs.writeFileSync(path.join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+      const r = await close(dir);
+      expect(r.outcome).toBe('failed');
+      expect(r.success).toBe(false);
+      expect(r.committed).toBe(false);
+      // The staged work is still staged — the agent must be told to deal with it.
+      expect(git('diff --cached --name-only')).toContain('tracked.txt');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('declines a merge in progress instead of stealing it', async () => {
+    // An unfinished merge leaves the index full of somebody else's resolution.
+    // Committing it produces a two-parent merge commit titled after this item —
+    // the same provenance theft, in a shape no staging rule can catch.
+    const { dir, git } = repo();
+    try {
+      git('checkout -q -b side');
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'side\n');
+      git('commit -q -am side');
+      git('checkout -q main');
+      fs.writeFileSync(path.join(dir, 'tracked.txt'), 'main\n');
+      git('commit -q -am main');
+      try { git('merge side'); } catch { /* conflicts, which is the point */ }
+      expect(fs.existsSync(path.join(dir, '.git', 'MERGE_HEAD'))).toBe(true);
+
+      const r = await close(dir);
+      expect(r.outcome).toBe('declined');
+      expect(r.committed).toBe(false);
+      expect(r.detail).toMatch(/merge/i);
+      // No commit was made, so the merge is still the author's to finish.
+      expect(fs.existsSync(path.join(dir, '.git', 'MERGE_HEAD'))).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reports a directory that is not a git repository', async () => {
+    // Swallowing git's own refusal made a server started outside a repo — or
+    // pointed at one by a stale projectRoot — report every close as a clean
+    // "nothing staged", forever.
+    const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'agenfk-notarepo-'));
+    try {
+      const r = await close(dir);
+      expect(r.outcome).toBe('failed');
+      expect(r.success).toBe(false);
+      expect(r.detail).toMatch(/not a git repository/i);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });

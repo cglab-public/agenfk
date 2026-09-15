@@ -76,7 +76,7 @@ The card advances to **TEST**, where AgEnFK runs your project's full test suite 
 
 ### 5. Done
 
-When all verification passes, the card moves to **DONE**, the agent commits the changes, and pushes the branch. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
+When all verification passes, the card moves to **DONE**. The agent stages the work that belongs to the card, the server commits it, and the agent pushes the branch. You get a summary of everything that was implemented, and can choose to cut a release, start a new task, or keep iterating.
 
 ---
 
