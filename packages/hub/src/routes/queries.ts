@@ -117,7 +117,13 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const f = readEventFilters(req);
     const orgId = req.session!.orgId;
 
-    if (f.projects || f.itemTypes) {
+    // The rollups branch below cannot answer these. rollups_daily is keyed by
+    // (org, person, day, hub) and carries counters — it has no `type`,
+    // `remote_url` or `item_type` column at all, so any filter on those has to
+    // be answered from the raw events. `types` was missing from this condition,
+    // which is why ?types= never worked here (BUG 61bdbd45): the query reached
+    // rollups_daily and failed on 'no such column: type'.
+    if (f.projects || f.itemTypes || f.types) {
       const { where, params } = applyEventFilters(orgId, f);
       const rows = await ctx.db.all<Record<string, unknown>>(
         `SELECT user_key, date(occurred_at) AS day,
