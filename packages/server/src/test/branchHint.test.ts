@@ -24,12 +24,39 @@
 import { describe, it, expect, vi } from 'vitest';
 import { resolveBranchHint } from '../branchHint';
 
-/** Records every git invocation, so the cwd can be asserted per call. */
+/**
+ * A fake git that REFUSES what real git refuses.
+ *
+ * The first version of this returned '' for everything, and that is how nine
+ * passing tests sat on top of a feature that had never once worked. The code
+ * ran `rev-parse --verify -- <name>` and `checkout -- <name>`; `--` means
+ * "everything after this is a PATHSPEC", so real git answers:
+ *
+ *   $ git rev-parse --verify -- main
+ *   fatal: Needed a single revision
+ *   $ git checkout -- feature
+ *   error: pathspec 'feature' did not match any file(s) known to git
+ *
+ * A stub that says '' to both cannot tell a working implementation from a
+ * broken one, and a test asserting the `--` was present actively locked the
+ * defect in. So this models the one rule that matters: a revision argument
+ * after `--` is not a revision.
+ */
 const spyGit = (impl?: (args: string[]) => string) => {
   const calls: string[][] = [];
   return {
     calls,
-    run: (args: string[]) => { calls.push(args); return impl?.(args) ?? ''; },
+    run: (args: string[]) => {
+      calls.push(args);
+      const sep = args.indexOf('--');
+      if (sep !== -1 && args[sep + 1] !== undefined) {
+        if (args.includes('rev-parse')) throw new Error('fatal: Needed a single revision');
+        if (args.includes('checkout')) {
+          throw new Error(`error: pathspec '${args[sep + 1]}' did not match any file(s) known to git`);
+        }
+      }
+      return impl?.(args) ?? '';
+    },
   };
 };
 
@@ -110,27 +137,48 @@ describe('what it tells the agent', () => {
 });
 
 describe('the branch name is data, not a command', () => {
-  it('passes it as an argument and stops option parsing', () => {
+  it('names the branch unambiguously without disarming the command', () => {
     /*
-     * Kept from the original, which got this right and said why: branchName is
-     * stored data, this runs implicitly on every gatekeeper call, and a name
-     * like `--upload-pack=...` must not be read as an option. The `--` is what
-     * stops that, and it has to survive the move into this module.
+     * This test used to assert the OPPOSITE - that `--` preceded the name -
+     * and it was wrong in the most expensive way available: it made the defect
+     * permanent. `--` does not protect a revision argument, it reclassifies it
+     * as a path, so the command could never resolve a branch at all.
+     *
+     * `refs/heads/<name>` is what actually removes the ambiguity, and it is
+     * what worktrees.ts and server.ts have always used. A name like
+     * `--upload-pack=x` cannot be read as an option once it is a path
+     * component of a fully-qualified ref.
      */
     const git = onAnotherBranch();
     resolveBranchHint({ branchName: '--not-a-flag', worktreePath: '/wt/a' }, { run: git.run });
-    const checkout = git.calls.find(a => a.includes('checkout'))!;
-    expect(checkout[checkout.indexOf('checkout') + 1]).toBe('--');
+    const verify = git.calls.find(a => a.includes('rev-parse'))!;
+    expect(verify).toContain('refs/heads/--not-a-flag');
+    expect(verify, 'the pathspec separator is back and the command cannot resolve a branch')
+      .not.toContain('--');
   });
 
-  it('never builds a shell string', () => {
-    // The caller takes an ARRAY. A template literal here would make
-    // `main; rm -rf ~` a stored value that runs.
+  it('actually switches, against a git that refuses what real git refuses', () => {
+    /*
+     * The test whose absence let this ship. Everything else here asks what was
+     * REQUESTED; this one asks whether the request works, against a stub that
+     * rejects a revision handed in after `--` the way git does.
+     */
     const git = onAnotherBranch();
-    resolveBranchHint({ branchName: 'a b; echo hi', worktreePath: '/wt/a' }, { run: git.run });
-    for (const call of git.calls) {
-      expect(Array.isArray(call)).toBe(true);
-      expect(call.join(' ')).not.toMatch(/&&|\|\|/);
-    }
+    const hint = resolveBranchHint({ branchName: 'feat/x', worktreePath: '/wt/a' }, { run: git.run });
+    expect(hint, 'the branch was reported missing when it exists').toMatch(/switched to branch/i);
+    expect(git.calls.some(a => a.includes('checkout'))).toBe(true);
   });
+
+  /*
+   * A test called 'never builds a shell string' sat here and was vacuous.
+   * `Array.isArray` is guaranteed by the `run: (args: string[]) => string`
+   * signature, and its regex could only fire if the branch NAME contained
+   * `&&` - which the fixture's name did not. It would have passed against an
+   * implementation that built `sh -c "git checkout $name"`.
+   *
+   * Deleted rather than repaired. The property is real but it belongs to the
+   * CALLER: index.ts is what chooses execFile over exec, and this module only
+   * ever hands out an array because its own type says so. A test here could
+   * only restate the type.
+   */
 });

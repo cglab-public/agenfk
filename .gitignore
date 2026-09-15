@@ -21,6 +21,13 @@ packages/desktop/build/*
 !packages/desktop/build/icon.png
 !packages/desktop/build/icon.svg
 !packages/desktop/build/icons/
+# The allowlist has to be re-applied INSIDE icons/ as well. `build/*` matches
+# one level only, so un-ignoring the directory left anything dropped in it
+# committable - a hole the "keeps out anything else" test did not probe,
+# because it only checked build/ itself. A .p12 there would still be caught by
+# the extension rules further down; an unsuffixed credential file would not.
+packages/desktop/build/icons/*
+!packages/desktop/build/icons/*.png
 .agenfk/
 *.log
 .DS_Store

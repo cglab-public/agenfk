@@ -445,6 +445,21 @@ describe('paths that must stay out of the repository (3d953bff)', () => {
       expect(isIgnored('packages/desktop/build/server-bundle/server.js')).toBe(true);
     });
 
+    it('keeps out anything dropped in icons/ too', () => {
+      /*
+       * The hole review found. `packages/desktop/build/*` matches ONE level, so
+       * un-ignoring `icons/` for the Linux set left everything inside it
+       * committable - and the test below only probed build/ itself, so it
+       * passed while the directory beside it was open.
+       *
+       * A .p12 there is still caught by the extension rules; an unsuffixed
+       * credential file was not caught by anything.
+       */
+      expect(isIgnored('packages/desktop/build/icons/credential.txt')).toBe(true);
+      // And the icons themselves still get through, or Linux ships without one.
+      expect(isIgnored('packages/desktop/build/icons/512x512.png')).toBe(false);
+    });
+
     it('keeps out anything else dropped in there', () => {
       /*
        * THE test for the allowlist. A denylist passes every other test in this

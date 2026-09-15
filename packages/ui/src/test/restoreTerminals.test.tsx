@@ -1042,3 +1042,34 @@ describe('a session that says what it is doing', () => {
     await waitFor(() => expect(runningCount()).toBe(0));
   });
 });
+
+describe('the Runs toggle in the terminal bar', () => {
+  it('hides the feed without navigating away', async () => {
+    /*
+     * The button says "Hide the run feed", and it shared a callback with the
+     * dock strip's up-arrow - which says "Put Runs back to its own screen" and
+     * navigates there. Correct for that control, and the exact opposite of
+     * what this one promises: pressing hide moved the user to the full-height
+     * Agents screen with the terminal gone.
+     *
+     * Found by review, by reading, not by a failing test - the two callers
+     * shared one function and only one of them had a test.
+     */
+    localStorage.setItem('agenfk_runs_dock', JSON.stringify('bottom'));
+    vi.mocked(api.listTerminalSessions).mockResolvedValue([{
+      id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
+      itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
+    }] as never);
+    renderShell();
+    await waitFor(() => expect(spawnCalls.length).toBe(1));
+    await goToTerminalView();
+
+    fireEvent.click(await screen.findByTitle('Hide the run feed'));
+
+    await waitFor(() => expect(screen.queryByTestId('runs-dock')).toBeNull());
+    expect(
+      document.getElementById('panel-terminal')!.hasAttribute('hidden'),
+      'hiding the feed navigated away from the terminal',
+    ).toBe(false);
+  });
+});

@@ -202,3 +202,15 @@ describe('a run the panel does not recognise', () => {
     expect(await screen.findByRole('button', { name: /REFACTOR/ })).toBeInTheDocument();
   });
 });
+
+/*
+ * A test for the Runs toggle in the terminal bar lived here and moved to
+ * restoreTerminals.test.tsx, which is the only harness that can open a real
+ * terminal. The control only renders once one is open, and this file's shell
+ * cannot get there: a hook-recorded run has no terminal of ours, so clicking
+ * its row opens a dialog instead.
+ *
+ * Worth recording because two versions of that test passed through here
+ * failing for reasons unrelated to the defect - one clicked the dock strip's
+ * arrow because /runs/i matches "Put Runs back to its own screen" as well.
+ */

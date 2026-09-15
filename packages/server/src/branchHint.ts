@@ -61,13 +61,25 @@ export function resolveBranchHint(item: BranchHintItem, deps: BranchHintDeps): s
 
   try {
     /*
-     * `--` before the name, and an argument ARRAY rather than a shell string.
-     * branchName is stored data and this runs implicitly on every gatekeeper
-     * call, so a name like `--upload-pack=…` must not be read as an option and
-     * `main; rm -rf ~` must not be read at all. Both were right in the original
-     * and both have to survive the move.
+     * `refs/heads/<name>`, NOT `-- <name>`.
+     *
+     * The original wrote `rev-parse --verify -- <name>` and this file copied it
+     * over, with a comment claiming it was right. It is not, and the mistake is
+     * worth spelling out because it reads as a safety measure: `--` tells git
+     * "everything after this is a PATHSPEC", so the command asks for a revision
+     * and is then handed a filename. It fails for every branch, existing or
+     * not, which meant this feature never once switched a branch - it always
+     * answered "that branch does not exist".
+     *
+     * The fully-qualified ref is what actually makes the name unambiguous, and
+     * it is what worktrees.ts:116 and server.ts:3620 have always used. An
+     * argument ARRAY is what keeps `main; rm -rf ~` from being read as a
+     * command; that part of the original was right.
+     *
+     * `--quiet` because a missing branch is an expected answer here, not an
+     * error worth printing.
      */
-    deps.run(at('rev-parse', '--verify', '--', item.branchName));
+    deps.run(at('rev-parse', '--verify', '--quiet', `refs/heads/${item.branchName}`));
   } catch {
     return `\n⚠️ Branch '${item.branchName}' does not exist in this item's worktree.`
       + ` Work on the current branch or ask the user to create it.`;
@@ -76,7 +88,9 @@ export function resolveBranchHint(item: BranchHintItem, deps: BranchHintDeps): s
   try {
     const current = deps.run(at('rev-parse', '--abbrev-ref', 'HEAD')).trim();
     if (current === item.branchName) return `\n🔀 Already on branch '${item.branchName}'.`;
-    deps.run(at('checkout', '--', item.branchName));
+    // No `--` here either: `git checkout -- <name>` restores a PATH of that
+    // name. Switching branches is `git checkout <name>`.
+    deps.run(at('checkout', item.branchName));
     return `\n🔀 Switched to branch '${item.branchName}'.`;
   } catch {
     // A checkout can fail for ordinary reasons - uncommitted changes that

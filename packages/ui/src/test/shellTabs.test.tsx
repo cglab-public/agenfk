@@ -383,9 +383,21 @@ describe('the board is reached from the sidebar, not a tab', () => {
   it('still shows the board when Tasks is chosen', async () => {
     // The route that replaces it. If this fails the board is unreachable,
     // which is worse than a redundant tab.
+    /*
+     * Navigate AWAY first. This used to render and click Tasks straight away,
+     * and `active` already starts at 'kanban' with the panel rendered
+     * unconditionally - so the click could be a complete no-op and the
+     * assertion still held. It claimed to cover the route that replaced the
+     * tab and covered nothing.
+     */
     renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /tasks/i }));
-    expect(document.getElementById('panel-kanban')).not.toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
+    await waitFor(() =>
+      expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true));
+
+    fireEvent.click(await screen.findByRole('button', { name: /^tasks$/i }));
+    await waitFor(() =>
+      expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(false));
   });
 
   it('keeps the board MOUNTED, never unmounted', async () => {

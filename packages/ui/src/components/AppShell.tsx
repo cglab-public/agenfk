@@ -42,7 +42,14 @@ import {
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
-import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail';
+/*
+ * Types only. The rail component itself is no longer rendered anywhere - the
+ * SESSIONS section it lived in was removed (1a1b8df6) - and importing it kept
+ * a dead component alive to every reader and to the bundler. Its TYPES are
+ * still the shared vocabulary for a session row, which is why the module
+ * stays imported at all.
+ */
+import type { SessionRow, SessionState } from './SessionsRail';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
@@ -181,7 +188,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // session outlives every view switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
   const [runsDock, setRunsDock] = React.useState<RunsDock>(() => readRunsDock());
-  const moveRunsTo = React.useCallback((dock: RunsDock) => {
+  const moveRunsTo = React.useCallback((dock: RunsDock, navigate = false) => {
     setRunsDock(dock);
     try { localStorage.setItem(RUNS_DOCK_KEY, JSON.stringify(dock)); } catch { /* a lost preference */ }
     // Sending the feed to the strip while its own screen is the one showing
@@ -190,7 +197,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // the control reports success while the user still sees the board.
     setActive(cur => {
       if (dock === 'bottom') return cur === 'agents' ? 'kanban' : cur;
-      return 'agents';
+      /*
+       * Only when the CALLER asks. Navigating on every undock was one
+       * behaviour shared between two opposite promises: the dock strip's arrow
+       * says "put Runs back on its own screen" and must go there, while the
+       * terminal bar's toggle says "hide the run feed" and must leave you
+       * exactly where you are. Pressing hide used to land you on the
+       * full-height feed with the terminal gone.
+       */
+      return navigate ? 'agents' : cur;
     });
   }, []);
   // Same latch idea as the terminal, for a much smaller reason: no request goes
@@ -945,9 +960,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
           liveItems={liveItems}
-          openTerminalCount={sessions.length}
           openSession={openSession}
-          stopSession={stopSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
           revealOnBoard={revealOnBoard}
           activeView={active}
@@ -1221,7 +1234,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   Runs
                 </h2>
                 <button
-                  onClick={() => moveRunsTo('screen')}
+                  onClick={() => moveRunsTo('screen', true)}
                   aria-label="Put Runs back to its own screen"
                   title="Put Runs back to its own screen"
                   className="ml-auto rounded px-1.5 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
@@ -1403,9 +1416,7 @@ interface SidebarProps {
   sessionRows: SessionRow[];
   /** Cards an agent has touched inside the live window. */
   liveItems: ReadonlySet<string>;
-  openTerminalCount: number;
   openSession: (row: SessionRow) => void;
-  stopSession: (runId: string) => void;
   /** Clicking a card asks the shell to open a terminal on it. */
   requestTerminal: (item: AgEnFKItem) => void;
   /** Take the board to a card. The rail's secondary affordance. */
@@ -1434,7 +1445,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });

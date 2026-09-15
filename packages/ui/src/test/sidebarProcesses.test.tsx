@@ -187,9 +187,32 @@ describe('a process whose card is not in the tree', () => {
   });
 
   it('keeps no such section when every process has a card', async () => {
-    // The guard against bringing the old duplicate list back by accident.
+    /*
+     * This could not fail, in two compounding ways, and review caught both.
+     *
+     * `vi.clearAllMocks()` clears CALLS but not implementations, so the
+     * previous test's `listRuns` - an orphaned run - was still in place. And
+     * the only await was on the Projects heading, which is synchronously
+     * present, so the assertion ran before any query resolved. It passed WITH
+     * the orphan data live, which means the mutation it claims to kill
+     * ("always render the section") survived it.
+     *
+     * Both halves are fixed here: the run is given a card that IS in the tree,
+     * and the wait is on that card's own process row - the thing whose
+     * presence proves the data arrived.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'A card in the tree', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
     renderShell();
-    await waitFor(() => expect(screen.getByRole('heading', { name: /projects/i })).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await screen.findByTestId('process-row');
     expect(screen.queryByTestId('orphan-processes')).toBeNull();
   });
 });
