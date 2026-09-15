@@ -83,15 +83,21 @@ export function classifyTrigger(command) {
     if (/^gh\s+pr\s+create\b/.test(segment)) return { kind: 'open' };
     const pushMatch = segment.match(/^git\s+push\b(.*)$/);
     if (pushMatch && !push) {
-      const rest = (pushMatch[1] || '').trim().split(/\s+/);
-      // crude branch extraction: last non-flag token, ignoring 'origin' / '-u'
-      // and redirections (2>&1, >out) that survive segment splitting.
+      let rest = (pushMatch[1] || '').trim().split(/\s+/).filter(Boolean);
+      // Everything from the first redirection onwards is shell plumbing, not
+      // arguments to git. Cutting there — rather than filtering tokens that
+      // CONTAIN < or > — is what handles a target written as its own token:
+      // `git push -u origin feat/x > out.txt` used to report the branch as
+      // 'out.txt', and `2> /dev/null` as '/dev/null'. (Pipes and && are already
+      // gone by here; splitShellSegments ended the segment at them.)
+      const redirect = rest.findIndex(tok => /^\d*[<>]/.test(tok));
+      if (redirect !== -1) rest = rest.slice(0, redirect);
+      // Last non-flag token, ignoring the remote name.
       let branch;
       for (let i = rest.length - 1; i >= 0; i--) {
         const tok = rest[i];
         if (!tok || tok.startsWith('-')) continue;
         if (tok === 'origin') continue;
-        if (/[<>]/.test(tok)) continue;
         branch = tok;
         break;
       }
