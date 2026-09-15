@@ -66,15 +66,20 @@ export interface UpgradeDispatch {
 }
 
 /**
- * The same strict tag allowlist the admin route applies to an admin's own
- * input, applied again here.
+ * A SHAPE check, not an existence check — and the distinction matters enough
+ * to state, because this comment used to claim otherwise and a documentation
+ * fact-check caught it.
  *
- * The parent is a DIFFERENT HUB — a trust boundary — and this value travels
- * from here to every machine in this fleet, where it is interpolated into a
- * shell command. One regex at the far end is not somewhere to keep the only
- * check: a parent that is buggy, newer, or hostile would otherwise fill this
- * hub's upgrade board with targets that can never complete while the parent is
- * told the rollout succeeded.
+ * The admin routes do two things to a version: this same regex, and then
+ * `releaseExists`, which asks whether the release is real. Only the first
+ * happens here. So a parent CAN dispatch a shape-valid version that does not
+ * exist, and this hub will accept it and push it at its fleet, where each
+ * machine refuses it individually.
+ *
+ * What the regex is for is the trust boundary: the parent is a different hub,
+ * and this value travels to every machine in this fleet where it is
+ * interpolated into a shell command. One regex at the far end is not somewhere
+ * to keep the only check.
  */
 const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 

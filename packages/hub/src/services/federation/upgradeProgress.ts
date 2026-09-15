@@ -56,11 +56,29 @@ const isCompleteSnapshot = (raw: string): boolean => {
   try { return JSON.parse(raw)?.completed === true; } catch { return false; }
 };
 
+/**
+ * The skip list as it goes UPSTREAM.
+ *
+ * A machine skipped because its owner is hidden loses its id. Hiding someone
+ * is a promise that they stop emitting go-forward data (CGLAB-31), and a list
+ * naming their installations breaks that promise as surely as forwarding their
+ * events would — more quietly, too, because the progress report is deliberately
+ * exempt from the hidden-user filter at the other end, so nothing catches it
+ * there.
+ *
+ * The COUNT still travels: the parent needs the fleet arithmetic to add up, and
+ * "one machine was skipped because its owner is hidden" discloses nothing about
+ * who that is. Only the identity is withheld, and only upstream — this hub's
+ * own record keeps it, because it is this hub's fleet.
+ */
 const parseSkips = (raw: string | null): unknown[] => {
   if (!raw) return [];
   try {
     const p = JSON.parse(raw);
-    return Array.isArray(p) ? p : [];
+    if (!Array.isArray(p)) return [];
+    return p.map((sk: any) => (sk?.reason === 'hidden'
+      ? { reason: 'hidden' }
+      : sk));
   } catch { return []; }
 };
 

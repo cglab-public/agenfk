@@ -106,22 +106,36 @@ presents it once, and the parent issues the key
 
 ### What a parent cannot do — the part that matters
 
-- **It cannot reach into a child's database.** Everything it learns arrives as
-  events the child chose to send; there is no query path from parent to child.
-- **It never sees a hidden person's activity.** An admin who hides someone stops
-  their events being stored *and* forwarded — the exclusion happens at ingest,
-  before anything is queued (`routes/events.ts`, CGLAB-31).
-- **It cannot stop a child working.** Forwarding is queued, never awaited on the
-  request path, and a failure to queue is caught outside the ingest transaction.
-  A parent that is down, slow, hostile or gone is invisible to the child's own
-  developers. Pinned by `test/federation-standalone.test.ts`.
+- **It cannot reach into a child's database.** There is no query path from
+  parent to child at all: every federation route is child-initiated, and a
+  directive tells the child what to do rather than asking it anything. Beyond
+  forwarded events the parent learns only what the relationship itself requires
+  — the child's chosen name, its hub version, its liveness, and the progress
+  reports it sends about work the parent asked for.
+- **Hiding someone stops their activity reaching the parent from that moment.**
+  The exclusion happens at ingest, before anything is queued (`routes/events.ts`,
+  CGLAB-31), and a group upgrade does not name their machines upstream either —
+  the count travels, the identity does not
+  (`services/federation/upgradeProgress.ts`). It is **go-forward only**: events
+  already delivered stay at the parent, and rows already in the outbox are still
+  sent. Hiding is not a retraction.
+- **It cannot stop a child working.** No network call to the parent happens on
+  the ingest path: forwarding only writes to a local outbox, and a failure to do
+  even that is caught outside the ingest transaction. A parent that is down,
+  slow, hostile or gone is invisible to the child's own developers. Pinned by
+  `test/federation-standalone.test.ts`, which ingests while a tick is stuck
+  mid-call against a parent that never answers.
 - **It cannot silently take a fleet backwards.** A downgrade needs the parent
-  admin to confirm it, and the child re-validates the version it is given against
-  the same release allowlist it applies to its own admin — the parent is a
-  different hub, so it is a trust boundary, not an authority.
-- **It cannot overwrite a child's own flows.** A dispatched flow is keyed by id;
-  one that clashes by NAME installs alongside the child's, and nothing local is
-  replaced.
+  admin to confirm it explicitly. The child re-validates the version's SHAPE
+  against the same strict tag regex it applies to its own admin — note it does
+  *not* re-check that the release exists, so a parent can dispatch a plausible
+  version that is real nowhere, and each machine then refuses it individually.
+- **It cannot overwrite a flow the child authored.** A dispatched flow is keyed
+  by id, and every locally-authored flow has a random one, so a clash by NAME
+  installs alongside rather than replacing. The one exception is a flow the
+  parent previously dispatched and the child kept on leaving: re-joining and
+  re-dispatching reclaims it, deliberately, or a re-join could never restore the
+  group's standard.
 - **It cannot claim work landed.** Serving a directive is not the same as it
   landing: a target stays `pending` until the child reports, and "asked to stop"
   (`cancel-pending`) is deliberately distinct from "stopped" (`cancelled`).
@@ -132,6 +146,13 @@ The policy belongs to the parent — `keep` or `pseudonymize` — set for the gr
 or overridden per child, and the override wins in both directions because it is
 an override, not an escalation (`services/federation/forwarding.ts`).
 
+**The default is `keep`, and `keep` forwards the event whole**: the actor's git
+email, the item title, the entire free-form payload. A fresh group has no policy
+row, and no policy row means `keep`. If that is not what you want, it is one
+setting and it is not the one you get by doing nothing — this is the single most
+decision-relevant fact about federating, so it is stated before the nuance
+rather than after it.
+
 Two properties make it auditable rather than merely configurable. The child can
 read the policy it is currently forwarding under (`GET /v1/admin/federation`), so
 people are not subject to a control their own admin cannot see. And the policy
@@ -140,7 +161,10 @@ switching it can never retroactively change the meaning of rows already queued.
 
 Under `pseudonymize` the payload is reduced to a known list of forwardable keys
 rather than filtered for known-bad ones: a deny-list on a free-form blob is a
-promise nobody can keep.
+promise nobody can keep. The pseudonym is derived per child hub from that hub's
+own secret, so the same person appears as two different people to a parent
+watching two sibling hubs, and rotating `AGENFK_HUB_SECRET_KEY` re-pseudonymises
+everyone from that point on. Both are deliberate; neither is reversible.
 
 ### Leaving a group
 
@@ -169,12 +193,26 @@ What a child keeps when it leaves:
 Sync stops rather than retrying, and a revoked binding stops queueing instead of
 growing a table forever for a parent that is never coming back.
 
+Two limits worth knowing before you join, because neither is obvious and both
+are the kind of thing people discover at a bad moment:
+
+- **A parent that simply goes dark cannot be left.** Leaving requires the
+  binding to be `revoked`, and only the parent answering 401 produces that. A
+  parent that stops responding without detaching leaves the child bound and
+  ticking, with no exit through the product.
+- **The outbox is capped** (`MAX_OUTBOX_ROWS`, 50,000) and trims the OLDEST rows
+  first. A long enough outage silently loses the front of the queue rather than
+  refusing new work.
+
+And what leaving does not do: **nothing is deleted at the parent.** The child
+keeps its own things, but every event it already forwarded stays upstream. Detach
+ends the relationship going forward; it is not a recall.
+
 ### Deployment
 
 A hub needs no configuration to be standalone: the federation worker starts
 unconditionally and every tick is a no-op without a binding, so a hub that never
-joins a group pays one cheap query a minute. See `packages/hub/README.md` for the
-environment a parent or child actually needs.
+joins a group pays one cheap query a minute (`FEDERATION_TICK_MS`, 60s).
 
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)

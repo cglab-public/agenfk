@@ -86,6 +86,47 @@ describe('a child reports its upgrade progress upstream', () => {
     expect(r.payload.completed).toBe(false);
   });
 
+  it('does not name a hidden person\'s machines to the parent', async () => {
+    // Hiding someone is a promise that they stop emitting go-forward data
+    // (CGLAB-31). The skip list defeats that if it travels upstream intact:
+    // the parent would learn exactly which installations belong to hidden
+    // people — and the report is deliberately exempt from the hidden-user
+    // filter at the other end, so nothing catches it there.
+    //
+    // The COUNT still goes: the parent needs the fleet arithmetic to add up.
+    // The identity does not.
+    await install('departed');
+    await db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', [ORG, 'departed@acme.com']);
+    await install('gone');
+    await db.run('UPDATE installations SET retired_at = ? WHERE id = ?', [new Date().toISOString(), 'gone']);
+    await fanOut(['i1']);
+
+    await reportUpgradeProgress(db, ORG);
+    const [r] = await queued();
+
+    expect(r.payload.counts.skipped).toBe(2);
+    const hidden = r.payload.skipped.filter((s: any) => s.reason === 'hidden');
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0].installationId).toBeFalsy();
+    // A retired machine is not a person, so it keeps its id — the parent's
+    // board is more useful for it and nothing is disclosed about anybody.
+    const retired = r.payload.skipped.filter((s: any) => s.reason === 'retired');
+    expect(retired[0].installationId).toBe('gone');
+  });
+
+  it('keeps the hidden machine\'s identity in its OWN record', async () => {
+    // Only the upstream report is redacted. This hub's admin can still see
+    // which of their machines was skipped and why — it is their fleet.
+    await install('departed');
+    await db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', [ORG, 'departed@acme.com']);
+    await fanOut(['i1']);
+
+    const row = await db.get<any>(
+      'SELECT skipped_json FROM upgrade_dispatch_fanout WHERE dispatch_id = ?', ['d-1'],
+    );
+    expect(JSON.parse(row.skipped_json)).toEqual([{ installationId: 'departed', reason: 'hidden' }]);
+  });
+
   it('carries the skip reasons the fan-out recorded', async () => {
     await install('gone');
     await db.run('UPDATE installations SET retired_at = ? WHERE id = ?', [new Date().toISOString(), 'gone']);
