@@ -52,6 +52,7 @@ import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
+import { RunsPanel } from './RunsPanel';
 import { ORDER } from './sessionPresentation';
 import { cardState, itemsNeedingAPerson } from '../cardState';
 
@@ -263,6 +264,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // prevent one level up.
   const [sessions, setSessions] = React.useState<TerminalSession[]>([]);
   const [activeSession, setActiveSession] = React.useState<string | null>(null);
+  /**
+   * Whose runs the feed shows.
+   *
+   * The terminal you are watching first, and the card you last navigated to
+   * otherwise. Following the terminal ALONE was the first attempt and it was
+   * wrong in the way that matters: a run recorded by the Claude Code hook has
+   * no terminal of ours at all, and those are precisely the runs this feed
+   * exists for - the sub-agent dispatches nothing else on screen shows. The
+   * feed would have stayed empty for its own main use.
+   *
+   * Null only when neither is set, which is the one state in which "no agent
+   * runs open" is a true thing to say rather than a placeholder.
+   */
+  const runsItemId = React.useMemo(() => {
+    const watched = sessions.find(s => s.id === activeSession)?.itemId;
+    if (watched) return watched;
+    /*
+     * `focusedItemId` is NONCED - `<id>#<n>` - so that clicking the same row
+     * twice still counts as a new navigation. Consumers that need the id take
+     * the part before the `#`; the board is the other one, and it keys its
+     * one-shot guard on the WHOLE string for exactly the opposite reason.
+     */
+    return focusedItemId ? focusedItemId.split('#')[0] : null;
+  }, [sessions, activeSession, focusedItemId]);
   const sessionSeq = React.useRef(0);
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
@@ -1148,10 +1173,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </header>
             <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6">
               {runsDock === 'screen' ? (
-                <EmptyState
-                  title="No agent runs open"
-                  body="Runs started from a card appear here. Open a card and start work to see its live log."
-                />
+                /* The real feed, following the session you are watching.
+
+                   Both of these were a hand-written EmptyState saying "No
+                   agent runs open" whatever was running - missing wiring
+                   wearing an empty case's clothes, which is the worst kind,
+                   because the app looks finished while telling you nothing.
+
+                   Following the ACTIVE SESSION rather than, say, the focused
+                   card: a feed pinned to something else is the same defect
+                   again, quieter - a panel confidently showing the wrong
+                   thing. With no session there is genuinely nothing to show,
+                   and that is the one time this empty state is true. */
+                runsItemId ? (
+                  <RunsPanel itemId={runsItemId} />
+                ) : (
+                  <EmptyState
+                    title="No agent runs open"
+                    body="Open a terminal on a card to follow its agent here."
+                  />
+                )
               ) : (
                 /* Says where the feed went rather than showing an empty
                    screen. Landing on nothing after clicking Agents reads as a
@@ -1189,10 +1230,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </button>
               </header>
               <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-4">
-                <EmptyState
-                  title="No agent runs open"
-                  body="Runs started from a card appear here."
-                />
+                {runsItemId ? (
+                  <RunsPanel itemId={runsItemId} />
+                ) : (
+                  <EmptyState
+                    title="No agent runs open"
+                    body="Open a terminal on a card to follow its agent here."
+                  />
+                )}
               </div>
             </section>
           )}

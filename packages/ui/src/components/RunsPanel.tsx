@@ -278,7 +278,18 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
       {/* Run list */}
       <div className="w-56 shrink-0 space-y-2 overflow-y-auto">
         {runs.map(run => {
-          const lane = LANE[run.actor];
+          /*
+           * The same fallback the event row has used all along, which this
+           * line did not. An actor that is absent or unrecognised made
+           * `lane.tag` a read on undefined and took the WHOLE panel down - a
+           * white screen rather than a missing label.
+           *
+           * It mattered less while the panel was only reachable from the card
+           * detail modal. It is a top-level screen now (0d897a8c), so the
+           * surface is every run the server returns, including ones written by
+           * an older build or a client that did not set an actor.
+           */
+          const lane = LANE[run.actor as keyof typeof LANE] || LANE.worker;
           const isSel = run.id === selectedRunId;
           return (
             <button
