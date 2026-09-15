@@ -102,16 +102,6 @@ describe('a facet follows the URL it is persisted in', () => {
     await waitFor(() => expect(sentHub(ALPHA)).toBe(true));
   });
 
-  it('shows the popped selection in the facet, not the one it mounted with', async () => {
-    renderAt([`/prs?childHubId=${ALPHA}`, `/prs?childHubId=${BETA}`], 1);
-    await screen.findByText(/Child hub/i);
-    fireEvent.click(screen.getByText('go-back'));
-    await waitFor(() => expect(url().get('childHubId')).toBe(ALPHA));
-    // FacetMultiselect marks the selected chip; assert via the summary count
-    // instead of internals — one hub selected, and the request proves which.
-    await waitFor(() => expect(sentHub(ALPHA)).toBe(true));
-  });
-
   it('does NOT undo a toggle while the URL write is still catching up', async () => {
     // The regression a naive sync introduces: state changes first, the page
     // writes the URL in a later effect, and a sync that fires on "state differs
@@ -124,9 +114,12 @@ describe('a facet follows the URL it is persisted in', () => {
     expect(url().get('childHubId')).toBe(ALPHA);
   });
 
-  it('leaves a localStorage-backed facet alone', async () => {
-    // Those seed from a constant default, so the sync must never fire for them
-    // and clobber a restored selection.
+  it('does not touch a storage-backed facet on another page', async () => {
+    // PrOverview's facets are all URL-seeded, so this page cannot exercise the
+    // storage path at all — that contract lives in useToggleSetRestore.test.tsx,
+    // where a real storage-backed facet is rendered. Kept here only to say so:
+    // an earlier version of this test pretended to cover it and was green
+    // throughout the mount-clobber regression.
     renderAt(['/prs'], 0);
     await screen.findByText(/Child hub/i);
     expect(url().has('childHubId')).toBe(false);

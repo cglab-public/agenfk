@@ -22,6 +22,7 @@ import { OrgPage } from '../pages/Org';
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
 const ALPHA = '9f1c7e2a-0000-4000-8000-000000000001';
+const BETA = '9f1c7e2a-0000-4000-8000-000000000002';
 
 beforeEach(() => {
   get.mockReset();
@@ -86,6 +87,39 @@ describe('UserDetail honours a child hub arriving in the link', () => {
     );
     const link = await screen.findByRole('link', { name: /alice@acme\.com/i });
     expect(link.getAttribute('href')).toContain(`childHubId=${ALPHA}`);
+  });
+
+  it('scopes the chip universes, so no chip offers another hub\'s data', async () => {
+    renderAt(`/users/alice%40acme.com?childHubId=${ALPHA}`);
+    await waitFor(() => expect(sent('/v1/event-types', ALPHA)).toBe(true));
+    await waitFor(() => expect(sent('/v1/projects', ALPHA)).toBe(true));
+  });
+
+  it('keeps the scope in the timeline CACHE key, not only the request', async () => {
+    // Two hubs sharing one cache entry means this page paints the other hub's
+    // events until a refetch lands — or forever, if that refetch errors.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const mount = (hub: string) => render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[`/users/alice%40acme.com?childHubId=${hub}`]}>
+          <Routes><Route path="/users/:userKey" element={<UserDetailPage />} /></Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    mount(ALPHA);
+    await waitFor(() => expect(sent('/v1/timeline', ALPHA)).toBe(true));
+    cleanup();
+    mount(BETA);
+    await waitFor(() => expect(sent('/v1/timeline', BETA)).toBe(true));
+    const keys = qc.getQueryCache().getAll()
+      .filter(q => Array.isArray(q.queryKey) && q.queryKey[0] === 'timeline');
+    expect(keys.length).toBeGreaterThan(1);
+  });
+
+  it('carries the scope back to the org board', async () => {
+    renderAt(`/users/alice%40acme.com?childHubId=${ALPHA}`);
+    const back = await screen.findByRole('link', { name: /back to org/i });
+    expect(back.getAttribute('href')).toContain(`childHubId=${ALPHA}`);
   });
 
   it('sends nothing when the link carries no hub, so a standalone hub is unchanged', async () => {

@@ -131,11 +131,17 @@ export function UserDetailPage() {
   const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
   const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
 
+  // Partitioned by hub, exactly as Org does it: offering a repo or an event
+  // type that belongs to a hub this page is not showing is a dead end.
+  const hubQs = hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : '';
   const eventTypes = useQuery<EventTypesResponse>({
-    queryKey: ['event-types'],
-    queryFn: async () => (await api.get('/v1/event-types')).data,
+    queryKey: ['event-types', hubQs],
+    queryFn: async () => (await api.get(`/v1/event-types${hubQs}`)).data,
   });
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
 
   // Per-itemType counts honour the user, project, and event-type filters but
   // ignore the itemTypes filter (the chip answers "what would I see if I
@@ -196,7 +202,10 @@ export function UserDetailPage() {
   );
 
   const tl = useQuery<{ events: TimelineRow[] }>({
-    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso],
+    // hubCsv belongs in the KEY, not just the request: without it two hubs
+    // share one cache entry and this page paints the other hub's events until a
+    // background refetch lands — or forever, if that refetch errors.
+    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso, hubCsv ?? ''],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
   });
 
@@ -210,7 +219,11 @@ export function UserDetailPage() {
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
-      <Link to="/" className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
+      {/* Carries the scope back. Org's hub facet is URL-persisted and
+          deliberately not stored, so without this the trip out and back
+          silently widens to every hub — the same drop, in the other direction. */}
+      <Link to={`/${hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : ''}`}
+        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 

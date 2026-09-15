@@ -85,10 +85,18 @@ export function useToggleSet(initial: Iterable<string> = [], opts: ToggleSetOpti
   // nothing could prove and it is gone rather than left to look load-bearing.
   const externalKey = keyOf(initial);
   useEffect(() => {
+    // NEVER for a storage-backed facet. There, `initial` is a constant default
+    // literal, not an external source of truth — the real seed came from
+    // localStorage. Syncing to it overwrites the restored selection with the
+    // default on MOUNT, and the persist effect below then writes that default
+    // back, destroying the user's choice permanently rather than for one
+    // render. That is what this did before the guard, to all six chip filters
+    // on Org and UserDetail.
+    if (storageKey) return;
     setS(prev => (keyOf(prev) === externalKey
       ? prev // same members: never re-render for a re-ordered list
       : new Set(externalKey ? externalKey.split('\u0000') : [])));
-  }, [externalKey]);
+  }, [externalKey, storageKey]);
 
   useEffect(() => {
     if (storageKey) writePersistedSet(storage, storageKey, s);
