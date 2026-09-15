@@ -94,7 +94,16 @@ export function federationRouter(ctx: HubServerContext): Router {
       });
       if (!outcome) { res.status(400).json({ error: 'invite token already used' }); return; }
 
-      res.json({ token: outcome, childHubId, orgId: parsed.orgId, parentUrl: publicHubUrl(req) });
+      // Hand the policy over at enrolment, not on the first heartbeat a minute
+      // later: a hub joining a group that already opted out would otherwise
+      // forward real identities for that first minute.
+      const group = await ctx.db.get<{ identity_policy: string | null }>(
+        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [parsed.orgId],
+      );
+      res.json({
+        token: outcome, childHubId, orgId: parsed.orgId, parentUrl: publicHubUrl(req),
+        identityPolicy: effectiveIdentityPolicy(group?.identity_policy as any ?? null, null),
+      });
     } catch (err) {
       // express 4 does not forward a rejected promise, so without this the
       // child would hang until timeout instead of seeing a 500.

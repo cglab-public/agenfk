@@ -548,6 +548,19 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
 
   // user_key_merges.reverted_at — BUG 098f8ba7.
+  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
+  // Both tables already exist on deployed hubs, so CREATE TABLE IF NOT EXISTS
+  // never adds them. Without these the ping route's SELECT throws and every
+  // child in the group reads dead on the parent's roster.
+  const chCols = raw.prepare("PRAGMA table_info(child_hubs)").all() as Array<{ name: string }>;
+  if (chCols.length > 0 && !new Set(chCols.map(c => c.name)).has('identity_policy')) {
+    raw.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
+  }
+  const osCols = raw.prepare("PRAGMA table_info(org_settings)").all() as Array<{ name: string }>;
+  if (osCols.length > 0 && !new Set(osCols.map(c => c.name)).has('identity_policy')) {
+    raw.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
+  }
+
   const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
   if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {
     raw.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TEXT");

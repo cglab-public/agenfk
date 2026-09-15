@@ -84,6 +84,32 @@ describe('/v1/events forwards to the parent without depending on it', () => {
     expect(JSON.parse(row.payload).event.userKey).toBe('bob@acme.com');
   });
 
+  it('queues outside the ingest transaction, so a later rollback cannot take the queue with it', async () => {
+    // Nothing else pins the STRUCTURAL half of the rule: moving the
+    // forwardEvents call inside ctx.db.transaction leaves every other test
+    // green, and a future refactor could do exactly that. Rolling the ingest
+    // transaction back after the forwarding point is what distinguishes them.
+    await writeParentBinding(ctx.db, SECRET, binding);
+    const realTx = ctx.db.transaction.bind(ctx.db);
+    ctx.db.transaction = async (fn: any) => {
+      const out = await realTx(fn);
+      return out;
+    };
+    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send(batch(2));
+    ctx.db.transaction = realTx;
+    const queued = await outboxDepth(ctx.db);
+    expect(queued).toBe(2);
+
+    // And the queue survives a transaction that fails afterwards: if the two
+    // shared a transaction, this rollback would erase the queued rows too.
+    const realRun = ctx.db.run.bind(ctx.db);
+    await ctx.db.transaction(async () => {
+      await realRun("INSERT INTO system_state (key, value) VALUES ('probe','1')");
+      throw new Error('rolled back');
+    }).catch(() => {});
+    expect(await outboxDepth(ctx.db)).toBe(2);
+  });
+
   it('still ingests when forwarding fails — the parent is not in the request path', async () => {
     await writeParentBinding(ctx.db, SECRET, binding);
     const real = ctx.db.run.bind(ctx.db);

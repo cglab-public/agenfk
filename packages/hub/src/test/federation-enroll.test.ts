@@ -124,6 +124,17 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
       expect(keys[0].revoked_at).toBeNull();
     });
 
+    it('hands the group identity policy over at enrolment, not a minute later', async () => {
+      // Learning it only on the first heartbeat means a hub joining a group
+      // that has already opted out forwards real identities for that minute.
+      const dflt = await enroll('alpha');
+      expect(dflt.body.identityPolicy).toBe('keep');
+
+      await ctx.db.run("INSERT INTO org_settings (org_id, identity_policy) VALUES ('org','pseudonymize') ON CONFLICT(org_id) DO UPDATE SET identity_policy = 'pseudonymize'");
+      const optedOut = await enroll('beta');
+      expect(optedOut.body.identityPolicy).toBe('pseudonymize');
+    });
+
     it('is single-use: the same invite cannot enroll twice', async () => {
       const inviteToken = await createInvite();
       const first = await supertest(app).post('/v1/federation/enroll').send({ inviteToken, childHub: { name: 'a' } });

@@ -81,6 +81,29 @@ describe('child hub: join, request release, leave', () => {
       expect(b).toMatchObject({ parentUrl: PARENT, token: TOKEN, childHubId: 'ch-1', state: 'active' });
     });
 
+    it('adopts the identity policy the parent hands back at enrolment', async () => {
+      // Otherwise the first minute of a child's life in an opted-out group
+      // forwards real identities.
+      const out = await createHubApp({
+        dbPath: TEST_DB + '4', secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org',
+        federationClient: {
+          async enroll() { return { token: TOKEN, childHubId: 'ch-9', identityPolicy: 'pseudonymize' }; },
+        },
+      } as any);
+      await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
+      const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ parentUrl: PARENT, inviteToken: 't' });
+      expect(r.status).toBe(200);
+      expect((await readParentBinding(out.ctx.db, SECRET))!.identityPolicy).toBe('pseudonymize');
+      const status = await supertest(out.app).get('/v1/admin/federation').set('Cookie', cookie);
+      // and the child's own admin can see what their people are subject to
+      expect(status.body.identityPolicy).toBe('pseudonymize');
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
+      for (const sfx of ['', '-wal', '-shm']) { const f = TEST_DB + '4' + sfx; if (fs.existsSync(f)) fs.unlinkSync(f); }
+    });
+
     it('never returns the federation token to the browser', async () => {
       const r = await join({ parentUrl: PARENT, inviteToken: 'body.sig' });
       expect(r.status).toBe(200);

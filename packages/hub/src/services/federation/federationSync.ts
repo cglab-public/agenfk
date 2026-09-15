@@ -103,7 +103,8 @@ function messageOf(err: unknown): string {
  * Queue a row for the parent. A no-op when this hub has no parent — otherwise a
  * standalone hub would accumulate rows forever for a parent that never comes.
  */
-export async function enqueueOutbox(db: DB, kind: string, payload: unknown): Promise<boolean> {
+/** Is this hub currently forwarding to a parent? Cheap, and the same gate for one row or many. */
+async function outboxAccepting(db: DB): Promise<boolean> {
   const bound = await db.get<{ value: string }>(
     'SELECT value FROM system_state WHERE key = ?', [PARENT_BINDING_KEY],
   );
@@ -111,11 +112,14 @@ export async function enqueueOutbox(db: DB, kind: string, payload: unknown): Pro
   // A revoked binding never drains, so continuing to queue would grow the
   // table for the rest of the hub's life with rows nothing will ever send.
   try {
-    if (JSON.parse(bound.value)?.state === 'revoked') return false;
+    return JSON.parse(bound.value)?.state !== 'revoked';
   } catch {
     return false;
   }
+}
 
+/** Serialise a payload, or null when it cannot be stored. Never throws. */
+function serialisePayload(payload: unknown): string | null {
   // This runs in the request path, so a payload we cannot serialise must cost
   // the event, never the request. JSON.stringify throws on a circular object
   // or a BigInt, and returns undefined for `undefined` — which the NOT NULL
@@ -125,35 +129,71 @@ export async function enqueueOutbox(db: DB, kind: string, payload: unknown): Pro
     body = JSON.stringify(payload);
   } catch (err) {
     console.warn('[FEDERATION] dropping an unserialisable outbox payload:', messageOf(err));
-    return false;
+    return null;
   }
   if (typeof body !== 'string') {
     console.warn('[FEDERATION] dropping an outbox payload that serialised to undefined');
-    return false;
+    return null;
   }
+  return body;
+}
 
+/** Trim the oldest rows once the queue is over its ceiling. */
+async function trimOutbox(db: DB, incoming: number): Promise<void> {
   // An unbounded queue is its own outage: a parent down for a week would grow
-  // this table without limit. Past the cap the oldest row makes way, so the
+  // this table without limit. Past the cap the oldest rows make way, so the
   // most recent history survives.
   const depth = await outboxDepth(db);
-  if (depth >= MAX_OUTBOX_ROWS) {
-    await db.run(
-      `DELETE FROM federation_outbox WHERE seq IN (
-         SELECT seq FROM federation_outbox ORDER BY seq ASC LIMIT ${Math.max(1, depth - MAX_OUTBOX_ROWS + 1)})`,
-    );
-  }
+  const over = depth + incoming - MAX_OUTBOX_ROWS;
+  if (over <= 0) return;
+  await db.run(
+    `DELETE FROM federation_outbox WHERE seq IN (
+       SELECT seq FROM federation_outbox ORDER BY seq ASC LIMIT ${safeLimit(over)})`,
+  );
+}
+
+/**
+ * Queue rows for the parent. A no-op when this hub has no parent — otherwise a
+ * standalone hub would accumulate rows forever for a parent that never comes.
+ *
+ * Batched deliberately. Queuing one row at a time cost three statements and a
+ * commit PER EVENT, so a 500-event batch added 1500 statements to a request,
+ * and the per-row depth check turned a full outbox into a scan per event. That
+ * made the child's own ingest slower the sicker its parent was — the exact
+ * coupling this whole design exists to avoid.
+ */
+export async function enqueueOutboxBatch(
+  db: DB,
+  rows: ReadonlyArray<{ kind: string; payload: unknown }>,
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  if (!(await outboxAccepting(db))) return 0;
 
   const now = new Date().toISOString();
-  // `seq` rather than created_at for ordering: several rows can share a
-  // millisecond and the tie-break was then a random UUID, so a burst came out
-  // shuffled. It is a real sequence (AUTOINCREMENT / BIGSERIAL) rather than
-  // MAX(seq)+1, which two Postgres connections would read identically.
-  await db.run(
-    `INSERT INTO federation_outbox (id, kind, payload, created_at, attempts, next_attempt_at)
-     VALUES (?, ?, ?, ?, 0, ?)`,
-    [randomUUID(), kind, body, now, now],
-  );
-  return true;
+  const values: Array<[string, string, string, string, string]> = [];
+  for (const r of rows) {
+    const body = serialisePayload(r.payload);
+    if (body === null) continue;
+    values.push([randomUUID(), r.kind, body, now, now]);
+  }
+  if (values.length === 0) return 0;
+
+  await db.transaction(async () => {
+    await trimOutbox(db, values.length);
+    for (const v of values) {
+      await db.run(
+        `INSERT INTO federation_outbox (id, kind, payload, created_at, attempts, next_attempt_at)
+         VALUES (?, ?, ?, ?, 0, ?)`,
+        v,
+      );
+    }
+  });
+  return values.length;
+}
+
+/** Single-row convenience over {@link enqueueOutboxBatch}. */
+export async function enqueueOutbox(db: DB, kind: string, payload: unknown): Promise<boolean> {
+  return (await enqueueOutboxBatch(db, [{ kind, payload }])) === 1;
 }
 
 export async function outboxDepth(db: DB): Promise<number> {

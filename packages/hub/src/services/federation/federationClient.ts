@@ -8,6 +8,8 @@ import { FEDERATION_HTTP_TIMEOUT_MS } from './federationSync.js';
 export interface FederationClient {
   enroll(args: { parentUrl: string; inviteToken: string; name: string; hubVersion?: string }): Promise<{
     token: string; childHubId: string; orgId?: string; parentUrl?: string;
+    /** The group's policy, handed over at enrolment so the child never forwards under the wrong one. */
+    identityPolicy?: 'keep' | 'pseudonymize';
   }>;
   requestRelease(args: { parentUrl: string; token: string; reason?: string | null }): Promise<unknown>;
 }

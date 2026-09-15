@@ -490,6 +490,22 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // process drift (recent events still tagged with old version after upgrade).
   if (!have.has('reporting_version')) await adapter.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
   // rollups_daily.prs_opened — added with the PR metrics initiative.
+  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
+  // See the SQLite block: deployed hubs already have both tables, so the
+  // column only ever arrives through an ALTER.
+  const chCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'child_hubs'"
+  );
+  if (chCols.length > 0 && !new Set(chCols.map(c => c.column_name)).has('identity_policy')) {
+    await adapter.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
+  }
+  const osCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'org_settings'"
+  );
+  if (osCols.length > 0 && !new Set(osCols.map(c => c.column_name)).has('identity_policy')) {
+    await adapter.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
+  }
+
   const rdCols = await adapter.all<{ column_name: string }>(
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'`
   );
