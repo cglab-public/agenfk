@@ -271,10 +271,23 @@ export function federationRouter(ctx: HubServerContext): Router {
     [childHubId, orgId],
   );
 
+  const isUpgradeProgress = (e: any) => e?.type === 'fleet:upgrade-dispatch:progress';
+
   const isDispatchReport = (e: any) =>
     e?.type === 'fleet:flow-dispatch:installed' || e?.type === 'fleet:flow-dispatch:failed';
 
-  const isUpgradeProgress = (e: any) => e?.type === 'fleet:upgrade-dispatch:progress';
+  /**
+   * Events that are a child hub talking to its parent about a directive,
+   * rather than a person's telemetry.
+   *
+   * They ride the same pipe under a non-person key, so the people-privacy
+   * controls must not reach them: an admin who happened to hide that key would
+   * otherwise stall every rollout silently — the target stays pending, the feed
+   * keeps serving, and nothing is logged anywhere. One predicate rather than a
+   * list repeated at each site, because the previous shape held the rule for
+   * one of two identical cases and quietly dropped the other.
+   */
+  const isControlPlaneReport = (e: any) => isDispatchReport(e) || isUpgradeProgress(e);
 
   /**
    * A child reporting how its group upgrade is going (CGLAB-183, task 3).
@@ -400,7 +413,7 @@ export function federationRouter(ctx: HubServerContext): Router {
           // admin who happened to hide that key would otherwise stall every
           // rollout silently: the target stays pending, /directives keeps
           // serving, and the child re-installs forever with nothing logged.
-          if (hidden.has(userKey) && !isDispatchReport(e)) { hiddenDropped++; continue; }
+          if (hidden.has(userKey) && !isControlPlaneReport(e)) { hiddenDropped++; continue; }
 
           // Canonicalise like /v1/events, or the same repo shows up as two
           // chips in the projects filter depending on which hub reported it.

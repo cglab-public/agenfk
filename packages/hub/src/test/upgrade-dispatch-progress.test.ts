@@ -325,6 +325,20 @@ describe('the parent records the progress its child reports', () => {
       'SELECT state FROM upgrade_dispatch_targets WHERE dispatch_id = ?', ['d-other'])).state).toBe('pending');
   });
 
+  it('is not filterable by the hidden-people control', async () => {
+    // Control plane riding the telemetry pipe under a non-person key. An admin
+    // who hid that key would otherwise stall every rollout silently: the
+    // target stays pending, the feed keeps serving, and nothing is logged.
+    // The flow-dispatch report was already exempt; this one has to be too, or
+    // the exemption is a rule that holds for one of two identical cases.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    await ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', [ORG, 'system']);
+
+    await report(a.token, 1, { counts: { pending: 0, updated: 1, failed: 0, skipped: 0 }, completed: true });
+    expect((await target(a.childHubId)).state).toBe('completed');
+  });
+
   it('shows the progress on the admin board', async () => {
     const a = await enroll('alpha');
     await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
