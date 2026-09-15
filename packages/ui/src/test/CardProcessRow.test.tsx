@@ -101,29 +101,36 @@ describe('the state is not carried by colour alone', () => {
   });
 });
 
-describe('stopping it', () => {
-  it('offers STOP and not BOARD', () => {
+/*
+ * A `describe('stopping it')` block sat here with three tests: that STOP was
+ * offered, that it stopped the right session, and that it was absent without a
+ * handler.
+ *
+ * The control is gone, reported by the user (8b019106). It did not stop
+ * anything - the handler looked the run up among the open sessions and CLOSED
+ * the terminal - so a label promising to interrupt an agent discarded the
+ * session and its scrollback instead, at exactly the moment somebody most
+ * wants the output.
+ *
+ * Deleted rather than reversed into "offers no STOP", because that assertion
+ * would pass on any row that happens to lack the button for any reason,
+ * including a rendering bug. The absence that matters is asserted once, below,
+ * against the whole row.
+ */
+describe('what the row does NOT offer', () => {
+  it('has no controls that act on the process', () => {
     /*
-     * BOARD was in the rail's row because the rail was somewhere else entirely.
-     * Here the card is the line above, so "go to the card" is a control that
-     * takes you where you already are - and in the rail the two used to
-     * overprint each other as "19hBOARD".
+     * Both hover controls are gone and for different reasons. BOARD would have
+     * taken you to the line directly above the one you are pointing at. STOP
+     * closed the terminal.
+     *
+     * Asserted as "no buttons but the one that opens it", which is stronger
+     * than naming the two that were removed: a third control added later
+     * without a decision behind it fails here too.
      */
-    render(<CardProcessRow row={row()} onStop={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /board/i })).toBeNull();
-  });
-
-  it('stops the session it belongs to, not the card', () => {
-    // A card can hold several; stopping must reach exactly one.
-    const onStop = vi.fn();
-    render(<CardProcessRow row={row({ runId: 'r-two' })} onStop={onStop} />);
-    fireEvent.click(screen.getByRole('button', { name: /stop/i }));
-    expect(onStop).toHaveBeenCalledWith('r-two');
-  });
-
-  it('offers nothing to stop when there is no handler', () => {
-    render(<CardProcessRow row={row()} />);
-    expect(screen.queryByRole('button', { name: /stop/i })).toBeNull();
+    render(<CardProcessRow row={row()} onOpen={vi.fn()} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAttribute('data-testid', 'process-open');
   });
 });

@@ -15,10 +15,22 @@
  * the rail those strings existed but only reached assistive tech; the dot
  * carried the state visually, and colour alone is the weakest way to carry it.
  *
- * STOP is the only hover control. The rail also offered BOARD because the rail
- * was somewhere else entirely; here "go to the card" would take you to the row
- * above the one you are pointing at. The two also used to overprint as
- * "19hBOARD" when the row was narrow.
+ * NO HOVER CONTROLS AT ALL, and that is deliberate on both counts.
+ *
+ * BOARD went first: the rail offered it because the rail was somewhere else
+ * entirely, and here "go to the card" would take you to the line directly
+ * above the one you are pointing at.
+ *
+ * STOP went second, reported by the user. It did not stop anything - the
+ * handler behind it looked the run up among the open sessions and CLOSED the
+ * terminal. A label that promises to interrupt an agent and instead discards
+ * the session and its scrollback is worse than no control, because the moment
+ * somebody reaches for it is the moment they least want to lose the output.
+ *
+ * Stopping an agent is a real need. It is a different control with different
+ * semantics - signal the process, keep the terminal - and it belongs to its
+ * own card rather than being smuggled in under a label that already means
+ * something else.
  */
 import React from 'react';
 import { clsx } from 'clsx';
@@ -30,14 +42,9 @@ export interface CardProcessRowProps {
   readonly row: SessionRow;
   /** Open this process. Absent while the row is only being displayed. */
   readonly onOpen?: (row: SessionRow) => void;
-  /**
-   * Stop it. Keyed by `runId`, never by `itemId`: a card can hold several
-   * processes, and stopping has to reach exactly one of them.
-   */
-  readonly onStop?: (runId: string) => void;
 }
 
-export function CardProcessRow({ row, onOpen, onStop }: CardProcessRowProps): React.ReactElement {
+export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.ReactElement {
   const label = STATE_LABEL[row.state];
   return (
     <div
@@ -45,7 +52,7 @@ export function CardProcessRow({ row, onOpen, onStop }: CardProcessRowProps): Re
       // The state in the DOM as well as on screen, so a test and a stylesheet
       // can both ask without re-deriving it from a class name.
       data-state={row.state}
-      className="group flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[11px]"
+      className="flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[11px]"
     >
       {row.state === 'running' ? (
         <>
@@ -99,23 +106,6 @@ export function CardProcessRow({ row, onOpen, onStop }: CardProcessRowProps): Re
         )}
       </button>
 
-      {onStop && (
-        <button
-          type="button"
-          onClick={() => onStop(row.runId)}
-          aria-label={`Stop ${row.agentLabel}`}
-          title={`Stop ${row.agentLabel}`}
-          /*
-           * Hidden until hover or focus, but never display:none - a control
-           * that is not in the tab order cannot be reached without a pointer,
-           * and stopping a runaway agent is the last thing that should require
-           * one.
-           */
-          className="shrink-0 rounded px-1 font-mono text-[9px] uppercase text-ink-tertiary opacity-0 transition-opacity hover:text-rose-400 focus:opacity-100 group-hover:opacity-100"
-        >
-          Stop
-        </button>
-      )}
     </div>
   );
 }

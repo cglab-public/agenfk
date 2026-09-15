@@ -1909,7 +1909,6 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                                 key={row.runId}
                                 row={row}
                                 onOpen={openSession}
-                                onStop={stopSession}
                               />
                             ))}
                           </div>
@@ -1995,7 +1994,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
               No card in view
             </h2>
             {orphans.map(row => (
-              <CardProcessRow key={row.runId} row={row} onOpen={openSession} onStop={stopSession} />
+              <CardProcessRow key={row.runId} row={row} onOpen={openSession} />
             ))}
           </div>
         );
