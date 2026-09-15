@@ -87,4 +87,43 @@ describe('a database error answers 500 instead of hanging the client', () => {
       expect(r.status).toBe(500);
     });
   }
+
+  // The card scoped the fix to the two routers above, but the same hole was
+  // open in every other one — 60 more handlers in admin.ts, flows.ts, auth.ts,
+  // events.ts and orgRename.ts. A sample from each, so the sweep is pinned by
+  // behaviour rather than by a grep over the source.
+  const SWEPT: Array<[string, string, Record<string, unknown> | null, boolean]> = [
+    ['get', '/v1/admin/api-keys', null, true],
+    ['get', '/v1/admin/installations', null, true],
+    ['get', '/v1/admin/flows', null, true],
+    ['put', '/v1/admin/auth-config', { passwordEnabled: true }, true],
+    ['get', '/v1/admin/system/pending', null, true],
+    ['get', '/auth/providers', null, false],
+    ['post', '/auth/login', { email: 'admin@x', password: 'longenough1' }, false],
+  ];
+
+  for (const [verb, url, body, needsAdmin] of SWEPT) {
+    it(`${verb.toUpperCase()} ${url} answers 500`, async () => {
+      breakTheDatabase();
+      const req = (supertest(app) as any)[verb](url).timeout({ deadline: DEADLINE_MS });
+      if (needsAdmin) req.set('Cookie', cookie);
+      const r = body ? await req.send(body) : await req;
+      expect(r.status).toBe(500);
+    });
+  }
+
+  // A key-guarded router needs a live key to reach the handler at all — and
+  // requireKey does its OWN db.get, which already answers 500 when everything
+  // is broken. Breaking only db.all therefore gets past the guard and fails
+  // inside the handler, which is the code under test. Without this the test
+  // passes against the unfixed router and pins nothing.
+  it('GET /v1/flows/available answers 500', async () => {
+    const key = await supertest(app).post('/v1/admin/api-keys').set('Cookie', cookie).send({ label: 'k' });
+    expect(key.status).toBeLessThan(300);
+    ctx.db.all = async () => { throw new Error('database is on fire'); };
+    const r = await supertest(app).get('/v1/flows/available')
+      .set('Authorization', `Bearer ${key.body.token}`)
+      .timeout({ deadline: DEADLINE_MS });
+    expect(r.status).toBe(500);
+  });
 });

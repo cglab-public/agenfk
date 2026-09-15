@@ -30,6 +30,7 @@ function requestHost(req: Request): string | null {
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 
 /**
@@ -90,7 +91,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
   // the calling installation, or 204 if none. The caller (Story 3 client)
   // decides whether to act on it; the hub does NOT transition state here —
   // it waits for the corresponding `fleet:upgrade:*` event in /v1/events.
-  router.get('/upgrade-directive', requireKey, async (req: Request, res: Response) => {
+  router.get('/upgrade-directive', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const installationId = req.hubApiKey!.installationId;
     if (!installationId) {
       return res.status(204).end();
@@ -113,13 +114,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
       targetVersion: row.target_version,
       issuedAt: row.created_at,
     });
-  });
+  }));
 
   // Repoint directive (CGLAB-66). Same shape as /upgrade-directive: keyed off
   // the api_key's installation binding, so a legacy org-wide key gets nothing —
   // it cannot be attributed to a machine and therefore cannot be tracked to a
   // confirmed move.
-  router.get('/repoint-directive', requireKey, async (req: Request, res: Response) => {
+  router.get('/repoint-directive', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const installationId = req.hubApiKey!.installationId;
     if (!installationId) return res.status(204).end();
     // A hidden person's events are dropped at ingest, so such an install would
@@ -151,12 +152,12 @@ export function eventsRouter(ctx: HubServerContext): Router {
       allowedHost: row.allowed_host,
       issuedAt: row.created_at,
     });
-  });
+  }));
 
   // Hard ceiling on events processed in a single /v1/events transaction.
   const MAX_EVENTS_PER_BATCH = 500;
 
-  router.post('/events', requireKey, async (req: Request, res: Response) => {
+  router.post('/events', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     // An installation-bound key may only post events for its OWN installation.
     // Without this, any org key could stamp fleet:upgrade:* state or running
@@ -516,7 +517,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
     }
 
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
-  });
+  }));
 
   return router;
 }

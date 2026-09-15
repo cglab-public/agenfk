@@ -5,6 +5,7 @@ import { requireApiKey } from '../auth/apiKey.js';
 import { resolveEffectiveFlow } from '../services/flowResolution.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { resolveRegistryRead, ghHeaders, listRegistryFiles } from '../services/flowRegistry.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 /**
  * Client-facing flow distribution: a connected agenfk installation calls
@@ -22,7 +23,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
   const router = Router();
   const requireKey = requireApiKey(ctx.db);
 
-  router.get('/flows/active', requireKey, async (req: Request, res: Response) => {
+  router.get('/flows/active', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const installationId = req.hubApiKey!.installationId ?? null;
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : null;
@@ -51,9 +52,9 @@ export function flowsRouter(ctx: HubServerContext): Router {
       scope: resolved.scope,
       targetId: resolved.targetId,
     });
-  });
+  }));
 
-  router.get('/flows/available', requireKey, async (req: Request, res: Response) => {
+  router.get('/flows/available', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const rows = await ctx.db.all<{
       id: string; name: string; description: string | null; definition_json: string; version: number;
@@ -79,7 +80,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
       };
     });
     res.json({ flows, defaultFlowId });
-  });
+  }));
 
   // ── Registry proxy for connected installations (CGLAB-138) ──────────
   //
@@ -93,7 +94,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
   // The response carries `repo` so the client can show which registry the
   // entries came from; a list of flows with no label is how a private repo
   // gets mistaken for the public one.
-  router.get('/registry/flows', requireKey, async (req: Request, res: Response) => {
+  router.get('/registry/flows', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     try {
       const { repo, branch, token } = await resolveRegistryRead(ctx.db, orgId, ctx.config.secretKey);
@@ -125,13 +126,13 @@ export function flowsRouter(ctx: HubServerContext): Router {
       // assume is authoritative.
       res.status(502).json({ error: 'Failed to fetch registry', detail: e?.message });
     }
-  });
+  }));
 
   // Install one registry flow on behalf of a connected installation. The
   // installation cannot fetch this itself — a private org repo is readable
   // only with the hub-held token — so the hub fetches and hands back the
   // definition, and the client creates it locally.
-  router.post('/registry/flows/install', requireKey, async (req: Request, res: Response) => {
+  router.post('/registry/flows/install', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
@@ -165,9 +166,9 @@ export function flowsRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
     }
-  });
+  }));
 
-  router.put('/flows/selection', requireKey, async (req: Request, res: Response) => {
+  router.put('/flows/selection', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     const installationId = req.hubApiKey!.installationId ?? null;
     // Selection is a per-installation action; a fleet api_key without an
@@ -264,7 +265,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
       );
     });
     res.json({ ...respKey, flowId, scope });
-  });
+  }));
 
   return router;
 }

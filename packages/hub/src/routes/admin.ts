@@ -28,6 +28,7 @@ import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 import {
   PUBLIC_REGISTRY_REPO,
   getRegistryConfig,
@@ -104,13 +105,13 @@ export function adminRouter(ctx: HubServerContext): Router {
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────
-  router.get('/auth-config', guard, async (req: Request, res: Response) => {
+  router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [req.session!.orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
-  });
+  }));
 
-  router.put('/auth-config', guard, async (req: Request, res: Response) => {
+  router.put('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
     const updates: string[] = [];
@@ -137,10 +138,10 @@ export function adminRouter(ctx: HubServerContext): Router {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
-  });
+  }));
 
   // ── API keys (installation tokens) ───────────────────────────────────────
-  router.get('/api-keys', guard, async (req: Request, res: Response) => {
+  router.get('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<any>(
       'SELECT token_hash, label, created_at, revoked_at, installation_id, os_user, git_name, git_email FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
       [req.session!.orgId],
@@ -155,15 +156,15 @@ export function adminRouter(ctx: HubServerContext): Router {
       gitName: r.git_name ?? null,
       gitEmail: r.git_email ?? null,
     })));
-  });
+  }));
 
-  router.post('/api-keys', guard, async (req: Request, res: Response) => {
+  router.post('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const label = typeof req.body?.label === 'string' ? req.body.label : null;
     const token = await issueApiKey(ctx.db, req.session!.orgId, label ?? undefined);
     res.status(201).json({ token, label });
-  });
+  }));
 
-  router.delete('/api-keys/:tokenHashPreview', guard, async (req: Request, res: Response) => {
+  router.delete('/api-keys/:tokenHashPreview', guard, asyncRoute(async (req: Request, res: Response) => {
     const preview = req.params.tokenHashPreview;
     // The segment fed straight into LIKE, so DELETE /api-keys/% revoked every
     // key in the org in one unconfirmed call — a fleet-wide kill switch nobody
@@ -195,13 +196,13 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, `${preview}%`],
     );
     res.json({ revoked: result.changes });
-  });
+  }));
 
   // ── Hidden people (CGLAB-31) ─────────────────────────────────────────────
   // Person-level hide keyed on events.user_key (lowercased git email).
   // Selection surfaces only — historical data (events, rollups, dashboards)
   // is deliberately untouched. Fully reversible via DELETE.
-  router.get('/hidden-users', guard, async (req: Request, res: Response) => {
+  router.get('/hidden-users', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT user_key, hidden_by_user_id, hidden_by_email, created_at
          FROM hidden_users
@@ -215,9 +216,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       hiddenByEmail: r.hidden_by_email ?? null,
       createdAt: r.created_at,
     })));
-  });
+  }));
 
-  router.post('/hidden-users', guard, async (req: Request, res: Response) => {
+  router.post('/hidden-users', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const raw = req.body?.userKey;
     const userKey = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -256,9 +257,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.status(201).json({ userKey, revokedApiKeys });
-  });
+  }));
 
-  router.delete('/hidden-users/:userKey', guard, async (req: Request, res: Response) => {
+  router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
     const userKey = decodeURIComponent(req.params.userKey).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
@@ -267,7 +268,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Note: api_key revocation is permanent — unhiding does NOT restore
     // revoked tokens (the person must re-register their installation).
     res.json({ userKey, unhidden: r.changes > 0 });
-  });
+  }));
 
   // ── Model mappings ───────────────────────────────────────────────────────
   // Admin-curated model identity: an alias reported by an installation folds
@@ -299,7 +300,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // event volume rather than by the window — acceptable at current scale, and
   // the reason this is an admin page rather than something on every dashboard
   // load. A materialized model column would replace it if that ever bites.
-  router.get('/models', guard, async (req: Request, res: Response) => {
+  router.get('/models', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const [mappings, seen, metaRows] = await Promise.all([
       ctx.db.all<Record<string, unknown>>(
@@ -349,7 +350,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         source: m.source,
       })),
     });
-  });
+  }));
 
   // ── Model provider / license metadata (CGLAB-133 follow-up) ──────────────
   // The table is seeded from util/modelMetaSeed.ts on first read and is the
@@ -357,7 +358,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // classification. Nothing here is inferred: an admin either sets a row or the
   // model stays whatever the seed said.
 
-  router.put('/models/meta', guard, async (req: Request, res: Response) => {
+  router.put('/models/meta', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const model = validModelId(req.body?.model);
     const provider = typeof req.body?.provider === 'string' ? req.body.provider.trim() : '';
@@ -410,9 +411,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       [orgId, model, provider, licenseClass, license, req.session!.userId ?? null, updatedByEmail],
     );
     res.status(201).json({ model, provider, licenseClass, license, source: 'admin' });
-  });
+  }));
 
-  router.delete('/models/meta/:model', guard, async (req: Request, res: Response) => {
+  router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
     const model = validModelId(decodeURIComponent(req.params.model));
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
@@ -423,9 +424,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     // (the seed only inserts when the org has NO rows at all), which is the
     // honest outcome: the admin said "I don't know", and we do not guess.
     res.json({ model, removed: r.changes > 0 });
-  });
+  }));
 
-  router.post('/models/mappings', guard, async (req: Request, res: Response) => {
+  router.post('/models/mappings', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const aliasModel = validModelId(req.body?.aliasModel);
     const canonicalModel = validModelId(req.body?.canonicalModel);
@@ -480,9 +481,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       [orgId, aliasModel, canonicalModel, req.session!.userId, createdByEmail],
     );
     res.status(201).json({ aliasModel, canonicalModel });
-  });
+  }));
 
-  router.delete('/models/mappings/:aliasModel', guard, async (req: Request, res: Response) => {
+  router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
     const aliasModel = validModelId(decodeURIComponent(req.params.aliasModel));
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
@@ -490,10 +491,10 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, aliasModel],
     );
     res.json({ aliasModel, removed: r.changes > 0 });
-  });
+  }));
 
   // ── Users ────────────────────────────────────────────────────────────────
-  router.get('/installations', guard, async (req: Request, res: Response) => {
+  router.get('/installations', guard, asyncRoute(async (req: Request, res: Response) => {
     // CGLAB-31: installations belonging to hidden people are excluded by
     // default (this endpoint feeds the Admin installations list, the upgrade
     // picker and the flow-assignment installation picker). ?includeHidden=1
@@ -535,7 +536,7 @@ export function adminRouter(ctx: HubServerContext): Router {
           retiredByEmail: r.retired_by_email ?? null,
         })),
     );
-  });
+  }));
 
   /**
    * Manual rollup repair. The merge recomputes after its transaction commits
@@ -543,7 +544,7 @@ export function adminRouter(ctx: HubServerContext): Router {
    * historical rollups_daily permanently wrong — the periodic timer is
    * forward-only by design and will never notice. This is the way back.
    */
-  router.post('/rollups/recompute', guard, async (req: Request, res: Response) => {
+  router.post('/rollups/recompute', guard, asyncRoute(async (req: Request, res: Response) => {
     const since = req.body?.since;
     const full = req.body?.full === true;
     if (!full && (typeof since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(since))) {
@@ -555,7 +556,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       orgId: req.session!.orgId,
     });
     res.json({ days: out.days, since: full ? null : since, full });
-  });
+  }));
 
   // ── Identity hygiene (task 2b7a391b) ──────────────────────────────────────
   //
@@ -571,7 +572,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // breakdown and are never offered as a single action. Merges are revertible
   // now, but a revert an admin never realises they need is no protection.
 
-  router.get('/identity-suggestions', guard, async (req: Request, res: Response) => {
+  router.get('/identity-suggestions', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const rows = await ctx.db.all<{
       from_key: string; to_key: string; installation_id: string;
@@ -655,7 +656,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Most history first: the biggest attribution errors are worth fixing first.
     out.sort((a, b) => b.events - a.events);
     res.json(out);
-  });
+  }));
 
   /**
    * Undo one merge. Restores exactly the rows that merge moved, using the
@@ -666,7 +667,7 @@ export function adminRouter(ctx: HubServerContext): Router {
    * older merge after a newer one claimed the same rows finds nothing. That is
    * reported as zero-restored with a note, never as a silent success.
    */
-  router.post('/user-keys/merges/:id/revert', guard, async (req: Request, res: Response) => {
+  router.post('/user-keys/merges/:id/revert', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     const record = await ctx.db.get<{
@@ -799,9 +800,9 @@ export function adminRouter(ctx: HubServerContext): Router {
           + 'Revert the newer merge first.'
         : null,
     });
-  });
+  }));
 
-  router.get('/user-keys/merges', guard, async (req: Request, res: Response) => {
+  router.get('/user-keys/merges', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, reverted_at, created_at
          FROM user_key_merges WHERE org_id = ? ORDER BY created_at DESC`,
@@ -816,7 +817,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       revertedAt: r.reverted_at ?? null,
       createdAt: r.created_at ?? null,
     })));
-  });
+  }));
 
   // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
   //
@@ -838,7 +839,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   }
 
-  router.post('/repoint', guard, async (req: Request, res: Response) => {
+  router.post('/repoint', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const raw = String(req.body?.targetUrl ?? '').trim().replace(/\/$/, '');
     let parsed: URL;
@@ -900,9 +901,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       }
     });
     res.status(201).json({ id, targetUrl: raw, allowedHost: parsed.hostname.toLowerCase(), targeted: targets.length });
-  });
+  }));
 
-  router.get('/repoint', guard, async (req: Request, res: Response) => {
+  router.get('/repoint', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const campaign = await openCampaign(orgId);
     if (!campaign) { res.json({ campaign: null, counts: {}, targets: [], drained: false }); return; }
@@ -950,16 +951,16 @@ export function adminRouter(ctx: HubServerContext): Router {
         lastSeen: r.last_seen ?? null,
       })),
     });
-  });
+  }));
 
-  router.post('/repoint/:id/close', guard, async (req: Request, res: Response) => {
+  router.post('/repoint/:id/close', guard, asyncRoute(async (req: Request, res: Response) => {
     const r = await ctx.db.run(
       "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
       [req.params.id, req.session!.orgId],
     );
     if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
     res.json({ id: req.params.id, closed: true });
-  });
+  }));
 
   // ── Identity merge (CGLAB-65) ─────────────────────────────────────────────
   //
@@ -971,7 +972,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // or an install with no git config created a phantom osUser identity sitting
   // beside the real person.
 
-  router.post('/user-keys/merge', guard, async (req: Request, res: Response) => {
+  router.post('/user-keys/merge', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     // Preserve case: userKeyFor lowercases gitEmail only, so an osUser-derived
     // key ('Daniel', 'DPolistchuck' on Windows) is stored as-is. Lowercasing the
@@ -1145,7 +1146,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       // Only differs when the requested target had itself been merged away.
       requestedTo: requestedTo === to ? undefined : requestedTo,
     });
-  });
+  }));
 
   // ── Installation retirement (CGLAB-64) ────────────────────────────────────
   //
@@ -1165,7 +1166,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   }
 
-  router.post('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+  router.post('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     const existing = await findInstallation(orgId, id);
@@ -1217,9 +1218,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       retiredAt = fresh?.retired_at ?? null;
     }
     res.json({ id, retired: true, retiredAt, revokedApiKeys, cancelledDirectiveTargets });
-  });
+  }));
 
-  router.delete('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+  router.delete('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     if (!(await findInstallation(orgId, id))) {
@@ -1234,17 +1235,17 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Deliberately asymmetric, matching hidden-users: revocation is permanent,
     // so the machine re-joins rather than silently regaining a live token.
     res.json({ id, retired: false });
-  });
+  }));
 
-  router.get('/users', guard, async (req: Request, res: Response) => {
+  router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all(
       'SELECT id, email, provider, role, active, created_at, last_login_at FROM users WHERE org_id = ? ORDER BY created_at DESC',
       [req.session!.orgId],
     );
     res.json(rows);
-  });
+  }));
 
-  router.post('/users/invite', guard, async (req: Request, res: Response) => {
+  router.post('/users/invite', guard, asyncRoute(async (req: Request, res: Response) => {
     const { email, password, role } = req.body ?? {};
     if (typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ error: 'email required' });
@@ -1274,9 +1275,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(409).json({ error: 'A user with that email already exists' });
     }
-  });
+  }));
 
-  router.put('/users/:id', guard, async (req: Request, res: Response) => {
+  router.put('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const { role, active, password } = req.body ?? {};
     const sets: string[] = [];
     const params: any[] = [];
@@ -1288,14 +1289,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
-  });
+  }));
 
-  router.delete('/users/:id', guard, async (req: Request, res: Response) => {
+  router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
     const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Flows ────────────────────────────────────────────────────────────────
   interface FlowRow {
@@ -1352,7 +1353,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // ── Project discovery (for assignment UI pickers) ───────────────────────
   // Returns the distinct project ids ever ingested for this org, with the
   // most-recent occurrence timestamp. Used by the hub-ui Assignments panel.
-  router.get('/projects', guard, async (req: Request, res: Response) => {
+  router.get('/projects', guard, asyncRoute(async (req: Request, res: Response) => {
     // Repo discovery for the assignment UI. The globally-shared identity is the
     // git repo (remote URL), NOT the local per-installation projectId — two
     // clones of the same repo have different projectIds. We therefore surface
@@ -1372,7 +1373,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       remoteUrl: r.remote_url,
       lastSeen: r.last_seen,
     })));
-  });
+  }));
 
   // Built-in default flow — declared BEFORE /flows/:id so the literal ":id"
   // doesn't swallow `/flows/default`.
@@ -1380,15 +1381,15 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(DEFAULT_FLOW);
   });
 
-  router.get('/flows', guard, async (req: Request, res: Response) => {
+  router.get('/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<FlowRow>(
       'SELECT * FROM flows WHERE org_id = ? ORDER BY updated_at DESC',
       [req.session!.orgId],
     );
     res.json(rows.map(presentFlow));
-  });
+  }));
 
-  router.post('/flows', guard, async (req: Request, res: Response) => {
+  router.post('/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const definition = req.body?.definition;
     const sourceIn = req.body?.source;
     const source: 'hub' | 'community' = sourceIn === 'community' ? 'community' : 'hub';
@@ -1410,18 +1411,18 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [id]);
     res.status(201).json(presentFlow(row!));
-  });
+  }));
 
-  router.get('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.get('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
     );
     if (!row) return res.status(404).json({ error: 'Flow not found' });
     res.json(presentFlow(row));
-  });
+  }));
 
-  router.put('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.put('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const existing = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
@@ -1445,9 +1446,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [req.params.id]);
     res.json(presentFlow(row!));
-  });
+  }));
 
-  router.put('/flows/:id/availability', guard, async (req: Request, res: Response) => {
+  router.put('/flows/:id/availability', guard, asyncRoute(async (req: Request, res: Response) => {
     const existing = await ctx.db.get<FlowRow>(
       'SELECT id FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
@@ -1459,9 +1460,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       [available ? 1 : 0, req.params.id, req.session!.orgId],
     );
     res.json({ id: req.params.id, orgAvailable: available });
-  });
+  }));
 
-  router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.delete('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const owned = await ctx.db.get<{ source: string }>(
       'SELECT source FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
@@ -1486,12 +1487,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     if (result.changes === 0) return res.status(404).json({ error: 'Flow not found' });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Flow assignments (multi-scope) ───────────────────────────────────────
   // List shape: array of { scope, targetId, flowId, updatedAt } so hub-ui can
   // render org/project/installation overrides in one pass.
-  router.get('/flow-assignments', guard, async (req: Request, res: Response) => {
+  router.get('/flow-assignments', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<{ scope: string; target_id: string; flow_id: string; updated_at: string }>(
       'SELECT scope, target_id, flow_id, updated_at FROM flow_assignments WHERE org_id = ? ORDER BY scope, target_id',
       [req.session!.orgId],
@@ -1552,7 +1553,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         ? r.target_id
         : r.scope === 'project' ? (remoteByProjectId.get(r.target_id) ?? null) : null,
     })));
-  });
+  }));
 
   // ── Community registry proxy ────────────────────────────────────────────
   // Mirrors the local server's /registry/flows surface so the FlowEditorModal
@@ -1578,11 +1579,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   // The admin of a hub-connected company points the org's flow registry at an
   // EXISTING repo of their own. GET never returns the token — only that one
   // exists — because the UI has no legitimate reason to render a secret.
-  router.get('/registry-config', guard, async (req: Request, res: Response) => {
+  router.get('/registry-config', guard, asyncRoute(async (req: Request, res: Response) => {
     res.json(await getRegistryConfig(ctx.db, req.session!.orgId));
-  });
+  }));
 
-  router.put('/registry-config', guard, async (req: Request, res: Response) => {
+  router.put('/registry-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
 
@@ -1649,11 +1650,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       ...(await getRegistryConfig(ctx.db, orgId)),
       copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated,
     });
-  });
+  }));
 
   // Re-run the copy after a partial or failed one. Tops up the repo the org
   // already points at; does not re-probe-and-switch.
-  router.post('/registry-config/sync', guard, async (req: Request, res: Response) => {
+  router.post('/registry-config/sync', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const cfg = await getRegistryConfig(ctx.db, orgId);
     if (cfg.isPublic) {
@@ -1670,9 +1671,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       copiedAt: new Date().toISOString(),
     });
     res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
-  });
+  }));
 
-  router.get('/registry/flows', guard, async (req: Request, res: Response) => {
+  router.get('/registry/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const resolved = await resolveRegistrySource(
       ctx.db, req.session!.orgId, ctx.config.secretKey, req.query?.source,
     );
@@ -1712,10 +1713,10 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to fetch registry', detail: e?.message });
     }
-  });
+  }));
 
   // ── Install from registry into the org's flows table (source='community') ──
-  router.post('/flows/install', guard, async (req: Request, res: Response) => {
+  router.post('/flows/install', guard, asyncRoute(async (req: Request, res: Response) => {
     const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
     const resolved = await resolveRegistrySource(
@@ -1767,9 +1768,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
     }
-  });
+  }));
 
-  router.put('/flow-assignments', guard, async (req: Request, res: Response) => {
+  router.put('/flow-assignments', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const body = req.body ?? {};
     // Default scope to 'org' for legacy callers that send only `{ flowId }`.
@@ -1833,7 +1834,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       }
     });
     res.json({ scope, targetId: targetId || null, flowId });
-  });
+  }));
 
   // ── Fleet upgrade directives (Story 2 of EPIC 541c12b3) ────────────────
   // Strict semver allowlist mirrors the CLI's SEMVER_TAG_RE — a directive's
@@ -1845,7 +1846,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // sourced from the public agenfk GitHub release list and filtered to
   // releases >= the org's fleet floor (the oldest agenfk_version any
   // installation in this org has reported). Sorted newest → oldest.
-  router.get('/upgrade/available-versions', guard, async (req: Request, res: Response) => {
+  router.get('/upgrade/available-versions', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     // Admin-triggered cache invalidation: ?refresh=1 lets an admin force a
     // fresh fetch right after a new release is cut, instead of waiting for
@@ -1876,9 +1877,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     filtered.sort((a, b) => compareSemver(b, a)); // newest → oldest
 
     res.json({ versions: filtered, fleetFloor });
-  });
+  }));
 
-  router.post('/upgrade', guard, async (req: Request, res: Response) => {
+  router.post('/upgrade', guard, asyncRoute(async (req: Request, res: Response) => {
     const { targetVersion, scope, confirmDowngrade } = req.body ?? {};
     if (typeof targetVersion !== 'string' || !SEMVER_TAG_RE.test(targetVersion)) {
       return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
@@ -2058,9 +2059,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.status(201).json({ directiveId, targetVersion, targetCount: installations.length });
-  });
+  }));
 
-  router.get('/upgrade', guard, async (req: Request, res: Response) => {
+  router.get('/upgrade', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directives = await ctx.db.all<{
       id: string; target_version: string; scope_type: string; scope_id: string | null;
@@ -2122,7 +2123,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       });
     }
     res.json({ directives: out });
-  });
+  }));
 
   // POST /v1/admin/upgrade/:directiveId/cancel — admin-driven cancel for a
   // pending directive. Flips every target still in 'pending' to 'cancelled';
@@ -2446,7 +2447,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (err) { next(err); }
   });
 
-  router.post('/upgrade/:directiveId/cancel', guard, async (req: Request, res: Response) => {
+  router.post('/upgrade/:directiveId/cancel', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directiveId = req.params.directiveId;
     const force = req.body?.force === true;
@@ -2489,7 +2490,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.json({ directiveId, cancelledCount, forcedCount, leftAlone });
-  });
+  }));
 
 
   // ── Child hubs (CGLAB-181) ────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireAdmin, signSession, setSessionCookie } from '../auth/session.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 /**
  * Tables whose `org_id` column references `orgs.id` and must be repointed
@@ -43,7 +44,7 @@ export function orgRenameRouter(ctx: HubServerContext): Router {
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // POST /v1/admin/orgs/rename
-  router.post('/orgs/rename', guard, async (req: Request, res: Response) => {
+  router.post('/orgs/rename', guard, asyncRoute(async (req: Request, res: Response) => {
     const session = req.session!;
     const from = typeof req.body?.from === 'string' ? req.body.from.trim() : '';
     const to   = typeof req.body?.to   === 'string' ? req.body.to.trim()   : '';
@@ -106,22 +107,22 @@ export function orgRenameRouter(ctx: HubServerContext): Router {
       requiresEnvUpdate: true,
       envVar: 'AGENFK_HUB_ORG_ID',
     });
-  });
+  }));
 
   // GET /v1/admin/system/pending — drives the persistent banner.
-  router.get('/system/pending', guard, async (_req: Request, res: Response) => {
+  router.get('/system/pending', guard, asyncRoute(async (_req: Request, res: Response) => {
     const row = await ctx.db.get<{ value: string }>(
       'SELECT value FROM system_state WHERE key = ?', ['pending_env_orgid'],
     );
     res.json({ pendingEnvOrgId: row?.value ?? null });
-  });
+  }));
 
   // POST /v1/admin/system/pending/ack — clears the banner once the operator
   // confirms they've updated the deployment manifest.
-  router.post('/system/pending/ack', guard, async (_req: Request, res: Response) => {
+  router.post('/system/pending/ack', guard, asyncRoute(async (_req: Request, res: Response) => {
     await ctx.db.run('DELETE FROM system_state WHERE key = ?', ['pending_env_orgid']);
     res.json({ ok: true });
-  });
+  }));
 
   return router;
 }
