@@ -180,6 +180,53 @@ export function federationRouter(ctx: HubServerContext): Router {
     message: 'Too many deliveries, slow down.',
   });
 
+  /**
+   * A child answering for a flow we dispatched (CGLAB-182).
+   *
+   * This is the ONLY thing that moves a target off `pending`. The parent never
+   * marks one installed because it SERVED the directive — serving is not
+   * landing, and showing what actually happened per hub is the whole reason
+   * the target table exists.
+   *
+   * The child hub comes from the CREDENTIAL, never from the payload. Otherwise
+   * one key holder could report `installed` for every sibling and an admin
+   * would read a broken rollout as complete — the same reason the
+   * fleet:upgrade ingest refuses to attribute a report without a key-bound
+   * installation.
+   *
+   * `state = 'pending'` sits IN THE STATEMENT rather than in a preceding read.
+   * It is the no-regression guard — installed and failed are both terminal for
+   * a given dispatch, so a late duplicate of the other cannot overwrite the
+   * first answer — and as a read-then-write two concurrent deliveries would
+   * both see pending and both write.
+   *
+   * A report naming a dispatch that is not this org's, or a target row that
+   * does not exist because the hub was never served, matches nothing and is
+   * silently a no-op. Both are the right outcome: it is still stored as an
+   * event, it just moves no state.
+   */
+  const applyFlowDispatchReport = async (
+    e: any,
+    args: {
+      orgId: string;
+      childHubId: string;
+      now: string;
+      str: (v: unknown) => string | null;
+    },
+  ): Promise<void> => {
+    if (e.type !== 'fleet:flow-dispatch:installed' && e.type !== 'fleet:flow-dispatch:failed') return;
+    const dispatchId = args.str(e.payload?.dispatchId);
+    if (!dispatchId) return;
+    const state = e.type === 'fleet:flow-dispatch:installed' ? 'installed' : 'failed';
+    await ctx.db.run(
+      `UPDATE flow_dispatch_targets
+          SET state = ?, detail = ?, updated_at = ?
+        WHERE dispatch_id = ? AND child_hub_id = ? AND state = 'pending'
+          AND dispatch_id IN (SELECT id FROM flow_dispatches WHERE org_id = ?)`,
+      [state, args.str(e.payload?.detail), args.now, dispatchId, args.childHubId, args.orgId],
+    );
+  };
+
   router.post('/deliver', requireKey, deliverRateLimit, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { childHubId, orgId } = req.hubFederation!;
@@ -254,35 +301,7 @@ export function federationRouter(ctx: HubServerContext): Router {
           if (result.changes === 0) { duplicates++; continue; }
           accepted++;
 
-          // A child answering for a flow we dispatched (CGLAB-182). This is
-          // the ONLY thing that moves a target off `pending` — the parent
-          // never marks one installed because it served the directive, since
-          // serving is not landing.
-          //
-          // The child hub comes from the CREDENTIAL, never from the payload:
-          // otherwise one holder could report `installed` for every sibling
-          // and an admin would read a broken rollout as complete. Same reason
-          // the fleet:upgrade ingest refuses to attribute without a key-bound
-          // installation.
-          //
-          // `state = 'pending'` in the statement is the no-regression guard:
-          // installed and failed are both terminal for a given dispatch, so a
-          // late duplicate of the other one cannot overwrite the first answer.
-          // Deliberately not a read-then-write — the guard has to be in the
-          // UPDATE, or two concurrent deliveries both see pending.
-          if (e.type === 'fleet:flow-dispatch:installed' || e.type === 'fleet:flow-dispatch:failed') {
-            const dispatchId = str(e.payload?.dispatchId);
-            if (dispatchId) {
-              const state = e.type === 'fleet:flow-dispatch:installed' ? 'installed' : 'failed';
-              await ctx.db.run(
-                `UPDATE flow_dispatch_targets
-                    SET state = ?, detail = ?, updated_at = ?
-                  WHERE dispatch_id = ? AND child_hub_id = ? AND state = 'pending'
-                    AND dispatch_id IN (SELECT id FROM flow_dispatches WHERE org_id = ?)`,
-                [state, str(e.payload?.detail), now, dispatchId, childHubId, orgId],
-              );
-            }
-          }
+          await applyFlowDispatchReport(e, { orgId, childHubId, now, str });
           const day = e.occurredAt.slice(0, 10);
           if (!earliestDay || day < earliestDay) earliestDay = day;
         }
