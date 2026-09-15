@@ -1101,10 +1101,25 @@ const FlowMermaid: React.FC<{ steps: { name: string; label: string }[] }> = ({ s
   useEffect(() => {
     if (!ref.current || steps.length === 0) return;
     const id = `mermaid-flow-${Math.random().toString(36).substring(2, 9)}`;
-    const nodes = steps.map((s, i) => `  ${i}["${s.label || s.name}"]`).join('\n');
+    /*
+     * Labels come from the community registry, so they are untrusted.
+     *
+     * An unescaped `"` terminated the quoted label and left a blank preview;
+     * a newline injected extra statements into the chart source. Neither can
+     * become script at 'strict' — the URL is sanitized and the final SVG goes
+     * through DOMPurify — but the diagram is data, not source, and is escaped
+     * as such (F1 from the CGLAB-187 adversarial review).
+     */
+    const escapeLabel = (raw: string): string =>
+      raw.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
+    const nodes = steps.map((s, i) => `  ${i}["${escapeLabel(s.label || s.name)}"]`).join('\n');
     const edges = steps.slice(1).map((_, i) => `  ${i} --> ${i + 1}`).join('\n');
     const chart = `flowchart LR\n${nodes}\n${edges}`;
-    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    // 'strict', NEVER 'loose' (CGLAB-187): a community flow is authored by
+    // someone else, and at 'loose' Mermaid skips its own URL sanitization, so a
+    // `javascript:` link in a step would survive into the SVG this injects with
+    // innerHTML. See ReadmeModal.tsx for the desktop-escalation detail.
+    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'strict' });
     mermaid.render(id, chart).then(({ svg }) => {
       if (ref.current) ref.current.innerHTML = svg;
     }).catch(() => {});

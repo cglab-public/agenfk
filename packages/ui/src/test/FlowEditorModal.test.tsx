@@ -9,6 +9,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { Flow, RegistryFlow } from '../types';
 import { ThemeProvider } from '../ThemeContext';
+import mermaid from 'mermaid';
+
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(() => Promise.resolve({ svg: '<svg />' })),
+  },
+}));
 
 vi.mock('../api', () => ({
   api: {
@@ -1049,6 +1057,66 @@ describe('FlowEditorModal — Community tab', () => {
     await waitFor(() => screen.getByTestId('community-preview-panel'));
     expect(screen.getByTestId('community-install-btn')).toBeDefined();
     expect(screen.getByTestId('community-clone-btn')).toBeDefined();
+  });
+
+  /*
+   * CGLAB-187. A community flow is authored by someone else and reaches the
+   * diagram renderer, whose SVG is injected with innerHTML. Mermaid's `loose`
+   * level skips its own URL sanitization, so untrusted flow steps could carry
+   * a `javascript:` link into the DOM. Pinned at the call site.
+   */
+  it('renders the community flow diagram at a URL-sanitizing security level, never "loose"', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+
+    await waitFor(() => expect(mermaid.initialize).toHaveBeenCalled());
+    const calls = vi.mocked(mermaid.initialize).mock.calls;
+    const config = calls[calls.length - 1][0] as { securityLevel?: string };
+    expect(config.securityLevel).not.toBe('loose');
+    expect(config.securityLevel).toBe('strict');
+  });
+
+  /*
+   * F1 from the CGLAB-187 adversarial review. A community flow's step label is
+   * untrusted and was interpolated into the Mermaid source unescaped: a `"`
+   * terminated the quoted label (blank preview) and a newline injected extra
+   * statements. At 'strict' neither becomes script, but the diagram source is
+   * data and must not be breakable by its input.
+   */
+  it('escapes untrusted community step labels before building the diagram source', async () => {
+    const EVIL: RegistryFlow = {
+      filename: 'evil.json',
+      name: 'Evil Flow',
+      author: 'attacker',
+      version: '1.0.0',
+      stepCount: 2,
+      steps: [
+        { name: 'A', label: 'x"]\n  click 1 "javascript:alert(1)"\n  ["y' },
+        { name: 'B', label: 'B' },
+      ],
+    };
+    vi.mocked(api.browseRegistry).mockResolvedValue([EVIL]);
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    fireEvent.click(screen.getByTestId('tab-community'));
+    await waitFor(() => screen.getByTestId('community-flow-item-0'));
+    fireEvent.click(screen.getByTestId('community-flow-item-0'));
+    await waitFor(() => screen.getByTestId('community-preview-panel'));
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalled());
+
+    const renderCalls = vi.mocked(mermaid.render).mock.calls;
+    const chart = String(renderCalls[renderCalls.length - 1][1]);
+    // The label cannot start a new statement line, and its quotes are entities.
+    expect(chart).not.toMatch(/^\s*click\b/m);
+    expect(chart).toContain('&quot;');
   });
 
   it('Install button calls installFromRegistry and switches to My Flows tab', async () => {
