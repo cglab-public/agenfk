@@ -181,3 +181,56 @@ describe('device-code onboarding binds the installation', () => {
     expect((await keyRow(pollA.body.token)).installation_id).toBe('inst-device-1');
   });
 });
+
+describe('the in-memory bearer does not outlive the code that owns it (CGLAB-75)', () => {
+  // /device/approve mints a live token and parks the PLAINTEXT in a process
+  // Map until /device/poll collects it exactly once. It was deleted only on a
+  // successful collection — so an approved code nobody polled (the admin
+  // approved, the developer walked away) left a usable bearer in memory for the
+  // lifetime of the server, long after its device_codes row had been pruned.
+  let app: any; let ctx: any; let cookie: string;
+
+  beforeEach(async () => {
+    cleanup();
+    const out = await createHubApp({
+      dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
+    });
+    app = out.app; ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
+    cookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
+      .headers['set-cookie']?.[0] ?? '';
+  });
+  afterEach(async () => { ctx.stopWorkers?.(); await ctx.db.close(); cleanup(); });
+
+  it('drops the held token when its code expires', async () => {
+    const start = await supertest(app).post('/hub/device/start').send({});
+    expect(start.status).toBe(200);
+    const approved = await supertest(app).post('/hub/device/approve')
+      .set('Cookie', cookie).send({ userCode: start.body.userCode });
+    expect(approved.status).toBe(200);
+    // Approved and never polled: the bearer is sitting in the Map.
+    expect((ctx as any)._deviceTokens.has(start.body.deviceCode)).toBe(true);
+
+    // Age the code past its TTL, then let the next /device/start prune.
+    await ctx.db.run('UPDATE device_codes SET expires_at = ? WHERE device_code = ?',
+      ['2000-01-01T00:00:00.000Z', start.body.deviceCode]);
+    await supertest(app).post('/hub/device/start').send({});
+
+    expect((ctx as any)._deviceTokens.has(start.body.deviceCode)).toBe(false);
+    // And the token really is unreachable now.
+    const poll = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(poll.body.token).toBeUndefined();
+  });
+
+  it('still hands a live code its token exactly once', async () => {
+    // The prune must not take the codes that are still valid with it.
+    const start = await supertest(app).post('/hub/device/start').send({});
+    await supertest(app).post('/hub/device/approve').set('Cookie', cookie).send({ userCode: start.body.userCode });
+    await supertest(app).post('/hub/device/start').send({}); // triggers a prune
+    const first = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(first.body.status).toBe('approved');
+    expect(first.body.token).toMatch(/\S/);
+    const second = await supertest(app).post('/hub/device/poll').send({ deviceCode: start.body.deviceCode });
+    expect(second.status).toBe(410);
+  });
+});

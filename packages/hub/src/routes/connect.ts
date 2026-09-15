@@ -77,7 +77,10 @@ export function connectRouter(ctx: HubServerContext): Router {
   const router = Router();
   // Per-instance rate limiter (not module-level) — see auth.ts rationale.
   const deviceStartRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many device-code requests, slow down.' });
-  const guard = requireSession(ctx.config.sessionSecret);
+  // No requireSession guard here on purpose. Every authenticated route in this
+  // file mints or reveals a live bearer token, so admin is the only correct
+  // gate — and CGLAB-75 was precisely the wrong one being picked from the two
+  // sitting side by side. Leaving the unused one here invites the repeat.
   const adminGuard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Device-code flow ──────────────────────────────────────────────────────
@@ -86,7 +89,16 @@ export function connectRouter(ctx: HubServerContext): Router {
     const nowIso = new Date().toISOString();
     // Prune expired rows so the table self-cleans, then refuse if the pending
     // backlog is already saturated (cheap DoS guard). (bug 72f8da10.)
+    const expired = await ctx.db.all<{ device_code: string }>(
+      'SELECT device_code FROM device_codes WHERE expires_at < ?', [nowIso],
+    );
     await ctx.db.run('DELETE FROM device_codes WHERE expires_at < ?', [nowIso]);
+    // The plaintext bearer is held in memory until /device/poll collects it, and
+    // was deleted ONLY on a successful collection — so an approved code nobody
+    // polled left a live token in the process for the lifetime of the server,
+    // long after its row had been pruned. The map follows the rows.
+    const held: Map<string, string> | undefined = (ctx as any)._deviceTokens;
+    if (held) for (const row of expired) held.delete(row.device_code);
     const pending = await ctx.db.get<{ n: number }>(
       'SELECT COUNT(*) AS n FROM device_codes WHERE approved_at IS NULL AND expires_at > ?',
       [nowIso],
