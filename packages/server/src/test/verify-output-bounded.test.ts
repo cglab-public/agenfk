@@ -33,7 +33,6 @@ describe('bounded output capture', () => {
     const chunk = Buffer.alloc(64 * 1024, 0x61); // 'a'
     for (let i = 0; i < 1024; i++) cap.write(chunk);
     const out = cap.end();
-    fs.closeSync(fd);
 
     expect(out.totalBytes).toBe(64 * 1024 * 1024);
     // The whole point: what is retained is a fixed budget, not a fraction.
@@ -50,7 +49,6 @@ describe('bounded output capture', () => {
     cap.write(Buffer.alloc(200_000, 0x62));
     cap.write(Buffer.from('\nLAST\n'));
     const out = cap.end();
-    fs.closeSync(fd);
 
     expect(out.head.startsWith('FIRST')).toBe(true);
     expect(out.tail.endsWith('LAST\n')).toBe(true);
@@ -64,7 +62,6 @@ describe('bounded output capture', () => {
     const cap = createOutputCapture({ fd });
     for (let i = 0; i < 100; i++) cap.write(Buffer.from(`line ${i}\n`));
     const out = cap.end();
-    fs.closeSync(fd);
 
     expect(out.logTruncated).toBe(false);
     const written = fs.readFileSync(file, 'utf8');
@@ -83,7 +80,6 @@ describe('bounded output capture', () => {
     const cap = createOutputCapture({ fd, maxLogBytes: 4096 });
     cap.write(Buffer.alloc(100_000, 0x63));
     const out = cap.end();
-    fs.closeSync(fd);
 
     expect(out.logTruncated).toBe(true);
     expect(out.totalBytes).toBe(100_000); // the TRUE total, not what fit
@@ -104,7 +100,6 @@ describe('bounded output capture', () => {
     cap.write(bytes.subarray(0, 2));
     cap.write(bytes.subarray(2));
     const out = cap.end();
-    fs.closeSync(fd);
 
     expect(out.head).toBe('héllo — wörld ✓');
     expect(out.head).not.toContain('�');
@@ -119,5 +114,85 @@ describe('bounded output capture', () => {
     const out = cap.end();
     expect(out.totalBytes).toBe(21);
     expect(out.head).toContain('no file for this one');
+  });
+
+  it('writes to the file AS IT GOES, rather than at the end', () => {
+    // The whole claim. Every other assertion here reads the file after end(),
+    // and a buffer-it-all-then-write-once implementation satisfies all of them.
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd });
+
+    cap.write(Buffer.from('arrived early\n'));
+    expect(fs.statSync(file).size).toBeGreaterThan(0);
+
+    cap.end();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses everything after end(), and closes the fd itself', () => {
+    // An orphaned grandchild still holds the inherited pipe and keeps firing
+    // the data handler long after a cap-killed run was answered — resolution
+    // happens on 'exit', which fires BEFORE stdio drains. Writing then goes to
+    // a CLOSED fd number, which the OS has already reissued: measured, the
+    // orphan's output landed in the next file this process opened.
+    const dir = tmp();
+    const logFile = path.join(dir, 'out.log');
+    const fd = fs.openSync(logFile, 'w');
+    const cap = createOutputCapture({ fd });
+    cap.write(Buffer.from('during the run\n'));
+    const out = cap.end();
+
+    // The fd number is now free, so claim it for something else.
+    const victimFile = path.join(dir, 'victim.txt');
+    const victimFd = fs.openSync(victimFile, 'w');
+
+    cap.write(Buffer.from('ORPHAN GRANDCHILD OUTPUT\n'));
+    cap.note('and a note too\n');
+    fs.closeSync(victimFd);
+
+    expect(fs.readFileSync(victimFile, 'utf8')).toBe('');
+    expect(fs.readFileSync(logFile, 'utf8')).toBe('during the run\n');
+    // The snapshot is frozen too — the late bytes are not counted.
+    expect(cap.end().totalBytes).toBe(out.totalBytes);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('end() is idempotent, so a second close cannot hit a reused descriptor', () => {
+    const dir = tmp();
+    const fd = fs.openSync(path.join(dir, 'out.log'), 'w');
+    const cap = createOutputCapture({ fd });
+    cap.write(Buffer.from('once\n'));
+    expect(() => { cap.end(); cap.end(); cap.end(); }).not.toThrow();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a failed write is reported as a failed write, not as the ceiling', () => {
+    // ENOSPC and a deliberate cap are different problems with different fixes.
+    // Reporting both as the ceiling sends the operator to tune an env var that
+    // is not the answer.
+    const dir = tmp();
+    const fd = fs.openSync(path.join(dir, 'out.log'), 'w');
+    const cap = createOutputCapture({ fd });
+    fs.closeSync(fd); // the write will now fail with EBADF
+    cap.write(Buffer.from('this cannot land\n'));
+    const out = cap.end();
+
+    expect(out.logWriteError).toBeTruthy();
+    expect(out.logTruncated).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('says the head is complete when it holds everything, multi-byte included', () => {
+    // The budgets are counted in UTF-16 code units and the total in bytes, so
+    // for multi-byte output the head can already hold the lot while totalBytes
+    // says otherwise. A preview that stitches head+tail then duplicates the
+    // whole output and claims it truncated something.
+    const cap = createOutputCapture({ fd: null });
+    cap.write(Buffer.from('日本語のテスト'));
+    const out = cap.end();
+    expect(out.headIsComplete).toBe(true);
+    expect(out.totalBytes).toBeGreaterThan(out.head.length);
   });
 });

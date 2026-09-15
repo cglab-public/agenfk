@@ -374,10 +374,16 @@ const openValidationLog = (itemId: string, testId: string): { fd: number; logPat
   }
 };
 
-/** Close the streamed log and run the same post-write housekeeping. */
+/**
+ * Post-run housekeeping for the streamed log. The fd is NOT closed here — the
+ * capture owns it and closes it in end(), so that write-eligibility and fd
+ * ownership cannot drift apart while an orphaned grandchild is still printing.
+ *
+ * Returns null when the file is gone, which on this path means the item was
+ * deleted mid-run and purgeItemLogs took the directory with it.
+ */
 const closeValidationLog = (handle: { fd: number; logPath: string } | null): string | null => {
   if (!handle) return null;
-  try { fs.closeSync(handle.fd); } catch { /* already gone */ }
   try { pruneItemLogDir(path.dirname(handle.logPath), path.basename(handle.logPath)); } catch { /* advisory */ }
   return fs.existsSync(handle.logPath) ? handle.logPath : null;
 };
@@ -426,29 +432,45 @@ const logUnavailable = (): string =>
     : 'Full log: unavailable — the temp directory could not be written';
 
 /**
+ * What became of the full log, in one clause — named once so the preview and
+ * the failure message cannot disagree. A ceiling, a failed write and a deleted
+ * item are three different problems with three different fixes, and reporting
+ * them all as the ceiling sends the operator to tune an env var that is not it.
+ */
+const describeLog = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
+  // A log that was written and then disappeared is not a log that could not be
+  // written. On this path it means the item was deleted mid-run and
+  // purgeItemLogs took the directory with it — telling the operator the temp
+  // directory is unwritable would send them hunting a problem they do not have.
+  if (vanished) return 'Full log: gone — the item was deleted while the command ran';
+  if (!logPath) return logUnavailable();
+  if (captured.logWriteError) return `Full log: ${logPath} (INCOMPLETE — writing it failed: ${captured.logWriteError})`;
+  if (captured.logTruncated) return `Full log: ${logPath} (truncated at the AGENFK_VERIFY_MAX_LOG_BYTES ceiling)`;
+  return `Full log: ${logPath}`;
+};
+
+/**
  * Head + tail of the output, from the BOUNDED buffers the capture kept — never
  * from the whole stream, which is no longer held anywhere (BUG 24c679df).
  * `totalBytes` is the true size, so "the last 1KB of 900MB" cannot read the
  * same as "all of it".
  */
-const buildOutputPreview = (
-  captured: { head: string; tail: string; totalBytes: number; logTruncated: boolean },
-  logPath: string | null,
-): string => {
+const buildOutputPreview = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
   let body: string;
-  if (captured.totalBytes <= headTailBudget && captured.head.length <= headTailBudget) {
+  // headIsComplete, not a byte count: the budgets are enforced in UTF-16 code
+  // units while totalBytes counts bytes, so for multi-byte output the head can
+  // already hold everything while totalBytes says otherwise — and the stitched
+  // form then duplicates the whole output and claims it truncated something.
+  if (captured.headIsComplete && captured.head.length <= headTailBudget) {
     body = captured.head;
   } else {
     const head = captured.head.substring(0, PREVIEW_HEAD_BYTES);
     const tail = captured.tail.substring(Math.max(0, captured.tail.length - PREVIEW_TAIL_BYTES));
-    const omitted = Math.max(0, captured.totalBytes - head.length - tail.length);
+    const omitted = Math.max(0, captured.totalBytes - Buffer.byteLength(head) - Buffer.byteLength(tail));
     body = `${head}\n... (${omitted} bytes truncated of ${formatBytes(captured.totalBytes)} total) ...\n${tail}`;
   }
-  const logNote = logPath
-    ? `Full log: ${logPath}${captured.logTruncated ? ' (truncated — the command exceeded AGENFK_VERIFY_MAX_LOG_BYTES)' : ''}`
-    : logUnavailable();
-  return `${body}\n[${logNote}]`;
+  return `${body}\n[${describeLog(captured, logPath, vanished)}]`;
 };
 
 /** ANSI escape sequences, stripped so the repeated tail is readable text. */
@@ -3342,9 +3364,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
 
-  const { captured, code, timedOut, signal, spawnError } = await new Promise<{
-    captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
-  }>((resolve) => {
+  // try/finally around the spawn, not just the awaited result: spawn() throws
+  // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
+  // cwd from a hand-edited project record). Without this the promise rejects
+  // with the log fd still open, and that is one leaked descriptor per
+  // occurrence with no recovery short of a restart. capture.end() is idempotent
+  // and owns the close.
+  let settledCapture: CapturedOutput | null = null;
+  const { captured, code, timedOut, signal, spawnError } = await (async () => {
+   try {
+    return await new Promise<{
+      captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
+    }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let killed = false;
     let settled = false;
@@ -3355,7 +3386,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       settled = true;
       clearTimeout(killer);
       if (grace) clearTimeout(grace);
-      resolve({ captured: capture.end(), code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
+      settledCapture = capture.end();
+      resolve({ captured: settledCapture, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
     };
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
@@ -3388,10 +3420,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Keep whatever the command already printed — discarding it loses the only
     // evidence of why the spawn failed.
     child.on('error', (err) => finish(1, null, err.message));
-  });
+    });
+   } finally {
+     if (!settledCapture) capture.end();
+   }
+  })();
 
   const logPath = closeValidationLog(logHandle);
-  const preview = buildOutputPreview(captured, logPath);
+  const logVanished = !!logHandle && logPath === null;
+  const preview = buildOutputPreview(captured, logPath, logVanished);
   const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
@@ -3486,7 +3523,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}${captured.logTruncated ? ' (truncated at the AGENFK_VERIFY_MAX_LOG_BYTES ceiling)' : ''}` : logUnavailable()}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}`,
       output: preview,
     });
   }

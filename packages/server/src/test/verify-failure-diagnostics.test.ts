@@ -533,17 +533,31 @@ describe('POST /items/:id/validate — a verbose command is streamed, not buffer
     expect(size).toBeGreaterThan(8 * 1024 * 1024);
   }, 60_000);
 
-  it('keeps the preview bounded regardless of how much was printed', async () => {
+  it('bounds the log FILE too, and says so instead of leaving it silently short', async () => {
+    // Streaming fixes memory but hands the runaway command the disk instead,
+    // and the log root is a shared temp directory. (The preview being bounded
+    // is NOT what this pins — buildOutputPreview already capped at 2KB before
+    // any of this work, so a test asserting that was green pre-fix and proved
+    // nothing.)
     if (!VERIFY_TOKEN) return;
-    const { item } = await setupItem('LoudPreview');
+    const { item } = await setupItem('LoudCeiling');
+    process.env.AGENFK_VERIFY_MAX_LOG_BYTES = '65536';
+    try {
+      const res = await request(app)
+        .post(`/items/${item.id}/validate`)
+        .set('x-agenfk-internal', VERIFY_TOKEN)
+        .send({ command: LOUD_AND_FAILING });
 
-    const res = await request(app)
-      .post(`/items/${item.id}/validate`)
-      .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ command: LOUD_AND_FAILING });
-
-    // A few KB of head+tail plus the trailer — not a fraction of 8MB.
-    expect(res.body.output.length).toBeLessThan(64 * 1024);
-    expect(res.body.message.length).toBeLessThan(64 * 1024);
+      expect(res.status).toBe(422);
+      expect(res.body.message).toMatch(/AGENFK_VERIFY_MAX_LOG_BYTES/);
+      const dir = itemLogDir(item.id);
+      const file = path.join(dir, fs.readdirSync(dir)[0]);
+      expect(fs.statSync(file).size).toBeLessThan(128 * 1024);
+      expect(fs.readFileSync(file, 'utf8')).toMatch(/log truncated at/i);
+      // The reported total is what the command PRINTED, not what fit.
+      expect(res.body.message).toMatch(/Output: 8[.,]\d+ MB/i);
+    } finally {
+      delete process.env.AGENFK_VERIFY_MAX_LOG_BYTES;
+    }
   }, 60_000);
 });

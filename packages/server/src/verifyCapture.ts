@@ -53,6 +53,14 @@ export interface CapturedOutput {
   totalBytes: number;
   /** The log file hit its ceiling and says so in its last line. */
   logTruncated: boolean;
+  /**
+   * The log stopped early for a reason that is NOT the ceiling — a full disk, a
+   * vanished directory. Reporting it as the ceiling sends the operator to tune
+   * an env var that is not the problem.
+   */
+  logWriteError?: string;
+  /** The head holds the ENTIRE output, so a preview need not stitch a tail on. */
+  headIsComplete: boolean;
 }
 
 export interface OutputCapture {
@@ -62,6 +70,17 @@ export interface OutputCapture {
   note(text: string): void;
   /** The head so far, for a live run follower. */
   live(): string;
+  /**
+   * Snapshot, close the log, and refuse everything after.
+   *
+   * Closing here rather than in the caller is deliberate: the capture owns the
+   * fd, so write-eligibility and fd ownership cannot drift apart. They did — a
+   * cap-killed command resolves on 'exit', which fires BEFORE stdio drains, and
+   * surviving grandchildren keep printing into a handler nobody detached. Those
+   * bytes reached fs.writeSync on a CLOSED fd number, which the OS had already
+   * reissued: measured, an orphan's stdout landed in the next file this process
+   * opened. Idempotent.
+   */
   end(): CapturedOutput;
 }
 
@@ -84,47 +103,74 @@ export function createOutputCapture(opts: { fd: number | null; maxLogBytes?: num
   let totalBytes = 0;
   let writtenBytes = 0;
   let logTruncated = false;
+  let headIsComplete = true;
+  let logWriteError: string | undefined;
+  let finished = false;
+  let fd: number | null = opts.fd;
+
+  /** writeSync can return short. Ignoring that overstates writtenBytes, which
+   *  trips the ceiling early and then blames it for the wrong thing. */
+  const writeAll = (buf: Buffer): number => {
+    let off = 0;
+    while (off < buf.length) {
+      const n = fs.writeSync(fd as number, buf, off, buf.length - off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return off;
+  };
 
   const toFile = (buf: Buffer) => {
-    if (opts.fd === null || logTruncated) return;
+    if (fd === null || logTruncated || logWriteError) return;
     const room = maxLogBytes - writtenBytes;
     if (room <= 0) return;
     try {
       if (buf.length <= room) {
-        fs.writeSync(opts.fd, buf);
-        writtenBytes += buf.length;
+        writtenBytes += writeAll(buf);
         return;
       }
-      fs.writeSync(opts.fd, buf.subarray(0, room));
-      writtenBytes += room;
+      writtenBytes += writeAll(buf.subarray(0, room));
       logTruncated = true;
       // The file admits to its own ceiling. A silently short log is worse than
       // a short one, because it reads as "the command stopped there".
-      fs.writeSync(opts.fd, Buffer.from(
+      writeAll(Buffer.from(
         `\n[agenfk] log truncated at ${formatBytes(maxLogBytes)} (AGENFK_VERIFY_MAX_LOG_BYTES). ` +
         `The command kept printing; the rest was discarded.\n`,
       ));
-    } catch {
-      // A failed log write must not cost the run its outcome. Diagnostics are
-      // best-effort; the transition is not.
-      logTruncated = true;
+    } catch (err: any) {
+      // A failed log write must not cost the run its outcome — diagnostics are
+      // best-effort, the transition is not. But it must not be reported as the
+      // ceiling either: a full disk and a deliberate cap are different problems
+      // with different fixes.
+      logWriteError = err?.code || err?.message || 'log write failed';
     }
   };
 
   const remember = (text: string) => {
     if (!text) return;
-    if (head.length < CAPTURE_HEAD_BYTES) head += text.slice(0, CAPTURE_HEAD_BYTES - head.length);
+    if (head.length < CAPTURE_HEAD_BYTES) {
+      const room = CAPTURE_HEAD_BYTES - head.length;
+      head += text.slice(0, room);
+      if (text.length > room) headIsComplete = false;
+    } else {
+      headIsComplete = false;
+    }
     tail += text;
     if (tail.length > CAPTURE_TAIL_BYTES) tail = tail.slice(tail.length - CAPTURE_TAIL_BYTES);
   };
 
   return {
     write(chunk: Buffer) {
+      // Everything after end() is dropped. An orphaned grandchild still holding
+      // the inherited pipe keeps firing this handler long after the run was
+      // answered, and by then the fd number belongs to somebody else's file.
+      if (finished) return;
       totalBytes += chunk.length;
       toFile(chunk);
       remember(decoder.write(chunk));
     },
     note(text: string) {
+      if (finished) return;
       const buf = Buffer.from(text);
       totalBytes += buf.length;
       toFile(buf);
@@ -132,8 +178,15 @@ export function createOutputCapture(opts: { fd: number | null; maxLogBytes?: num
     },
     live() { return head; },
     end() {
-      remember(decoder.end());
-      return { head, tail, totalBytes, logTruncated };
+      if (!finished) {
+        remember(decoder.end());
+        finished = true;
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch { /* already gone */ }
+          fd = null;
+        }
+      }
+      return { head, tail, totalBytes, logTruncated, logWriteError, headIsComplete };
     },
   };
 }
