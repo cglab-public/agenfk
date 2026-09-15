@@ -47,26 +47,31 @@ describe('the child reports the outcome of a dispatch upstream', () => {
     ...over,
   });
 
+  // Observed at the wire, not in the outbox: the tick drains what it queued in
+  // the same pass, so a report that reached the parent leaves the outbox empty
+  // behind it. Asserting on the queue would have asserted on a table that is
+  // empty either way.
+  let sent: any[] = [];
   const transport = (directive: unknown) => ({
     async ping() { return { ok: true }; },
     async directives() { return directive; },
-    async deliver(rows: any[]) { return { accepted: rows.length }; },
+    async deliver(rows: any[]) { sent.push(...rows); return { accepted: rows.length }; },
   });
 
-  const queued = () => db.all<any>('SELECT kind, payload FROM federation_outbox ORDER BY seq');
-  const reports = async () =>
-    (await queued())
-      .map(r => JSON.parse(r.payload)?.event)
+  const reports = () =>
+    sent
+      .map(r => (typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload)?.event)
       .filter((e: any) => e?.type?.startsWith('fleet:flow-dispatch:'));
 
   beforeEach(async () => {
+    sent = [];
     db = await openDb(':memory:');
     await writeParentBinding(db, SECRET, binding);
   });
 
   it('queues an installed report naming the dispatch it answers', async () => {
     await federationTick({ db, secretKey: SECRET, transport: transport(dispatch()), orgId: 'org' } as any);
-    const [r] = await reports();
+    const [r] = reports();
     expect(r).toBeTruthy();
     expect(r.type).toBe('fleet:flow-dispatch:installed');
     expect(r.payload.dispatchId).toBe('d-1');
@@ -79,7 +84,7 @@ describe('the child reports the outcome of a dispatch upstream', () => {
       db, secretKey: SECRET, orgId: 'org',
       transport: transport(dispatch({ flow: { id: 'flow-1', name: 'Group TDD', version: 1 } })),
     } as any);
-    const [r] = await reports();
+    const [r] = reports();
     expect(r).toBeTruthy();
     expect(r.type).toBe('fleet:flow-dispatch:failed');
     expect(r.payload.dispatchId).toBe('d-1');
@@ -91,11 +96,12 @@ describe('the child reports the outcome of a dispatch upstream', () => {
     // The outbox has no lease and the parent dedups on the event id. A random
     // id per attempt would make every retry a NEW report.
     await federationTick({ db, secretKey: SECRET, transport: transport(dispatch()), orgId: 'org' } as any);
-    const first = (await reports())[0].eventId;
+    const first = reports()[0].eventId;
 
-    await db.run('DELETE FROM federation_outbox');
     await federationTick({ db, secretKey: SECRET, transport: transport(dispatch()), orgId: 'org' } as any);
-    expect((await reports())[0].eventId).toBe(first);
+    const all = reports();
+    expect(all).toHaveLength(2);
+    expect(all[1].eventId).toBe(first);
   });
 
   it('says nothing about a directive kind it does not understand', async () => {
@@ -105,12 +111,12 @@ describe('the child reports the outcome of a dispatch upstream', () => {
       db, secretKey: SECRET, orgId: 'org',
       transport: transport({ kind: 'upgrade.dispatch', dispatchId: 'd-9' }),
     } as any);
-    expect(await reports()).toHaveLength(0);
+    expect(reports()).toHaveLength(0);
   });
 
   it('does not report when there was no directive at all', async () => {
     await federationTick({ db, secretKey: SECRET, transport: transport(null), orgId: 'org' } as any);
-    expect(await reports()).toHaveLength(0);
+    expect(reports()).toHaveLength(0);
   });
 });
 
@@ -190,6 +196,7 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
 
   it('records a failure with the reason the child gave', async () => {
     const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
     const r = await supertest(app).post('/v1/federation/deliver')
       .set('Authorization', `Bearer ${a.token}`).send({
         rows: [{
@@ -213,6 +220,7 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
 
   it('counts a redelivered report once and does not regress the state', async () => {
     const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
     await report(a.token);
     expect((await target(a.childHubId)).state).toBe('installed');
 
@@ -224,6 +232,7 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
 
   it('a late failed report cannot overwrite an installed target', async () => {
     const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
     await report(a.token);
     await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
       rows: [{
@@ -247,6 +256,9 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
     // and an admin would read a broken rollout as complete.
     const a = await enroll('alpha');
     const b = await enroll('beta');
+    // Both are served, so both have a target row and the only thing that can
+    // decide which one moves is the credential the report arrived on.
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
     await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${b.token}`);
 
     await report(a.token, { childHubId: b.childHubId });
@@ -278,6 +290,15 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
        VALUES (?, ?, ?, 1, 'all', ?)`,
       ['d-other', 'org-b', 'flow-1', new Date().toISOString()],
     );
+    // A target row that MATCHES on both dispatch id and child hub, so the org
+    // scoping is the only thing standing between the report and the row.
+    // Without this the UPDATE would match nothing anyway and the test would
+    // pass against an unscoped statement.
+    await ctx.db.run(
+      `INSERT INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+       VALUES (?, ?, 'pending', ?)`,
+      ['d-other', a.childHubId, new Date().toISOString()],
+    );
     await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
       rows: [{
         id: 'ob-3', kind: 'event',
@@ -295,7 +316,7 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
     const t = await ctx.db.get<any>(
       'SELECT state FROM flow_dispatch_targets WHERE dispatch_id = ?', ['d-other'],
     );
-    expect(t).toBeFalsy();
+    expect(t.state).toBe('pending');
   });
 
   it('a report with no dispatchId is stored as an event but moves nothing', async () => {

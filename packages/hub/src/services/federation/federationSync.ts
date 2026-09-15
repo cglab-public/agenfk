@@ -313,6 +313,37 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
 }
 
 /**
+ * The child's answer to a flow dispatch.
+ *
+ * The event id is DERIVED from the dispatch id and the outcome, never random.
+ * The outbox has no lease, so delivery is at-least-once and the same report
+ * reaches the parent more than once as a matter of course; the parent dedups
+ * on the event id, so a stable id is what turns a retry into one report rather
+ * than a new one each time. It also means a re-run of the same directive
+ * cannot double-count.
+ */
+export async function reportFlowDispatch(
+  db: DB,
+  directive: FlowDispatch,
+  detail: string | null,
+): Promise<void> {
+  const dispatchId = typeof directive?.dispatchId === 'string' ? directive.dispatchId : null;
+  // Nothing to answer for: a directive with no id cannot name a target row,
+  // and inventing one would move the wrong hub's state.
+  if (!dispatchId) return;
+  const state = detail === null ? 'installed' : 'failed';
+  await enqueueOutbox(db, 'event', {
+    event: {
+      eventId: `flow-dispatch:${dispatchId}:${state}`,
+      type: `fleet:flow-dispatch:${state}`,
+      occurredAt: new Date().toISOString(),
+      userKey: 'system',
+      payload: { dispatchId, detail },
+    },
+  });
+}
+
+/**
  * Record that the parent has let this hub go, and hand its flows back in the
  * same breath.
  *
@@ -374,11 +405,24 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
         // A malformed or unusable directive must not take the tick down with
         // it — the outbox drain below still has to run, and a child that
         // crashes on one bad directive stops delivering anything at all.
+        const d = directive as FlowDispatch;
+        let detail: string | null = null;
         try {
-          await installDispatchedFlow(db, args.orgId ?? DEFAULT_ORG, directive as FlowDispatch);
+          const applied = await installDispatchedFlow(db, args.orgId ?? DEFAULT_ORG, d);
+          if (!applied) detail = 'the directive did not carry a usable flow definition';
         } catch (err) {
-          result.flowDispatchError = messageOf(err);
+          detail = messageOf(err);
+          result.flowDispatchError = detail;
         }
+        // Tell the parent what actually happened. Serving a directive is not
+        // the flow landing, so until this arrives the parent's target row
+        // stays `pending` — which is the honest answer, and the whole reason
+        // the target table exists.
+        //
+        // Queued through the ordinary outbox rather than sent inline: the
+        // report must not be able to fail the tick, and a child whose parent
+        // is briefly down still owes it this answer when it comes back.
+        await reportFlowDispatch(db, d, detail);
       } else {
         // A kind this build does not implement — upgrade dispatch (CGLAB-183)
         // is the next one. Recording rather than throwing is what lets an older

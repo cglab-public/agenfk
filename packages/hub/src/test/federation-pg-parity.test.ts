@@ -347,3 +347,65 @@ describe('PG parity: parent-side ingest of forwarded events (CGLAB-184)', () => 
     await db.close();
   });
 });
+
+describe('PG parity: dispatch reports moving a target (CGLAB-182)', () => {
+  it('transitions flow_dispatch_targets on the child\'s report, on Postgres', async () => {
+    // The ingest's UPDATE carries a subquery (`dispatch_id IN (SELECT id FROM
+    // flow_dispatches WHERE org_id = ?)`) and a state guard in the WHERE. That
+    // shape is exactly where the two backends have disagreed before, and the
+    // SQLite suite cannot see it.
+    const { app, db, cookie } = await bootHubOnPg();
+
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enrolled = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-child' } });
+    expect(enrolled.status).toBe(200);
+    const { token, childHubId } = enrolled.body as { token: string; childHubId: string };
+
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['pg-flow', 'org', 'Group TDD',
+       JSON.stringify({ name: 'Group TDD', steps: [{ id: 's0', name: 'TODO', order: 0 }] })],
+    );
+    await db.run(
+      `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type, created_at)
+       VALUES (?, ?, ?, 1, 'all', ?)`,
+      ['pg-d1', 'org', 'pg-flow', new Date().toISOString()],
+    );
+
+    // Served, so a target row exists — and serving must leave it pending.
+    const served = await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${token}`);
+    expect(served.status).toBe(200);
+    const pending = await db.get<any>(
+      'SELECT state FROM flow_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      ['pg-d1', childHubId],
+    );
+    expect(pending.state).toBe('pending');
+
+    const report = (eventId: string, type: string, detail: string | null) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${token}`).send({
+        rows: [{ id: `ob-${eventId}`, kind: 'event', payload: { event: {
+          eventId, type, occurredAt: new Date().toISOString(), userKey: 'system',
+          payload: { dispatchId: 'pg-d1', detail },
+        } } }],
+      });
+
+    expect((await report('pg-r1', 'fleet:flow-dispatch:installed', null)).status).toBe(200);
+    const after = await db.get<any>(
+      'SELECT state, detail FROM flow_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      ['pg-d1', childHubId],
+    );
+    expect(after.state).toBe('installed');
+
+    // The no-regression guard, on the backend where the WHERE clause is
+    // translated rather than executed verbatim.
+    await report('pg-r2', 'fleet:flow-dispatch:failed', 'stale');
+    const guarded = await db.get<any>(
+      'SELECT state, detail FROM flow_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      ['pg-d1', childHubId],
+    );
+    expect(guarded.state).toBe('installed');
+    expect(guarded.detail ?? null).toBeNull();
+  });
+});
