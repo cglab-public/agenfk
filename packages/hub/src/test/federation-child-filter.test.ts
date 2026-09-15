@@ -308,6 +308,15 @@ describe('childHubId facet on the query endpoints', () => {
       expect(r.body.childHubs.find((c: any) => c.id === beta)).toMatchObject({ name: 'beta', events: 0 });
     });
 
+    it('lists a hub once however many times the link names it', async () => {
+      // parseList does not de-duplicate and the sentinel is case-normalised, so
+      // a hand-edited or append-rather-than-toggle link can name one hub twice.
+      // A doubled option is also a doubled React key in the picker.
+      const r = await get(`/v1/child-hubs?from=2026-05-01&to=2026-05-31&childHubId=${beta},${beta.toUpperCase()}`);
+      expect(r.status).toBe(200);
+      expect(r.body.childHubs.filter((c: any) => c.id === beta)).toHaveLength(1);
+    });
+
     it('keeps a detached hub listed, named, and flagged while its events remain', async () => {
       const d = await supertest(app).post(`/v1/admin/child-hubs/${alpha}/detach`)
         .set('Cookie', cookie).send({});

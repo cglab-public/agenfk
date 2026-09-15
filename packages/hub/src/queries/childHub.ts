@@ -17,31 +17,22 @@
 export const LOCAL_HUB = 'local';
 
 /**
- * Rows this hub produced itself.
+ * The originating-hub column, per table.
  *
- * The two tables encode that differently — `events.child_hub_id` is NULLable and
- * left NULL by the ingest path, while `rollups_daily.child_hub_id` is NOT NULL
- * DEFAULT '' because it is part of that table's PRIMARY KEY. Matching both
- * spellings means a caller need not know which table it is building a WHERE for,
- * and a later backfill normalising one to the other cannot change what this hits.
+ * `events.child_hub_id` is NULLable and left NULL by the ingest path, so reads
+ * there normalise with COALESCE and `idx_events_org_childnorm_time` indexes that
+ * same expression. `rollups_daily.child_hub_id` is NOT NULL DEFAULT '' because
+ * it is part of that table's PRIMARY KEY, so the plain column is already total
+ * there — and wrapping it would be a semantic no-op that blinds both its index
+ * and its primary key, turning a seek into an org-wide scan. That is not
+ * hypothetical: it shipped that way for one commit. See
+ * child-hub-index-usage.test.ts, which pins the plan for both tables.
  */
-/**
- * The originating-hub column, normalised so the two spellings of "own rows" are
- * one value.
- *
- * `events.child_hub_id` is NULLable and left NULL by the ingest path, while
- * `rollups_daily.child_hub_id` is NOT NULL DEFAULT '' because it is part of that
- * table's PRIMARY KEY. Every read goes through this expression rather than
- * matching both spellings with a disjunction, for a measurable reason: SQLite
- * cannot use an index across `(col IS NULL OR col = '')`, so selecting "this
- * hub" — the largest partition on a parent, and the one an operator picks most —
- * walked the whole org. `idx_events_org_childnorm_time` indexes this same
- * expression, so the filter and the facet's GROUP BY both seek.
- */
-export const HUB_COL = `COALESCE(child_hub_id, '')`;
+export const HUB_COL_EVENTS = `COALESCE(child_hub_id, '')`;
+export const HUB_COL_ROLLUPS = `child_hub_id`;
 
-/** Rows this hub produced itself. */
-export const OWN_ROWS_SQL = `${HUB_COL} = ''`;
+/** Rows this hub produced itself, on the events table. */
+export const OWN_ROWS_SQL = `${HUB_COL_EVENTS} = ''`;
 
 /** Lower-cased for comparison. Hub ids are `randomUUID()` — lowercase hex — so
  *  normalising costs nothing and stops a case-normalised or hand-edited link
@@ -49,13 +40,22 @@ export const OWN_ROWS_SQL = `${HUB_COL} = ''`;
  *  showing an empty board instead of the data asked for. */
 const norm = (h: string) => h.toLowerCase();
 
-/** SQL for a child-hub selection, or null when there is nothing to constrain. */
-export function childHubPredicate(hubs: string[] | null): { sql: string; params: string[] } | null {
+/**
+ * SQL for a child-hub selection, or null when there is nothing to constrain.
+ *
+ * `col` picks the spelling for the table being queried — see HUB_COL_EVENTS /
+ * HUB_COL_ROLLUPS. Getting it wrong costs an index, not a correct answer, which
+ * is why it is a named constant and a test rather than a convention.
+ */
+export function childHubPredicate(
+  hubs: string[] | null,
+  col: string = HUB_COL_EVENTS,
+): { sql: string; params: string[] } | null {
   if (!hubs || !hubs.length) return null;
-  const ids = hubs.map(norm).filter(h => h !== LOCAL_HUB);
+  const ids = [...new Set(hubs.map(norm).filter(h => h !== LOCAL_HUB))];
   const parts: string[] = [];
-  if (ids.length) parts.push(`${HUB_COL} IN (${ids.map(() => '?').join(',')})`);
-  if (hubs.some(h => norm(h) === LOCAL_HUB)) parts.push(OWN_ROWS_SQL);
+  if (ids.length) parts.push(`${col} IN (${ids.map(() => '?').join(',')})`);
+  if (hubs.some(h => norm(h) === LOCAL_HUB)) parts.push(`${col} = ''`);
   // An id list matching no hub yields `... IN ('nope')`, which matches nothing —
   // deliberately, so a stale link to a hub that has since been removed shows an
   // empty result rather than quietly widening to the whole group.
@@ -64,14 +64,16 @@ export function childHubPredicate(hubs: string[] | null): { sql: string; params:
 
 /**
  * The same predicate as a trailing `AND ...` fragment, for the facet queries
- * that build their own WHERE instead of going through applyEventFilters.
+ * that build their own WHERE instead of going through applyEventFilters. Events
+ * only — every caller is a facet over `events`.
  */
 export function childHubClause(hubs: string[] | null): { and: string; params: string[] } {
-  const hub = childHubPredicate(hubs);
+  const hub = childHubPredicate(hubs, HUB_COL_EVENTS);
   return hub ? { and: ` AND ${hub.sql}`, params: hub.params } : { and: '', params: [] };
 }
 
-/** The hub ids a caller explicitly selected, sentinel excluded and normalised. */
+/** The hub ids a caller explicitly selected — sentinel excluded, normalised and
+ *  de-duplicated, so a repeated or mixed-case id cannot list a hub twice. */
 export function selectedHubIds(hubs: string[] | null): string[] {
-  return (hubs ?? []).map(norm).filter(h => h !== LOCAL_HUB);
+  return [...new Set((hubs ?? []).map(norm).filter(h => h !== LOCAL_HUB))];
 }

@@ -77,6 +77,14 @@ describe('rollups_daily gains child_hub_id on an existing hub', () => {
     const db = await openDb(DB);
     const idx = await db.all<{ name: string }>("SELECT name FROM pragma_index_list('events')");
     expect(idx.map(i => i.name)).toContain('idx_events_org_childnorm_time');
+    // Definition, not just the name: an index over the PLAIN column would carry
+    // this same name and satisfy a name-only assertion, while sending the
+    // ?childHubId=local read back to walking the org. What it indexes is the
+    // whole point of it. child-hub-index-usage.test.ts pins the consequence.
+    const def = await db.get<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_events_org_childnorm_time'",
+    );
+    expect(def!.sql.replace(/\s+/g, ' ')).toContain("COALESCE(child_hub_id, '')");
     await db.close();
   });
 

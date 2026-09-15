@@ -10,7 +10,7 @@ import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
-import { childHubPredicate, childHubClause, selectedHubIds } from '../queries/childHub.js';
+import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -59,7 +59,8 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
   // case) still resolve correctly.
   if (f.projects)  { where.push(`remote_url IN (${f.projects.map(() => '?').join(',')})`); params.push(...f.projects.map(s => sanitizeRemoteUrl(s))); }
   if (f.itemTypes) { where.push(`item_type IN (${f.itemTypes.map(() => '?').join(',')})`); params.push(...f.itemTypes); }
-  const hub = childHubPredicate(f.childHubs);
+  // timeCol already tells the two tables apart; the hub column follows it.
+  const hub = childHubPredicate(f.childHubs, timeCol === 'day' ? HUB_COL_ROLLUPS : HUB_COL_EVENTS);
   if (hub)         { where.push(hub.sql); params.push(...hub.params); }
   if (f.from)      { where.push(`${timeCol} >= ?`); params.push(f.from); }
   if (f.to)        { where.push(`${timeCol} <= ?`); params.push(f.to); }
