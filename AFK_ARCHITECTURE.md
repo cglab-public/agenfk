@@ -72,6 +72,110 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 
 Codex's hook system reliably fires for the shell tool but not for `apply_patch` or most MCP tool calls (open issues `openai/codex#14882`, `#16732`, May 2026). The PR sizing hook is unaffected because `gh pr create` and `git push` always run via the shell tool. If pre-edit gatekeeping is added to Codex later, this caveat will need to be revisited.
 
+## Hub Federation (hub of hubs)
+
+A hub can enrol with another hub, making it a **child** and the other a **parent**.
+The parent gets a view across the group; the child keeps running its own show.
+Every claim below names the file it is true in, so it can be checked rather than
+trusted.
+
+### Principals
+
+A **federation key** is its own kind of credential, never an `api_keys` row
+(`packages/hub/src/auth/federationKey.ts`, table `federation_keys`). That
+separation is the point: an installation key can never reach a `/v1/federation/*`
+route, and a federation key can never post a developer's telemetry. A key is
+refused the moment its hub is revoked or detached, so a detached child cannot
+poll with a credential nobody got round to deleting.
+
+Enrolment is invite-based: the parent mints a single-use invite, the child
+presents it once, and the parent issues the key
+(`routes/federation.ts`, `POST /v1/federation/enroll`).
+
+### What a parent can see and do
+
+- **See the events its children forward**, shaped by the identity policy below.
+- **Read aggregate metrics per child hub**, kept apart by `child_hub_id` on
+  `events` and `rollups_daily` rather than in a separate table.
+- **Dispatch one of its flows** to some or all children, which install it as an
+  `org_available` flow of origin `parent` (`services/federation/federationSync.ts`).
+- **Dispatch a target agenfk version**, which each child fans out over its own
+  installations (`services/federation/upgradeFanout.ts`), and **cancel** it.
+- **Set the identity policy** for the group, or per child.
+- **Detach a child**, which is the only way a child is released.
+
+### What a parent cannot do — the part that matters
+
+- **It cannot reach into a child's database.** Everything it learns arrives as
+  events the child chose to send; there is no query path from parent to child.
+- **It never sees a hidden person's activity.** An admin who hides someone stops
+  their events being stored *and* forwarded — the exclusion happens at ingest,
+  before anything is queued (`routes/events.ts`, CGLAB-31).
+- **It cannot stop a child working.** Forwarding is queued, never awaited on the
+  request path, and a failure to queue is caught outside the ingest transaction.
+  A parent that is down, slow, hostile or gone is invisible to the child's own
+  developers. Pinned by `test/federation-standalone.test.ts`.
+- **It cannot silently take a fleet backwards.** A downgrade needs the parent
+  admin to confirm it, and the child re-validates the version it is given against
+  the same release allowlist it applies to its own admin — the parent is a
+  different hub, so it is a trust boundary, not an authority.
+- **It cannot overwrite a child's own flows.** A dispatched flow is keyed by id;
+  one that clashes by NAME installs alongside the child's, and nothing local is
+  replaced.
+- **It cannot claim work landed.** Serving a directive is not the same as it
+  landing: a target stays `pending` until the child reports, and "asked to stop"
+  (`cancel-pending`) is deliberately distinct from "stopped" (`cancelled`).
+
+### Identity policy
+
+The policy belongs to the parent — `keep` or `pseudonymize` — set for the group
+or overridden per child, and the override wins in both directions because it is
+an override, not an escalation (`services/federation/forwarding.ts`).
+
+Two properties make it auditable rather than merely configurable. The child can
+read the policy it is currently forwarding under (`GET /v1/admin/federation`), so
+people are not subject to a control their own admin cannot see. And the policy
+travels **with** each queued row rather than being read at delivery time, so
+switching it can never retroactively change the meaning of rows already queued.
+
+Under `pseudonymize` the payload is reduced to a known list of forwardable keys
+rather than filtered for known-bad ones: a deny-list on a free-form blob is a
+promise nobody can keep.
+
+### Leaving a group
+
+**Leaving is parent-granted.** A child cannot let itself out: `DELETE
+/v1/admin/federation` succeeds only once the parent has detached it, which flips
+the binding to `revoked` (`routes/admin.ts`). That keeps the parent's roster
+authoritative — a child cannot quietly vanish from a dispatch target list — and
+it is why there is a release *request* rather than a release action.
+
+The binding's state is stored in clear beside the encrypted token on purpose.
+Gating the leave on decryptability turned rotating `AGENFK_HUB_SECRET_KEY` into a
+product-surface way out of the group.
+
+What a child keeps when it leaves:
+
+- **Flows the parent dispatched stay, and become editable.** Their origin flips
+  from `parent` to `hub`, so nothing a team is mid-project under disappears
+  (`services/federation/parentFlows.ts`). This fires on both exits — the parent
+  detaching, discovered as a 401, and the child's own leave — because a hub whose
+  parent detached it would otherwise hold flows nobody on earth can edit.
+- **Its outbox**, deliberately: it is this hub's own record of what it never
+  managed to send, and discarding it would destroy data as a side effect of
+  tidying up a relationship.
+- **Everything else**, because none of it was ever the parent's.
+
+Sync stops rather than retrying, and a revoked binding stops queueing instead of
+growing a table forever for a parent that is never coming back.
+
+### Deployment
+
+A hub needs no configuration to be standalone: the federation worker starts
+unconditionally and every tick is a no-op without a binding, so a hub that never
+joins a group pays one cheap query a minute. See `packages/hub/README.md` for the
+environment a parent or child actually needs.
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io
