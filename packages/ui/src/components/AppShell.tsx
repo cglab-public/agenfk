@@ -1819,6 +1819,23 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                 >
                 <ul
                   id={`work-${project.id}`}
+                  /*
+                   * `inert`, not `aria-hidden` alone.
+                   *
+                   * aria-hidden removes the subtree from the accessibility tree
+                   * and leaves it in the TAB ORDER, so a keyboard user could
+                   * land on a card button or a process row's open control while
+                   * collapsed: focus moves, nothing is announced, and there is
+                   * no way to tell what happened. The list holds two such
+                   * controls per card now.
+                   *
+                   * inert does both halves - unfocusable and unexposed - which
+                   * is what "collapsed" actually means. aria-hidden stays
+                   * alongside it for the browsers that do not support inert
+                   * yet; where it is supported the two agree, and where it is
+                   * not the old behaviour is no worse than before.
+                   */
+                  inert={!isOpen ? true : undefined}
                   aria-hidden={!isOpen}
                   className="mb-1 ml-2 overflow-hidden border-l border-border-soft pl-2 transition-[grid-template-rows] motion-reduce:transition-none"
                 >

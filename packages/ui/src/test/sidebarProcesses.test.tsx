@@ -412,3 +412,92 @@ describe('how a card row is laid out', () => {
     );
   });
 });
+
+/**
+ * Nothing focusable hides inside an aria-hidden subtree (cd80783c).
+ *
+ * The collapsible list of a project's cards carried aria-hidden={!isOpen} while
+ * still containing buttons: the card itself, and - after processes moved under
+ * their cards - every process row's open control.
+ *
+ * That combination is a documented conflict rather than a style preference. The
+ * element stays in the tab order while being removed from the accessibility
+ * tree, so a keyboard user can land on a control that assistive tech will not
+ * announce: focus moves, nothing is read, and there is no way to tell what
+ * happened.
+ *
+ * Pre-existing for the card button. 3e658085 extended it to every process row,
+ * which is why it belongs to this batch rather than to whoever wrote the
+ * collapse.
+ */
+describe('a collapsed project hides its contents from everyone equally', () => {
+  const twoCardsOneRunning = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+  };
+
+  /** Everything the browser would let Tab reach, inside an aria-hidden subtree. */
+  const focusableInsideHidden = (): Element[] => {
+    const hidden = [...document.querySelectorAll('[aria-hidden="true"]')];
+    return hidden.flatMap(root => [
+      ...root.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'),
+    ]).filter(el =>
+      el.getAttribute('tabindex') !== '-1'
+      // `inert` sits on the SUBTREE, not on each control, and it is what makes
+      // the contents unfocusable. Checking the element itself - which an
+      // earlier version did - looks like a guard and excludes nothing.
+      && el.closest('[inert]') === null);
+  };
+
+  it('traps no focusable control while collapsed', async () => {
+    /*
+     * Derived from the DOM rather than from a list of the controls we happen to
+     * know about. A guard naming `process-open` and the card button would pass
+     * the day somebody adds a third control, which is exactly how this one grew
+     * from one button to two.
+     */
+    twoCardsOneRunning();
+    renderShell();
+    // Wait for the COUNT, which only renders once the items have arrived. An
+    // earlier version waited on the Projects heading, which is synchronously
+    // present - so it asserted against an empty tree and could not fail.
+    await screen.findByTestId('in-flight-count');
+
+    const trapped = focusableInsideHidden();
+    expect(
+      trapped.map(el => el.textContent?.trim().slice(0, 40)),
+      'these are tabbable but invisible to assistive tech',
+    ).toEqual([]);
+  });
+
+  it('still hides the contents, rather than fixing it by showing them', async () => {
+    /*
+     * The lazy fix is to drop aria-hidden, which trades one defect for a
+     * collapsed list a screen reader reads out in full.
+     *
+     * Asked through a ROLE query, which respects aria-hidden. A testid query
+     * does not - the row is still in the DOM, collapsed by the grid animation -
+     * so asserting its absence there would have failed for the wrong reason
+     * and told us nothing about what is exposed.
+     */
+    twoCardsOneRunning();
+    renderShell();
+    await screen.findByTestId('in-flight-count');
+    expect(screen.queryByRole('button', { name: /claude code/i })).toBeNull();
+  });
+
+  it('gives them back when the project is expanded', async () => {
+    twoCardsOneRunning();
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await screen.findByTestId('process-row');
+    expect(focusableInsideHidden()).toEqual([]);
+  });
+});
