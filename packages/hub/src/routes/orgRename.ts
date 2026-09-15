@@ -28,6 +28,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'repoint_campaigns',
   'rollups_daily',
   'upgrade_directives',
+  'upgrade_dispatches',
   'used_invites',
   'user_key_aliases',
   'user_key_merges',

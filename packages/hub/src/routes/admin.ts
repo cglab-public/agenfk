@@ -2258,6 +2258,145 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (err) { next(err); }
   });
 
+  /**
+   * A child's report detail is a JSON blob of counts and skip reasons. It is
+   * read back as an object where possible, and as a bare string when it is
+   * not — an older child, or a plain message, must not break the board.
+   */
+  const parseTargetDetail = (raw: unknown): unknown => {
+    if (typeof raw !== 'string' || !raw) return null;
+    try { return JSON.parse(raw); } catch { return raw; }
+  };
+
+  // ── Group upgrades (CGLAB-183) ───────────────────────────────────────────
+  //
+  // The parent names a target version; each child hub fans it out over its OWN
+  // installations. Deliberately the same shape as flow dispatch, including the
+  // rule that serving a directive is not the upgrade landing.
+
+  router.post('/upgrade-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const targetVersion = typeof req.body?.targetVersion === 'string' ? req.body.targetVersion : '';
+      if (!SEMVER_TAG_RE.test(targetVersion)) {
+        return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
+      }
+      const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
+      if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
+
+      const ids: string[] = Array.isArray(req.body?.childHubIds)
+        ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
+        : [];
+      if (scope === 'selected' && !ids.length) {
+        return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
+      }
+
+      // The same allowlist gate POST /upgrade applies, and applied HERE rather
+      // than on each child: a version that does not exist should be refused
+      // where the admin who typed it can read the error, not discovered by a
+      // child hub in the middle of the night.
+      const releaseExists = ctx.config.releaseExists ?? defaultReleaseExists;
+      if (!(await releaseExists(targetVersion))) {
+        return res.status(422).json({ error: `Release ${targetVersion} not found` });
+      }
+
+      const dispatchId = randomUUID();
+      const now = new Date().toISOString();
+      const actor = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?', [req.session!.userId],
+      );
+      const confirmDowngrade = req.body?.confirmDowngrade === true;
+      await ctx.db.transaction(async () => {
+        await ctx.db.run(
+          `INSERT INTO upgrade_dispatches (id, org_id, target_version, scope_type, confirm_downgrade,
+                                           created_by_user_id, created_by_email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dispatchId, orgId, targetVersion, scope, confirmDowngrade ? 1 : 0,
+           req.session!.userId ?? null, actor?.email ?? null, now],
+        );
+        if (scope === 'selected') {
+          // Only hubs that are this org's and still attached, for the same
+          // reason flow dispatch does it: a silently-ignored id would read as
+          // a delivered target.
+          for (const id of ids) {
+            const hub = await ctx.db.get<{ id: string }>(
+              'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
+            );
+            if (!hub) continue;
+            await ctx.db.run(
+              `INSERT INTO upgrade_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+               VALUES (?, ?, 'pending', ?)`,
+              [dispatchId, id, now],
+            );
+          }
+        }
+      });
+      res.json({ id: dispatchId, targetVersion, scope, confirmDowngrade });
+    } catch (err) { next(err); }
+  });
+
+  router.get('/upgrade-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const rows = await ctx.db.all<any>(
+        `SELECT id, target_version, scope_type, confirm_downgrade, created_by_email, created_at, cancelled_at
+         FROM upgrade_dispatches WHERE org_id = ? ORDER BY created_at DESC`, [orgId],
+      );
+      const targets = await ctx.db.all<any>(
+        `SELECT t.dispatch_id, t.child_hub_id, t.state, t.detail, t.updated_at, c.name
+         FROM upgrade_dispatch_targets t
+         JOIN upgrade_dispatches d ON d.id = t.dispatch_id
+         LEFT JOIN child_hubs c ON c.id = t.child_hub_id
+         WHERE d.org_id = ?`, [orgId],
+      );
+      const byDispatch = new Map<string, any[]>();
+      for (const t of targets) {
+        const list = byDispatch.get(t.dispatch_id) ?? [];
+        list.push({
+          childHubId: t.child_hub_id,
+          name: t.name ?? t.child_hub_id,
+          state: t.state,
+          // The child's aggregate counts and skip reasons, as it reported them.
+          detail: parseTargetDetail(t.detail),
+          updatedAt: isoOrNull(t.updated_at),
+        });
+        byDispatch.set(t.dispatch_id, list);
+      }
+      res.json({
+        dispatches: rows.map(r => ({
+          id: r.id,
+          targetVersion: r.target_version,
+          scope: r.scope_type,
+          confirmDowngrade: !!r.confirm_downgrade,
+          createdByEmail: r.created_by_email ?? null,
+          createdAt: isoOrNull(r.created_at),
+          cancelledAt: isoOrNull(r.cancelled_at),
+          // Under scope 'all' a target appears only once a hub has been served,
+          // so an empty list means "nobody has polled yet", not "nobody is targeted".
+          targets: byDispatch.get(r.id) ?? [],
+        })),
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/upgrade-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const result = await ctx.db.run(
+        `UPDATE upgrade_dispatches SET cancelled_at = ?
+          WHERE id = ? AND org_id = ? AND cancelled_at IS NULL`,
+        [new Date().toISOString(), req.params.id, orgId],
+      );
+      if (Number(result.changes ?? 0) === 0) {
+        const exists = await ctx.db.get<{ id: string }>(
+          'SELECT id FROM upgrade_dispatches WHERE id = ? AND org_id = ?', [req.params.id, orgId],
+        );
+        if (!exists) return res.status(404).json({ error: 'Dispatch not found' });
+      }
+      res.json({ ok: true, id: req.params.id });
+    } catch (err) { next(err); }
+  });
+
   router.post('/flow-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;

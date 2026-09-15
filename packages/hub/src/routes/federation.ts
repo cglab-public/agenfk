@@ -31,6 +31,23 @@ const MAX_DELIVER_ROWS = 500;
  * `events.event_id` is the primary key on its own and two children mint ids
  * independently — an unnamespaced collision would drop the second silently.
  */
+/**
+ * A created_at as milliseconds, whatever shape the backend handed back.
+ *
+ * Postgres (and pg-mem) return a Date here; SQLite returns an ISO string.
+ * Within ONE backend a bare `<` happens to be correct for both shapes — Dates
+ * compare by valueOf, ISO strings compare lexicographically — so this is
+ * defensive rather than load-bearing today. It earns its place by not caring:
+ * the two dispatch tables are separate, and the day one of their columns
+ * diverges in type from the other, a bare `<` between a Date and a string
+ * silently yields false and serves the wrong directive forever.
+ */
+export function msOf(v: unknown): number {
+  if (v instanceof Date) return v.getTime();
+  const t = Date.parse(String(v ?? ''));
+  return Number.isNaN(t) ? 0 : t;
+}
+
 export function forwardedEventId(childHubId: string, eventId: string): string {
   return `ch:${childHubId}:${eventId}`;
 }
@@ -396,7 +413,7 @@ export function federationRouter(ctx: HubServerContext): Router {
     try {
       const { childHubId, orgId } = req.hubFederation!;
       const row = await ctx.db.get<any>(
-        `SELECT d.id, d.flow_id, d.flow_version
+        `SELECT d.id, d.flow_id, d.flow_version, d.created_at
            FROM flow_dispatches d
            LEFT JOIN flow_dispatch_targets t
              ON t.dispatch_id = d.id AND t.child_hub_id = ?
@@ -408,6 +425,43 @@ export function federationRouter(ctx: HubServerContext): Router {
           LIMIT 1`,
         [childHubId, orgId],
       );
+
+      // Group upgrades share this feed (CGLAB-183). A child takes ONE directive
+      // per poll, so the two kinds are picked separately and the older wins:
+      // that keeps them in the order the admin actually issued them instead of
+      // letting one kind starve the other. Two small indexed lookups rather
+      // than a UNION, which the pg-mem parity backend does not handle.
+      const upgradeRow = await ctx.db.get<any>(
+        `SELECT d.id, d.target_version, d.confirm_downgrade, d.created_at
+           FROM upgrade_dispatches d
+           LEFT JOIN upgrade_dispatch_targets t
+             ON t.dispatch_id = d.id AND t.child_hub_id = ?
+          WHERE d.org_id = ?
+            AND d.cancelled_at IS NULL
+            AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
+            AND (t.state IS NULL OR t.state = 'pending')
+          ORDER BY d.created_at ASC
+          LIMIT 1`,
+        [childHubId, orgId],
+      );
+
+      if (upgradeRow && (!row || msOf(upgradeRow.created_at) < msOf(row.created_at))) {
+        // Serving is not the upgrade landing: the row stays pending until the
+        // child reports what its own installations actually did.
+        await ctx.db.run(
+          `INSERT OR IGNORE INTO upgrade_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+           VALUES (?, ?, 'pending', ?)`,
+          [upgradeRow.id, childHubId, new Date().toISOString()],
+        );
+        res.json({
+          kind: 'upgrade.dispatch',
+          dispatchId: upgradeRow.id,
+          targetVersion: upgradeRow.target_version,
+          confirmDowngrade: !!upgradeRow.confirm_downgrade,
+        });
+        return;
+      }
+
       if (!row) { res.status(204).end(); return; }
 
       const flow = await ctx.db.get<any>(

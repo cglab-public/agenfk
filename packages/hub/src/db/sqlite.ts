@@ -177,6 +177,42 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (dispatch_id, child_hub_id)
   );
 
+
+  -- Group upgrades (CGLAB-183). The parent names a target version; each child
+  -- fans it out over its OWN installations. Same shape as flow_dispatches, and
+  -- for the same reasons: scope 'all' means every current AND FUTURE hub, so
+  -- it is stored as intent and resolved per poll rather than expanded into
+  -- target rows here.
+  --
+  -- confirm_downgrade travels with the dispatch: the parent admin confirms a
+  -- backwards move once, in the blind, and the child carries the flag through
+  -- its local fan-out instead of asking again.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_version TEXT NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    confirm_downgrade INTEGER NOT NULL DEFAULT 0,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cancelled_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_upgrade_dispatches_org_time ON upgrade_dispatches(org_id, created_at);
+
+  -- state: pending | running | completed | failed. Only a report from the
+  -- child moves it off pending — serving a directive is not the upgrade
+  -- landing. detail carries the child's aggregate counts and skip reasons.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    seq INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
   CREATE TABLE IF NOT EXISTS federation_keys (
     token_hash TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
