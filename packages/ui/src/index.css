@@ -26,6 +26,30 @@ body {
   font-family: var(--font-sans);
 }
 
+/* The window is not a document, so it does not scroll (CGLAB-189).
+ *
+ * The shell is exactly viewport height and every pane inside it owns its own
+ * scrollbar. Nothing is ever meant to move the document itself - but nothing
+ * said so, and a few pixels of residual overflow anywhere made the WHOLE app
+ * draggable downward: the title bar and the status bar slid off, leaving a
+ * black band where the window used to be. Measured in the running Electron
+ * window before this rule: documentElement.scrollHeight 1203 against a 900px
+ * viewport, and window.scrollTo(0, 400) really moved it to 303.
+ *
+ * It is a ceiling rather than a repair of whichever descendant overflowed.
+ * That was the fix I reached for first, and it is the wrong shape: it has to
+ * be re-found every time a pane is added, and it fails silently, as a window
+ * that quietly starts sliding. A shell that cannot scroll cannot regress into
+ * scrolling, and a pane that outgrows its box now shows its own scrollbar,
+ * which is what the layout already asks for everywhere else. */
+html, body {
+  height: 100%;
+  overflow: hidden;
+  /* The gesture, not just the bars: without this an inertial two-finger swipe
+   * still translates the document on macOS even with nothing to scroll to. */
+  overscroll-behavior: none;
+}
+
 /* Desktop shell (CGLAB-168). Electron's titleBarStyle: 'hiddenInset' removes
  * the OS title bar, so the window can only be moved by a region that declares
  * itself draggable. A drag region also swallows pointer events, which is why
