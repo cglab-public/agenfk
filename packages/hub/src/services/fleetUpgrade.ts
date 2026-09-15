@@ -32,15 +32,26 @@ export interface FleetInstallation {
  * (CGLAB-31).
  */
 export function eligibleInstallations(db: DB, orgId: string): Promise<FleetInstallation[]> {
+  // Written as NOT IN over an org-scoped subquery rather than a CORRELATED
+  // NOT EXISTS. The correlated form — `h.org_id = i.org_id AND h.user_key =
+  // lower(i.git_email)` — cannot be executed by the pg-mem backend the parity
+  // suite runs on, so for as long as it was spelled that way this query had no
+  // Postgres coverage at all and the SQLite suites could not see it. The
+  // correlation on org_id was redundant in any case: the outer WHERE already
+  // pins the org.
+  //
+  // COALESCE is load-bearing, not decoration. `NULL NOT IN (...)` is NULL, not
+  // true, so an installation with no git_email — which the column allows —
+  // would be silently EXCLUDED from every fleet-wide upgrade, the opposite of
+  // what the NOT EXISTS form did.
   return db.all<FleetInstallation>(
-    `SELECT i.id, i.agenfk_version FROM installations i
-      WHERE i.org_id = ?
-        AND i.retired_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM hidden_users h
-           WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
+    `SELECT id, agenfk_version FROM installations
+      WHERE org_id = ?
+        AND retired_at IS NULL
+        AND COALESCE(lower(git_email), '') NOT IN (
+          SELECT user_key FROM hidden_users WHERE org_id = ?
         )`,
-    [orgId],
+    [orgId, orgId],
   );
 }
 

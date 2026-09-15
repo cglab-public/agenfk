@@ -207,6 +207,25 @@ const SCHEMA_PG = `
     PRIMARY KEY (dispatch_id, child_hub_id)
   );
 
+
+  -- What a child hub's fan-out of a group upgrade actually did (CGLAB-183).
+  --
+  -- Recorded rather than recomputed, because the tick that REPORTS is almost
+  -- never the tick that computed: the parent keeps re-serving a dispatch until
+  -- the child reports, and by the next tick the machines this upgraded are in
+  -- flight and would read as skipped. Re-deriving would hand the parent a
+  -- fleet with no skips in it, which is the one thing the skip reasons exist
+  -- to prevent.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_fanout (
+    dispatch_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    upgraded INTEGER NOT NULL DEFAULT 0,
+    skipped_json TEXT NOT NULL DEFAULT '[]',
+    directive_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS federation_keys (
     token_hash TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,

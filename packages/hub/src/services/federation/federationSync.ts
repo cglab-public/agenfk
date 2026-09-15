@@ -440,9 +440,15 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
         // must not take the tick down, because the outbox drain below still
         // has to run. Reporting the outcome upstream is task 3.
         try {
-          result.upgradeFanout = await applyUpgradeDispatch(
+          const fanout = await applyUpgradeDispatch(
             db, args.orgId ?? DEFAULT_ORG, directive as UpgradeDispatch,
           );
+          result.upgradeFanout = fanout;
+          // A refusal is returned as a value, not thrown — but the parent
+          // re-serves until the child reports, so a directive this hub will
+          // never accept comes back every tick. Surfacing it here is what
+          // stops that being a silent, permanent loop.
+          if (fanout.outcome === 'invalid') result.upgradeDispatchError = fanout.error;
         } catch (err) {
           result.upgradeDispatchError = messageOf(err);
         }
