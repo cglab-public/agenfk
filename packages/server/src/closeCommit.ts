@@ -19,10 +19,24 @@
  * original defect with a condition in front of it, and it would fire precisely
  * when an agent had been careful.
  *
+ * THE INDEX IS PER WORKTREE, NOT PER AGENT, and an earlier version of this
+ * docblock glossed over it. `.git/index` belongs to the tree, and the design
+ * this module exists for is several agents sharing one - so a bare `git commit`
+ * still takes whatever any of them staged. Narrower than `add -A`, and not
+ * isolation.
+ *
+ * The card's CLAIMS are what close that gap: they are exactly the paths it
+ * owns, so committing `-- <claims>` lifts the card's files out of the shared
+ * index and leaves everybody else's untouched. Optional for now, because claims
+ * are not persisted yet; without them the behaviour is what it was, which is
+ * what keeps this from landing as a silent change.
+ *
  * Injectable runner, like gitStatus.ts and branchHint.ts, so the ARGUMENT LIST
  * is something a test can read back. Every git defect found in this server this
  * week was invisible until the arguments were observable.
  */
+
+import { isWellFormedClaim } from '@agenfk/core';
 
 export interface CloseCommitDeps {
   /** Run git with these arguments and return stdout. Throws if git fails. */
@@ -76,9 +90,18 @@ export function commitStagedForCard(
   card: CloseCommitCard,
   repoRoot: string,
   deps: CloseCommitDeps,
+  /**
+   * The paths this card owns. When known, the commit is limited to them.
+   *
+   * Filtered through `isWellFormedClaim` on the way in: a pathspec is a command
+   * argument, and a claim the claims module would reject must not reach git
+   * just because it arrived through a different door.
+   */
+  claims?: readonly string[],
 ): CloseCommitResult {
   const at = (...args: string[]): string[] => ['-C', repoRoot, ...args];
   const message = `close(${card.type.toLowerCase()}): ${card.title} [${card.id}]`;
+  const paths = (claims ?? []).filter(isWellFormedClaim);
 
   let staged: string;
   try {
@@ -90,7 +113,17 @@ export function commitStagedForCard(
     return { committed: false, reason: `Could not read the index: ${gitSaid(e)}` };
   }
 
-  if (!staged.trim()) {
+  /*
+   * With a pathspec the question changes from "is anything staged" to "is any
+   * of MINE staged". Committing without checking would produce an empty commit,
+   * or succeed on a sibling's file and call it this card's work.
+   */
+  const stagedPaths = staged.split('\n').map(l => l.trim()).filter(Boolean);
+  const mine = paths.length
+    ? stagedPaths.filter(f => paths.some(p => f === p || f.startsWith(p.replace(/\/+$/, '') + '/')))
+    : stagedPaths;
+
+  if (!mine.length) {
     return {
       committed: false,
       reason: 'Nothing was staged, so nothing was committed. '
@@ -107,7 +140,7 @@ export function commitStagedForCard(
      * array rather than a shell string: the title is user data and reaches here
      * unescaped.
      */
-    const output = deps.run(at('commit', '-m', message));
+    const output = deps.run(at('commit', '-m', message, ...(paths.length ? ['--', ...paths] : [])));
     return { committed: true, output: output.trim() };
   } catch (e: any) {
     return { committed: false, reason: gitSaid(e) };

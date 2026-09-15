@@ -70,6 +70,16 @@ Working the flow:
 - `agenfk flow show --project <id> --json` — load the full flow with all steps and exit criteria at session start. Your working contract for the session.
 - `agenfk verify <id> --evidence "<evidence>" ["<command>"]` — step-completion gate. `--evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions** (including TODO → first working step). The command is optional: if omitted, uses `project.verifyCommand` on the final step. If verify reports `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retry. Only ask the developer as a last resort.
 
+### Staging before a card closes — MANDATORY
+
+Before the `agenfk verify` that moves a card to its final step, `git add` the files **that card changed**.
+
+The server commits **what you staged**, and nothing else. It used to run `git add -A` itself and no longer does: several agents can share one worktree, and a sweep of the whole tree put their half-finished work inside somebody else's card.
+
+- Staging nothing means committing **nothing** — your work stays uncommitted and a later push sends a branch without it.
+- **Never `git add -A`.** In a shared worktree it takes other agents' work with it.
+- `git status` first if you are unsure what you touched.
+
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY

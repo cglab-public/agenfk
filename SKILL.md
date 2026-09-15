@@ -25,8 +25,9 @@ This skill enforces the core AgenFK Engineering workflow to ensure all software 
 ### Hard Block Rules
 1. **NO TASK = NO CODE**: If no task is in an active working step of the project's flow, stop immediately and create one. Check with `agenfk list --active --json` — do not look for a step named `IN_PROGRESS`, which many flows do not have.
 2. **NO GATE = NO CODE**: Run `agenfk gatekeeper --intent "<intent>"` before the first edit of every session.
-3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `agenfk verify`.
-4. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
+3. **NO BYPASS**: Never use `git commit`, `npm test`, or direct file writes to circumvent `agenfk verify`. Staging is not a bypass — see below.
+4. **STAGE WHAT YOU CHANGED**: Before closing a card, `git add` the files that card touched. The server commits **what you staged** and nothing else; it used to run `git add -A` and stopped, because several agents can share one worktree and that swept their unfinished work into somebody else's card. Staging nothing means committing nothing. Never `git add -A` — that is the behaviour this replaced.
+5. **MEASURE EVERYTHING**: Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ## Operation Modes
 
