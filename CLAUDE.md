@@ -90,7 +90,8 @@ The old version is read from the root `package.json`; commit the manifest change
 
 ## Testing notes
 
-- Root vitest config sets `fileParallelism: false` and `sequence.concurrent: false` because tests touch the filesystem (sqlite DBs, install dirs). Don't flip these without auditing.
+- Root vitest config splits the suite into two projects. `serial` (server, hub, cli) runs one file at a time because those tests share a per-run HOME sandbox and on-disk state; `parallel` (core, storage-sqlite, telemetry, hub-ui, ui, flow-editor) runs its files concurrently. Don't move a package between them without auditing what it writes.
+- `sequence.concurrent` is `false` everywhere and is not a knob: it runs tests WITHIN a file at once, and the jsdom packages are component specs sharing one document. It used to be fused to file parallelism under a single `parallel` flag, which is why neither could be enabled (BUG c03aa92e). Note the root-level `test` block's `fileParallelism` is the GLOBAL and overrides a project's own value — setting it false there silently serialises everything.
 - `packages/cli/src/test/cli.test.ts` and `packages/ui/src/test/**` are excluded from the root run — they have their own runners.
 - Aliases `@agenfk/core` and `@agenfk/telemetry` resolve to source in tests so you don't need to rebuild between iterations.
 - `scripts/enforce-coverage.ts` parses Vitest's `coverage-summary.json` to enforce per-file thresholds beyond the global 80% gate; it's the canonical example of the "newly inserted code must be ≥80% covered" rule referenced in `AFK_ARCHITECTURE.md`.

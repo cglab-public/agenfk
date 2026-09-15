@@ -18,12 +18,11 @@
  *     automatic afterEach cleanup, so rendered trees accumulate and every
  *     getBy* reports "found multiple elements".
  *
- * Deliberately NOT `parallel: true`. That also sets `sequence.concurrent`,
- * which runs tests within a file at the same time; these are React component
- * specs sharing one jsdom document, so concurrent renders collide and 95 of
- * them fail. (The root config lists this package under PARALLEL_INCLUDE, but
- * its root-level `test` block re-serialises everything at runtime, so the root
- * run never hits this either.)
+ * `fileParallelism: true` matches what the root config gives this package: each
+ * FILE in its own worker. Within-file concurrency stays off — these are React
+ * component specs sharing one jsdom document, and running their tests
+ * concurrently collides renders and fails 95 of them. The two used to be fused
+ * under one flag, which is why neither could be enabled; see BUG c03aa92e.
  */
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
@@ -42,7 +41,7 @@ export default defineConfig({
   resolve: { alias: sharedResolve.alias },
   define: { __AGENFK_VERSION__: JSON.stringify('test') },
   test: {
-    ...sharedTest({ include: ['src/test/**/*.{test,spec}.{ts,tsx}'] }),
+    ...sharedTest({ include: ['src/test/**/*.{test,spec}.{ts,tsx}'], fileParallelism: true }),
     // Absolute: setupFiles resolve against THIS package, not the repo root.
     setupFiles: [path.join(REPO_ROOT, 'vitest.setup.ts')],
   },

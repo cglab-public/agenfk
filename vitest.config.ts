@@ -39,11 +39,18 @@ export default defineConfig({
   },
   resolve: sharedResolve,
   test: {
-    ...sharedTest({ include: [...PARALLEL_INCLUDE, ...SERIAL_INCLUDE] }),
+    // NOTE the fileParallelism here. This root-level block is what vitest uses
+    // as the global, and the global WINS over a project's own value — which is
+    // why PARALLEL_INCLUDE below was inert for as long as this said false:
+    // both projects resolved their settings correctly and then ran serially
+    // anyway. Leaving it permissive lets each project decide; the serial
+    // project's `fileParallelism: false` is what actually holds the packages
+    // that share filesystem state to one file at a time.
+    ...sharedTest({ include: [...PARALLEL_INCLUDE, ...SERIAL_INCLUDE], fileParallelism: true }),
     projects: [
       {
         test: {
-          ...sharedTest({ include: PARALLEL_INCLUDE, parallel: true }),
+          ...sharedTest({ include: PARALLEL_INCLUDE, fileParallelism: true }),
           name: 'parallel',
         },
         resolve: sharedResolve,
