@@ -90,7 +90,12 @@ export function classifyTrigger(command) {
       // `git push -u origin feat/x > out.txt` used to report the branch as
       // 'out.txt', and `2> /dev/null` as '/dev/null'. (Pipes and && are already
       // gone by here; splitShellSegments ended the segment at them.)
-      const redirect = rest.findIndex(tok => /^\d*[<>]/.test(tok));
+      // The optional prefix covers every spelling that can precede the
+      // operator: a plain `>file`, a numbered `2>file`, bash's `&>file`, and a
+      // named descriptor `{fd}>file`. Anchoring on digits alone let `&>` and
+      // `{fd}>` through — which the old per-token filter had caught, so
+      // narrowing to a cut REGRESSED them.
+      const redirect = rest.findIndex(tok => /^(?:\d+|&|\{\w+\})?[<>]/.test(tok));
       if (redirect !== -1) rest = rest.slice(0, redirect);
       // Last non-flag token, ignoring the remote name.
       let branch;
@@ -98,6 +103,10 @@ export function classifyTrigger(command) {
         const tok = rest[i];
         if (!tok || tok.startsWith('-')) continue;
         if (tok === 'origin') continue;
+        // Belt to the cut's braces. A ref can never contain < or > — git
+        // refuses them — so anything that does is plumbing the cut missed,
+        // and keeping this costs nothing. Dropping it is what let &> regress.
+        if (/[<>]/.test(tok)) continue;
         branch = tok;
         break;
       }
