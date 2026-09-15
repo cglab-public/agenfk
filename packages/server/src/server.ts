@@ -3308,6 +3308,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
+  /*
+   * Filled in AFTER the commit attempt, because it is about what happened
+   * rather than about what was asked for. `pushInstruction` below is static -
+   * it is built here, before anything runs, so it can only ever hedge.
+   */
+  let closeCommitNote = '';
   const pushInstruction = nextStatus === Status.DONE
     ? `\n\n🚀 **Push your branch**: the server commits what you STAGED - it no longer stages for you, because several agents share this worktree. If you staged nothing, commit your own files first. Then:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
     : '';
@@ -3452,7 +3458,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
         // (whose transition already landed) as failed to the run follower.
-        try { await autoGitCommit(updated, projectRoot); }
+        try {
+          const outcome = await autoGitCommit(updated, projectRoot);
+          /*
+           * KEPT, not discarded. The close commit now declines when nothing is
+           * staged, and the whole point of declining is that the agent finds
+           * out - it has work in the tree and no commit. Every call site threw
+           * this result away, and `pushInstruction` is built two hundred lines
+           * ABOVE this, so it could not depend on the outcome even in
+           * principle. The commit that introduced the decline claimed it "says
+           * so to the agent rather than only to a log". It did not.
+           */
+          if (!outcome.success && outcome.error) closeCommitNote = `\n\n⚠️ ${outcome.error}`;
+        }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }
       recordHubEvent({
@@ -3483,7 +3501,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}${closeCommitNote}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {

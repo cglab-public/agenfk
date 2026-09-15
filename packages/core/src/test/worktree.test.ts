@@ -132,8 +132,23 @@ describe('a pathological path (CodeQL, PR #182)', () => {
   });
 
   it('trims a hostile branch name without stalling', () => {
+    /*
+     * ALTERNATING `.-`, not a run of dashes, and the difference is the whole
+     * test. Measured against the pre-fix implementation:
+     *
+     *   'x' + '-'.repeat(200_000) + 'x'   →      0 ms   ← passes on broken code
+     *   'x' + '.-'.repeat(100_000) + 'x'  → 14,264 ms   ← real
+     *
+     * A run of dashes is destroyed by `-{2,}` before the trim ever sees it, so
+     * the first shape proves nothing. Alternating survives BOTH collapses -
+     * neither `.` nor `-` ever repeats - and reaches the quadratic trim.
+     *
+     * The first version of this test used the first shape, and the commit that
+     * shipped it said the shape it had chosen was the safe one. It was not.
+     * Found by review.
+     */
     const started = Date.now();
-    buildWorktreePath('/root', 'repo', 'x' + '-'.repeat(200_000) + 'x');
+    buildWorktreePath('/root', 'repo', 'x' + '.-'.repeat(100_000) + 'x');
     expect(Date.now() - started, 'the slug trim is backtracking again').toBeLessThan(1000);
   });
 
@@ -149,7 +164,7 @@ describe('a pathological path (CodeQL, PR #182)', () => {
   });
 
   it('leaves no trailing separator or dot on the segment', () => {
-    const out = buildWorktreePath('/root', 'repo', 'x' + '-'.repeat(200_000) + 'x');
+    const out = buildWorktreePath('/root', 'repo', 'x' + '.-'.repeat(100_000) + 'x');
     expect(out.endsWith('-')).toBe(false);
     expect(out.endsWith('.')).toBe(false);
   });

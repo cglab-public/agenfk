@@ -29,6 +29,29 @@ export interface CloseCommitDeps {
   readonly run: (args: string[]) => string;
 }
 
+/**
+ * What git actually said, out of whatever execFileSync threw.
+ *
+ * `e.message` is the COMMAND LINE and nothing else - "Command failed: git -C
+ * /path commit -m ...". git puts the explanation on stdout, and sometimes on
+ * stderr. The first version of this module used `e.message`, which turned every
+ * real failure into an unhelpful echo: a rejected pre-commit hook, `gpg failed
+ * to sign the data`, `Please tell me who you are` and the unmerged-paths
+ * refusal all arrived as the same sentence. The code this replaced read
+ * `stderr || stdout` and did surface them.
+ *
+ * The command line is the last resort rather than the first, and it is also
+ * where the card's TITLE ends up, having been interpolated into the message.
+ */
+function gitSaid(e: any): string {
+  const out = [e?.stderr, e?.stdout]
+    .map(v => (typeof v === 'string' ? v : v?.toString?.() ?? ''))
+    .map(v => v.trim())
+    .filter(Boolean);
+  if (out.length) return out.join('\n');
+  return e?.message?.trim() ?? 'git failed';
+}
+
 export interface CloseCommitCard {
   readonly id: string;
   readonly type: string;
@@ -64,7 +87,7 @@ export function commitStagedForCard(
     // turn a yes into a no.
     staged = deps.run(at('diff', '--cached', '--name-only'));
   } catch (e: any) {
-    return { committed: false, reason: `Could not read the index: ${e?.message ?? 'git failed'}` };
+    return { committed: false, reason: `Could not read the index: ${gitSaid(e)}` };
   }
 
   if (!staged.trim()) {
@@ -87,6 +110,6 @@ export function commitStagedForCard(
     const output = deps.run(at('commit', '-m', message));
     return { committed: true, output: output.trim() };
   } catch (e: any) {
-    return { committed: false, reason: e?.message?.trim() ?? 'git commit failed' };
+    return { committed: false, reason: gitSaid(e) };
   }
 }

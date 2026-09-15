@@ -99,17 +99,52 @@ describe('when nothing is staged', () => {
 });
 
 describe('when git fails', () => {
-  it('reports it rather than claiming a commit', () => {
-    const git = {
-      calls: [] as string[][],
+  /**
+   * Thrown the way execFileSync actually throws, which is the point.
+   *
+   * The first version of this test threw `new Error('nothing to commit,
+   * working tree clean')` - a message shape real git never produces - and then
+   * asserted on it. It verified the fake. Measured against real git:
+   *
+   *   e.message → "Command failed: git -C /tmp/xyz commit -m x"
+   *   e.stderr  → ""
+   *   e.stdout  → "On branch main\nnothing to commit, working tree clean\n"
+   *
+   * So reading `e.message` loses the diagnostic entirely, and the test that was
+   * meant to catch that could not, because its fake put the explanation where
+   * the code was already looking.
+   */
+  const gitThrowing = (stdout: string, stderr = '') => {
+    const calls: string[][] = [];
+    return {
+      calls,
       run: (args: string[]) => {
-        git.calls.push(args);
+        calls.push(args);
         if (args.includes('--cached')) return 'a.ts';
-        throw new Error('nothing to commit, working tree clean');
+        throw Object.assign(new Error('Command failed: git -C /repo commit -m x'), { stdout, stderr });
       },
     };
+  };
+
+  it('reports what git said, not the command line', () => {
+    const git = gitThrowing('On branch main\nnothing to commit, working tree clean\n');
     const result = commitStagedForCard(card, '/repo', { run: git.run });
     expect(result.committed).toBe(false);
-    expect(result.reason).toMatch(/nothing to commit/i);
+    expect(result.reason, 'the diagnostic was replaced by the command line')
+      .toMatch(/nothing to commit/i);
+  });
+
+  it('surfaces a hook rejection, which arrives on stderr', () => {
+    // The failure worth surfacing most: a pre-commit hook refusing the work.
+    // Silent here means an agent told only that "git failed".
+    const git = gitThrowing('', 'pre-commit hook refused: lint errors');
+    expect(commitStagedForCard(card, '/repo', { run: git.run }).reason)
+      .toMatch(/pre-commit hook refused/i);
+  });
+
+  it('falls back to the command line when git said nothing at all', () => {
+    const git = gitThrowing('', '');
+    expect(commitStagedForCard(card, '/repo', { run: git.run }).reason)
+      .toMatch(/command failed/i);
   });
 });
