@@ -36,7 +36,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
 import { DOT, STATE_LABEL, Spinner } from './sessionPresentation';
-import type { SessionRow } from './SessionsRail';
+import type { SessionRow } from '../sessionRow';
 
 export interface CardProcessRowProps {
   readonly row: SessionRow;

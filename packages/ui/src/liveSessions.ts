@@ -31,7 +31,7 @@
  * four-minute `npm test` emits nothing at all for four minutes — and the row
  * vanished mid-work and reappeared afterwards.
  */
-import type { SessionRow } from './components/SessionsRail';
+import type { SessionRow } from './sessionRow';
 
 export interface LivenessDeps {
   /** Whether the card has produced a run event inside the live window. */

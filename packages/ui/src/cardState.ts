@@ -16,7 +16,7 @@
  * component from a component file trips `react-refresh/only-export-components`,
  * and this is testable on its own terms anyway.
  */
-import type { SessionState } from './components/SessionsRail';
+import type { SessionState } from './sessionRow';
 
 /**
  * Three, and only three.

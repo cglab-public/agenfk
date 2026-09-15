@@ -49,7 +49,7 @@ import { SettingsPanel } from './SettingsPanel';
  * still the shared vocabulary for a session row, which is why the module
  * stays imported at all.
  */
-import type { SessionRow, SessionState } from './SessionsRail';
+import type { SessionRow, SessionState } from '../sessionRow';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
@@ -627,7 +627,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // terminal whose itemId happened to equal another row's runId, and it did
     // nothing at all for a hook-recorded run — whose runId is an AgentRun uuid
     // that matches no session. Rows we cannot stop no longer offer STOP; see
-    // SessionsRail.
+    // the process row.
     const open = sessions.find(s => s.id === runId);
     if (open) closeSessionRef.current(open.id);
   }, [sessions]);

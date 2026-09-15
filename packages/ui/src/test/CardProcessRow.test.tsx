@@ -19,11 +19,11 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 import { CardProcessRow } from '../components/CardProcessRow';
-import type { SessionRow } from '../components/SessionsRail';
+import type { SessionRow } from '../sessionRow';
 
 afterEach(cleanup);
 
-/* The REAL SessionRow, read off SessionsRail rather than invented. Getting
+/* The REAL SessionRow, read off sessionRow.ts rather than invented. Getting
    this wrong is how a producer and a consumer come to agree with nobody. */
 const row = (over: Partial<SessionRow> = {}): SessionRow => ({
   runId: 'r1',

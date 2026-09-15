@@ -18,7 +18,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { liveSessions, isWorthShowing } from '../liveSessions';
-import type { SessionRow } from '../components/SessionsRail';
+import type { SessionRow } from '../sessionRow';
 
 /** This app launched an hour ago, so "started this session" is a real choice. */
 const LAUNCHED_AT = Date.now() - 60 * 60_000;

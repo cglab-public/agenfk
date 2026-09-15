@@ -16,7 +16,7 @@
  */
 import React from 'react';
 import { subscribeToFrames, SPINNER_FRAMES } from '../sharedTick';
-import type { SessionState } from './SessionsRail';
+import type { SessionState } from '../sessionRow';
 
 /**
  * Failures first, then what needs a person, then what is working, then quiet.

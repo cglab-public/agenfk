@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { cardState, itemsNeedingAPerson, CARD_STATE_LABEL } from '../cardState';
-import type { SessionState } from '../components/SessionsRail';
+import type { SessionState } from '../sessionRow';
 
 describe('cardState', () => {
   const none: ReadonlySet<string> = new Set();
