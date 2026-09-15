@@ -9,6 +9,9 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { writeParentBinding } from '../services/federation/parentBinding';
 import { enqueueOutbox, outboxDepth, federationTick } from '../services/federation/federationSync';
+import { applyUpgradeDispatch } from '../services/federation/upgradeFanout';
+import { applyUpgradeCancel } from '../services/federation/upgradeCancel';
+import { reportUpgradeProgress } from '../services/federation/upgradeProgress';
 import { recomputeRollups } from '../rollup';
 import type { HubDb } from '../db/types';
 
@@ -613,5 +616,149 @@ describe('PG parity: upgrade progress reports (CGLAB-183)', () => {
     await send(1, { pending: 2, updated: 0, failed: 0, skipped: 0 }, false);
     expect((await state()).state).toBe('completed');
     expect(Number((await state()).seq)).toBe(2);
+  });
+});
+
+describe('PG parity: the child side of a group upgrade (CGLAB-183, CGLAB-185)', () => {
+  // The whole child-side path had NO Postgres coverage: upgrade_dispatch_fanout
+  // was touched by no parity test at all. What these tests DO prove is that
+  // every statement on that path parses and executes on the Postgres dialect —
+  // which is not nothing, since eligibleInstallations' predicate had to be
+  // rewritten once already after the correlated NOT EXISTS it started as
+  // turned out to be inexecutable here.
+  //
+  // What they deliberately do NOT prove, because pg-mem does not reproduce it
+  // (both verified against this backend rather than assumed):
+  //   - `NULL NOT IN (...)`. Real Postgres yields NULL and drops the row; pg-mem
+  //     returns it. So the COALESCE in eligibleInstallations — without which a
+  //     machine with no git_email silently leaves every fleet-wide upgrade —
+  //     cannot be demonstrated here. It is guarded by the SQLite suite instead
+  //     ('includes an installation with no git email at all').
+  //   - bigint typing. Real Postgres returns COUNT(*) as a string; pg-mem
+  //     returns a JS number, so the Number() coercion in countsFor cannot be
+  //     shown to be load-bearing here either.
+  // Removing either guard leaves these tests green. That is a limit of the
+  // parity backend, not a licence to remove them.
+  it('fans out, reports and cancels against Postgres', async () => {
+    const { db } = await bootHubOnPg();
+
+    const now = new Date().toISOString();
+    const add = (id: string, email: string, version: string | null, retired: boolean) => db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, git_email, agenfk_version, retired_at)
+       VALUES (?, 'org', ?, ?, ?, ?, ${retired ? 'now()' : 'NULL'})`,
+      [id, now, now, email, version],
+    );
+    await add('keep', 'keep@acme.com', '1.0.0', false);
+    await add('gone', 'gone@acme.com', '1.0.0', true);
+    await add('hid', 'hid@acme.com', '1.0.0', false);
+    await add('anon', null as any, '1.0.0', false);
+    await db.run("INSERT INTO hidden_users (org_id, user_key) VALUES ('org', 'hid@acme.com')");
+
+    const fanout = await applyUpgradeDispatch(db, 'org', {
+      kind: 'upgrade.dispatch', dispatchId: 'pg-fd1', targetVersion: '1.2.3',
+    });
+    // 'anon' has a NULL git_email: without the COALESCE in the NOT IN it would
+    // silently drop out of the fleet, which is the trap this covers.
+    expect(fanout.outcome).toBe('applied');
+    expect(fanout.upgraded).toBe(2);
+    expect(fanout.skipped.map(s => s.reason).sort()).toEqual(['hidden', 'retired']);
+
+    // Redelivery reads the recorded result back off upgrade_dispatch_fanout.
+    const again = await applyUpgradeDispatch(db, 'org', {
+      kind: 'upgrade.dispatch', dispatchId: 'pg-fd1', targetVersion: '1.2.3',
+    });
+    expect(again.outcome).toBe('already-applied');
+    expect(again.upgraded).toBe(2);
+    expect(again.skipped).toHaveLength(2);
+
+    // COUNT(*) … GROUP BY state, read back through Number().
+    await writeParentBinding(db, SECRET, {
+      parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'pg-child',
+    });
+    expect(await reportUpgradeProgress(db, 'org')).toBe(1);
+    const [report] = (await db.all<any>('SELECT payload FROM federation_outbox ORDER BY seq'))
+      .map(r => JSON.parse(r.payload)?.event)
+      .filter((e: any) => e?.type === 'fleet:upgrade-dispatch:progress');
+    expect(report.payload.counts).toMatchObject({ pending: 2, updated: 0, failed: 0, skipped: 2 });
+
+    // The cancel's UPDATE, and the re-report it forces.
+    const cancelled = await applyUpgradeCancel(db, 'org', { kind: 'upgrade.cancel', dispatchId: 'pg-fd1' });
+    expect(cancelled.cancelled).toBe(2);
+    expect(await reportUpgradeProgress(db, 'org')).toBe(1);
+
+    await db.close();
+  });
+
+  it('will not stack a second upgrade on a machine claimed BEFORE the fan-out, on Postgres', async () => {
+    // Note this exercises the in-flight READ, not the conditional insert — the
+    // machine is already claimed when the fan-out starts. The conditional
+    // insert is covered by the test below.
+    const { db } = await bootHubOnPg();
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, git_email, agenfk_version)
+       VALUES ('i1', 'org', ?, ?, 'i1@acme.com', '1.0.0')`, [now, now],
+    );
+    await db.run(
+      `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type) VALUES ('prior', 'org', '1.1.0', 'all')`,
+    );
+    await db.run(
+      `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state)
+       VALUES ('prior', 'i1', 'in_progress')`,
+    );
+
+    const out = await applyUpgradeDispatch(db, 'org', {
+      kind: 'upgrade.dispatch', dispatchId: 'pg-fd2', targetVersion: '1.2.3',
+    });
+    expect(out.outcome).toBe('nothing-to-do');
+    expect(out.skipped).toEqual([{ installationId: 'i1', reason: 'in-flight' }]);
+
+    const rows = await db.all<any>(
+      "SELECT directive_id FROM upgrade_directive_targets WHERE installation_id = 'i1'",
+    );
+    expect(rows).toHaveLength(1);
+    await db.close();
+  });
+
+  it('will not stack a second upgrade on a machine claimed DURING the fan-out, on Postgres', async () => {
+    // This is the conditional `INSERT … SELECT … WHERE NOT EXISTS`: the
+    // claim lands after the in-flight set was read, so only the guard inside
+    // the statement can stop it. On SQLite that is one statement; the dialect
+    // translator has to keep it one statement here too, or the atomicity the
+    // in-flight guard depends on is gone.
+    const { db } = await bootHubOnPg();
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, git_email, agenfk_version)
+       VALUES ('i1', 'org', ?, ?, 'i1@acme.com', '1.0.0')`, [now, now],
+    );
+
+    const realRun = db.run.bind(db);
+    let claimed = false;
+    (db as any).run = async (sql: string, params?: unknown[]) => {
+      if (!claimed && /INSERT INTO upgrade_directives/i.test(sql)) {
+        claimed = true;
+        await realRun(
+          `INSERT INTO upgrade_directives (id, org_id, target_version, scope_type) VALUES ('racer','org','1.1.0','all')`,
+        );
+        await realRun(
+          `INSERT INTO upgrade_directive_targets (directive_id, installation_id, state) VALUES ('racer','i1','pending')`,
+        );
+      }
+      return realRun(sql, params);
+    };
+    try {
+      await applyUpgradeDispatch(db, 'org', {
+        kind: 'upgrade.dispatch', dispatchId: 'pg-fd3', targetVersion: '1.2.3',
+      });
+    } finally {
+      (db as any).run = realRun;
+    }
+
+    const rows = await db.all<any>(
+      "SELECT directive_id FROM upgrade_directive_targets WHERE installation_id = 'i1' AND state IN ('pending','in_progress')",
+    );
+    expect(rows).toHaveLength(1);
+    await db.close();
   });
 });
