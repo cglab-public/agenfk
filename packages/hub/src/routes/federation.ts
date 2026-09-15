@@ -5,6 +5,9 @@ import { requireAdmin } from '../auth/session.js';
 import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
+import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
+import { recomputeRollups } from '../rollup.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
@@ -170,7 +173,14 @@ export function federationRouter(ctx: HubServerContext): Router {
    * with the first's and vanish. Namespacing keeps the existing primary key —
    * and therefore the existing idempotency — rather than migrating it.
    */
-  router.post('/deliver', requireKey, async (req: Request, res: Response, next: NextFunction) => {
+  // Authenticated, but a child can still loop batches; give it the same kind
+  // of ceiling the other machine-facing routes have.
+  const deliverRateLimit = rateLimit({
+    windowMs: 60 * 1000, max: 120,
+    message: 'Too many deliveries, slow down.',
+  });
+
+  router.post('/deliver', requireKey, deliverRateLimit, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { childHubId, orgId } = req.hubFederation!;
       const rows: any[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
@@ -179,12 +189,26 @@ export function federationRouter(ctx: HubServerContext): Router {
         return;
       }
 
+      // The same two guards /v1/events applies. Without them a person an admin
+      // hid, or an identity deliberately merged away, walks back in through
+      // the federation door — both controls exist to stop go-forward data, and
+      // forwarded events are go-forward data.
+      const hiddenRows = await ctx.db.all<{ user_key: string }>(
+        'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
+      );
+      const hidden = new Set(hiddenRows.map(r => r.user_key));
+      const aliases = await loadAliasMap(ctx.db, orgId);
+
       let accepted = 0;
       let duplicates = 0;
       let rejected = 0;
       let ignored = 0;
+      let hiddenDropped = 0;
+      let earliestDay: string | null = null;
       const rejections: Array<{ id: string | null; reason: string }> = [];
       const now = new Date().toISOString();
+      /** Only strings reach the driver: an object or a boolean throws on bind. */
+      const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
       await ctx.db.transaction(async () => {
         for (const r of rows) {
@@ -192,11 +216,27 @@ export function federationRouter(ctx: HubServerContext): Router {
           // older parent must not choke on a newer child.
           if (r?.kind !== 'event') { ignored++; continue; }
           const e = r?.payload?.event;
-          if (!e || typeof e.eventId !== 'string' || !e.eventId || typeof e.type !== 'string' || typeof e.occurredAt !== 'string') {
+          const reject = (reason: string) => {
             rejected++;
-            rejections.push({ id: typeof r?.id === 'string' ? r.id : null, reason: 'invalid_event' });
-            continue;
+            rejections.push({ id: typeof r?.id === 'string' ? r.id : null, reason });
+          };
+          if (!e || typeof e !== 'object') { reject('invalid_event'); continue; }
+          if (typeof e.eventId !== 'string' || !e.eventId) { reject('invalid_event'); continue; }
+          if (typeof e.type !== 'string' || !e.type) { reject('invalid_event'); continue; }
+          if (typeof e.occurredAt !== 'string' || !e.occurredAt) { reject('invalid_event'); continue; }
+
+          const userKey = resolveAliasKey(str(e.userKey) ?? 'unknown', aliases);
+          if (hidden.has(userKey)) { hiddenDropped++; continue; }
+
+          // Canonicalise like /v1/events, or the same repo shows up as two
+          // chips in the projects filter depending on which hub reported it.
+          let remoteUrl = str(e.remoteUrl) ? sanitizeRemoteUrl(str(e.remoteUrl)!) : null;
+          if (!remoteUrl) {
+            const repo = str(e.payload?.repo);
+            const derived = repo ? remoteUrlFromRepo(repo) : null;
+            if (derived) remoteUrl = sanitizeRemoteUrl(derived);
           }
+
           const result = await ctx.db.run(
             `INSERT OR IGNORE INTO events
              (event_id, org_id, installation_id, user_key, occurred_at, received_at, type,
@@ -204,19 +244,36 @@ export function federationRouter(ctx: HubServerContext): Router {
               reporting_version, payload, child_hub_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              forwardedEventId(childHubId, e.eventId), orgId, String(e.installationId ?? 'unknown'),
-              typeof e.userKey === 'string' ? e.userKey : 'unknown',
-              e.occurredAt, now, e.type,
-              e.projectId ?? null, e.itemId ?? null, e.itemType ?? null,
-              e.remoteUrl ?? null, e.itemTitle ?? null, e.externalId ?? null,
+              forwardedEventId(childHubId, e.eventId), orgId, str(e.installationId) ?? 'unknown',
+              userKey, e.occurredAt, now, e.type,
+              str(e.projectId), str(e.itemId), str(e.itemType),
+              remoteUrl, str(e.itemTitle), str(e.externalId),
               null, JSON.stringify(e), childHubId,
             ],
           );
-          if (result.changes === 0) duplicates++; else accepted++;
+          if (result.changes === 0) { duplicates++; continue; }
+          accepted++;
+          const day = e.occurredAt.slice(0, 10);
+          if (!earliestDay || day < earliestDay) earliestDay = day;
         }
       });
 
-      res.json({ accepted, duplicates, rejected, ignored, rejections });
+      // Roll up the days this delivery actually landed on. recomputeRollups is
+      // forward-only by default — it anchors on MAX(day) already rolled up —
+      // which is fine for live telemetry but wrong for a retrying outbox: a
+      // child offline for a week delivers events dated days ago, and without
+      // this they would never appear in /v1/metrics at all.
+      if (earliestDay) {
+        try {
+          await recomputeRollups(ctx.db, { since: earliestDay, orgId });
+        } catch (err) {
+          // The rows are stored; a rollup failure must not make the child
+          // redeliver them.
+          console.warn('[FEDERATION] delivered events but could not recompute rollups:', (err as Error).message);
+        }
+      }
+
+      res.json({ accepted, duplicates, rejected, ignored, hiddenDropped, rejections });
     } catch (err) { next(err); }
   });
 

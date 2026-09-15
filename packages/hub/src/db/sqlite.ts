@@ -84,7 +84,6 @@ const SCHEMA_SQLITE = `
     PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
   CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
-  CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day);
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -562,14 +561,16 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   }
 
   // rollups_daily.child_hub_id joins the PRIMARY KEY, which SQLite cannot do
-  // with ALTER — so the table is rebuilt, exactly as flow_assignments was
-  // below. Existing rows take '', meaning this hub's own data, which leaves
-  // every current query correct with no WHERE clause change.
+  // with ALTER. The table is rebuilt rather than migrated: every boot already
+  // does DELETE FROM rollups_daily and recomputes from `events`, so there is
+  // no data here worth copying — and copying is what would make this depend on
+  // which other columns a given vintage of the table happens to have.
   const rdCols0 = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
   if (rdCols0.length > 0 && !new Set(rdCols0.map(c => c.name)).has('child_hub_id')) {
     raw.exec(`
       BEGIN;
-      CREATE TABLE rollups_daily_new (
+      DROP TABLE rollups_daily;
+      CREATE TABLE rollups_daily (
         org_id TEXT NOT NULL,
         user_key TEXT NOT NULL,
         day TEXT NOT NULL,
@@ -583,16 +584,8 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
         child_hub_id TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (org_id, child_hub_id, user_key, day)
       );
-      INSERT INTO rollups_daily_new
-        (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened, child_hub_id)
-        SELECT org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened, ''
-          FROM rollups_daily;
-      DROP TABLE rollups_daily;
-      ALTER TABLE rollups_daily_new RENAME TO rollups_daily;
       COMMIT;
     `);
-    raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
-    raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
   }
 
   // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
@@ -675,6 +668,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
+  // Here, not in SCHEMA_SQLITE: on an upgraded hub the column does not exist
+  // until the migration above has run, and CREATE INDEX over a missing column
+  // kills the boot before it gets there.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
 
   return new SqliteAdapter(raw);
 }

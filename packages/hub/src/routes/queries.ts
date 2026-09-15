@@ -131,8 +131,20 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
     const { where, params } = applyEventFilters(orgId, f, 'day');
     const rows = await ctx.db.all<Record<string, unknown>>(
-      `SELECT user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened
+      // SUM + GROUP BY, not a bare SELECT: rollups_daily used to guarantee one
+      // row per (org, person, day) through its PRIMARY KEY, and child_hub_id
+      // joining that key removed the guarantee. On a parent hub the same person
+      // and day now has a row per child hub plus the local one, so an
+      // ungrouped select emitted duplicates — harmless to a consumer that only
+      // totals them, wrong for anything keying by day. It also made the two
+      // branches of this endpoint disagree: the events branch already groups.
+      `SELECT user_key, day,
+              SUM(events_count) AS events_count, SUM(items_closed) AS items_closed,
+              SUM(tokens_in) AS tokens_in, SUM(tokens_out) AS tokens_out,
+              SUM(validate_passes) AS validate_passes, SUM(validate_fails) AS validate_fails,
+              SUM(prs_opened) AS prs_opened
        FROM rollups_daily WHERE ${where.join(' AND ')}
+       GROUP BY user_key, day
        ORDER BY day ASC, user_key ASC`,
       params,
     );
