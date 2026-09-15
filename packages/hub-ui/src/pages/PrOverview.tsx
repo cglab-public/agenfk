@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigationType, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
@@ -304,8 +304,19 @@ export function PrOverviewPage() {
   // on first render and written back (replace) whenever a filter changes.
   const [searchParams, setSearchParams] = useSearchParams();
   const csv = (k: string) => csvParam(searchParams, k);
-  const urlRange = searchParams.get('range');
-  const initRange = (RANGES.some(r => r.key === urlRange) ? urlRange : '30d') as RangeKey;
+  const readRange = (sp: URLSearchParams): RangeKey => {
+    const v = sp.get('range');
+    return (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
+  };
+  const readGran = (sp: URLSearchParams): Granularity => {
+    const v = sp.get('gran');
+    return v === 'weekly' || v === 'monthly' ? v : 'daily';
+  };
+  // Repeated ?pr= params seed from the first entry that PARSES, mirroring the
+  // server's parsePrNumberFilter — see the prQuery state below for why.
+  const readPrQuery = (sp: URLSearchParams): string =>
+    [...sp.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '';
+  const initRange = readRange(searchParams);
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
@@ -313,9 +324,7 @@ export function PrOverviewPage() {
   const childHubSel = useToggleSet(csv('childHubId'));
   const childHubs = useChildHubs(childHubSel.set);
   const [range, setRange] = useState<RangeKey>(initRange);
-  const urlGran = searchParams.get('gran');
-  const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
-  const [gran, setGran] = useState<Granularity>(initGran);
+  const [gran, setGran] = useState<Granularity>(() => readGran(searchParams));
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
@@ -332,9 +341,7 @@ export function PrOverviewPage() {
   // whatever it holds, so `?pr=&pr=57` would open the windowed overview and then
   // the URL effect below would rewrite the address bar without `pr` at all —
   // deleting the link's own evidence that it asked for PR #57.
-  const [prQuery, setPrQuery] = useState<string>(
-    () => [...searchParams.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '',
-  );
+  const [prQuery, setPrQuery] = useState<string>(() => readPrQuery(searchParams));
   const prNumber = parsePrQuery(prQuery);
   // A PR search supersedes the date window, the model filter and the developer
   // filter. Project (git remote) is the one filter it respects — a PR number is
@@ -347,6 +354,34 @@ export function PrOverviewPage() {
   // scans to answer one question. Cold load is unaffected: the hook starts
   // settled, so a shared ?pr=57 link is not one tick slower.
   const queryPrNumber = useDebouncedValue(prNumber, 350);
+
+  // Follow the URL on a POP, the way the chip facets already do (BUG 8e40e463).
+  //
+  // These six controls are plain state mirrored INTO the query string, so on a
+  // Back they were not merely stale: react-router hands back a fresh
+  // setSearchParams on every location change, which re-runs the write-back
+  // effect below and rewrites the whole query string from mount-time state.
+  // The popped values were deleted, not ignored.
+  //
+  // Keyed on the navigation TYPE rather than on the values, unlike useToggleSet.
+  // A value-keyed sync cannot work here: the write-back omits a control at its
+  // default (no `range` when it is 30d, no `range` at all while an explicit
+  // from/to is set), so "absent from the URL" does not mean "default" and a
+  // naive follow would reset the range every time a custom date range is used.
+  // A POP is unambiguous, and our own writes are REPLACE.
+  const navType = useNavigationType();
+  const location = useLocation();
+  useEffect(() => {
+    if (navType !== 'POP') return;
+    const sp = new URLSearchParams(location.search);
+    setRange(readRange(sp));
+    setGran(readGran(sp));
+    setCustomFrom(sp.get('from') ?? '');
+    setCustomTo(sp.get('to') ?? '');
+    setFiltersOpen(parseFiltersOpen(sp.get('filters')));
+    setPrQuery(readPrQuery(sp));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navType, location.key]);
 
   useEffect(() => {
     const p = new URLSearchParams();
