@@ -74,6 +74,50 @@ describe('PG parity: hub federation enrollment (CGLAB-181)', () => {
 
     await db.close();
   });
+
+  it('dispatches a flow to child hubs on Postgres, including a hub that enrolls later', async () => {
+    // The dispatch tables and the directive query are new DDL plus a LEFT JOIN
+    // with a three-way state predicate — exactly the shape the dialect
+    // translator has to carry, and the SQLite tests alone never exercise it.
+    const { app, db, cookie } = await bootHubOnPg();
+
+    const made = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie).send({
+      definition: {
+        name: 'PG Group Flow',
+        steps: [{ id: 'todo', name: 'TODO', order: 0 }, { id: 'done', name: 'DONE', order: 1 }],
+      },
+    });
+    expect(made.status).toBe(201);
+
+    const d = await supertest(app).post('/v1/admin/flow-dispatches').set('Cookie', cookie)
+      .send({ flowId: made.body.id, scope: 'all' });
+    expect(d.status).toBe(200);
+
+    // Enrolled AFTER the dispatch: scope 'all' has to reach it.
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enr = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-late' } });
+    expect(enr.status).toBe(200);
+
+    const poll = await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${enr.body.token}`);
+    expect(poll.status).toBe(200);
+    expect(poll.body).toMatchObject({ kind: 'flow.dispatch' });
+    expect(poll.body.flow.definition.steps.map((s: any) => s.name)).toEqual(['TODO', 'DONE']);
+
+    // Serving is not landing: the target exists and is still pending.
+    const list = await supertest(app).get('/v1/admin/flow-dispatches').set('Cookie', cookie);
+    expect(list.body.dispatches[0].targets).toHaveLength(1);
+    expect(list.body.dispatches[0].targets[0].state).toBe('pending');
+
+    // And a cancelled dispatch stops being served.
+    await supertest(app).post(`/v1/admin/flow-dispatches/${d.body.id}/cancel`).set('Cookie', cookie).send({});
+    const after = await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${enr.body.token}`);
+    expect(after.status).toBe(204);
+
+    await db.close();
+  });
 });
 
 describe('PG parity: child-hub administration (CGLAB-181)', () => {

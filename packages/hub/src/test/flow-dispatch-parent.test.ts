@@ -46,7 +46,16 @@ describe('parent hub: dispatching a flow to child hubs', () => {
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
     cookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
     const made = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
-      .send({ name: 'Group TDD', description: 'the org standard', definition: { steps: [{ name: 'TODO' }, { name: 'DONE' }] } });
+      .send({
+        definition: {
+          name: 'Group TDD',
+          description: 'the org standard',
+          steps: [
+            { id: 'todo', name: 'TODO', order: 0 },
+            { id: 'done', name: 'DONE', order: 1 },
+          ],
+        },
+      });
     expect(made.status).toBeLessThan(300);
     flowId = made.body.id;
   });
@@ -125,19 +134,50 @@ describe('parent hub: dispatching a flow to child hubs', () => {
       expect(alphaTarget.state).toBe('pending');
     });
 
-    it('refuses a dispatch of a flow this org does not own', async () => {
+    it('refuses a dispatch of a flow that does not exist', async () => {
       await enroll('alpha');
       const r = await dispatch({ flowId: 'no-such-flow', scope: 'all' });
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
-    it('never serves one org\'s dispatch to another org\'s child hub', async () => {
+    it("refuses a dispatch of another org's flow, which DOES exist", async () => {
+      // The id resolves, so only the ownership clause can refuse it — an
+      // unknown-id test cannot tell the two apart and passes either way.
+      await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version)
+         VALUES (?, ?, ?, ?, ?, 'hub', 1)`,
+        ['their-flow', 'other-org', 'Their Flow', null,
+         JSON.stringify({ name: 'Their Flow', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+      );
+      const r = await dispatch({ flowId: 'their-flow', scope: 'all' });
+      expect(r.status).toBe(404);
+    });
+
+    it("never serves another org's dispatch to this org's child hub", async () => {
+      // A real foreign dispatch, seeded alongside ours. Without the org clause
+      // in the directive query the child is served the wrong group's flow —
+      // the worst outcome this feature can produce.
       const a = await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version)
+         VALUES (?, ?, ?, ?, ?, 'hub', 1)`,
+        ['their-flow', 'other-org', 'Their Flow', null,
+         JSON.stringify({ name: 'Their Flow', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+      );
+      await ctx.db.run(
+        `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type, created_at)
+         VALUES (?, ?, ?, 1, 'all', ?)`,
+        ['their-dispatch', 'other-org', 'their-flow', '2020-01-01T00:00:00.000Z'],
+      );
+      // Ours is newer, so if org scoping were dropped the FOREIGN one would be
+      // served first — ordered by created_at, and theirs is dated 2020.
       await dispatch({ flowId, scope: 'all' });
-      // Move the hub to another org behind the API's back; its poll must dry up.
-      await ctx.db.run('UPDATE child_hubs SET org_id = ? WHERE id = ?', ['other-org', a.childHubId]);
-      await ctx.db.run('UPDATE federation_keys SET org_id = ? WHERE child_hub_id = ?', ['other-org', a.childHubId]);
-      expect((await poll(a.token)).status).toBe(204);
+
+      const r = await poll(a.token);
+      expect(r.status).toBe(200);
+      expect(r.body.flow.id).toBe(flowId);
+      expect(r.body.flow.name).toBe('Group TDD');
     });
   });
 });

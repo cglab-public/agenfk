@@ -2122,6 +2122,134 @@ export function adminRouter(ctx: HubServerContext): Router {
   // treats in_progress as active. Force-cancelled rows get finished_at and
   // an error_message so the admin view shows when and why they were closed.
   // succeeded/failed targets are never touched, with or without force.
+  /**
+   * Flow dispatch (CGLAB-182): send one of this org's flows to its child hubs.
+   *
+   * `scope: 'all'` is stored as intent, NOT expanded into a target list, because
+   * it means every current AND FUTURE child hub — a hub enrolling next month
+   * must receive it on its first poll. `scope: 'selected'` names hubs up front,
+   * so its targets are written here.
+   */
+  router.post('/flow-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const flowId = typeof req.body?.flowId === 'string' ? req.body.flowId : '';
+      const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
+      if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
+
+      // The flow must be one this org owns — dispatching by id alone would let
+      // an admin push another tenant's flow into their own group.
+      const flow = await ctx.db.get<{ id: string; version: number }>(
+        'SELECT id, version FROM flows WHERE id = ? AND org_id = ?', [flowId, orgId],
+      );
+      if (!flow) return res.status(404).json({ error: 'Flow not found' });
+
+      const ids: string[] = Array.isArray(req.body?.childHubIds)
+        ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
+        : [];
+      if (scope === 'selected' && !ids.length) {
+        return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
+      }
+
+      const dispatchId = randomUUID();
+      const now = new Date().toISOString();
+      // Denormalised for the audit trail, the same way model mappings and
+      // upgrade directives do it — the user row may be gone by the time anyone
+      // reads back who sent this flow to the group.
+      const actor = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?', [req.session!.userId],
+      );
+      await ctx.db.transaction(async () => {
+        await ctx.db.run(
+          `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type,
+                                        created_by_user_id, created_by_email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dispatchId, orgId, flow.id, Number(flow.version), scope,
+           req.session!.userId ?? null, actor?.email ?? null, now],
+        );
+        if (scope === 'selected') {
+          // Only hubs that are actually this org's and still attached. A
+          // silently-ignored id would otherwise look like a delivered target.
+          for (const id of ids) {
+            const hub = await ctx.db.get<{ id: string }>(
+              'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
+            );
+            if (!hub) continue;
+            await ctx.db.run(
+              `INSERT INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+               VALUES (?, ?, 'pending', ?)`,
+              [dispatchId, id, now],
+            );
+          }
+        }
+      });
+      res.json({ id: dispatchId, flowId: flow.id, flowVersion: Number(flow.version), scope });
+    } catch (err) { next(err); }
+  });
+
+  router.get('/flow-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const rows = await ctx.db.all<any>(
+        `SELECT id, flow_id, flow_version, scope_type, created_by_email, created_at, cancelled_at
+         FROM flow_dispatches WHERE org_id = ? ORDER BY created_at DESC`, [orgId],
+      );
+      const targets = await ctx.db.all<any>(
+        `SELECT t.dispatch_id, t.child_hub_id, t.state, t.detail, t.updated_at, c.name
+         FROM flow_dispatch_targets t
+         JOIN flow_dispatches d ON d.id = t.dispatch_id
+         LEFT JOIN child_hubs c ON c.id = t.child_hub_id
+         WHERE d.org_id = ?`, [orgId],
+      );
+      const byDispatch = new Map<string, any[]>();
+      for (const t of targets) {
+        const list = byDispatch.get(t.dispatch_id) ?? [];
+        list.push({
+          childHubId: t.child_hub_id,
+          name: t.name ?? t.child_hub_id,
+          state: t.state,
+          detail: t.detail ?? null,
+          updatedAt: isoOrNull(t.updated_at),
+        });
+        byDispatch.set(t.dispatch_id, list);
+      }
+      res.json({
+        dispatches: rows.map(r => ({
+          id: r.id,
+          flowId: r.flow_id,
+          flowVersion: Number(r.flow_version),
+          scope: r.scope_type,
+          createdByEmail: r.created_by_email ?? null,
+          createdAt: isoOrNull(r.created_at),
+          cancelledAt: isoOrNull(r.cancelled_at),
+          // Under scope 'all' a target appears only once a hub has been served,
+          // so an empty list means "nobody has polled yet", not "nobody is targeted".
+          targets: byDispatch.get(r.id) ?? [],
+        })),
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/flow-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      // `cancelled_at IS NULL` in the statement, not a prior read, so two
+      // admins cancelling at once cannot both claim to have done it.
+      const r = await ctx.db.run(
+        `UPDATE flow_dispatches SET cancelled_at = ?
+         WHERE id = ? AND org_id = ? AND cancelled_at IS NULL`,
+        [new Date().toISOString(), req.params.id, orgId],
+      );
+      if (!r.changes) {
+        const exists = await ctx.db.get<{ id: string }>(
+          'SELECT id FROM flow_dispatches WHERE id = ? AND org_id = ?', [req.params.id, orgId],
+        );
+        if (!exists) return res.status(404).json({ error: 'Dispatch not found' });
+      }
+      res.json({ ok: true, cancelled: true });
+    } catch (err) { next(err); }
+  });
+
   router.post('/upgrade/:directiveId/cancel', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directiveId = req.params.directiveId;

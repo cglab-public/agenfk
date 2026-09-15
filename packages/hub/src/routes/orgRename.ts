@@ -18,6 +18,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'events',
   'federation_keys',
   'flow_assignments',
+  'flow_dispatches',
   'flows',
   'hidden_users',
   'installations',

@@ -140,6 +140,38 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
+  -- Flow dispatch (CGLAB-182): a parent hub sends one of its flows to its
+  -- child hubs. The dispatch is the intent; the targets are what actually
+  -- happened, one row per hub.
+  --
+  -- scope_type 'all' deliberately does NOT expand into target rows when the
+  -- dispatch is created: 'all' means every current AND FUTURE child hub, so a
+  -- hub enrolling next month has to receive it on its first poll. Targets for
+  -- 'all' therefore appear lazily, the first time a hub is served.
+  CREATE TABLE IF NOT EXISTS flow_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    flow_id TEXT NOT NULL,
+    flow_version INTEGER NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cancelled_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_dispatches_org_time ON flow_dispatches(org_id, created_at);
+
+  -- state: pending | installed | failed | conflict. Only a report from the
+  -- child moves it off pending — serving a directive is not the flow landing.
+  CREATE TABLE IF NOT EXISTS flow_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
   CREATE TABLE IF NOT EXISTS federation_keys (
     token_hash TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,

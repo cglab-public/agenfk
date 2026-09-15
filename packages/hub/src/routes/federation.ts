@@ -302,11 +302,71 @@ export function federationRouter(ctx: HubServerContext): Router {
     } catch (err) { next(err); }
   });
 
-  // No directive kinds exist yet — flow dispatch (CGLAB-182) and upgrade
-  // dispatch (CGLAB-183) add them. The route exists so a child worker built
-  // now polls the final URL and simply sees "nothing to do".
-  router.get('/directives', requireKey, (_req: Request, res: Response) => {
-    res.status(204).end();
+  /**
+   * What this child should do next, or 204 for nothing.
+   *
+   * Flow dispatch (CGLAB-182) is the first kind. Upgrade dispatch (CGLAB-183)
+   * will add another; a child that does not recognise a kind records it and
+   * carries on, which is what lets an older child sit under a newer parent.
+   *
+   * The org and the child hub come from the CREDENTIAL, never from the request,
+   * and a detached hub never gets this far — requireKey refuses it.
+   *
+   * A dispatch is served while its target row says `pending`, or while no target
+   * row exists at all. That second case is scope 'all': it means every current
+   * AND FUTURE child hub, so it cannot be expanded into target rows when the
+   * dispatch is created — the row appears here, the first time a hub is served.
+   * A `failed` target is deliberately NOT re-served: retrying a definition the
+   * child has already rejected would loop forever, so it needs an admin to
+   * dispatch again once they have seen why.
+   */
+  router.get('/directives', requireKey, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { childHubId, orgId } = req.hubFederation!;
+      const row = await ctx.db.get<any>(
+        `SELECT d.id, d.flow_id, d.flow_version
+           FROM flow_dispatches d
+           LEFT JOIN flow_dispatch_targets t
+             ON t.dispatch_id = d.id AND t.child_hub_id = ?
+          WHERE d.org_id = ?
+            AND d.cancelled_at IS NULL
+            AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
+            AND (t.state IS NULL OR t.state = 'pending')
+          ORDER BY d.created_at ASC
+          LIMIT 1`,
+        [childHubId, orgId],
+      );
+      if (!row) { res.status(204).end(); return; }
+
+      const flow = await ctx.db.get<any>(
+        'SELECT id, name, description, definition_json, version FROM flows WHERE id = ? AND org_id = ?',
+        [row.flow_id, orgId],
+      );
+      // The flow was deleted after the dispatch was made. Nothing to install,
+      // and serving a half-directive would just fail on the child.
+      if (!flow) { res.status(204).end(); return; }
+
+      // Record that this hub has now SEEN it. Still pending: serving is not
+      // landing, and only a report from the child moves this off pending.
+      await ctx.db.run(
+        `INSERT OR IGNORE INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+         VALUES (?, ?, 'pending', ?)`,
+        [row.id, childHubId, new Date().toISOString()],
+      );
+
+      res.json({
+        kind: 'flow.dispatch',
+        dispatchId: row.id,
+        flowVersion: Number(row.flow_version),
+        flow: {
+          id: flow.id,
+          name: flow.name,
+          description: flow.description ?? null,
+          version: Number(flow.version),
+          definition: JSON.parse(flow.definition_json),
+        },
+      });
+    } catch (err) { next(err); }
   });
 
   return router;
