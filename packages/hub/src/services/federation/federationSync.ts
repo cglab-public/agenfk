@@ -422,7 +422,14 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
         // Queued through the ordinary outbox rather than sent inline: the
         // report must not be able to fail the tick, and a child whose parent
         // is briefly down still owes it this answer when it comes back.
-        await reportFlowDispatch(db, d, detail);
+        // Its own try: this sits inside the block whose catch RETURNS, so an
+        // enqueue failure here used to skip dueRows and deliverBatch entirely
+        // — the precise opposite of what the paragraph above promises.
+        try {
+          await reportFlowDispatch(db, d, detail);
+        } catch (err) {
+          result.flowDispatchError = result.flowDispatchError ?? messageOf(err);
+        }
       } else {
         // A kind this build does not implement — upgrade dispatch (CGLAB-183)
         // is the next one. Recording rather than throwing is what lets an older

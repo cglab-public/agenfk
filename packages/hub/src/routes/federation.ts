@@ -194,17 +194,29 @@ export function federationRouter(ctx: HubServerContext): Router {
    * fleet:upgrade ingest refuses to attribute a report without a key-bound
    * installation.
    *
-   * `state = 'pending'` sits IN THE STATEMENT rather than in a preceding read.
-   * It is the no-regression guard — installed and failed are both terminal for
-   * a given dispatch, so a late duplicate of the other cannot overwrite the
-   * first answer — and as a read-then-write two concurrent deliveries would
-   * both see pending and both write.
+   * The state guard sits IN THE STATEMENT rather than in a preceding read: as
+   * a read-then-write, two concurrent deliveries would both see `pending` and
+   * both write.
+   *
+   * It is MONOTONIC (pending -> failed -> installed), not first-writer-wins,
+   * and that is not a detail. `failed` is terminal for an ATTEMPT, not for the
+   * dispatch: the child retries. A transient install error queues `failed`; if
+   * the parent is unreachable that row waits while the next tick installs
+   * cleanly and queues `installed`; both then drain together, oldest first, so
+   * `failed` ARRIVES FIRST. Under first-writer-wins the target would pin at
+   * failed with the flow actually installed — and unrecoverably, because
+   * /directives deliberately never re-serves a failed target, so the child is
+   * never asked again and can never correct the record. `installed` therefore
+   * overrides `failed`, while a late `failed` can never override `installed`.
    *
    * A report naming a dispatch that is not this org's, or a target row that
    * does not exist because the hub was never served, matches nothing and is
    * silently a no-op. Both are the right outcome: it is still stored as an
    * event, it just moves no state.
    */
+  const isDispatchReport = (e: any) =>
+    e?.type === 'fleet:flow-dispatch:installed' || e?.type === 'fleet:flow-dispatch:failed';
+
   const applyFlowDispatchReport = async (
     e: any,
     args: {
@@ -214,16 +226,22 @@ export function federationRouter(ctx: HubServerContext): Router {
       str: (v: unknown) => string | null;
     },
   ): Promise<void> => {
-    if (e.type !== 'fleet:flow-dispatch:installed' && e.type !== 'fleet:flow-dispatch:failed') return;
+    if (!isDispatchReport(e)) return;
     const dispatchId = args.str(e.payload?.dispatchId);
     if (!dispatchId) return;
-    const state = e.type === 'fleet:flow-dispatch:installed' ? 'installed' : 'failed';
+    const installed = e.type === 'fleet:flow-dispatch:installed';
+    const state = installed ? 'installed' : 'failed';
+    // Capped like every other free-form string a child supplies (the
+    // release-request reason uses the same 500). messageOf(err) upstream can
+    // be an arbitrarily long driver message.
+    const detail = args.str(e.payload?.detail)?.slice(0, 500) ?? null;
+    const fromStates = installed ? `('pending', 'failed')` : `('pending')`;
     await ctx.db.run(
       `UPDATE flow_dispatch_targets
           SET state = ?, detail = ?, updated_at = ?
-        WHERE dispatch_id = ? AND child_hub_id = ? AND state = 'pending'
+        WHERE dispatch_id = ? AND child_hub_id = ? AND state IN ${fromStates}
           AND dispatch_id IN (SELECT id FROM flow_dispatches WHERE org_id = ?)`,
-      [state, args.str(e.payload?.detail), args.now, dispatchId, args.childHubId, args.orgId],
+      [state, detail, args.now, dispatchId, args.childHubId, args.orgId],
     );
   };
 
@@ -273,7 +291,12 @@ export function federationRouter(ctx: HubServerContext): Router {
           if (typeof e.occurredAt !== 'string' || !e.occurredAt) { reject('invalid_event'); continue; }
 
           const userKey = resolveAliasKey(str(e.userKey) ?? 'unknown', aliases);
-          if (hidden.has(userKey)) { hiddenDropped++; continue; }
+          // The hidden-people control filters PEOPLE. A dispatch report is
+          // control plane riding the same pipe under a non-person key, and an
+          // admin who happened to hide that key would otherwise stall every
+          // rollout silently: the target stays pending, /directives keeps
+          // serving, and the child re-installs forever with nothing logged.
+          if (hidden.has(userKey) && !isDispatchReport(e)) { hiddenDropped++; continue; }
 
           // Canonicalise like /v1/events, or the same repo shows up as two
           // chips in the projects filter depending on which hub reported it.

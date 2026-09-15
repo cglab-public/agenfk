@@ -406,6 +406,75 @@ describe('PG parity: dispatch reports moving a target (CGLAB-182)', () => {
       ['pg-d1', childHubId],
     );
     expect(guarded.state).toBe('installed');
-    expect(guarded.detail ?? null).toBeNull();
+    expect(guarded.detail).toBeNull();
+
+    // The org subquery in its NEGATIVE direction: a target row that matches on
+    // both key columns, under a dispatch belonging to another org, must not
+    // move. Asserting only the positive direction proves the statement runs,
+    // not that it filters.
+    await db.run("INSERT INTO orgs (id, name) VALUES (?, ?)", ['org-pg-b', 'org-pg-b']);
+    await db.run(
+      `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type, created_at)
+       VALUES (?, ?, ?, 1, 'all', ?)`,
+      ['pg-d-other', 'org-pg-b', 'pg-flow', new Date().toISOString()],
+    );
+    await db.run(
+      `INSERT INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
+       VALUES (?, ?, 'pending', ?)`,
+      ['pg-d-other', childHubId, new Date().toISOString()],
+    );
+    await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${token}`).send({
+      rows: [{ id: 'ob-pg-x', kind: 'event', payload: { event: {
+        eventId: 'pg-r3', type: 'fleet:flow-dispatch:installed',
+        occurredAt: new Date().toISOString(), userKey: 'system',
+        payload: { dispatchId: 'pg-d-other' },
+      } } }],
+    });
+    const other = await db.get<any>(
+      'SELECT state FROM flow_dispatch_targets WHERE dispatch_id = ?', ['pg-d-other'],
+    );
+    expect(other.state).toBe('pending');
+  });
+
+  it('lets installed correct an earlier failed, on Postgres', async () => {
+    // The monotonic guard builds its IN list per event type, so the two types
+    // produce DIFFERENT SQL. Both shapes have to survive the translator.
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enrolled = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-child-2' } });
+    const { token, childHubId } = enrolled.body as { token: string; childHubId: string };
+
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['pg-flow2', 'org', 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    await db.run(
+      `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type, created_at)
+       VALUES (?, ?, ?, 1, 'all', ?)`,
+      ['pg-d2', 'org', 'pg-flow2', new Date().toISOString()],
+    );
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${token}`);
+
+    const send = (eventId: string, type: string, detail: string | null) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${token}`).send({
+        rows: [{ id: `ob-${eventId}`, kind: 'event', payload: { event: {
+          eventId, type, occurredAt: new Date().toISOString(), userKey: 'system',
+          payload: { dispatchId: 'pg-d2', detail },
+        } } }],
+      });
+
+    await send('pg-f1', 'fleet:flow-dispatch:failed', 'transient');
+    expect((await db.get<any>(
+      'SELECT state FROM flow_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      ['pg-d2', childHubId])).state).toBe('failed');
+
+    await send('pg-i1', 'fleet:flow-dispatch:installed', null);
+    const t = await db.get<any>(
+      'SELECT state, detail FROM flow_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      ['pg-d2', childHubId]);
+    expect(t.state).toBe('installed');
+    expect(t.detail).toBeNull();
   });
 });

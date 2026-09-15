@@ -92,6 +92,49 @@ describe('the child reports the outcome of a dispatch upstream', () => {
     expect(r.payload.detail.length).toBeGreaterThan(0);
   });
 
+  it('reports failed when the install THROWS, not just when it declines', async () => {
+    // The catch branch, which nothing exercised: a DB error during install
+    // must reach the parent as a failure. Reporting 'installed' after a throw
+    // is the exact lie this whole task exists to prevent.
+    const realRun = db.run.bind(db);
+    db.run = async (sql: string, params?: unknown[]) => {
+      if (/INSERT INTO flows/i.test(sql)) throw new Error('database is locked');
+      return realRun(sql, params);
+    };
+    try {
+      await federationTick({ db, secretKey: SECRET, transport: transport(dispatch()), orgId: 'org' } as any);
+    } finally {
+      db.run = realRun;
+    }
+    const [r] = reports();
+    expect(r.type).toBe('fleet:flow-dispatch:failed');
+    expect(r.payload.detail).toMatch(/database is locked/);
+  });
+
+  it('still drains the outbox when the report itself cannot be queued', async () => {
+    // The report is a courtesy to the parent; it must never be able to cost
+    // this hub its delivery pass. A throw here used to return before dueRows
+    // ever ran, which is the opposite of what the comment promised.
+    await db.run(
+      `INSERT INTO federation_outbox (id, kind, payload, created_at, next_attempt_at)
+       VALUES (?, 'event', ?, ?, ?)`,
+      ['pending-1', JSON.stringify({ event: { eventId: 'e1', type: 'item.closed' } }),
+       new Date(0).toISOString(), new Date(0).toISOString()],
+    );
+    const realRun = db.run.bind(db);
+    db.run = async (sql: string, params?: unknown[]) => {
+      if (/INSERT INTO federation_outbox/i.test(sql)) throw new Error('disk full');
+      return realRun(sql, params);
+    };
+    let out: any;
+    try {
+      out = await federationTick({ db, secretKey: SECRET, transport: transport(dispatch()), orgId: 'org' } as any);
+    } finally {
+      db.run = realRun;
+    }
+    expect(out.delivered).toBe(1);
+  });
+
   it('gives the report a stable id, so an at-least-once redelivery is one report', async () => {
     // The outbox has no lease and the parent dedups on the event id. A random
     // id per attempt would make every retry a NEW report.
@@ -218,7 +261,7 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
     expect(t.detail).toBe('definition missing steps');
   });
 
-  it('counts a redelivered report once and does not regress the state', async () => {
+  it('counts a redelivered report once, deduplicated before it reaches the target', async () => {
     const a = await enroll('alpha');
     await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
     await report(a.token);
@@ -249,6 +292,74 @@ describe('the parent moves a dispatch target only on the child\'s report', () =>
       }],
     });
     expect((await target(a.childHubId)).state).toBe('installed');
+  });
+
+  it('lets a later installed report correct an earlier failed one', async () => {
+    // The child retries. A transient install error queues `failed`; the parent
+    // is unreachable, so that row waits; the next tick installs cleanly and
+    // queues `installed`. Both drain together, oldest first — so `failed`
+    // arrives FIRST. A plain first-writer-wins guard would pin the target at
+    // failed forever, with the flow actually installed and /directives
+    // refusing to re-serve a failed target, so nothing could ever correct it.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+
+    const send = (eventId: string, type: string, detail: string | null) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
+        rows: [{ id: `ob-${eventId}`, kind: 'event', payload: { event: {
+          eventId, type, occurredAt: new Date().toISOString(), userKey: 'system',
+          payload: { dispatchId: 'd-1', detail },
+        } } }],
+      });
+
+    await send('r-failed', 'fleet:flow-dispatch:failed', 'database is locked');
+    expect((await target(a.childHubId)).state).toBe('failed');
+
+    await send('r-installed', 'fleet:flow-dispatch:installed', null);
+    const t = await target(a.childHubId);
+    expect(t.state).toBe('installed');
+    expect(t.detail ?? null).toBeNull();
+  });
+
+  it('both reports in ONE delivery still settle on installed, whichever order they arrive', async () => {
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    const row = (eventId: string, type: string, detail: string | null) => ({
+      id: `ob-${eventId}`, kind: 'event', payload: { event: {
+        eventId, type, occurredAt: new Date().toISOString(), userKey: 'system',
+        payload: { dispatchId: 'd-1', detail },
+      } },
+    });
+    await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
+      rows: [row('r1', 'fleet:flow-dispatch:failed', 'transient'), row('r2', 'fleet:flow-dispatch:installed', null)],
+    });
+    expect((await target(a.childHubId)).state).toBe('installed');
+  });
+
+  it('a dispatch report is not filterable by the hidden-people control', async () => {
+    // The report rides the telemetry pipe but is control-plane, not a person.
+    // An admin hiding the key it reports under must not silently stall every
+    // rollout: the target would stay pending, /directives would keep serving,
+    // and the child would re-install forever with nothing logged.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    await ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'system']);
+
+    await report(a.token);
+    expect((await target(a.childHubId)).state).toBe('installed');
+  });
+
+  it('caps the detail a child can store, like every other child-supplied string', async () => {
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
+      rows: [{ id: 'ob-big', kind: 'event', payload: { event: {
+        eventId: 'r-big', type: 'fleet:flow-dispatch:failed',
+        occurredAt: new Date().toISOString(), userKey: 'system',
+        payload: { dispatchId: 'd-1', detail: 'x'.repeat(5000) },
+      } } }],
+    });
+    expect((await target(a.childHubId)).detail.length).toBeLessThanOrEqual(500);
   });
 
   it('attributes the report to the CREDENTIAL, not the payload', async () => {
