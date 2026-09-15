@@ -432,10 +432,31 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should show project selector when no project is selected', async () => {
+  it('shows the welcome screen when there are no projects at all', async () => {
+    /*
+     * This used to expect the project PICKER, which is a chooser - and with no
+     * projects it was a dialog asking a question that had no answers. The
+     * welcome screen asks the question somebody in that position actually has
+     * (004bd193).
+     *
+     * "None yet" and "none chosen" are different screens now; the picker is
+     * still what the second one shows, covered below.
+     */
     vi.mocked(api.listProjects).mockResolvedValue([]);
     render(<KanbanBoard />, { wrapper });
-    expect(await screen.findByText(/Welcome to AgEnFK/i)).toBeDefined();
+    expect(await screen.findByTestId('welcome-screen')).toBeDefined();
+    expect(screen.getByRole('button', { name: /new project/i })).toBeDefined();
+  });
+
+  it('still shows the picker when projects exist but none is chosen', async () => {
+    // The branch the welcome screen must not have swallowed: here there IS
+    // something to pick from, so a chooser is the right answer.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    render(<KanbanBoard />, { wrapper });
+    expect(await screen.findByTestId('project-picker-panel')).toBeDefined();
+    expect(screen.queryByTestId('welcome-screen')).toBeNull();
   });
 
   it('should render items in correct columns', async () => {
@@ -457,8 +478,8 @@ describe('KanbanBoard', () => {
     
     render(<KanbanBoard />, { wrapper });
     
-    const createBtn = await screen.findByText(/Create New Project/i);
-    fireEvent.click(createBtn);
+    // Through the welcome screen now, which is what an empty install shows.
+    fireEvent.click(await screen.findByRole('button', { name: /new project/i }));
     
     const input = await screen.findByPlaceholderText(/e.g. My Awesome App/i);
     fireEvent.change(input, { target: { value: 'New Project' } });

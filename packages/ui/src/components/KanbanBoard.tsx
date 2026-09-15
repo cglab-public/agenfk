@@ -22,6 +22,7 @@ import { useEasterEggs } from '../useEasterEggs';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { GitHubImportModal } from './GitHubImportModal';
+import { WelcomeScreen, welcomeActions } from './WelcomeScreen';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
@@ -1493,6 +1494,41 @@ export const KanbanBoard: React.FC = () => {
           </div>
         </div>
   );
+
+  /*
+   * NOTHING AT ALL YET - not "nothing chosen", which is a different screen.
+   *
+   * With no projects the picker has nothing to pick from, so it renders a
+   * chooser over an empty list: a dialog asking a question with no answers.
+   * The welcome screen asks the question somebody in that position actually
+   * has, which is how to start, and offers only routes that exist.
+   *
+   * Gated on the query having SETTLED. Showing "you have nothing" during the
+   * first fetch would flash a welcome at every existing user on every launch,
+   * which is worse than a moment of blank.
+   */
+  if (!selectedProjectId && !isLoadingProjects && (projects?.length ?? 0) === 0) {
+    return (
+      <div className="flex h-screen w-full flex-col bg-canvas">
+        {/* ONE action, and that is not a placeholder for three.
+        
+            The import routes both take a projectId - they bring issues INTO a
+            project - so on a screen that exists precisely because there are no
+            projects, they have nowhere to put anything. Showing them here
+            would be the dead control this screen is most likely to have
+            pressed. They appear once there is a project, which is where they
+            work. */}
+        <WelcomeScreen
+          actions={welcomeActions({ onNewProject: () => setIsCreatingProject(true) })}
+        />
+        {isCreatingProject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-canvas/90 p-6">
+            {projectPickerCard}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // First load / no project chosen yet: full-screen, not dismissable (no close button).
   if (!selectedProjectId) {
