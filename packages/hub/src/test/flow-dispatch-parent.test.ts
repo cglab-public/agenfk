@@ -180,6 +180,54 @@ describe('parent hub: dispatching a flow to child hubs', () => {
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
+    it('tolerates the same hub named twice instead of falling over', async () => {
+      // A multi-select sending a repeated id is an ordinary client bug, not a
+      // server error. childHubIds was never de-duplicated, so the second
+      // target insert violated PRIMARY KEY (dispatch_id, child_hub_id), rolled
+      // the transaction back and surfaced as a 500 with nothing created.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, a.childHubId] });
+      expect(r.status).toBe(200);
+      const rows = await ctx.db.all<any>(
+        'SELECT child_hub_id FROM flow_dispatch_targets WHERE dispatch_id = ?', [r.body.id],
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it('refuses a selected dispatch naming a hub it cannot target, rather than creating a black hole', async () => {
+      // Silently skipping bad ids produced a dispatch with no targets that
+      // could never be served to anyone — the feed requires scope 'all' or an
+      // explicit target row — returned 200, and was indistinguishable in the
+      // listing from an 'all' dispatch nobody had polled yet. The upgrade twin
+      // already refuses the whole batch and names what was missing.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, 'no-such-hub'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['no-such-hub']);
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
+    it('refuses a selected dispatch naming a DETACHED hub', async () => {
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      await supertest(app).post(`/v1/admin/child-hubs/${b.childHubId}/detach`).set('Cookie', cookie).send({});
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, b.childHubId] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual([b.childHubId]);
+    });
+
+    it("refuses a selected dispatch naming another org's child hub", async () => {
+      // The id resolves as a row, so only the org clause can refuse it.
+      const a = await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)`,
+        ['their-hub', 'other-org', 'Theirs', new Date().toISOString(), new Date().toISOString()],
+      );
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, 'their-hub'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['their-hub']);
+    });
+
     it("refuses a dispatch of another org's flow, which DOES exist", async () => {
       // The id resolves, so only the ownership clause can refuse it — an
       // unknown-id test cannot tell the two apart and passes either way.
