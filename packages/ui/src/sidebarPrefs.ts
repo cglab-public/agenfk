@@ -50,6 +50,15 @@ export const isPinned = (id: string): boolean => readPinned().includes(id);
 
 export const readExpanded = (): string[] => readIds(EXPANDED_KEY);
 export const toggleExpanded = (id: string): string[] => toggleId(EXPANDED_KEY, id);
+/**
+ * Remember a whole set at once.
+ *
+ * `toggleExpanded` is per id and flips, which is wrong for opening several
+ * projects together: the ones already open would close. This writes the list
+ * the caller worked out, and the caller is the one that knows which projects
+ * hold running work.
+ */
+export const writeExpanded = (ids: string[]): void => writeIds(EXPANDED_KEY, ids);
 export const isExpanded = (id: string): boolean => readExpanded().includes(id);
 
 /**

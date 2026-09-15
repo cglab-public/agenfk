@@ -29,7 +29,7 @@ import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import {
   readPinned, togglePinned, sortProjectsByPin,
-  readExpanded, toggleExpanded,
+  readExpanded, toggleExpanded, writeExpanded,
   readProjectSort, writeProjectSort, orderProjects, type ProjectSort,
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
@@ -1664,9 +1664,40 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
         return (
           <div className="flex shrink-0 items-center gap-1.5 px-1 pb-1 font-mono text-[10px]">
             {running > 0 && (
-              // Not a button: there is nothing to do about an agent that is
-              // working, and a control that leads nowhere is worse than text.
-              <span className="text-emerald-400">{running} running</span>
+              /*
+               * A button after all, and the reasoning that said otherwise was
+               * half right. There is nothing to DO about an agent that is
+               * working - but there is somewhere to GO, and on a fresh install
+               * that somewhere is unreachable: readExpanded() starts empty, so
+               * every project is collapsed and every process row with it. The
+               * count named work the screen offered no route to.
+               *
+               * It EXPANDS what holds the work rather than jumping to one of
+               * it. With three agents running, a jump has to pick, and picking
+               * is the part with no good answer. Only the projects that hold
+               * something running: opening the rest would discard a collapse
+               * the user chose for projects this has no claim on.
+               */
+              <button
+                type="button"
+                onClick={() => {
+                  const holders = new Set(
+                    sessionRows
+                      .filter(r => r.state === 'running')
+                      .map(r => r.projectId)
+                      .filter((id): id is string => Boolean(id)),
+                  );
+                  setExpanded(prev => {
+                    const next = [...new Set([...prev, ...holders])];
+                    writeExpanded(next);
+                    return next;
+                  });
+                }}
+                title="Open the projects with work running in them"
+                className="rounded text-emerald-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-emerald-300"
+              >
+                {running} running
+              </button>
             )}
             {running > 0 && stuck.length > 0 && <span className="text-ink-tertiary">·</span>}
             {stuck.length > 0 && (

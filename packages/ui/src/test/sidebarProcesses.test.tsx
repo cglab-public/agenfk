@@ -358,17 +358,15 @@ describe('the totals on the projects header', () => {
     expect(jump).toBeInTheDocument();
   });
 
-  it('does not make the running count a button, since there is nothing to do', async () => {
-    twoCards();
-    vi.mocked(api.listRuns).mockResolvedValue([
-      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
-    ] as never);
-    renderShell();
-    await screen.findAllByTestId('process-row');
-    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
-    await screen.findByText(/1 running/i);
-    expect(screen.queryByRole('button', { name: /running/i })).toBeNull();
-  });
+  /*
+   * A test asserting the running count was NOT a button stood here, reasoning
+   * that there is nothing to do about an agent that is working. Half right:
+   * there is nothing to DO, but there is somewhere to GO, and on a fresh
+   * install that somewhere is unreachable - every project starts collapsed, so
+   * the count named work the screen offered no route to (44acf3a4).
+   *
+   * Reversed deliberately. The replacement is the block at the end of this file.
+   */
 });
 
 describe('how a card row is laid out', () => {
@@ -499,5 +497,97 @@ describe('a collapsed project hides its contents from everyone equally', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     await screen.findByTestId('process-row');
     expect(focusableInsideHidden()).toEqual([]);
+  });
+});
+
+/**
+ * A running agent is always reachable from the count that mentions it (44acf3a4).
+ *
+ * `readExpanded()` returns [] on a fresh install, so every project starts
+ * collapsed and every process row with it. The cost was named when the counts
+ * were added and accepted on the grounds that the "N need you" jump reaches
+ * what matters - but that jump only goes to failed and blocked work.
+ *
+ * So a RUNNING agent inside a collapsed project was counted in "1 running" and
+ * had nothing leading to it: the number said something was happening and the
+ * screen offered no way there. The removed SESSIONS section had no such gap,
+ * because it listed everything regardless of the tree.
+ *
+ * The count EXPANDS what holds the work rather than jumping to one of it. With
+ * three agents running, "jump" has to pick, and picking is the part that has no
+ * good answer; expanding answers the question by not choosing. It is also an
+ * explicit action, so it does not fight a collapse the user chose.
+ */
+describe('reaching a running agent that the tree has collapsed', () => {
+  const runningInCollapsed = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+  };
+
+  it('offers a way to it, not just a number about it', async () => {
+    runningInCollapsed();
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    const count = await screen.findByText(/1 running/i);
+    expect(count.closest('button'), 'the running count leads nowhere').not.toBeNull();
+  });
+
+  it('opens what holds the work, from a tree that starts collapsed', async () => {
+    /*
+     * THE test, and it starts where a new install starts: nothing expanded, so
+     * the row exists and is unreachable.
+     */
+    runningInCollapsed();
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await screen.findByText(/1 running/i);
+    expect(screen.queryByRole('button', { name: /claude code/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /1 running/i }));
+
+    expect(await screen.findByRole('button', { name: /claude code/i })).toBeInTheDocument();
+  });
+
+  it('leaves alone the projects with nothing running in them', async () => {
+    // Expanding everything would be a different feature, and a worse one: it
+    // discards a collapse the user chose for projects this has no claim on.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'p2', name: 'horizon-lab', createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p2', type: 'TASK', title: 'Quiet card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await screen.findByText(/1 running/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /1 running/i }));
+
+    await screen.findByRole('button', { name: /claude code/i });
+    /*
+     * Asked through a ROLE query. A text query finds the quiet card either way
+     * - collapsed lists are rendered and hidden, not unmounted - so asserting
+     * on text would have failed while proving nothing. Roles respect
+     * aria-hidden, which is what "still collapsed" means here.
+     */
+    expect(
+      screen.queryByRole('button', { name: /quiet card/i }),
+      'a project with nothing running was opened too',
+    ).toBeNull();
   });
 });
