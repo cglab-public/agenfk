@@ -12,7 +12,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot } from '../server';
+import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot, autoGitCommit } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -314,9 +314,13 @@ describe('project root must never become the home directory (CGLAB-166 review)',
   it('does not place worktrees under ~/.agenfk', () => {
     // findProjectRoot walks UP looking for a `.agenfk` directory. Put the
     // worktrees under ~/.agenfk and the walk from inside one lands on $HOME —
-    // and then autoGitCommit runs `git add -A && git commit` in the user's
-    // home directory, staging ~/.ssh and ~/.aws for anyone with dotfiles in
-    // git. The location itself is the fix.
+    // and then the close commit runs `git -C $HOME commit` over whatever is
+    // staged there, landing a stranger's dotfile work under a card's name for
+    // anyone who keeps $HOME in git. The location itself is the fix.
+    //
+    // It used to be worse: the close ran `git add -A` first, so it STAGED
+    // ~/.ssh and ~/.aws on the way. closeCommit.ts removed the staging; the
+    // wrong-directory risk is what remains.
     const root = defaultWorktreeRoot();
     // Separator included on purpose: without it ".agenfk-worktrees" reads as
     // being inside ".agenfk".
@@ -328,8 +332,7 @@ describe('project root must never become the home directory (CGLAB-166 review)',
     // The dangerous case, stated directly: walking up from a worktree must not
     // land on $HOME just because ~/.agenfk exists there. If it does,
     // `agenfk verify` from that worktree persists projectRoot as $HOME and
-    // autoGitCommit then runs `git add -A && git commit` over the user's
-    // dotfiles.
+    // the close then commits whatever is staged there.
     const insideAgenfkHome = path.join(os.homedir(), '.agenfk', 'worktrees', 'repo', 'leaf');
     expect(findProjectRoot(insideAgenfkHome)).not.toBe(os.homedir());
 
@@ -339,5 +342,87 @@ describe('project root must never become the home directory (CGLAB-166 review)',
 
   it('still resolves a real project root normally', () => {
     expect(findProjectRoot(repo)).toBe(repo);
+  });
+});
+
+/**
+ * The close commits the card's files, not the index (819e7192).
+ *
+ * commitStagedForCard has accepted a claims pathspec since it was written and
+ * no caller ever passed one, so the narrowing it describes had never once
+ * happened in production. Same defect class this card exists to fix, one layer
+ * up: a mechanism complete, tested, and unreachable.
+ *
+ * WHY THIS CALLS autoGitCommit DIRECTLY RATHER THAN CLOSING A CARD. The close
+ * is gated on `process.env.NODE_ENV !== 'test' && !process.env.VITEST`, so
+ * walking an item to DONE runs no commit at all under vitest. That guard is
+ * also the reason `git add -A` survived as long as it did: no test could reach
+ * the line. Driving the function against a real repository is the closest this
+ * gets to the real path without loosening a guard that exists to keep the
+ * suite from committing to the developer's own checkout.
+ *
+ * The scenario is the one observed on 2026-09-15: three agents in one tree,
+ * and the index holding two cards' work before either card closed.
+ */
+describe('a close takes only the closing card\'s files', () => {
+  const card = (claims?: string[]) =>
+    ({ id: 'card-0001', type: 'TASK', title: 'Owns its files', claims } as never);
+
+  it('leaves another agent\'s staged file out of the commit', async () => {
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const mine = 1;\n');
+    fs.writeFileSync(path.join(repo, 'theirs.ts'), 'export const theirs = 2;\n');
+    // Both staged, which is the whole point: .git/index belongs to the
+    // WORKTREE, not to an agent, so a sibling's `git add` lands here too.
+    git(repo, 'add', 'mine.ts', 'theirs.ts');
+
+    const outcome = await autoGitCommit(card(['mine.ts']), repo);
+    expect(outcome.success, `the close did not commit: ${outcome.error ?? ''}`).toBe(true);
+
+    const committed = git(repo, 'log', '-1', '--name-only', '--format=').trim().split('\n').filter(Boolean);
+    expect(committed, 'the close swept a file this card never claimed').toEqual(['mine.ts']);
+    // And the sibling's work is still exactly where they left it.
+    expect(git(repo, 'diff', '--cached', '--name-only').trim()).toBe('theirs.ts');
+  });
+
+  it('honours a directory claim, not just an exact file', async () => {
+    fs.mkdirSync(path.join(repo, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'pkg', 'deep.ts'), 'export const d = 1;\n');
+    fs.writeFileSync(path.join(repo, 'outside.ts'), 'export const o = 2;\n');
+    git(repo, 'add', 'pkg/deep.ts', 'outside.ts');
+
+    await autoGitCommit(card(['pkg']), repo);
+
+    const committed = git(repo, 'log', '-1', '--name-only', '--format=').trim().split('\n').filter(Boolean);
+    expect(committed).toEqual(['pkg/deep.ts']);
+  });
+
+  it('still commits the whole index when the card claims nothing', async () => {
+    /*
+     * Every card in the database is in this state, so the narrowing must not
+     * change what happens until a card opts in. Getting this wrong ships as a
+     * close that silently commits nothing.
+     */
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(repo, 'b.ts'), 'export const b = 2;\n');
+    git(repo, 'add', 'a.ts', 'b.ts');
+
+    await autoGitCommit(card(), repo);
+
+    const committed = git(repo, 'log', '-1', '--name-only', '--format=').trim().split('\n').filter(Boolean);
+    expect(committed.sort()).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('declines when none of the card\'s own paths are staged', async () => {
+    // With a pathspec the question stops being "is anything staged" and
+    // becomes "is any of MINE staged". Committing here would either produce an
+    // empty commit or land a sibling's file under this card's name.
+    fs.writeFileSync(path.join(repo, 'theirs.ts'), 'export const t = 1;\n');
+    git(repo, 'add', 'theirs.ts');
+    const before = git(repo, 'rev-parse', 'HEAD').trim();
+
+    const outcome = await autoGitCommit(card(['mine.ts']), repo);
+
+    expect(outcome.success).toBe(false);
+    expect(git(repo, 'rev-parse', 'HEAD').trim(), 'it committed anyway').toBe(before);
   });
 });

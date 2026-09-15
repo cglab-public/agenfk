@@ -573,12 +573,28 @@ export const findProjectRoot = (startDir: string): string => {
  * See closeCommit.ts for why staging is the signal and why an empty index
  * declines rather than falling back.
  */
-const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
   const result = commitStagedForCard(item, projectRoot, {
     // execFileSync with an argument array, not a shell: the card's TITLE is in
     // the message and arrives from a user.
     run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
-  });
+  },
+  /*
+   * The card's own paths, which is what turns "commit the index" into "commit
+   * MY files" (819e7192). `.git/index` belongs to the WORKTREE, not to an
+   * agent, and the design is several agents sharing one - so without this the
+   * close takes whatever any of them staged. Narrower than `git add -A`, and
+   * still not isolation.
+   *
+   * Observed rather than reasoned about: on 2026-09-15 three agents worked
+   * this tree at once and the index held two cards' work before either closed.
+   * The split was done by hand that time.
+   *
+   * Undefined on every card that has not declared any, which is still most of
+   * them, and that keeps the behaviour exactly what it was rather than landing
+   * as a silent change.
+   */
+  item.claims);
   const timestamp = new Date().toISOString();
   if (result.committed) {
     console.log(`[${timestamp}] [AUTO_GIT] Committed the staged changes for ${item.id}\n${result.output ?? ''}`);
