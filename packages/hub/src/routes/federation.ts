@@ -20,6 +20,17 @@ import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.j
 // An invite is ~200 chars. Cap the input before it reaches createHmac so an
 // unauthenticated caller cannot make the hub HMAC megabytes per request.
 const MAX_INVITE_TOKEN_LEN = 4096;
+/** Same ceiling as /v1/events: one delivery must not be able to monopolise a writer. */
+const MAX_DELIVER_ROWS = 500;
+
+/**
+ * The id a forwarded event is stored under. Namespaced by child hub because
+ * `events.event_id` is the primary key on its own and two children mint ids
+ * independently — an unnamespaced collision would drop the second silently.
+ */
+export function forwardedEventId(childHubId: string, eventId: string): string {
+  return `ch:${childHubId}:${eventId}`;
+}
 
 /** Admin-facing: mint a child-hub invite. Mounted under /hub/federation. */
 export function federationInviteRouter(ctx: HubServerContext): Router {
@@ -139,6 +150,74 @@ export function federationRouter(ctx: HubServerContext): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  /**
+   * Ingest what a child hub forwarded (CGLAB-184).
+   *
+   * The child's outbox deletes a row only once this answers, and two replicas
+   * of a child share no lease, so delivery is at-least-once BY DESIGN. That
+   * makes idempotency the other half of the contract rather than a nicety:
+   * INSERT OR IGNORE on (event_id, child_hub_id) is what stops a redelivered
+   * batch counting twice.
+   *
+   * child_hub_id is taken from the CREDENTIAL, never from the payload — a
+   * child that claimed another's id would otherwise write into its series.
+   *
+   * The stored event_id is namespaced by child hub. `events.event_id` is the
+   * primary key on its own, and two children generate ids in their own
+   * spaces, so without this the second child's event would silently collide
+   * with the first's and vanish. Namespacing keeps the existing primary key —
+   * and therefore the existing idempotency — rather than migrating it.
+   */
+  router.post('/deliver', requireKey, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { childHubId, orgId } = req.hubFederation!;
+      const rows: any[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+      if (rows.length > MAX_DELIVER_ROWS) {
+        res.status(413).json({ error: `Too many rows in one delivery (max ${MAX_DELIVER_ROWS})` });
+        return;
+      }
+
+      let accepted = 0;
+      let duplicates = 0;
+      let rejected = 0;
+      let ignored = 0;
+      const rejections: Array<{ id: string | null; reason: string }> = [];
+      const now = new Date().toISOString();
+
+      await ctx.db.transaction(async () => {
+        for (const r of rows) {
+          // Kinds this build does not implement are counted, not fatal: an
+          // older parent must not choke on a newer child.
+          if (r?.kind !== 'event') { ignored++; continue; }
+          const e = r?.payload?.event;
+          if (!e || typeof e.eventId !== 'string' || !e.eventId || typeof e.type !== 'string' || typeof e.occurredAt !== 'string') {
+            rejected++;
+            rejections.push({ id: typeof r?.id === 'string' ? r.id : null, reason: 'invalid_event' });
+            continue;
+          }
+          const result = await ctx.db.run(
+            `INSERT OR IGNORE INTO events
+             (event_id, org_id, installation_id, user_key, occurred_at, received_at, type,
+              project_id, item_id, item_type, remote_url, item_title, external_id,
+              reporting_version, payload, child_hub_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              forwardedEventId(childHubId, e.eventId), orgId, String(e.installationId ?? 'unknown'),
+              typeof e.userKey === 'string' ? e.userKey : 'unknown',
+              e.occurredAt, now, e.type,
+              e.projectId ?? null, e.itemId ?? null, e.itemType ?? null,
+              e.remoteUrl ?? null, e.itemTitle ?? null, e.externalId ?? null,
+              null, JSON.stringify(e), childHubId,
+            ],
+          );
+          if (result.changes === 0) duplicates++; else accepted++;
+        }
+      });
+
+      res.json({ accepted, duplicates, rejected, ignored, rejections });
+    } catch (err) { next(err); }
   });
 
   /**

@@ -57,7 +57,8 @@ const SCHEMA_PG = `
     item_title TEXT,
     external_id TEXT,
     reporting_version TEXT,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    child_hub_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
@@ -74,7 +75,8 @@ const SCHEMA_PG = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (org_id, user_key, day)
+    child_hub_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
   CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
 
@@ -490,6 +492,24 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // process drift (recent events still tagged with old version after upgrade).
   if (!have.has('reporting_version')) await adapter.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
   // rollups_daily.prs_opened — added with the PR metrics initiative.
+  // events.child_hub_id + rollups_daily.child_hub_id — CGLAB-184. Postgres can
+  // swap the primary key in place, so no table rebuild is needed here.
+  const evCols2 = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'events'"
+  );
+  if (evCols2.length > 0 && !new Set(evCols2.map(c => c.column_name)).has('child_hub_id')) {
+    await adapter.exec("ALTER TABLE events ADD COLUMN child_hub_id TEXT");
+  }
+  const rdCols0 = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"
+  );
+  if (rdCols0.length > 0 && !new Set(rdCols0.map(c => c.column_name)).has('child_hub_id')) {
+    await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN child_hub_id TEXT NOT NULL DEFAULT ''");
+    await adapter.exec("ALTER TABLE rollups_daily DROP CONSTRAINT IF EXISTS rollups_daily_pkey");
+    await adapter.exec("ALTER TABLE rollups_daily ADD PRIMARY KEY (org_id, child_hub_id, user_key, day)");
+  }
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+
   // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
   // See the SQLite block: deployed hubs already have both tables, so the
   // column only ever arrives through an ALTER.

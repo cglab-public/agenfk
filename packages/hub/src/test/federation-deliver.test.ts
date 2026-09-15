@@ -62,7 +62,9 @@ describe('POST /v1/federation/deliver', () => {
     expect(r.body).toMatchObject({ accepted: 2 });
     const rows = await ctx.db.all<any>('SELECT event_id, child_hub_id, org_id, user_key FROM events ORDER BY event_id');
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toMatchObject({ event_id: 'e1', child_hub_id: a.childHubId, org_id: 'org', user_key: 'alice@acme.com' });
+    expect(rows[0]).toMatchObject({ child_hub_id: a.childHubId, org_id: 'org', user_key: 'alice@acme.com' });
+    // stored under an id namespaced by child hub, since event_id is the PK
+    expect(rows[0].event_id).toBe(`ch:${a.childHubId}:e1`);
   });
 
   it('counts a redelivered batch once — the delivery contract is at-least-once', async () => {
@@ -80,8 +82,10 @@ describe('POST /v1/federation/deliver', () => {
     const b = await enroll('beta');
     // alpha's token, but the row says it belongs to beta
     await deliver(a.token, [row('e1', b.childHubId)]);
-    const stored = await ctx.db.get<any>('SELECT child_hub_id FROM events WHERE event_id = ?', ['e1']);
+    const stored = await ctx.db.get<any>('SELECT child_hub_id FROM events WHERE event_id = ?', [`ch:${a.childHubId}:e1`]);
     expect(stored.child_hub_id).toBe(a.childHubId);
+    // and nothing landed under beta's namespace
+    expect(await ctx.db.get<any>('SELECT 1 AS x FROM events WHERE event_id = ?', [`ch:${b.childHubId}:e1`])).toBeFalsy();
   });
 
   it('keeps two children\'s identical event ids apart', async () => {
@@ -163,7 +167,7 @@ describe('POST /v1/federation/deliver', () => {
     const local = await ctx.db.get<any>('SELECT child_hub_id FROM events WHERE event_id = ?', ['local-1']);
     // The parent's own data is not attributed to any child hub.
     expect(local.child_hub_id === null || local.child_hub_id === '').toBe(true);
-    const child = await ctx.db.get<any>('SELECT child_hub_id FROM events WHERE event_id = ?', ['e1']);
+    const child = await ctx.db.get<any>('SELECT child_hub_id FROM events WHERE event_id = ?', [`ch:${a.childHubId}:e1`]);
     expect(child.child_hub_id).toBe(a.childHubId);
   });
 });

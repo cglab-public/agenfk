@@ -56,7 +56,8 @@ const SCHEMA_SQLITE = `
     item_title TEXT,
     external_id TEXT,
     reporting_version TEXT,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    child_hub_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
@@ -76,9 +77,14 @@ const SCHEMA_SQLITE = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (org_id, user_key, day)
+    -- '' means "this hub's own data". A child hub's id here keeps a group's
+    -- series apart without a separate table or a WHERE clause on every
+    -- existing query.
+    child_hub_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
   CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
+  CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day);
 
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -548,6 +554,47 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
 
   // user_key_merges.reverted_at — BUG 098f8ba7.
+  // events.child_hub_id — CGLAB-184. Nullable, so existing rows keep meaning
+  // "this hub's own data" without a backfill.
+  const evCols2 = raw.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+  if (!new Set(evCols2.map(c => c.name)).has('child_hub_id')) {
+    raw.exec("ALTER TABLE events ADD COLUMN child_hub_id TEXT");
+  }
+
+  // rollups_daily.child_hub_id joins the PRIMARY KEY, which SQLite cannot do
+  // with ALTER — so the table is rebuilt, exactly as flow_assignments was
+  // below. Existing rows take '', meaning this hub's own data, which leaves
+  // every current query correct with no WHERE clause change.
+  const rdCols0 = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
+  if (rdCols0.length > 0 && !new Set(rdCols0.map(c => c.name)).has('child_hub_id')) {
+    raw.exec(`
+      BEGIN;
+      CREATE TABLE rollups_daily_new (
+        org_id TEXT NOT NULL,
+        user_key TEXT NOT NULL,
+        day TEXT NOT NULL,
+        events_count INTEGER NOT NULL DEFAULT 0,
+        items_closed INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,
+        tokens_out INTEGER NOT NULL DEFAULT 0,
+        validate_passes INTEGER NOT NULL DEFAULT 0,
+        validate_fails INTEGER NOT NULL DEFAULT 0,
+        prs_opened INTEGER NOT NULL DEFAULT 0,
+        child_hub_id TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (org_id, child_hub_id, user_key, day)
+      );
+      INSERT INTO rollups_daily_new
+        (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened, child_hub_id)
+        SELECT org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened, ''
+          FROM rollups_daily;
+      DROP TABLE rollups_daily;
+      ALTER TABLE rollups_daily_new RENAME TO rollups_daily;
+      COMMIT;
+    `);
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  }
+
   // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
   // Both tables already exist on deployed hubs, so CREATE TABLE IF NOT EXISTS
   // never adds them. Without these the ping route's SELECT throws and every

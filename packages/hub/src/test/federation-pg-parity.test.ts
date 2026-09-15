@@ -9,6 +9,7 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { writeParentBinding } from '../services/federation/parentBinding';
 import { enqueueOutbox, outboxDepth, federationTick } from '../services/federation/federationSync';
+import { recomputeRollups } from '../rollup';
 import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
@@ -204,6 +205,48 @@ describe('PG parity: release requests (CGLAB-181)', () => {
       .set('Authorization', `Bearer ${enr.body.token}`).send({});
     const after = await supertest(app).get('/v1/admin/child-hubs').set('Cookie', cookie);
     expect(after.body.childHubs[0].releaseReason).toBe('splitting off');
+
+    await db.close();
+  });
+});
+
+describe('PG parity: parent-side ingest of forwarded events (CGLAB-184)', () => {
+  it('stores, deduplicates and rolls up per child hub on Postgres', async () => {
+    const { app, db, cookie } = await bootHubOnPg();
+    const enrol = async (name: string) => {
+      const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name } });
+      expect(r.status).toBe(200);
+      return r.body as { token: string; childHubId: string };
+    };
+    const row = (id: string) => ({
+      id: `outbox-${id}`, kind: 'event',
+      payload: { identityPolicy: 'keep', event: {
+        eventId: id, orgId: 'org', installationId: 'i1', userKey: 'alice@acme.com',
+        occurredAt: '2026-09-14T10:00:00.000Z', type: 'item.closed', itemId: `item-${id}`, payload: {},
+      } },
+    });
+
+    const a = await enrol('pg-alpha');
+    const b = await enrol('pg-beta');
+    const deliver = (token: string, rows: unknown[]) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${token}`).send({ rows });
+
+    expect((await deliver(a.token, [row('e1'), row('e2')])).body).toMatchObject({ accepted: 2, duplicates: 0 });
+    // at-least-once delivery means this WILL happen in production
+    expect((await deliver(a.token, [row('e1'), row('e2')])).body).toMatchObject({ accepted: 0, duplicates: 2 });
+    // the same ids from another child are a different series, not a collision
+    expect((await deliver(b.token, [row('e1')])).body).toMatchObject({ accepted: 1 });
+
+    // The rollup's new PRIMARY KEY column and its GROUP BY, on the backend
+    // where the key had to be swapped in place rather than rebuilt.
+    await recomputeRollups(db, { full: true });
+    const rolled = await db.all<any>(
+      "SELECT child_hub_id, events_count FROM rollups_daily WHERE child_hub_id <> '' ORDER BY events_count DESC",
+    );
+    expect(rolled).toHaveLength(2);
+    expect(Number(rolled[0].events_count)).toBe(2);
+    expect(Number(rolled[1].events_count)).toBe(1);
 
     await db.close();
   });
