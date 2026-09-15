@@ -2125,6 +2125,102 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ directives: out });
   }));
 
+  /**
+   * The most hubs one dispatch may name.
+   *
+   * childHubIds is caller-supplied and was unbounded, so a 50k-element array
+   * became a 50k-row IN list on one authenticated admin request. Well above any
+   * real group, and below SQLite's 999-variable statement limit once the org id
+   * is added.
+   */
+  const MAX_DISPATCH_TARGETS = 500;
+
+  /**
+   * The ids a dispatch body names, or the reason it is not usable.
+   *
+   * A non-string or empty element is REFUSED rather than filtered out. Quietly
+   * dropping it is the same defect as quietly dropping an unknown hub — the
+   * admin names two hubs, one is `null` from a client bug, and a dispatch to one
+   * hub comes back 200 as though both had been targeted.
+   */
+  function readDispatchTargetIds(raw: unknown): { ids: string[] } | { error: string } {
+    if (!Array.isArray(raw)) return { ids: [] };
+    if (raw.some(v => typeof v !== 'string' || !v)) {
+      return { error: 'childHubIds must contain only non-empty strings' };
+    }
+    if (raw.length > MAX_DISPATCH_TARGETS) {
+      return { error: `childHubIds may name at most ${MAX_DISPATCH_TARGETS} hubs` };
+    }
+    // De-duplicated: a repeated id from a multi-select is an ordinary client
+    // bug, and without this the second target insert violates PRIMARY KEY
+    // (dispatch_id, child_hub_id), rolls the transaction back and turns it
+    // into a 500.
+    return { ids: Array.from(new Set(raw as string[])) };
+  }
+
+  /**
+   * The ids a 'selected' dispatch cannot target, in the order they were named.
+   *
+   * Both dispatch kinds — flows and group upgrades — name hubs the same way and
+   * must refuse the same way. An id from another org, a typo, or a hub that
+   * detached since the picker loaded belongs here. Skipping those silently
+   * creates a dispatch with no target rows, which the directive feed can never
+   * serve to anyone and which reads in the admin listing exactly like an 'all'
+   * dispatch nobody has polled yet.
+   *
+   * One query, not one per id — the shape POST /upgrade already uses for the
+   * same question.
+   */
+  async function untargetableChildHubs(orgId: string, ids: string[]): Promise<string[]> {
+    if (!ids.length) return [];
+    const rows = await ctx.db.all<{ id: string }>(
+      `SELECT id FROM child_hubs
+        WHERE org_id = ? AND detached_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`,
+      [orgId, ...ids],
+    );
+    const found = new Set(rows.map(r => r.id));
+    return ids.filter(id => !found.has(id));
+  }
+
+  /**
+   * Write one target row, but only for a hub that is STILL targetable.
+   *
+   * The validation above runs before the transaction, so a hub that detaches in
+   * between would otherwise get a target row anyway: there is no foreign key on
+   * flow_dispatch_targets.child_hub_id, the insert cannot fail, and the feed's
+   * predicate matches that row forever — the dispatch sits half-pending on the
+   * board with no hub able to answer it. Putting the condition in the STATEMENT
+   * is the same rule the detach route insists on for itself.
+   *
+   * Returns false when the race was lost, so the caller can abandon the batch.
+   */
+  async function insertDispatchTarget(
+    table: 'flow_dispatch_targets' | 'upgrade_dispatch_targets',
+    dispatchId: string, childHubId: string, orgId: string, now: string,
+  ): Promise<boolean> {
+    const r = await ctx.db.run(
+      // The CASTs are load-bearing on Postgres: in an INSERT ... SELECT the
+       // parameter types are resolved from the SELECT list, not from the target
+       // columns, so an un-cast placeholder arrives as text and the insert is
+       // refused ("column updated_at is of type timestamp with time zone but
+       // expression is of type text"). SQLite gives TIMESTAMPTZ numeric
+       // affinity, which leaves an ISO string untouched, so the same statement
+       // works on both. The pg parity test for a 'selected' dispatch exists
+       // because this broke the moment it was written.
+      `INSERT INTO ${table} (dispatch_id, child_hub_id, state, updated_at)
+       SELECT CAST(? AS TEXT), id, 'pending', CAST(? AS TIMESTAMPTZ) FROM child_hubs
+        WHERE id = ? AND org_id = ? AND detached_at IS NULL`,
+      [dispatchId, now, childHubId, orgId],
+    );
+    return r.changes > 0;
+  }
+
+  const CHILD_HUBS_NOT_TARGETABLE = 'One or more child hubs are not in this group, or have detached';
+  /** Thrown inside the dispatch transaction to roll it back; see insertDispatchTarget. */
+  class TargetVanished extends Error {
+    constructor(readonly childHubId: string) { super(`child hub ${childHubId} detached mid-dispatch`); }
+  }
+
   // POST /v1/admin/upgrade/:directiveId/cancel — admin-driven cancel for a
   // pending directive. Flips every target still in 'pending' to 'cancelled';
   // leaves in_progress/succeeded/failed alone (those flights have already
@@ -2137,38 +2233,6 @@ export function adminRouter(ctx: HubServerContext): Router {
   // treats in_progress as active. Force-cancelled rows get finished_at and
   // an error_message so the admin view shows when and why they were closed.
   // succeeded/failed targets are never touched, with or without force.
-  /**
-   * The child hubs a 'selected' dispatch may target.
-   *
-   * Both dispatch kinds — flows and group upgrades — name hubs the same way and
-   * must refuse the same way. Returns the ids that could NOT be targeted: an id
-   * from another org, a typo, or a hub that detached since the picker loaded.
-   * Skipping those silently creates a dispatch with no target rows, which the
-   * directive feed can never serve to anyone and which reads in the admin
-   * listing exactly like an 'all' dispatch nobody has polled yet.
-   *
-   * Callers pass ids ALREADY de-duplicated: a repeated id from a multi-select
-   * would otherwise violate PRIMARY KEY (dispatch_id, child_hub_id) on the
-   * second target insert, roll the transaction back, and surface as a 500.
-   */
-  async function untargetableChildHubs(orgId: string, ids: string[]): Promise<string[]> {
-    const missing: string[] = [];
-    for (const id of ids) {
-      const hub = await ctx.db.get<{ id: string }>(
-        'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
-      );
-      if (!hub) missing.push(id);
-    }
-    return missing;
-  }
-
-  /** The ids a dispatch body names, de-duplicated. See untargetableChildHubs. */
-  const dispatchTargetIds = (raw: unknown): string[] => Array.from(new Set(
-    Array.isArray(raw) ? raw.filter((v: unknown): v is string => typeof v === 'string' && !!v) : [],
-  ));
-
-  const CHILD_HUBS_NOT_TARGETABLE = 'One or more child hubs are not in this group, or have detached';
-
   /**
    * Flow dispatch (CGLAB-182): send one of this org's flows to its child hubs.
    *
@@ -2191,7 +2255,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       );
       if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-      const ids = dispatchTargetIds(req.body?.childHubIds);
+      const parsed = readDispatchTargetIds(req.body?.childHubIds);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      const ids = parsed.ids;
       if (scope === 'selected' && !ids.length) {
         return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
       }
@@ -2219,18 +2285,20 @@ export function adminRouter(ctx: HubServerContext): Router {
            req.session!.userId ?? null, actor?.email ?? null, now],
         );
         if (scope === 'selected') {
-          // Every id was validated above, so each one becomes a target.
           for (const id of ids) {
-            await ctx.db.run(
-              `INSERT INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
-               VALUES (?, ?, 'pending', ?)`,
-              [dispatchId, id, now],
-            );
+            if (!await insertDispatchTarget('flow_dispatch_targets', dispatchId, id, orgId, now)) {
+              throw new TargetVanished(id);
+            }
           }
         }
       });
       res.json({ id: dispatchId, flowId: flow.id, flowVersion: Number(flow.version), scope });
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof TargetVanished) {
+        return res.status(409).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing: [err.childHubId] });
+      }
+      next(err);
+    }
   });
 
   router.get('/flow-dispatches', guard, async (req: Request, res: Response, next) => {
@@ -2302,7 +2370,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
       if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
 
-      const ids = dispatchTargetIds(req.body?.childHubIds);
+      const parsed = readDispatchTargetIds(req.body?.childHubIds);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      const ids = parsed.ids;
       if (scope === 'selected' && !ids.length) {
         return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
       }
@@ -2337,18 +2407,20 @@ export function adminRouter(ctx: HubServerContext): Router {
            req.session!.userId ?? null, actor?.email ?? null, now],
         );
         if (scope === 'selected') {
-          // Every id was validated above, so each one becomes a target.
           for (const id of ids) {
-            await ctx.db.run(
-              `INSERT INTO upgrade_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
-               VALUES (?, ?, 'pending', ?)`,
-              [dispatchId, id, now],
-            );
+            if (!await insertDispatchTarget('upgrade_dispatch_targets', dispatchId, id, orgId, now)) {
+              throw new TargetVanished(id);
+            }
           }
         }
       });
       res.json({ id: dispatchId, targetVersion, scope, confirmDowngrade });
-    } catch (err) { next(err); }
+    } catch (err) {
+      if (err instanceof TargetVanished) {
+        return res.status(409).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing: [err.childHubId] });
+      }
+      next(err);
+    }
   });
 
   router.get('/upgrade-dispatches', guard, async (req: Request, res: Response, next) => {

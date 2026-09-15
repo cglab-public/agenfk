@@ -193,6 +193,25 @@ describe('parent hub: dispatching a group upgrade', () => {
     expect(r.body.missing).toEqual([b.childHubId]);
   });
 
+  it("refuses a selected dispatch naming another org's child hub", async () => {
+    // The row exists, so only the org clause can refuse it — an unknown-id test
+    // passes either way. The flow twin had this; this file did not.
+    const a = await enroll('alpha');
+    await ctx.db.run(
+      'INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)',
+      ['their-hub', 'other-org', 'Theirs', new Date().toISOString(), new Date().toISOString()],
+    );
+    const r = await create({ targetVersion: '1.2.3', scope: 'selected', childHubIds: [a.childHubId, 'their-hub'] });
+    expect(r.status).toBe(404);
+    expect(r.body.missing).toEqual(['their-hub']);
+  });
+
+  it('refuses a null or empty id instead of quietly dropping it', async () => {
+    const a = await enroll('alpha');
+    const r = await create({ targetVersion: '1.2.3', scope: 'selected', childHubIds: [a.childHubId, null] });
+    expect(r.status).toBe(400);
+  });
+
   it('does not serve a cancelled dispatch', async () => {
     const a = await enroll('alpha');
     const d = await create({ targetVersion: '1.2.3', scope: 'all' });

@@ -127,6 +127,65 @@ describe('PG parity: hub federation enrollment (CGLAB-181)', () => {
   });
 });
 
+describe("PG parity: a 'selected' dispatch (701c4ca4)", () => {
+  // Both parity tests above dispatch with scope 'all', so the target-validation
+  // IN list and the INSERT ... SELECT that writes a target row had never been
+  // through the dialect translator at all — the two statements this fix added.
+  it('validates and writes selected targets on Postgres, for both dispatch kinds', async () => {
+    const { app, db, cookie } = await bootHubOnPg({
+      releaseExists: async (v: string) => v === '1.2.3',
+    });
+
+    const enroll = async (name: string) => {
+      const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+      const r = await supertest(app).post('/v1/federation/enroll')
+        .send({ inviteToken: inv.body.inviteToken, childHub: { name } });
+      expect(r.status).toBe(200);
+      return r.body as { token: string; childHubId: string };
+    };
+    const a = await enroll('pg-alpha');
+    const b = await enroll('pg-beta');
+
+    const made = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie).send({
+      definition: { name: 'PG Selected', steps: [{ id: 'todo', name: 'TODO', order: 0 }] },
+    });
+    expect(made.status).toBe(201);
+
+    // The refusal path: the IN list must resolve on PG, and name what it could
+    // not target.
+    const bad = await supertest(app).post('/v1/admin/flow-dispatches').set('Cookie', cookie)
+      .send({ flowId: made.body.id, scope: 'selected', childHubIds: [a.childHubId, 'no-such-hub'] });
+    expect(bad.status).toBe(404);
+    expect(bad.body.missing).toEqual(['no-such-hub']);
+
+    // The write path: INSERT ... SELECT with the detached_at guard in the
+    // statement.
+    const ok = await supertest(app).post('/v1/admin/flow-dispatches').set('Cookie', cookie)
+      .send({ flowId: made.body.id, scope: 'selected', childHubIds: [a.childHubId, a.childHubId] });
+    expect(ok.status).toBe(200);
+    const targets = await db.all<any>(
+      'SELECT child_hub_id FROM flow_dispatch_targets WHERE dispatch_id = ?', [ok.body.id],
+    );
+    expect(targets.map(t => t.child_hub_id)).toEqual([a.childHubId]);
+
+    // Only the named hub is served it.
+    const served = await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${b.token}`);
+    expect(served.status).toBe(204);
+
+    // And the upgrade twin, which shares both statements.
+    const up = await supertest(app).post('/v1/admin/upgrade-dispatches').set('Cookie', cookie)
+      .send({ targetVersion: '1.2.3', scope: 'selected', childHubIds: [b.childHubId] });
+    expect(up.status).toBe(200);
+    const upTargets = await db.all<any>(
+      'SELECT child_hub_id FROM upgrade_dispatch_targets WHERE dispatch_id = ?', [up.body.id],
+    );
+    expect(upTargets.map(t => t.child_hub_id)).toEqual([b.childHubId]);
+
+    await db.close();
+  });
+});
+
 describe('PG parity: child-hub administration (CGLAB-181)', () => {
   it('lists, renames and detaches a child hub, with Date-shaped timestamps normalised', async () => {
     const { app, db, cookie } = await bootHubOnPg();

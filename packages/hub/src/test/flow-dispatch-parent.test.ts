@@ -228,6 +228,80 @@ describe('parent hub: dispatching a flow to child hubs', () => {
       expect(r.body.missing).toEqual(['their-hub']);
     });
 
+    it('refuses a selected dispatch that names nobody', async () => {
+      // The twin has this; this file did not, and each route still owns its own
+      // empty-list guard line.
+      expect((await dispatch({ flowId, scope: 'selected', childHubIds: [] })).status).toBe(400);
+    });
+
+    it('names EVERY hub it could not target, in the order they were given', async () => {
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: ['zzz', a.childHubId, 'aaa'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['zzz', 'aaa']);
+    });
+
+    it('refuses a null or empty id instead of quietly dropping it', async () => {
+      // Filtering a malformed element out is the same defect as dropping an
+      // unknown hub: the admin names two hubs, one is null from a client bug,
+      // and a dispatch to ONE hub comes back 200 as though both were targeted.
+      const a = await enroll('alpha');
+      for (const junk of [null, '', 7, { id: 'x' }]) {
+        const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, junk] });
+        expect(r.status).toBe(400);
+      }
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
+    it('refuses more hubs than one dispatch may name', async () => {
+      // childHubIds was unbounded, so a huge array became a huge IN list on one
+      // authenticated admin request.
+      const r = await dispatch({
+        flowId, scope: 'selected',
+        childHubIds: Array.from({ length: 501 }, (_, i) => `h-${i}`),
+      });
+      expect(r.status).toBe(400);
+    });
+
+    it('ignores childHubIds entirely under scope all', async () => {
+      // Named nowhere else, and worth holding: 'all' means every current AND
+      // future hub, so a stray id must not narrow it or refuse it.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'all', childHubIds: ['no-such-hub'] });
+      expect(r.status).toBe(200);
+      expect((await poll(a.token)).status).toBe(200);
+    });
+
+    it('creates no target row for a hub that detaches mid-dispatch', async () => {
+      // The validation runs before the transaction, so a hub detaching in the
+      // gap used to get a target row anyway: there is no foreign key on
+      // flow_dispatch_targets.child_hub_id, the insert could not fail, and the
+      // feed's predicate matches that row forever — a dispatch stuck
+      // half-pending on the board with no hub able to answer it.
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      const realRun = ctx.db.run.bind(ctx.db);
+      let detached = false;
+      ctx.db.run = async (sql: string, params?: any[]) => {
+        const r = await realRun(sql, params);
+        // Detach beta the instant the dispatch row lands — i.e. after the
+        // validation passed and inside the transaction.
+        if (!detached && /INSERT INTO flow_dispatches/.test(sql)) {
+          detached = true;
+          await realRun('UPDATE child_hubs SET detached_at = ? WHERE id = ?', [new Date().toISOString(), b.childHubId]);
+        }
+        return r;
+      };
+      try {
+        const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, b.childHubId] });
+        expect(r.status).toBe(409);
+        expect(r.body.missing).toEqual([b.childHubId]);
+      } finally { ctx.db.run = realRun; }
+      // All or nothing: alpha must not be left holding half a dispatch.
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatch_targets')).toMatchObject({ n: 0 });
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
     it("refuses a dispatch of another org's flow, which DOES exist", async () => {
       // The id resolves, so only the ownership clause can refuse it — an
       // unknown-id test cannot tell the two apart and passes either way.
