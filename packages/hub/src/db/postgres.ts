@@ -203,6 +203,10 @@ const SCHEMA_PG = `
     child_hub_id TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     detail TEXT,
+    -- The sequence of the last progress report accepted for this hub. Progress
+    -- reports supersede one another and can arrive out of order, so the guard
+    -- is monotonic in this rather than "latest write wins".
+    seq INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (dispatch_id, child_hub_id)
   );
@@ -223,6 +227,13 @@ const SCHEMA_PG = `
     upgraded INTEGER NOT NULL DEFAULT 0,
     skipped_json TEXT NOT NULL DEFAULT '[]',
     directive_id TEXT,
+    -- Reporting bookkeeping (CGLAB-183 task 3). reported_seq is the sequence of
+    -- the last report sent upstream and reported_json the snapshot it carried,
+    -- so the next tick can tell whether anything actually MOVED — the cadence
+    -- is on change plus a final completion, not one event per child per minute
+    -- for the length of a rollout.
+    reported_seq INTEGER NOT NULL DEFAULT 0,
+    reported_json TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 

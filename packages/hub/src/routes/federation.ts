@@ -274,6 +274,53 @@ export function federationRouter(ctx: HubServerContext): Router {
   const isDispatchReport = (e: any) =>
     e?.type === 'fleet:flow-dispatch:installed' || e?.type === 'fleet:flow-dispatch:failed';
 
+  const isUpgradeProgress = (e: any) => e?.type === 'fleet:upgrade-dispatch:progress';
+
+  /**
+   * A child reporting how its group upgrade is going (CGLAB-183, task 3).
+   *
+   * Like the flow-dispatch report, this is the ONLY thing that moves an
+   * upgrade target off `pending`, and the child hub comes from the CREDENTIAL
+   * rather than the payload — otherwise one key holder could drive every
+   * sibling's row and an admin would read a stalled rollout as finished.
+   *
+   * Unlike it, these reports SUPERSEDE one another, so the guard is a
+   * monotonic sequence rather than a terminal-state check. Delivery is
+   * at-least-once and an earlier report can drain after a later one, so
+   * `seq > stored seq` is what keeps a stale snapshot from overwriting a newer
+   * one. Taking the most recent write instead is precisely how a flow dispatch
+   * ended up pinned at a stale value in CGLAB-182.
+   */
+  const applyUpgradeProgressReport = async (
+    e: any,
+    args: { orgId: string; childHubId: string; now: string; str: (v: unknown) => string | null },
+  ): Promise<void> => {
+    if (!isUpgradeProgress(e)) return;
+    const dispatchId = args.str(e.payload?.dispatchId);
+    const seq = Number(e.payload?.seq);
+    if (!dispatchId || !Number.isFinite(seq) || seq <= 0) return;
+
+    const completed = e.payload?.completed === true;
+    const state = completed ? 'completed' : 'running';
+    // The counts and skip reasons as the child sent them, stored whole so the
+    // board can render what that hub actually saw. Bounded, because it is a
+    // remote party's blob.
+    const detail = JSON.stringify({
+      counts: e.payload?.counts ?? null,
+      completed,
+      skipped: Array.isArray(e.payload?.skipped) ? e.payload.skipped.slice(0, 500) : [],
+      seq,
+    }).slice(0, 20000);
+
+    await ctx.db.run(
+      `UPDATE upgrade_dispatch_targets
+          SET state = ?, detail = ?, seq = ?, updated_at = ?
+        WHERE dispatch_id = ? AND child_hub_id = ? AND seq < ?
+          AND dispatch_id IN (SELECT id FROM upgrade_dispatches WHERE org_id = ?)`,
+      [state, detail, seq, args.now, dispatchId, args.childHubId, seq, args.orgId],
+    );
+  };
+
   const applyFlowDispatchReport = async (
     e: any,
     args: {
@@ -382,6 +429,7 @@ export function federationRouter(ctx: HubServerContext): Router {
           accepted++;
 
           await applyFlowDispatchReport(e, { orgId, childHubId, now, str });
+          await applyUpgradeProgressReport(e, { orgId, childHubId, now, str });
           const day = e.occurredAt.slice(0, 10);
           if (!earliestDay || day < earliestDay) earliestDay = day;
         }

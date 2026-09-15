@@ -562,3 +562,46 @@ describe('PG parity: group upgrade dispatch (CGLAB-183)', () => {
       .set('Authorization', `Bearer ${token}`)).body.kind).toBe('upgrade.dispatch');
   });
 });
+
+describe('PG parity: upgrade progress reports (CGLAB-183)', () => {
+  it('moves a target monotonically by sequence on Postgres', async () => {
+    // The guard is `seq < ?` inside the UPDATE, alongside an org subquery —
+    // the same shape that had to be rewritten for the eligibility query. And
+    // `seq` is an INTEGER column bound from a JSON number, which is exactly
+    // where the two backends have disagreed on numeric types before.
+    const { app, db, cookie } = await bootHubOnPg({ releaseExists: async (v: string) => v === '1.2.3' });
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const { token, childHubId } = (await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-prog' } })).body;
+
+    const created = await supertest(app).post('/v1/admin/upgrade-dispatches')
+      .set('Cookie', cookie).send({ targetVersion: '1.2.3', scope: 'all' });
+    expect(created.status).toBe(200);
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${token}`);
+
+    const send = (seq: number, counts: Record<string, number>, completed: boolean) =>
+      supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${token}`).send({
+        rows: [{ id: `ob-${seq}`, kind: 'event', payload: { event: {
+          eventId: `upgrade-dispatch:${created.body.id}:${seq}`,
+          type: 'fleet:upgrade-dispatch:progress',
+          occurredAt: new Date().toISOString(), userKey: 'system',
+          payload: { dispatchId: created.body.id, seq, counts, completed, skipped: [] },
+        } } }],
+      });
+
+    const state = async () => (await db.get<any>(
+      'SELECT state, seq FROM upgrade_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      [created.body.id, childHubId],
+    ));
+
+    expect((await state()).state).toBe('pending');
+    await send(2, { pending: 0, updated: 2, failed: 0, skipped: 0 }, true);
+    expect((await state()).state).toBe('completed');
+    expect(Number((await state()).seq)).toBe(2);
+
+    // The late, older report must not walk it back.
+    await send(1, { pending: 2, updated: 0, failed: 0, skipped: 0 }, false);
+    expect((await state()).state).toBe('completed');
+    expect(Number((await state()).seq)).toBe(2);
+  });
+});

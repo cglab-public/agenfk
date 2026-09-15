@@ -6,6 +6,7 @@ import {
 } from './parentBinding.js';
 import { releaseParentFlows } from './parentFlows.js';
 import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
+import { reportUpgradeProgress } from './upgradeProgress.js';
 
 /**
  * The child half of hub federation (CGLAB-181).
@@ -464,6 +465,17 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
+  }
+
+  // Tell the parent how the group upgrade is going, before the drain below so
+  // a report queued now goes out in this same pass. On change only: a settled
+  // rollout queues nothing, which is the common case.
+  try {
+    await reportUpgradeProgress(db, args.orgId ?? DEFAULT_ORG);
+  } catch (err) {
+    // A courtesy to the parent, exactly like the flow-dispatch report: it must
+    // never be able to cost this hub its delivery pass.
+    result.upgradeDispatchError = result.upgradeDispatchError ?? messageOf(err);
   }
 
   let rows: OutboxRow[];
