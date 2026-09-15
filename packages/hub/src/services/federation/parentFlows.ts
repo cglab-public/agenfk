@@ -19,6 +19,14 @@ import type { DB } from '../../db.js';
  * released hub-wide. Scoping this to the acting admin's org would leave
  * another org's flows locked to a parent that no longer exists.
  *
+ * That rests on an invariant worth naming, because it is real but unenforced:
+ * a source='parent' row can only ever exist in config.defaultOrgId, since both
+ * enrolment and installDispatchedFlow are wired to it and no production path
+ * creates a second org. The schema is nonetheless multi-org. If a second org
+ * ever becomes creatable AND can hold its own parent binding, this statement
+ * starts releasing flows for an org that left nothing, and it must gain a
+ * scope at that point.
+ *
  * Idempotent: a hub with nothing from a parent is left alone, which is what
  * makes it safe to call on every exit path without checking first.
  */
