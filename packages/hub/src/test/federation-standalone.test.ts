@@ -103,15 +103,33 @@ describe('a child hub whose parent is unreachable', () => {
   });
 
   it('still answers every query the board reads', async () => {
-    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send(event('e1'));
+    for (const id of ['e1', 'e2']) {
+      expect((await supertest(app).post('/v1/events')
+        .set('Authorization', `Bearer ${key}`).send(event(id))).body.ingested).toBe(1);
+    }
     for (const route of [
       '/v1/users', '/v1/timeline', '/v1/metrics', '/v1/event-types',
       '/v1/projects', '/v1/item-types', '/v1/histogram', '/v1/prs/overview',
-      '/v1/child-hubs',
+      '/v1/child-hubs', '/v1/admin/federation',
     ]) {
       const r = await supertest(app).get(route).set('Cookie', cookie);
       expect(r.status, route).toBe(200);
     }
+
+    // Status codes alone are near-unconditional here: none of these routes
+    // talks to a parent, so they answer 200 whatever the federation state is.
+    // The regression that would actually hurt is a QUERY change that drops
+    // this hub's own rows — an inner join onto a federation table, say — and
+    // that returns 200 with nothing in it. So assert the data.
+    const users = await supertest(app).get('/v1/users').set('Cookie', cookie);
+    expect(users.body).toHaveLength(1);
+    expect(Number(users.body[0].events_count)).toBe(2);
+
+    const timeline = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    expect(timeline.body.events.map((e: any) => e.event_id).sort()).toEqual(['e1', 'e2']);
+
+    const types = await supertest(app).get('/v1/event-types').set('Cookie', cookie);
+    expect(JSON.stringify(types.body)).toContain('item.closed');
   });
 
   it('still serves its own admin surface', async () => {
@@ -119,6 +137,10 @@ describe('a child hub whose parent is unreachable', () => {
       '/v1/admin/installations', '/v1/admin/api-keys', '/v1/admin/users',
       '/v1/admin/flows', '/v1/admin/flow-assignments', '/v1/admin/upgrade',
       '/v1/admin/flow-dispatches', '/v1/admin/upgrade-dispatches',
+      // The only admin route on this list that reads the parent binding at
+      // all, and therefore the only one that could couple the admin surface
+      // to the group relationship.
+      '/v1/admin/federation',
     ]) {
       const r = await supertest(app).get(route).set('Cookie', cookie);
       expect(r.status, route).toBe(200);
@@ -170,16 +192,20 @@ describe('a child hub whose parent is unreachable', () => {
   it('keeps what it could not send, and loses none of it', async () => {
     for (const id of ['e1', 'e2', 'e3']) {
       expect((await supertest(app).post('/v1/events')
-        .set('Authorization', `Bearer ${key}`).send(event(id))).status).toBe(200);
+        .set('Authorization', `Bearer ${key}`).send(event(id))).body.ingested).toBe(1);
     }
-    const queued = await outboxDepth(ctx.db);
-    expect(queued).toBeGreaterThan(0);
+    // Exactly three, not merely "some": a baseline of toBeGreaterThan(0) would
+    // survive ingest silently dropping two of them.
+    expect(await outboxDepth(ctx.db)).toBe(3);
 
-    // Several failed passes must not drain or discard anything.
+    // A parent that is unreachable at the PING never reaches the outbox at
+    // all — the tick gives up first — so this pins the cheap half of the
+    // property. The half that could actually lose rows is the delivery
+    // refusal below.
     for (let i = 0; i < 3; i++) {
       await federationTick({ db: ctx.db, secretKey: SECRET, orgId: ORG, transport: deadParent() } as any);
     }
-    expect(await outboxDepth(ctx.db)).toBe(queued);
+    expect(await outboxDepth(ctx.db)).toBe(3);
   });
 
   it('drains everything it kept once the parent comes back', async () => {
@@ -187,7 +213,7 @@ describe('a child hub whose parent is unreachable', () => {
       await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send(event(id));
     }
     const queued = await outboxDepth(ctx.db);
-    expect(queued).toBeGreaterThan(0);
+    expect(queued).toBe(3);
     await federationTick({ db: ctx.db, secretKey: SECRET, orgId: ORG, transport: deadParent() } as any);
 
     const sent: any[] = [];
@@ -215,7 +241,7 @@ describe('a child hub whose parent is unreachable', () => {
       await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send(event(id));
     }
     const queued = await outboxDepth(ctx.db);
-    expect(queued).toBeGreaterThan(0);
+    expect(queued).toBe(2);
 
     const refusesDelivery = {
       async ping() { return { ok: true }; },
@@ -247,9 +273,22 @@ describe('a child hub whose parent is unreachable', () => {
         .set('Authorization', `Bearer ${k2}`).send(event('rot-1'));
       expect(r.status).toBe(200);
       expect(r.body.ingested).toBe(1);
+      // Unreadable is NOT the same as absent, and the difference is the whole
+      // point: a hub that quietly discarded a binding it could not decrypt
+      // would stop reporting with nothing to explain it. The row must still be
+      // there, and nothing new may be queued under it.
+      expect(await outboxDepth(out.ctx.db)).toBe(0);
+      const row = await out.ctx.db.get<any>(
+        'SELECT value FROM system_state WHERE key = ?', ['federation.parent'],
+      );
+      expect(row?.value).toBeTruthy();
     } finally {
       out.ctx.stopWorkers?.();
       await drainApp(out.app);
+      // The first app's handle is closed by afterEach, which then unlinks the
+      // file; leaving this one open leaks a better-sqlite3 handle for the rest
+      // of the worker process, which the serial project shares across files.
+      await out.ctx.db.close();
     }
   });
 
@@ -263,17 +302,90 @@ describe('a child hub whose parent is unreachable', () => {
     expect(rows.every(r => Number(r.attempts) === 0)).toBe(true);
   });
 
-  it('never lets the parent slow down its own ingest', async () => {
-    // Forwarding is queued, never awaited on the request path. If an ingest
-    // ever started waiting on the parent, a slow parent would become the
-    // child's latency.
-    const started = Date.now();
-    for (let i = 0; i < 5; i++) {
-      await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send(event(`slow-${i}`));
+  it('serves its own people at full speed while a tick hangs on a SLOW parent', async () => {
+    // The headline property, and the one a wall-clock bound against an
+    // unreachable parent never actually exercised: a parent that refuses
+    // fails instantly, so nothing was ever slow. This boots a hub whose
+    // federation WORKER is mid-tick against a parent that never answers, and
+    // then uses the hub normally.
+    let release!: () => void;
+    const hung = new Promise<void>(r => { release = r; });
+    let pinged = 0;
+    const slowParent = {
+      async ping() { pinged++; await hung; return { ok: true }; },
+      async directives() { return null; },
+      async deliver(rows: any[]) { return { accepted: rows.length }; },
+    };
+
+    const out = await createHubApp({
+      dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: ORG,
+      federationTransport: slowParent,
+      federationIntervalMs: 10,
+    } as any);
+    try {
+      const k2 = await issueApiKey(out.ctx.db, ORG, 'slow');
+      const c2 = (await supertest(out.app).post('/auth/login')
+        .send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+
+      // Wait until a tick is genuinely stuck inside the parent call.
+      const deadline = Date.now() + 2_000;
+      while (pinged === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      expect(pinged).toBeGreaterThan(0);
+
+      const started = Date.now();
+      expect((await supertest(out.app).post('/v1/events')
+        .set('Authorization', `Bearer ${k2}`).send(event('hung-1'))).body.ingested).toBe(1);
+      expect((await supertest(out.app).get('/v1/metrics').set('Cookie', c2)).status).toBe(200);
+      // Tight on purpose: the hung parent is still hung. Anything that awaited
+      // it would sit here until the federation HTTP timeout.
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      release();
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
     }
-    // Generous: this is a smoke bound on "does not await a network call", not
-    // a performance assertion.
-    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('a worker tick that throws is swallowed, not left as an unhandled rejection', async () => {
+    // The worker's own catch is what keeps a bug in federation code from
+    // taking down the process that serves everyone's telemetry. Asserting
+    // "the hub still responds" cannot see this: the tick runs in a detached
+    // async IIFE, so under a test harness a throw is merely an unhandled
+    // rejection and the hub keeps serving either way. In production that
+    // rejection is fatal by default. So the observable thing to pin is the
+    // rejection itself.
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => rejections.push(e);
+    process.on('unhandledRejection', onRejection);
+
+    const exploding = {
+      async ping(): Promise<any> { throw new Error('boom'); },
+      async directives(): Promise<any> { throw new Error('boom'); },
+      async deliver(): Promise<any> { throw new Error('boom'); },
+    };
+    const out = await createHubApp({
+      dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: ORG,
+      federationTransport: exploding,
+      federationIntervalMs: 5,
+    } as any);
+    try {
+      // Several ticks' worth, then let the microtask queue settle so any
+      // rejection has actually been reported.
+      await new Promise(r => setTimeout(r, 80));
+      await new Promise(r => setImmediate(r));
+
+      expect(rejections).toEqual([]);
+
+      const k2 = await issueApiKey(out.ctx.db, ORG, 'boom');
+      expect((await supertest(out.app).post('/v1/events')
+        .set('Authorization', `Bearer ${k2}`).send(event('boom-1'))).body.ingested).toBe(1);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
+    }
   });
 });
 
@@ -339,9 +451,12 @@ describe('a hub that has left its group', () => {
       parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64),
       childHubId: 'ch-1', state: 'revoked',
     });
-    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send({
+    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${key}`).send({
       events: [{ eventId: 'x1', orgId: ORG, installationId: 'inst-1', type: 'item.closed', occurredAt: new Date().toISOString(), userKey: 'd@acme.com', actor: { osUser: 'd' }, payload: {} }],
     });
+    // Asserted, or an outbox of 0 could simply mean the event was rejected and
+    // this would be green while testing nothing.
+    expect(r.body.ingested).toBe(1);
     expect(await outboxDepth(ctx.db)).toBe(0);
   });
 

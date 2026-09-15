@@ -12,6 +12,18 @@ export interface HubServerConfig {
    * Releases lookup at runtime; tests inject a stub.
    */
   releaseExists?: (version: string) => Promise<boolean>;
+  /**
+   * The transport the child-side federation WORKER talks to its parent
+   * through, and how often it runs.
+   *
+   * Injected in tests, defaulting to the real HTTP transport and a one-minute
+   * tick. Without this seam the worker could only ever be driven by calling
+   * federationTick directly, which means the standalone guarantee — that a
+   * parent which is down or SLOW is invisible to this hub's own people —
+   * could be asserted but never actually exercised end to end.
+   */
+  federationTransport?: unknown;
+  federationIntervalMs?: number;
 }
 
 export interface SessionPayload {

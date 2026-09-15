@@ -255,6 +255,10 @@ export async function createHubApp(
     db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
     // Which org a flow dispatched by the parent lands in: this hub's own.
     orgId: config.defaultOrgId,
+    // Both undefined in production, where the worker builds its own HTTP
+    // transport and ticks once a minute.
+    transport: config.federationTransport as any,
+    intervalMs: config.federationIntervalMs,
   });
   ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
 
