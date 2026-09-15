@@ -9,6 +9,7 @@ import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
+import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
@@ -348,6 +349,40 @@ function ensureVerifyLogRoot(): string | null {
 const getItemLogDir = (itemId: string): string =>
   path.join(getVerifyLogRoot(), assertSafeItemId(itemId));
 
+/**
+ * Open the log BEFORE the command runs, so its output can be streamed straight
+ * to disk instead of accumulated in memory (BUG 24c679df). Returns the fd and
+ * the path, or null when no log can be written safely — which must cost the
+ * diagnostics, never the run.
+ *
+ * Same guarantees as writeValidationLog below, which it replaces on the verify
+ * path: 'wx' so the 0600 mode is real (writeFileSync applies `mode` only when
+ * it CREATES the file, and follows symlinks, so without the exclusive flag a
+ * pre-planted name would be overwritten with someone else's permissions), and
+ * assertSafeItemId so nothing but a server-minted id reaches a path segment.
+ */
+const openValidationLog = (itemId: string, testId: string): { fd: number; logPath: string } | null => {
+  const root = ensureVerifyLogRoot();
+  if (!root) return null;
+  try {
+    const dir = path.join(root, assertSafeItemId(itemId));
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const logPath = path.join(dir, `${testId}.log`);
+    const fd = fs.openSync(logPath, 'wx', 0o600);
+    return { fd, logPath };
+  } catch {
+    return null;
+  }
+};
+
+/** Close the streamed log and run the same post-write housekeeping. */
+const closeValidationLog = (handle: { fd: number; logPath: string } | null): string | null => {
+  if (!handle) return null;
+  try { fs.closeSync(handle.fd); } catch { /* already gone */ }
+  try { pruneItemLogDir(path.dirname(handle.logPath), path.basename(handle.logPath)); } catch { /* advisory */ }
+  return fs.existsSync(handle.logPath) ? handle.logPath : null;
+};
+
 /** Returns the log path, or null when no log could be written safely. */
 const writeValidationLog = (itemId: string, testId: string, output: string): string | null => {
   const root = ensureVerifyLogRoot();
@@ -419,18 +454,30 @@ const logUnavailable = (): string =>
     ? `Full log: unavailable — log root refused: ${logRootRefusal}`
     : 'Full log: unavailable — the temp directory could not be written';
 
-const buildOutputPreview = (output: string, logPath: string | null): string => {
+/**
+ * Head + tail of the output, from the BOUNDED buffers the capture kept — never
+ * from the whole stream, which is no longer held anywhere (BUG 24c679df).
+ * `totalBytes` is the true size, so "the last 1KB of 900MB" cannot read the
+ * same as "all of it".
+ */
+const buildOutputPreview = (
+  captured: { head: string; tail: string; totalBytes: number; logTruncated: boolean },
+  logPath: string | null,
+): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
   let body: string;
-  if (output.length <= headTailBudget) {
-    body = output;
+  if (captured.totalBytes <= headTailBudget && captured.head.length <= headTailBudget) {
+    body = captured.head;
   } else {
-    const head = output.substring(0, PREVIEW_HEAD_BYTES);
-    const tail = output.substring(output.length - PREVIEW_TAIL_BYTES);
-    const omitted = output.length - headTailBudget;
-    body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
+    const head = captured.head.substring(0, PREVIEW_HEAD_BYTES);
+    const tail = captured.tail.substring(Math.max(0, captured.tail.length - PREVIEW_TAIL_BYTES));
+    const omitted = Math.max(0, captured.totalBytes - head.length - tail.length);
+    body = `${head}\n... (${omitted} bytes truncated of ${formatBytes(captured.totalBytes)} total) ...\n${tail}`;
   }
-  return `${body}\n[${logPath ? `Full log: ${logPath}` : logUnavailable()}]`;
+  const logNote = logPath
+    ? `Full log: ${logPath}${captured.logTruncated ? ' (truncated — the command exceeded AGENFK_VERIFY_MAX_LOG_BYTES)' : ''}`
+    : logUnavailable();
+  return `${body}\n[${logNote}]`;
 };
 
 /** ANSI escape sequences, stripped so the repeated tail is readable text. */
@@ -3314,11 +3361,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Read once, so the cap reported in the failure message is the cap that was
   // actually enforced even if the environment moves underneath us.
   const maxMs = verifyMaxMs();
-  const { output, code, timedOut, signal, spawnError } = await new Promise<{
-    output: string; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
+  // Opened BEFORE the spawn, so the command's output can be streamed straight to
+  // disk. The whole stream is never held in memory (BUG 24c679df); the id has to
+  // be minted here rather than after the run for the same reason. Keyed by the
+  // id AS STORED, so the value reaching mkdir / open / unlink is one the server
+  // minted and an id that does not exist cannot create a directory at all.
+  const testId = uuidv4();
+  const storedItem = await storage.getItem(itemId);
+  const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
+  const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+
+  const { captured, code, timedOut, signal, spawnError } = await new Promise<{
+    captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
   }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
-    let out = '';
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -3328,14 +3384,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       settled = true;
       clearTimeout(killer);
       if (grace) clearTimeout(grace);
-      resolve({ output: out, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
+      resolve({ captured: capture.end(), code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
     };
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
     // 409 guard would lock the item's verify verb until a server restart.
     const killer = setTimeout(() => {
       killed = true;
-      out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
+      capture.note(`\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`);
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
       // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
       // lifecycle scripts — survive it and hold the inherited stdio pipes open,
@@ -3350,10 +3406,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (typeof grace.unref === 'function') grace.unref();
     }, maxMs);
     if (typeof killer.unref === 'function') killer.unref();
-    // Live output for run followers, capped so a verbose command can't pin
-    // hundreds of MB in the run map; the full output still goes to the log file.
-    const LIVE_CAP = 1024 * 1024;
-    const onData = (d: Buffer) => { out += d.toString(); if (run && out.length <= LIVE_CAP) run.output = out; };
+    // Live output for run followers is the capture's bounded head, so a verbose
+    // command can't pin hundreds of MB in the run map — and now cannot pin them
+    // anywhere else either. The full output is on disk, not in this process.
+    const onData = (d: Buffer) => { capture.write(d); if (run) run.output = capture.live(); };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
@@ -3363,14 +3419,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     child.on('error', (err) => finish(1, null, err.message));
   });
 
-  const testId = uuidv4();
-  // Key the log by the id AS STORED rather than the URL segment. The regex guard
-  // already makes traversal impossible; this removes the class instead of the
-  // instance, so the value reaching mkdir / write / unlink is one the server
-  // minted and an id that does not exist cannot create a directory at all.
-  const storedItem = await storage.getItem(itemId);
-  const logPath = storedItem ? writeValidationLog(storedItem.id, testId, output) : null;
-  const preview = buildOutputPreview(output, logPath);
+  const logPath = closeValidationLog(logHandle);
+  const preview = buildOutputPreview(captured, logPath);
   const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
@@ -3465,7 +3515,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(output, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}` : logUnavailable()}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}${captured.logTruncated ? ' (truncated at the AGENFK_VERIFY_MAX_LOG_BYTES ceiling)' : ''}` : logUnavailable()}`,
       output: preview,
     });
   }
