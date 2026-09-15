@@ -25,8 +25,44 @@ interface EventFilters {
   types: string[] | null;
   projects: string[] | null;
   itemTypes: string[] | null;
+  /**
+   * Which hubs in the federation group to read. `null` means all of them,
+   * which is the only thing a standalone hub ever sees. See LOCAL_HUB for the
+   * reserved value that selects this hub's own events.
+   */
+  childHubs: string[] | null;
   from: string | null;
   to: string | null;
+}
+
+/**
+ * The reserved id meaning "this hub's own events" — the rows a parent ingested
+ * directly rather than receiving from a child. Child hub ids are UUIDs
+ * (randomUUID at enrollment), so a bare word cannot collide with one.
+ */
+const LOCAL_HUB = 'local';
+
+/**
+ * SQL for a child-hub selection, or null when there is nothing to constrain.
+ *
+ * The two tables encode "own events" differently — `events.child_hub_id` is
+ * NULLable and left NULL by the ingest path, while `rollups_daily.child_hub_id`
+ * is NOT NULL DEFAULT '' because it is part of that table's PRIMARY KEY. The
+ * disjunction covers both, so callers do not have to know which table they are
+ * building a WHERE for, and a future backfill that normalises one to the other
+ * cannot silently change what this matches.
+ */
+function childHubPredicate(hubs: string[] | null): { sql: string; params: string[] } | null {
+  if (!hubs || !hubs.length) return null;
+  const ids = hubs.filter(h => h !== LOCAL_HUB);
+  const wantsLocal = hubs.includes(LOCAL_HUB);
+  const parts: string[] = [];
+  if (ids.length) parts.push(`child_hub_id IN (${ids.map(() => '?').join(',')})`);
+  if (wantsLocal) parts.push(`(child_hub_id IS NULL OR child_hub_id = '')`);
+  // An id list that matches no hub yields `child_hub_id IN ('nope')`, which
+  // matches nothing — deliberately, so a stale link to a detached hub shows an
+  // empty result rather than quietly widening to the whole group.
+  return { sql: `(${parts.join(' OR ')})`, params: ids };
 }
 
 function readEventFilters(req: Request): EventFilters {
@@ -35,6 +71,7 @@ function readEventFilters(req: Request): EventFilters {
     types: parseList(req.query.types as string | undefined),
     projects: parseList(req.query.projects as string | undefined),
     itemTypes: parseList(req.query.itemTypes as string | undefined),
+    childHubs: parseList(req.query.childHubId as string | undefined),
     from: (req.query.from as string | undefined) ?? null,
     to: (req.query.to as string | undefined) ?? null,
   };
@@ -51,6 +88,8 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
   // case) still resolve correctly.
   if (f.projects)  { where.push(`remote_url IN (${f.projects.map(() => '?').join(',')})`); params.push(...f.projects.map(s => sanitizeRemoteUrl(s))); }
   if (f.itemTypes) { where.push(`item_type IN (${f.itemTypes.map(() => '?').join(',')})`); params.push(...f.itemTypes); }
+  const hub = childHubPredicate(f.childHubs);
+  if (hub)         { where.push(hub.sql); params.push(...hub.params); }
   if (f.from)      { where.push(`${timeCol} >= ?`); params.push(f.from); }
   if (f.to)        { where.push(`${timeCol} <= ?`); params.push(f.to); }
   return { where, params };
@@ -152,19 +191,31 @@ export function queriesRouter(ctx: HubServerContext): Router {
   });
 
   router.get('/event-types', guard, async (req: Request, res: Response) => {
+    // Scoped by child hub but by nothing else: the chip list stays org-wide
+    // across users/projects/time so a selection never removes its own chip.
+    // The hub is different in kind — it partitions the data, it does not narrow
+    // a view of it, and offering a type no selected hub ever reported is noise.
+    const hub = childHubPredicate(readEventFilters(req).childHubs);
     const rows = await ctx.db.all<{ type: string }>(
-      `SELECT DISTINCT type FROM events WHERE org_id = ? ORDER BY type ASC`,
-      [req.session!.orgId],
+      `SELECT DISTINCT type FROM events
+       WHERE org_id = ?${hub ? ` AND ${hub.sql}` : ''}
+       ORDER BY type ASC`,
+      [req.session!.orgId, ...(hub?.params ?? [])],
     );
     res.json({ types: rows.map(r => r.type) });
   });
 
   router.get('/projects', guard, async (req: Request, res: Response) => {
+    // Same reasoning as /event-types: partitioned by hub, not narrowed by the
+    // other filters. This also gives the repo list the provenance it lacked —
+    // two hubs reporting unrelated repos no longer present one undifferentiated
+    // list with no way to tell which group a repo came from.
+    const hub = childHubPredicate(readEventFilters(req).childHubs);
     const rows = await ctx.db.all<{ remote_url: string }>(
       `SELECT DISTINCT remote_url FROM events
-       WHERE org_id = ? AND remote_url IS NOT NULL AND remote_url != ''
+       WHERE org_id = ? AND remote_url IS NOT NULL AND remote_url != ''${hub ? ` AND ${hub.sql}` : ''}
        ORDER BY remote_url ASC`,
-      [req.session!.orgId],
+      [req.session!.orgId, ...(hub?.params ?? [])],
     );
     res.json({ projects: rows.map(r => r.remote_url) });
   });
@@ -172,19 +223,22 @@ export function queriesRouter(ctx: HubServerContext): Router {
   router.get('/item-types', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
 
+    const f = readEventFilters(req);
+
     // The list of all known item types stays org-wide so chips remain
-    // selectable even when the current filter set produces zero hits.
+    // selectable even when the current filter set produces zero hits — with the
+    // child hub as the one exception, for the reason given on /event-types.
+    const hub = childHubPredicate(f.childHubs);
     const allRows = await ctx.db.all<{ item_type: string }>(
       `SELECT DISTINCT item_type FROM events
-       WHERE org_id = ? AND item_type IS NOT NULL AND item_type != ''
+       WHERE org_id = ? AND item_type IS NOT NULL AND item_type != ''${hub ? ` AND ${hub.sql}` : ''}
        ORDER BY item_type ASC`,
-      [orgId],
+      [orgId, ...(hub?.params ?? [])],
     );
 
     // Counts respect projects + event-type filters but ignore the itemTypes
     // filter — the UI uses these to show "what would I get if I selected
     // this chip", which is meaningless if we constrain by current selection.
-    const f = readEventFilters(req);
     const { where, params } = applyEventFilters(orgId, { ...f, itemTypes: null });
     const countRows = await ctx.db.all<{ item_type: string; n: number }>(
       `SELECT item_type, COUNT(*) AS n FROM events
@@ -196,6 +250,64 @@ export function queriesRouter(ctx: HubServerContext): Router {
     for (const r of countRows) counts[r.item_type] = Number(r.n);
 
     res.json({ itemTypes: allRows.map(r => r.item_type), counts });
+  });
+
+  /**
+   * Which hubs actually carry data in the current view — the options a child-hub
+   * picker should offer.
+   *
+   * Deliberately NOT "every child hub ever enrolled": a hub enrolled last week
+   * that has delivered nothing, or one whose events all fall outside the
+   * selected window, is an option that returns an empty board when picked. The
+   * every-hub list already exists for administration (/hub/admin/child-hubs);
+   * this one answers a different question.
+   *
+   * Every other filter is honoured (so the picker narrows as the view narrows),
+   * except childHubId itself — a picker must not hide the options next to the
+   * one currently selected.
+   *
+   * `hasLocal` reports whether this hub has events of its own in the window, so
+   * the picker can offer "This hub" without inventing a child_hubs row for the
+   * parent. A standalone hub answers with an empty `childHubs`, and its UI can
+   * drop the control entirely.
+   */
+  router.get('/child-hubs', guard, async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const f = readEventFilters(req);
+    const { where, params } = applyEventFilters(orgId, { ...f, childHubs: null });
+
+    const rows = await ctx.db.all<{ child_hub_id: string; events: number | string }>(
+      `SELECT child_hub_id, COUNT(*) AS events
+       FROM events
+       WHERE ${where.join(' AND ')} AND child_hub_id IS NOT NULL AND child_hub_id != ''
+       GROUP BY child_hub_id`,
+      params,
+    );
+
+    const local = await ctx.db.get<{ n: number | string }>(
+      `SELECT COUNT(*) AS n FROM events
+       WHERE ${where.join(' AND ')} AND (child_hub_id IS NULL OR child_hub_id = '')`,
+      params,
+    );
+
+    // Names come from child_hubs, but the events are the source of truth for
+    // WHICH hubs to list: a detached hub's rows stay in the table and must keep
+    // their label rather than turning into a bare UUID in the picker.
+    const named = await ctx.db.all<{ id: string; name: string; detached_at: string | null }>(
+      `SELECT id, name, detached_at FROM child_hubs WHERE org_id = ?`, [orgId],
+    );
+    const byId = new Map(named.map(n => [n.id, n]));
+
+    const childHubs = rows
+      .map(r => ({
+        id: r.child_hub_id,
+        name: byId.get(r.child_hub_id)?.name ?? r.child_hub_id,
+        detached: byId.get(r.child_hub_id)?.detached_at != null,
+        events: Number(r.events),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ childHubs, hasLocal: Number(local?.n ?? 0) > 0 });
   });
 
   router.get('/histogram', guard, async (req: Request, res: Response) => {
@@ -285,7 +397,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
                 json_extract(payload, '$.payload.sizingShadow.bug') AS bug,
                 json_extract(payload, '$.payload.model') AS model,
                 json_extract(payload, '$.payload.harness') AS harness,
-                remote_url
+                remote_url, child_hub_id
          FROM events WHERE ${where.join(' AND ')}
          ORDER BY occurred_at ASC`,
         base.params,

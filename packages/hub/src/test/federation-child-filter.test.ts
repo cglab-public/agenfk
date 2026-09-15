@@ -238,6 +238,25 @@ describe('childHubId facet on the query endpoints', () => {
       expect(r.body.childHubs.map((c: any) => c.id)).toEqual([alpha]);
     });
 
+    it('keeps listing every option when one hub is already selected', async () => {
+      // A picker that dropped the unselected hubs would strand the reader on
+      // whichever one they picked first.
+      const r = await get(`/v1/child-hubs?childHubId=${alpha}`);
+      expect(r.body.childHubs.map((c: any) => c.id).sort()).toEqual([alpha, beta].sort());
+      expect(r.body.hasLocal).toBe(true);
+    });
+
+    it('keeps a detached hub listed, named, and flagged while its events remain', async () => {
+      const d = await supertest(app).post(`/v1/admin/child-hubs/${alpha}/detach`)
+        .set('Cookie', cookie).send({});
+      expect(d.status).toBe(200);
+      const r = await get('/v1/child-hubs');
+      const row = r.body.childHubs.find((c: any) => c.id === alpha);
+      // Its rows are still in `events` and still counted, so hiding it from the
+      // picker would leave data nobody can select or explain.
+      expect(row).toMatchObject({ name: 'alpha', detached: true, events: 3 });
+    });
+
     it('offers no children on a hub that has none, and still reports local', async () => {
       const soloDb = DB.replace('.sqlite', '-solo.sqlite');
       const solo = await createHubApp({ dbPath: soloDb, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org' });
