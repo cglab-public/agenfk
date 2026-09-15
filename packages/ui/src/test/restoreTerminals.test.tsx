@@ -162,7 +162,7 @@ const renderShell = () => {
  * board - so the view still has to be asked for rather than waited for.
  */
 const goToTerminalView = async () => {
-  fireEvent.click((await screen.findAllByTestId('session-title'))[0]);
+  fireEvent.click((await screen.findAllByTestId('process-open'))[0]);
   await waitFor(() =>
     expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
 };
@@ -386,7 +386,7 @@ describe('two agents on one card', () => {
     vi.mocked(api.listTerminalSessions).mockResolvedValue(twoRestored as never);
     renderShell();
     await waitFor(() => expect(spawnCalls.length).toBe(2));
-    const labels = (await screen.findAllByTestId('session-title')).length;
+    const labels = (await screen.findAllByTestId('process-open')).length;
     expect(labels, 'the rail collapsed two agents into one row').toBe(2);
   });
 
@@ -397,9 +397,12 @@ describe('two agents on one card', () => {
     vi.mocked(api.listTerminalSessions).mockResolvedValue(twoRestored as never);
     renderShell();
     await waitFor(() => expect(spawnCalls.length).toBe(2));
-    const rail = document.querySelector('[data-testid="sessions-section"]')!;
-    expect(rail.textContent).toMatch(/Claude Code/);
-    expect(rail.textContent).toMatch(/Codex/);
+    // Read off the process rows themselves now that the flat section is gone:
+    // both agents are drawn under the one card they share.
+    const rows = await screen.findAllByTestId('process-row');
+    const text = rows.map(r => r.textContent).join(' ');
+    expect(text).toMatch(/Claude Code/);
+    expect(text).toMatch(/Codex/);
   });
 });
 

@@ -16,7 +16,7 @@ import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
-import { X, Plus, GitBranch } from 'lucide-react';
+import { X, Plus, GitBranch, FileDiff, Activity } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
 import { AgentIcon } from './AgentIcon';
@@ -158,6 +158,15 @@ export interface TerminalTabProps {
    * something to start doing on somebody's behalf.
    */
   readonly showWorktree?: boolean;
+  /**
+   * Whether the run feed is showing below the terminal.
+   *
+   * Passed in rather than owned here: the feed is a sibling of the terminal in
+   * the shell's column, so the shell is the only thing that can say. Undefined
+   * means the caller does not offer the control at all.
+   */
+  readonly runsOpen?: boolean;
+  readonly onToggleRuns?: () => void;
 }
 
 /**
@@ -172,15 +181,18 @@ export interface TerminalTabProps {
  * dock already get.
  */
 const WORKTREE_PANEL_KEY = 'agenfk_worktree_panel';
-const WORKTREE_VIEWS: WorktreeView[] = ['changed', 'staged'];
-
-function readWorktreeView(): WorktreeView | null {
-  try {
-    const stored = JSON.parse(localStorage.getItem(WORKTREE_PANEL_KEY) ?? 'null');
-    // Anything this build does not recognise reads as closed. Closed is the
-    // state with a way out of it in one click, so it is the safe fallback.
-    return WORKTREE_VIEWS.includes(stored) ? stored : null;
-  } catch { return null; }
+/**
+ * Is the worktree panel showing?
+ *
+ * Open or closed, and nothing else. It briefly stored WHICH list was showing,
+ * from when the bar had two buttons; that choice belongs to the panel's own
+ * tabs now. A stored value from that version is not a boolean, so it reads as
+ * closed - which is the right landing place, because closed is the state with
+ * a way out of it in one click.
+ */
+function readWorktreeOpen(): boolean {
+  try { return JSON.parse(localStorage.getItem(WORKTREE_PANEL_KEY) ?? 'false') === true; }
+  catch { return false; }
 }
 
 export function TerminalTab({
@@ -197,10 +209,12 @@ export function TerminalTab({
   editors,
   onOpenInEditor,
   showWorktree,
+  runsOpen,
+  onToggleRuns,
 }: TerminalTabProps): React.ReactElement {
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
-  const [panelView, setPanelView] = React.useState<WorktreeView | null>(() => readWorktreeView());
+  const [panelOpen, setPanelOpen] = React.useState<boolean>(() => readWorktreeOpen());
   const current = sessions.find(s => s.id === activeId);
   /*
    * Asked even with the panel CLOSED, which is what makes moving the counts
@@ -214,15 +228,14 @@ export function TerminalTab({
   const { data: git } = useGitStatus(current?.itemId ?? null, Boolean(showWorktree));
 
   /**
-   * Open on `view`, or close if that view is already the one showing.
+   * A TOGGLE, not open-only.
    *
-   * A TOGGLE rather than open-only. The alternative is a separate close
-   * control on the panel, which is two controls for one piece of state — and
-   * this pair already carries three states between them.
+   * Open-only would need a separate close control on the panel, which is two
+   * controls for one piece of state. One button, one fact.
    */
-  const togglePanel = React.useCallback((view: WorktreeView) => {
-    setPanelView(cur => {
-      const next = cur === view ? null : view;
+  const toggleWorktree = React.useCallback(() => {
+    setPanelOpen(cur => {
+      const next = !cur;
       try { localStorage.setItem(WORKTREE_PANEL_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
       return next;
     });
@@ -281,29 +294,54 @@ export function TerminalTab({
             aria-label="Worktree"
             className="flex shrink-0 items-center gap-1 border-r border-border-soft pr-2"
           >
-            {WORKTREE_VIEWS.map(view => {
-              const pressed = panelView === view;
-              const count = (view === 'staged' ? git?.staged : git?.changed) ?? 0;
-              return (
-                <button
-                  key={view}
-                  type="button"
-                  aria-pressed={pressed}
-                  onClick={() => togglePanel(view)}
-                  title={pressed
-                    ? `Hide the ${view} files`
-                    : `Show the ${view} files beside the terminal`}
-                  className={clsx(
-                    'shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
-                    pressed
-                      ? 'border-brand bg-canvas font-semibold text-ink'
-                      : 'border-transparent text-ink-tertiary hover:text-ink',
-                  )}
-                >
-                  {view === 'staged' ? 'Staged' : 'Changed'} ({count})
-                </button>
-              );
-            })}
+            {/* ONE control, not two. Changed and staged are two halves of one
+                question about one worktree, so splitting them into two buttons
+                made a reader close one half to see the other. The button opens
+                the panel; choosing between the halves happens inside it, where
+                both counts are in view.
+
+                The counts stay out here because with the panel shut they are
+                the only sign the worktree has changes at all - which is the
+                whole reason this moved into the bar. */}
+            <button
+              type="button"
+              aria-pressed={panelOpen}
+              onClick={toggleWorktree}
+              title={panelOpen ? 'Hide the worktree files' : 'Show the worktree files beside the terminal'}
+              className={clsx(
+                'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
+                panelOpen
+                  ? 'border-brand bg-canvas font-semibold text-ink'
+                  : 'border-border-soft text-ink-tertiary hover:border-brand hover:text-ink',
+              )}
+            >
+              <FileDiff size={11} />
+              {(git?.changed ?? 0)} / {(git?.staged ?? 0)}
+            </button>
+
+            {/* Runs in the same group, because it answers the same kind of
+                question - "show me something beside the terminal" - and it is
+                the only other thing competing for that space. Docked below it
+                costs the terminal 192px whether or not anything is running,
+                and until now the only way to reclaim that was to send Runs to
+                its own screen, which is not the same as closing it. */}
+            {onToggleRuns && (
+              <button
+                type="button"
+                aria-pressed={runsOpen === true}
+                onClick={onToggleRuns}
+                title={runsOpen ? 'Hide the run feed' : 'Show the run feed below the terminal'}
+                className={clsx(
+                  'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
+                  runsOpen
+                    ? 'border-brand bg-canvas font-semibold text-ink'
+                    : 'border-border-soft text-ink-tertiary hover:border-brand hover:text-ink',
+                )}
+              >
+                <Activity size={11} />
+                Runs
+              </button>
+            )}
           </div>
         )}
 
@@ -423,8 +461,8 @@ export function TerminalTab({
           exactly as narrow as before. Nothing is lost by unmounting it - it
           holds a query, not a process, and the query is the shared one the
           bar's counts keep alive anyway. */}
-      {showWorktree && panelView && (
-        <WorktreePanel itemId={current?.itemId ?? null} view={panelView} />
+      {showWorktree && panelOpen && (
+        <WorktreePanel itemId={current?.itemId ?? null} />
       )}
       </div>
     </div>

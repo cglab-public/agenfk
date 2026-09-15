@@ -48,10 +48,26 @@ export function CardProcessRow({ row, onOpen, onStop }: CardProcessRowProps): Re
       className="group flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[11px]"
     >
       {row.state === 'running' ? (
-        <Spinner />
+        <>
+          <Spinner />
+          {/* The state still lives on a STATIC node, so assistive tech and any
+              test can read it without depending on the animation frame. Copied
+              from the rail deliberately: dropping it here would have made the
+              running state readable only by watching. */}
+          <span
+            data-testid="session-dot"
+            data-state="running"
+            aria-label={STATE_LABEL.running}
+            role="img"
+            className="sr-only"
+          />
+        </>
       ) : (
         <span
-          aria-hidden="true"
+          data-testid="session-dot"
+          data-state={row.state}
+          aria-label={STATE_LABEL[row.state]}
+          role="img"
           className={clsx('mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full', DOT[row.state])}
         />
       )}
@@ -60,6 +76,7 @@ export function CardProcessRow({ row, onOpen, onStop }: CardProcessRowProps): Re
 
       <button
         type="button"
+        data-testid="process-open"
         onClick={onOpen ? () => onOpen(row) : undefined}
         disabled={!onOpen}
         /*

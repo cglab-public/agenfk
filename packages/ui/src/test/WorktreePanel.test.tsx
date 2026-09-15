@@ -9,7 +9,7 @@
  * be trustworthy — a panel that shows a clean tree when the tree is not clean
  * is worse than no panel, because it is the one thing you would have checked.
  */
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -23,13 +23,22 @@ vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
 beforeEach(() => { vi.clearAllMocks(); });
 afterEach(cleanup);
 
+/*
+ * The view is CHOSEN INSIDE the panel now, not handed to it. The bar carries
+ * one button that opens this; the two lists are two halves of one question
+ * about one worktree, so making a reader close one to see the other was the
+ * wrong split. Tests that want the staged half click the tab, which is what a
+ * person does.
+ */
 const renderPanel = (itemId: string | null = 'i1', view: 'changed' | 'staged' = 'changed') => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={client}>
-      <WorktreePanel itemId={itemId} view={view} />
+      <WorktreePanel itemId={itemId} />
     </QueryClientProvider>,
   );
+  if (view === 'staged') fireEvent.click(screen.getByRole('tab', { name: /staged/i }));
+  return result;
 };
 
 describe('what it shows', () => {
@@ -44,18 +53,25 @@ describe('what it shows', () => {
     } as never);
   };
 
-  it('carries no header of its own any more', async () => {
+  it('carries the two lists as tabs, with both counts in view', async () => {
     /*
-     * `CHANGED (n)` and `STAGED (n)` used to be two static labels at the top of
-     * this panel. They are buttons in the terminal's top bar now, and the row
-     * has to be GONE rather than restyled in place: the terminal only gains
-     * the space if nothing is left occupying it.
+     * This assertion used to be the opposite - that the panel had no header at
+     * all - from the version where the bar carried two buttons and each opened
+     * the panel on one list. Reversed deliberately, not dropped: the two are
+     * halves of one question about one worktree, and making a reader close one
+     * to see the other was the wrong split.
+     *
+     * The counts belong here BECAUSE they are also in the bar. The bar's
+     * button says the worktree has changes while the panel is shut; these say
+     * how the changes divide once it is open, which is a different question.
      */
     mixed();
     renderPanel();
     await screen.findByText('a.ts');
-    expect(screen.queryByText(/changed \(\d+\)/i)).toBeNull();
-    expect(screen.queryByText(/staged \(\d+\)/i)).toBeNull();
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map(t => t.textContent)).toEqual(['Changed (2)', 'Staged (1)']);
+    // Exactly one showing: a tablist with none selected describes nothing.
+    expect(tabs.filter(t => t.getAttribute('aria-selected') === 'true')).toHaveLength(1);
   });
 
   it('shows one list at a time, named by the button that opened it', async () => {

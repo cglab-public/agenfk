@@ -43,21 +43,51 @@ const STATE_MARK: Record<string, { letter: string; className: string }> = {
 };
 
 
-export function WorktreePanel({ itemId, view }: {
+export function WorktreePanel({ itemId }: {
   itemId: string | null;
-  view: WorktreeView;
 }): React.ReactElement {
   const { data, isError, isPending } = useGitStatus(itemId);
-
-  // One list at a time, named by the button that opened it. `staged` is the
-  // git distinction itself, so this is a filter rather than a second request.
+  /*
+   * The two lists are ONE panel with tabs, not two panels reached by two
+   * buttons. They were briefly split, and it was the wrong call: changed and
+   * staged are two halves of one question about one worktree, so a reader
+   * comparing them had to close one to open the other. The bar carries a
+   * single control that opens this; choosing between the halves happens here,
+   * where both are in view.
+   */
+  const [view, setView] = React.useState<WorktreeView>('changed');
   const files = (data?.files ?? []).filter(f => (view === 'staged' ? f.staged : !f.staged));
+  const count = (v: WorktreeView) =>
+    (data?.files ?? []).filter(f => (v === 'staged' ? f.staged : !f.staged)).length;
 
   return (
     <aside
       aria-label="Worktree"
       className="flex h-full w-72 shrink-0 flex-col border-l border-border-soft bg-nav-surface"
     >
+      {/* A real tablist, unlike the pair in the bar: here one of the two is
+          always showing, which is the condition a tablist describes and
+          aria-pressed does not. */}
+      <div role="tablist" aria-label="Worktree files" className="flex shrink-0 border-b border-border-soft">
+        {(['changed', 'staged'] as WorktreeView[]).map(v => (
+          <button
+            key={v}
+            role="tab"
+            type="button"
+            aria-selected={view === v}
+            onClick={() => setView(v)}
+            className={clsx(
+              'flex-1 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wide transition-colors',
+              view === v
+                ? 'border-b-2 border-brand text-ink'
+                : 'border-b-2 border-transparent text-ink-tertiary hover:text-ink-secondary',
+            )}
+          >
+            {v === 'staged' ? 'Staged' : 'Changed'} ({count(v)})
+          </button>
+        ))}
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-slim">
         {isError && (
           <div

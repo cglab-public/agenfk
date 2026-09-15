@@ -51,6 +51,8 @@ import { WhatsNewModal } from './WhatsNewModal';
 import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
+import { CardProcessRow } from './CardProcessRow';
+import { ORDER } from './sessionPresentation';
 import { cardState, itemsNeedingAPerson } from '../cardState';
 
 /**
@@ -1051,6 +1053,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onClose={closeSession}
                 editors={editors}
                 showWorktree
+                /* The feed is the terminal's sibling in this column, so the
+                   shell is the only thing that can say whether it is showing
+                   or move it. */
+                runsOpen={runsDock === 'bottom'}
+                onToggleRuns={() => moveRunsTo(runsDock === 'bottom' ? 'screen' : 'bottom')}
                 onOpenInEditor={(itemId, editorId) => {
                   // Fire and forget: failing to open an editor must not
                   // disturb the terminal the user is working in.
@@ -1812,6 +1819,30 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           {item.status}
                         </span>
                       </button>
+
+                      {/* The processes running on THIS card, directly beneath
+                          it. The row drops the title because the button above
+                          is the title, which is the whole saving.
+
+                          Sorted by how much they want a person - failures, then
+                          blocked, then working, then quiet - because a failure
+                          buried under three busy agents is worse than not shown
+                          at all. Same ORDER the rail used, imported rather than
+                          repeated.
+
+                          No chevron to collapse these: a card must never be
+                          able to hide an agent that is stuck. */}
+                      {sessionRows
+                        .filter(row => row.itemId === item.id)
+                        .sort((a, b) => ORDER[a.state] - ORDER[b.state])
+                        .map(row => (
+                          <CardProcessRow
+                            key={row.runId}
+                            row={row}
+                            onOpen={openSession}
+                            onStop={stopSession}
+                          />
+                        ))}
                     </li>
                   ))}
                 </ul>
@@ -1866,27 +1897,48 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
         </>
       )}
 
-      <div data-testid="sessions-section" className="flex min-h-0 shrink-0 flex-col border-t border-border-soft pt-1">
-        <div className="flex items-center gap-2 px-2 pt-2">
-          <h2 className="text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">Sessions</h2>
-          {openTerminalCount > 0 && (
-            // How many terminals you have OPEN, which is a different number
-            // from how many agents are running: a card can have a terminal
-            // with nothing working in it, and a run can exist with no terminal
-            // of ours at all.
-            <span
-              data-testid="open-terminal-count"
-              title={`${openTerminalCount} terminal${openTerminalCount === 1 ? '' : 's'} open`}
-              className="rounded-full bg-canvas px-1.5 font-mono text-[9px] font-semibold text-ink-secondary"
-            >
-              {openTerminalCount}
-            </span>
-          )}
-        </div>
-        <div className="min-h-0 overflow-y-auto scrollbar-slim">
-          <SessionsRail rows={sessionRows} onOpen={openSession} onStop={stopSession} onReveal={revealOnBoard} />
-        </div>
-      </div>
+      {/* Processes whose card is NOT in the tree.
+          
+          Not the old SESSIONS section returning. That listed everything, which
+          duplicated the tree; this holds only what the tree cannot show, and
+          renders nothing at all when there is nothing orphaned - which is most
+          of the time.
+          
+          It exists because the tree lists work IN FLIGHT and a terminal
+          outlives the card reaching DONE. Without it, a running agent whose
+          card has left the list has no route in the sidebar at all: still
+          burning tokens, still holding a worktree, and invisible. */}
+      {(() => {
+        const shown = new Set((activeItems as AgEnFKItem[]).map(i => i.id));
+        const orphans = sessionRows
+          .filter(row => !shown.has(row.itemId))
+          .sort((a, b) => ORDER[a.state] - ORDER[b.state]);
+        if (orphans.length === 0) return null;
+        return (
+          <div
+            data-testid="orphan-processes"
+            className="flex shrink-0 flex-col border-t border-border-soft px-1 py-1"
+          >
+            <h2 className="px-1 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+              No card in view
+            </h2>
+            {orphans.map(row => (
+              <CardProcessRow key={row.runId} row={row} onOpen={openSession} onStop={stopSession} />
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* The SESSIONS section used to sit here: a flat list of every running
+          agent, under a tree that already listed the cards those agents were
+          working on. Two places for one fact, and they drifted - which is how
+          the rail and the terminal came to disagree earlier in this epic.
+
+          Its contents are not lost. Each process is drawn under the card it
+          belongs to, a few lines up, where the card's own mark rolls up the
+          states beneath it. What went with the section is the flat globally
+          sorted view and the open-terminal count, both recorded on 1a1b8df6 as
+          accepted costs rather than oversights. */}
 
       </div>
       )}

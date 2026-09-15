@@ -284,11 +284,18 @@ describe('AppShell — chrome', () => {
     expect(screen.getByRole('region', { name: 'Tasks' })).toBeDefined();
   });
 
-  it('names the sessions area and says plainly that there are none yet', () => {
-    renderShell();
-    expect(screen.getByRole('heading', { name: /sessions/i })).toBeDefined();
-    expect(screen.getByText(/none running/i)).toBeDefined();
-  });
+  /*
+   * A test asserting the SESSIONS heading and its "none running" sentence sat
+   * here. Both are gone with the section (1a1b8df6): processes are drawn under
+   * the card they belong to, so there is no flat list to head or to describe
+   * as empty. The sentence taught the feature to somebody seeing it for the
+   * first time, and losing it is recorded on that card as an accepted cost
+   * rather than an oversight.
+   *
+   * Deleted rather than adjusted because there is nothing left to assert. Left
+   * as a note because "this was removed deliberately" and "somebody dropped a
+   * test to make a change pass" look identical in a diff a year from now.
+   */
 });
 
 describe('AppShell — live connection state', () => {
@@ -1134,11 +1141,7 @@ describe('the Sessions rail (CGLAB-170)', () => {
     expect(await screen.findByTestId('session-dot')).toBeDefined();
   });
 
-  it('shows nothing running as a sentence, not an empty box', async () => {
-    vi.mocked(api.listRuns).mockResolvedValue([] as never);
-    renderShell();
-    expect(await screen.findByText(/none running/i)).toBeDefined();
-  });
+  /* The empty sentence went with the section - see the note above. */
 
   it('lights a row when a run event arrives for its card', async () => {
     // Liveness is recency of run:event, never AgentRun.status — the hook never
@@ -1164,7 +1167,7 @@ describe('the Sessions rail (CGLAB-170)', () => {
       { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
     ] as never);
     renderShell();
-    fireEvent.click(await screen.findByTestId('session-title'));
+    fireEvent.click(await screen.findByTestId('process-open'));
 
     // No terminal exists for that card yet, so it offers to open one there
     // rather than doing nothing.
@@ -1174,39 +1177,15 @@ describe('the Sessions rail (CGLAB-170)', () => {
     expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(true);
   });
 
-  it('shows how many terminals are open beside the Sessions header', async () => {
-    vi.mocked(api.listActiveItems).mockResolvedValue([
-      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'First card', status: 'IN_PROGRESS' },
-      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'Second card', status: 'IN_PROGRESS' },
-    ] as never);
-    renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
-
-    // Nothing open yet: no badge at all rather than a zero.
-    expect(screen.queryByTestId('open-terminal-count')).toBeNull();
-
-    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
-    fireEvent.click(await within(list).findByTitle('First card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
-    await waitFor(() => expect(screen.getByTestId('open-terminal-count').textContent).toBe('1'));
-
-    fireEvent.click(await within(list).findByTitle('Second card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
-    await waitFor(() => expect(screen.getByTestId('open-terminal-count').textContent).toBe('2'));
-  });
-
-  it('counts terminals open, not agents running — they are different numbers', async () => {
-    // A run can exist with no terminal of ours (recorded by the hook), and a
-    // terminal can sit open with nothing working in it. Conflating them would
-    // make the badge lie in both directions.
-    vi.mocked(api.listRuns).mockResolvedValue([
-      { id: 'r1', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
-    ] as never);
-    renderShell();
-    await screen.findByTestId('session-dot');
-    expect(screen.queryByTestId('open-terminal-count'), 'a run with no terminal was counted as one').toBeNull();
-  });
-
+  /*
+   * Two tests about the open-terminal badge sat here and below. The badge was
+   * part of the SESSIONS header and went with it: with processes drawn under
+   * their cards there is no one place left that could carry a total, and the
+   * terminal's own tab strip already says how many are open.
+   *
+   * Recorded on 1a1b8df6 as an accepted cost. If a total is ever wanted again
+   * it belongs on the PROJECTS header, counting processes rather than tabs.
+   */
   it('shows a terminal you just opened, even with no run recorded', async () => {
     // The gap the user hit: the rail was fed only by GET /agent-runs, and those
     // are written by the Claude Code hook. Opening a terminal here creates a
@@ -1226,7 +1205,13 @@ describe('the Sessions rail (CGLAB-170)', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(screen.getAllByTestId('session-dot').length).toBeGreaterThan(0));
-    expect(screen.getByTestId('session-title').textContent).toBe('First card');
+    /*
+     * Which card it belongs to is no longer read off the row - the row sits
+     * UNDER the card, so the card's own title is the line above it, and the
+     * terminal tab carries the name too. What this still has to prove is that
+     * the process appears at all, which is the gap the test was written for.
+     */
+    expect(screen.getAllByTestId('process-row').length).toBeGreaterThan(0);
   });
 
   it('shows a card once when it has both a terminal and a recorded run', async () => {
@@ -1244,9 +1229,11 @@ describe('the Sessions rail (CGLAB-170)', () => {
     fireEvent.click(await within(list).findByTitle('First card'));
     fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
 
+    // ONE row, not two. Listing it twice would say two agents are working on
+    // the card where there is one - and now that the row sits directly under
+    // that card, the double would be unmistakable.
     await waitFor(() => expect(screen.getAllByTestId('session-dot')).toHaveLength(1));
-    // And the terminal wins, because that is the one the user can be taken to.
-    expect(screen.getByTestId('session-title').textContent).toBe('First card');
+    expect(screen.getAllByTestId('process-row')).toHaveLength(1);
   });
 
   it('ignores an event for a card it is not showing', async () => {

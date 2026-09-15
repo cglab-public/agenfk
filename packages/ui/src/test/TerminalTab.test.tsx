@@ -87,31 +87,28 @@ describe('opening the worktree in an editor', () => {
 });
 
 /**
- * CHANGED and STAGED, moved into the top bar (CGLAB-193).
+ * The worktree, reached by ONE button in the top bar (CGLAB-193).
  *
- * They were a header row INSIDE the worktree panel: two static labels with
- * counts, above a list that showed changed and staged files together with a
- * badge on the staged ones. Not a switch at all - saying so was a mistake in
- * the request, and worth recording because the change reads differently once
- * you know it: this makes them controls for the first time.
+ * CHANGED and STAGED were a header row INSIDE the panel: two static labels
+ * above a list that showed both kinds of file together with a badge on the
+ * staged ones. Not a switch at all.
  *
- * WHAT THE CHANGE IS FOR IS SPACE, and the vertical pixels the header row gave
- * back are the small half of it. The panel is 288px of fixed width beside the
- * terminal, and until now there was no way to get rid of it. Making these
- * buttons open the panel is what makes it closeable, and a closed panel is the
- * full width of the window back.
+ * They were briefly promoted to TWO buttons in the bar, each opening the panel
+ * on its own list. That was wrong and the user said so: the two are halves of
+ * one question about one worktree, so splitting them made a reader close one
+ * half to look at the other. One button opens the panel; the halves are tabs
+ * inside it, where both counts are in view at once.
  *
- * Which forces the counts up into the bar rather than merely inviting it: with
+ * WHAT THE CHANGE IS FOR IS SPACE. The panel is 288px of fixed width beside
+ * the terminal and there was no way to be rid of it. The vertical pixels the
+ * header row gave back are the small half.
+ *
+ * WHICH FORCES THE COUNTS INTO THE BUTTON rather than merely inviting it: with
  * the panel closed they are the only thing on screen saying the worktree has
- * changes at all, so a button that hid its own count would close the panel and
- * take the reason to reopen it with them.
- *
- * TOGGLE, not open. Pressing the button for the view already showing closes the
- * panel. The alternative - open-only, with a separate close control on the
- * panel - is two controls for one piece of state, and the pair already has to
- * carry three states between them.
+ * changes at all, so a control that hid its own count would close the panel
+ * and take away the reason to open it again.
  */
-describe('the worktree counts in the terminal bar', () => {
+describe('the worktree button in the terminal bar', () => {
   const withChanges = () => {
     vi.mocked(api.getGitStatus).mockResolvedValue({
       changed: 2, staged: 1,
@@ -123,153 +120,96 @@ describe('the worktree counts in the terminal bar', () => {
     } as never);
   };
 
-  const changedButton = () => screen.findByRole('button', { name: /changed \(\d+\)/i });
-  const stagedButton = () => screen.findByRole('button', { name: /staged \(\d+\)/i });
+  /* Found by its counts, which is the contract: a button that stops showing
+     them still matches a looser selector and the test would not notice. */
+  const worktreeButton = () => screen.findByRole('button', { name: /2\s*\/\s*1/ });
+  const openTab = () => renderTab(<TerminalTab {...baseProps()} showWorktree />);
   const panel = () => screen.queryByRole('complementary', { name: /worktree/i });
 
-  it('puts both counts in the bar', async () => {
-    // Waited for rather than read straight off: the counts arrive from git,
-    // and the buttons render with a zero before the answer does. Asserting
-    // immediately would be asserting the placeholder.
+  it('offers one control, not one per list', async () => {
+    // THE correction. Two buttons meant closing one half to see the other.
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    await waitFor(async () => expect(await changedButton()).toHaveTextContent('Changed (2)'));
-    expect(await stagedButton()).toHaveTextContent('Staged (1)');
+    openTab();
+    await worktreeButton();
+    expect(screen.queryByRole('button', { name: /^changed/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^staged/i })).toBeNull();
   });
 
-  it('shows the counts with the panel closed, which is the point of moving them', async () => {
-    // Closed, these two are the only thing on screen saying the worktree has
-    // changes. A count that went away with the panel would take the reason to
-    // reopen it along with it.
+  it('carries both counts, so the panel need not be open to see them', async () => {
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    await waitFor(async () => expect(await changedButton()).toHaveTextContent('Changed (2)'));
+    openTab();
+    expect(await worktreeButton()).toBeInTheDocument();
     expect(panel()).toBeNull();
   });
 
   it('starts closed, so the terminal has the full width', async () => {
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    await changedButton();
-    expect(panel(), 'the panel opened without being asked for').toBeNull();
+    openTab();
+    await worktreeButton();
+    expect(panel()).toBeNull();
   });
 
-  it('opens the panel on the view whose button was pressed', async () => {
+  it('opens the panel, with both lists reachable inside it', async () => {
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await changedButton());
-    expect(await screen.findByText('a.ts')).toBeInTheDocument();
-    // The CHANGED view, so the staged file is not in it.
-    expect(screen.queryByText('c.ts')).toBeNull();
-  });
-
-  it('opens on the staged files when that is the button pressed', async () => {
-    withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await stagedButton());
-    expect(await screen.findByText('c.ts')).toBeInTheDocument();
-    expect(screen.queryByText('a.ts')).toBeNull();
-  });
-
-  it('closes again when the button for the view already showing is pressed', async () => {
-    // The promise the label makes on a second click. Open-only would need a
-    // separate close control, which is two controls for one piece of state.
-    withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await changedButton());
-    await screen.findByText('a.ts');
-    fireEvent.click(await changedButton());
-    await waitFor(() => expect(panel()).toBeNull());
-  });
-
-  it('switches view rather than closing when the other button is pressed', async () => {
-    withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await changedButton());
-    await screen.findByText('a.ts');
-    fireEvent.click(await stagedButton());
-    expect(await screen.findByText('c.ts')).toBeInTheDocument();
+    openTab();
+    fireEvent.click(await worktreeButton());
     expect(panel()).not.toBeNull();
+    // Both halves in view at once, which is what the single button buys.
+    expect(screen.getByRole('tab', { name: /changed/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /staged/i })).toBeInTheDocument();
   });
 
-  it('presses neither button while the panel is closed', async () => {
+  it('closes again when pressed a second time', async () => {
+    // A toggle rather than open-only. Open-only needs a separate close control
+    // on the panel, which is two controls for one piece of state.
+    withChanges();
+    openTab();
+    fireEvent.click(await worktreeButton());
+    fireEvent.click(await worktreeButton());
+    expect(panel()).toBeNull();
+  });
+
+  it('is unmounted when closed, not merely hidden', async () => {
     /*
-     * Three states, not a two-way switch: changed showing, staged showing, or
-     * nothing showing. `aria-pressed` can say "neither", which is why these are
-     * buttons rather than tabs - `aria-selected` on a tablist has to have a
-     * selected tab, so a closed panel would have to lie about one of them.
+     * The assertion the whole change rests on. A hidden 288px aside still
+     * occupies its column, so hiding it would have given the terminal nothing
+     * while looking exactly like a fix.
      */
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    expect(await changedButton()).toHaveAttribute('aria-pressed', 'false');
-    expect(await stagedButton()).toHaveAttribute('aria-pressed', 'false');
+    openTab();
+    fireEvent.click(await worktreeButton());
+    fireEvent.click(await worktreeButton());
+    expect(document.querySelector('[aria-label="Worktree"][class*="w-72"]')).toBeNull();
   });
 
-  it('presses exactly the button whose view is showing', async () => {
+  it('says whether it is showing, rather than leaving it to be guessed', async () => {
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await stagedButton());
-    await waitFor(async () => expect(await stagedButton()).toHaveAttribute('aria-pressed', 'true'));
-    expect(await changedButton()).toHaveAttribute('aria-pressed', 'false');
+    openTab();
+    const button = await worktreeButton();
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(button);
+    expect((await worktreeButton()).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('remembers that the panel was closed, or closing it means nothing', async () => {
-    // A panel that reopens itself on the next launch was never closed. The
-    // sidebar and the Runs dock already persist the same way.
+  it('remembers that it was closed, or closing it means nothing', async () => {
     withChanges();
-    const { unmount } = renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await changedButton());
-    await screen.findByText('a.ts');
-    fireEvent.click(await changedButton());
-    await waitFor(() => expect(panel()).toBeNull());
-    unmount();
-
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    await changedButton();
-    expect(panel(), 'the panel reopened itself after being closed').toBeNull();
+    const first = openTab();
+    fireEvent.click(await worktreeButton());
+    first.unmount();
+    cleanup();
+    openTab();
+    expect((await worktreeButton()).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('remembers which view was showing, not merely that it was open', async () => {
-    withChanges();
-    const { unmount } = renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    fireEvent.click(await stagedButton());
-    await screen.findByText('c.ts');
-    unmount();
-
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    expect(await screen.findByText('c.ts')).toBeInTheDocument();
-    expect(screen.queryByText('a.ts')).toBeNull();
-  });
-
-  it('survives a stored value written by another build', async () => {
-    // Same rule every other remembered preference here follows: an unreadable
-    // value must not leave the panel in a state with no way out of it.
-    localStorage.setItem('agenfk_worktree_panel', '{"not":"a view"}');
-    withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree />);
-    expect(await changedButton()).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('keeps the pair apart from the editor button, which does a different thing', async () => {
+  it('reads a value written by the two-button version as closed', async () => {
     /*
-     * "Open in VS Code" launches an application; these two change what is on
-     * screen. Three identical buttons in a row would read as three of the same
-     * kind of control, so the pair is grouped and the group is named.
+     * That version stored WHICH list was showing, so the stored value is a
+     * string where this one expects a boolean. Closed is the right landing
+     * place: it is the state with a way out of it in one click.
      */
+    localStorage.setItem('agenfk_worktree_panel', JSON.stringify('staged'));
     withChanges();
-    renderTab(<TerminalTab {...baseProps()} showWorktree editors={[{ id: 'vscode', label: 'VS Code' }]} />);
-    const group = await screen.findByRole('group', { name: /worktree/i });
-    expect(group).toContainElement(await changedButton());
-    expect(group).toContainElement(await stagedButton());
-    expect(group).not.toContainElement(screen.getByRole('button', { name: /open in vs code/i }));
-  });
-
-  it('asks git nothing when the worktree panel is not offered at all', async () => {
-    // `showWorktree` is off for any caller that does not want a git poll every
-    // four seconds. The counts are part of that panel, so they must not be the
-    // thing that starts it.
-    renderTab(<TerminalTab {...baseProps()} />);
-    await new Promise(r => setTimeout(r, 20));
-    expect(api.getGitStatus).not.toHaveBeenCalled();
+    openTab();
+    expect((await worktreeButton()).getAttribute('aria-pressed')).toBe('false');
   });
 });
