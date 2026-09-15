@@ -2137,6 +2137,38 @@ export function adminRouter(ctx: HubServerContext): Router {
   // an error_message so the admin view shows when and why they were closed.
   // succeeded/failed targets are never touched, with or without force.
   /**
+   * The child hubs a 'selected' dispatch may target.
+   *
+   * Both dispatch kinds — flows and group upgrades — name hubs the same way and
+   * must refuse the same way. Returns the ids that could NOT be targeted: an id
+   * from another org, a typo, or a hub that detached since the picker loaded.
+   * Skipping those silently creates a dispatch with no target rows, which the
+   * directive feed can never serve to anyone and which reads in the admin
+   * listing exactly like an 'all' dispatch nobody has polled yet.
+   *
+   * Callers pass ids ALREADY de-duplicated: a repeated id from a multi-select
+   * would otherwise violate PRIMARY KEY (dispatch_id, child_hub_id) on the
+   * second target insert, roll the transaction back, and surface as a 500.
+   */
+  async function untargetableChildHubs(orgId: string, ids: string[]): Promise<string[]> {
+    const missing: string[] = [];
+    for (const id of ids) {
+      const hub = await ctx.db.get<{ id: string }>(
+        'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
+      );
+      if (!hub) missing.push(id);
+    }
+    return missing;
+  }
+
+  /** The ids a dispatch body names, de-duplicated. See untargetableChildHubs. */
+  const dispatchTargetIds = (raw: unknown): string[] => Array.from(new Set(
+    Array.isArray(raw) ? raw.filter((v: unknown): v is string => typeof v === 'string' && !!v) : [],
+  ));
+
+  const CHILD_HUBS_NOT_TARGETABLE = 'One or more child hubs are not in this group, or have detached';
+
+  /**
    * Flow dispatch (CGLAB-182): send one of this org's flows to its child hubs.
    *
    * `scope: 'all'` is stored as intent, NOT expanded into a target list, because
@@ -2158,38 +2190,14 @@ export function adminRouter(ctx: HubServerContext): Router {
       );
       if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-      // De-duplicated: a repeated id from a multi-select is an ordinary client
-      // bug, and without this the second target insert violates the primary
-      // key, rolls the transaction back and turns it into a 500.
-      const ids: string[] = Array.from(new Set(
-        Array.isArray(req.body?.childHubIds)
-          ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
-          : [],
-      ));
+      const ids = dispatchTargetIds(req.body?.childHubIds);
       if (scope === 'selected' && !ids.length) {
         return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
       }
-
-      // Refuse the whole batch naming anything we cannot target, the way the
-      // upgrade twin does. Skipping them silently produced a dispatch with NO
-      // targets — the directive feed requires scope 'all' or an explicit
-      // target row — that could never be served to anyone, returned 200, and
-      // was indistinguishable in the listing from an 'all' dispatch nobody had
-      // polled yet.
       if (scope === 'selected') {
-        const found = new Set<string>();
-        for (const id of ids) {
-          const hub = await ctx.db.get<{ id: string }>(
-            'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
-          );
-          if (hub) found.add(id);
-        }
-        const missing = ids.filter(id => !found.has(id));
+        const missing = await untargetableChildHubs(orgId, ids);
         if (missing.length) {
-          return res.status(404).json({
-            error: 'One or more child hubs are not in this group, or have detached',
-            missing,
-          });
+          return res.status(404).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing });
         }
       }
 
@@ -2293,37 +2301,14 @@ export function adminRouter(ctx: HubServerContext): Router {
       const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
       if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
 
-      // De-duplicated: a repeated id from a multi-select is an ordinary client
-      // bug, and without this the second target insert violates the primary
-      // key, rolls the transaction back and turns it into a 500.
-      const ids: string[] = Array.from(new Set(
-        Array.isArray(req.body?.childHubIds)
-          ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
-          : [],
-      ));
+      const ids = dispatchTargetIds(req.body?.childHubIds);
       if (scope === 'selected' && !ids.length) {
         return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
       }
-
-      // Refuse the whole batch naming anything we cannot target, the way POST
-      // /upgrade already refuses an unknown installation. Skipping them
-      // silently produced a dispatch with NO targets that could never be
-      // served to anyone, returned 200, and was indistinguishable in the
-      // listing from an 'all' dispatch nobody had polled yet.
       if (scope === 'selected') {
-        const found = new Set<string>();
-        for (const id of ids) {
-          const hub = await ctx.db.get<{ id: string }>(
-            'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
-          );
-          if (hub) found.add(id);
-        }
-        const missing = ids.filter(id => !found.has(id));
+        const missing = await untargetableChildHubs(orgId, ids);
         if (missing.length) {
-          return res.status(404).json({
-            error: 'One or more child hubs are not in this group, or have detached',
-            missing,
-          });
+          return res.status(404).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing });
         }
       }
 
