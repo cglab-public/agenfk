@@ -14,7 +14,9 @@ import type { HubDb } from '../db/types';
 
 const SECRET = 'a'.repeat(64);
 
-async function bootHubOnPg(): Promise<{ app: any; db: HubDb; cookie: string }> {
+async function bootHubOnPg(
+  extra: Record<string, unknown> = {},
+): Promise<{ app: any; db: HubDb; cookie: string }> {
   const db = await openPgMemDb();
   const out = await createHubApp({
     dbPath: '/tmp/unused-federation-pg-parity.sqlite',
@@ -22,7 +24,8 @@ async function bootHubOnPg(): Promise<{ app: any; db: HubDb; cookie: string }> {
     sessionSecret: 'sess-secret',
     defaultOrgId: 'org',
     db,
-  });
+    ...extra,
+  } as any);
   await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
   const login = await supertest(out.app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
   return { app: out.app, db, cookie: login.headers['set-cookie']?.[0] ?? '' };
@@ -476,5 +479,86 @@ describe('PG parity: dispatch reports moving a target (CGLAB-182)', () => {
       ['pg-d2', childHubId]);
     expect(t.state).toBe('installed');
     expect(t.detail).toBeNull();
+  });
+});
+
+describe('PG parity: group upgrade dispatch (CGLAB-183)', () => {
+  const bootWithReleases = () => bootHubOnPg({ releaseExists: async (v: string) => v === '1.2.3' });
+
+  it('creates, serves and cancels an upgrade dispatch on Postgres', async () => {
+    // Two things only this backend can catch. `confirm_downgrade` is BOOLEAN
+    // here and INTEGER on SQLite, so a truthiness check that works on one can
+    // read wrong on the other. And created_at is a Date here but an ISO string
+    // on SQLite, which is what the feed's oldest-first comparison sorts on.
+    const { app, db, cookie } = await bootWithReleases();
+
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const enrolled = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-up' } });
+    expect(enrolled.status).toBe(200);
+    const { token, childHubId } = enrolled.body as { token: string; childHubId: string };
+
+    const created = await supertest(app).post('/v1/admin/upgrade-dispatches')
+      .set('Cookie', cookie).send({ targetVersion: '1.2.3', scope: 'all', confirmDowngrade: true });
+    expect(created.status).toBe(200);
+
+    const served = await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${token}`);
+    expect(served.status).toBe(200);
+    expect(served.body.kind).toBe('upgrade.dispatch');
+    expect(served.body.targetVersion).toBe('1.2.3');
+    // The BOOLEAN/INTEGER divergence, asserted as a real boolean.
+    expect(served.body.confirmDowngrade).toBe(true);
+
+    // Serving is not landing, on this backend too.
+    const t = await db.get<any>(
+      'SELECT state FROM upgrade_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      [created.body.id, childHubId],
+    );
+    expect(t.state).toBe('pending');
+
+    const listed = await supertest(app).get('/v1/admin/upgrade-dispatches').set('Cookie', cookie);
+    expect(listed.status).toBe(200);
+    const row = listed.body.dispatches.find((d: any) => d.id === created.body.id);
+    expect(row.confirmDowngrade).toBe(true);
+    expect(row.targets).toHaveLength(1);
+    expect(row.targets[0].state).toBe('pending');
+
+    const cancelled = await supertest(app)
+      .post(`/v1/admin/upgrade-dispatches/${created.body.id}/cancel`).set('Cookie', cookie);
+    expect(cancelled.status).toBe(200);
+    expect((await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${token}`)).status).toBe(204);
+  });
+
+  it('picks the older of the two directive kinds on Postgres, where created_at is a Date', async () => {
+    // Both kinds must EXIST or the comparison short-circuits on `!row` and the
+    // test proves nothing. The upgrade is issued first, so it must be served
+    // first even though the flow dispatch is the one the older code path
+    // looked at.
+    const { app, db, cookie } = await bootWithReleases();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const { token } = (await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-order' } })).body;
+
+    const upgrade = await supertest(app).post('/v1/admin/upgrade-dispatches')
+      .set('Cookie', cookie).send({ targetVersion: '1.2.3', scope: 'all' });
+    expect(upgrade.status).toBe(200);
+    // Push it into the past so the two created_at values cannot tie on a fast
+    // machine — a tie would make the assertion depend on evaluation order.
+    await db.run('UPDATE upgrade_dispatches SET created_at = ? WHERE id = ?',
+      [new Date(Date.now() - 60_000).toISOString(), upgrade.body.id]);
+
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['pg-of', 'org', 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    const flow = await supertest(app).post('/v1/admin/flow-dispatches')
+      .set('Cookie', cookie).send({ flowId: 'pg-of', scope: 'all' });
+    expect(flow.status).toBe(200);
+
+    expect((await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${token}`)).body.kind).toBe('upgrade.dispatch');
   });
 });
