@@ -23,6 +23,8 @@ import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { GitHubImportModal } from './GitHubImportModal';
 import { WelcomeScreen, welcomeActions } from './WelcomeScreen';
+import { AgenfkFlag } from './AgenfkFlag';
+import { AgenfkWordmark } from './AgenfkWordmark';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
@@ -1534,7 +1536,15 @@ export const KanbanBoard: React.FC = () => {
   if (!selectedProjectId) {
     return (
       <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-canvas p-6">
-        <Logo size={64} className="mb-8" />
+        {/* The brand as it is drawn now: the flag with the name beside it.
+            This was the CglabSpark lockup, which predates the new mark and is
+            the only place it still showed at size. */}
+        <div className="mb-8 flex items-center gap-4">
+          <AgenfkFlag size={52} label="AgEnFK" />
+          <span aria-hidden="true">
+            <AgenfkWordmark size={28} />
+          </span>
+        </div>
         {projectPickerCard}
       </div>
     );

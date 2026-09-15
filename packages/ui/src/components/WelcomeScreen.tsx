@@ -19,6 +19,7 @@
 import React from 'react';
 import { FolderPlus, Github, Link2 } from 'lucide-react';
 import { AgenfkFlag } from './AgenfkFlag';
+import { AgenfkWordmark } from './AgenfkWordmark';
 
 export interface WelcomeAction {
   readonly id: string;
@@ -43,10 +44,20 @@ export function WelcomeScreen({ actions }: WelcomeScreenProps): React.ReactEleme
       data-testid="welcome-screen"
       className="flex min-h-0 flex-1 flex-col items-center justify-center gap-10 p-8"
     >
-      {/* At size, and named. Everywhere else the mark is chrome beside other
-          things that say what this is; here it is alone, so its accessible
-          name is the only thing telling a screen reader which app this is. */}
-      <AgenfkFlag size={84} label="AgEnFK" />
+      {/* The LOCKUP: the flag with the name beside it, which is how the brand
+          book draws it. The top bar carries the name alone because a chrome bar
+          has no room for the mark; here there is room, and this is the one
+          screen where the product should introduce itself in full.
+
+          The flag is named and the wordmark is hidden from assistive tech -
+          otherwise the pair announces "AgEnFK agenFK", which is the same thing
+          twice. */}
+      <div className="flex items-center gap-4">
+        <AgenfkFlag size={64} label="AgEnFK" />
+        <span aria-hidden="true">
+          <AgenfkWordmark size={34} />
+        </span>
+      </div>
 
       <ul className="flex w-full max-w-md flex-col gap-1">
         {actions.map(action => (
