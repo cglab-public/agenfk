@@ -185,11 +185,15 @@ describe('childHubId facet on the query endpoints', () => {
       }
     });
 
-    it('matches the local sentinel whatever case a hand-edited link uses', async () => {
+    it('matches whatever case a hand-edited link uses — sentinel AND hub id', async () => {
+      // Anything that upper-cases a URL upper-cases the UUID too, so normalising
+      // only the sentinel would still leave the same silently-empty board.
       for (const spelling of ['local', 'LOCAL', 'Local']) {
         const r = await get(`/v1/users?childHubId=${spelling}`);
         expect(r.body.map((u: any) => u.user_key)).toEqual(['alice@acme.com']);
       }
+      const upper = await get(`/v1/users?childHubId=${alpha.toUpperCase()}`);
+      expect(upper.body.map((u: any) => u.user_key)).toEqual(['bob@acme.com']);
     });
   });
 
@@ -291,6 +295,19 @@ describe('childHubId facet on the query endpoints', () => {
       expect(r.body.hasLocal).toBe(true);
     });
 
+    it('always offers the hub that is currently selected, window or not', async () => {
+      // Narrowing the date range until the selected hub has nothing in it used
+      // to drop it from its own picker: an empty board and no visible control
+      // to leave it. The window still decides which OTHER hubs are offered.
+      const r = await get(`/v1/child-hubs?from=2026-05-01&to=2026-05-31&childHubId=${beta}`);
+      expect(r.status).toBe(200);
+      const ids = r.body.childHubs.map((c: any) => c.id);
+      expect(ids).toContain(beta);
+      expect(ids).toContain(alpha);
+      // Offered, but honestly: it contributes nothing to this window.
+      expect(r.body.childHubs.find((c: any) => c.id === beta)).toMatchObject({ name: 'beta', events: 0 });
+    });
+
     it('keeps a detached hub listed, named, and flagged while its events remain', async () => {
       const d = await supertest(app).post(`/v1/admin/child-hubs/${alpha}/detach`)
         .set('Cookie', cookie).send({});
@@ -314,14 +331,25 @@ describe('childHubId facet on the query endpoints', () => {
       expect(byType.body.childHubs.map((c: any) => c.id).sort()).toEqual([alpha, beta].sort());
     });
 
-    it('lists only this org\'s child hubs', async () => {
+    it('lists only this org\'s child hubs, even when the foreign one has events', async () => {
+      // A hub with no events is unlistable whatever the org scoping does — the
+      // list is built from the events grouping — so seeding events is what makes
+      // this a test of the boundary rather than of the join.
       await ctx.db.run(
         `INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen)
          VALUES (?, ?, ?, ?, ?)`,
         ['other-org-hub', 'other-org', 'intruder', '2026-05-01', '2026-05-01'],
       );
+      await ctx.db.run(
+        `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at,
+                             received_at, type, payload, child_hub_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ['other-org-1', 'other-org', 'i9', 'mallory@evil.com', '2026-05-03T10:00:00.000Z',
+         '2026-05-03T10:00:00.000Z', 'item.created', '{}', 'other-org-hub'],
+      );
       const r = await get('/v1/child-hubs');
       expect(r.body.childHubs.map((c: any) => c.id)).not.toContain('other-org-hub');
+      expect(r.body.childHubs.map((c: any) => c.id).sort()).toEqual([alpha, beta].sort());
     });
 
     it('offers no children on a hub that has none, and still reports local', async () => {

@@ -30,6 +30,16 @@ function seedOldSchema(withPrsOpened: boolean): void {
     PRIMARY KEY (org_id, user_key, day)
   );`);
   raw.exec("INSERT INTO rollups_daily (org_id, user_key, day, events_count) VALUES ('org','a@x','2026-09-01',3)");
+  // An events table from before federation: no child_hub_id. `CREATE TABLE IF
+  // NOT EXISTS` in the schema block will leave this shape alone, so any index
+  // over child_hub_id placed there — rather than after the ALTER — kills boot.
+  raw.exec(`CREATE TABLE events (
+    event_id TEXT PRIMARY KEY, org_id TEXT NOT NULL, installation_id TEXT NOT NULL,
+    user_key TEXT NOT NULL, occurred_at TEXT NOT NULL, received_at TEXT NOT NULL,
+    type TEXT NOT NULL, project_id TEXT, item_id TEXT, item_type TEXT,
+    remote_url TEXT, item_title TEXT, external_id TEXT, reporting_version TEXT,
+    payload TEXT NOT NULL
+  );`);
   raw.close();
 }
 
@@ -56,23 +66,17 @@ describe('rollups_daily gains child_hub_id on an existing hub', () => {
     expect(cols.map(c => c.name)).toEqual(expect.arrayContaining(['child_hub_id', 'prs_opened']));
   });
 
-  it('indexes events by originating hub, so the childHubId filter is not a scan', async () => {
-    // The filter exists to make a parent hub's board readable one group at a
-    // time; without this index every such read walks the whole org's events.
-    // Its own file: the test above deliberately leaves its handle open.
-    const dbPath = DB.replace('.sqlite', '-idx.sqlite');
-    const db = await openDb(dbPath);
+  it('indexes events by originating hub on an UPGRADED hub, not just a fresh one', async () => {
+    // Placement, not existence: on a hub that predates federation the events
+    // table has no child_hub_id until the migration ALTERs it in. An index
+    // declared in the always-run schema block would be created first and take
+    // the boot down with "no such column" — the same trap the rollups index
+    // already carries a comment about. A fresh-DB assertion cannot see that.
+    cleanup();
+    seedOldSchema(true);
+    const db = await openDb(DB);
     const idx = await db.all<{ name: string }>("SELECT name FROM pragma_index_list('events')");
-    expect(idx.map(i => i.name)).toContain('idx_events_org_child_time');
-    const cols = await db.all<{ name: string; seqno: number }>(
-      "SELECT name, seqno FROM pragma_index_info('idx_events_org_child_time') ORDER BY seqno",
-    );
-    expect(cols.map(c => c.name)).toEqual(['org_id', 'child_hub_id', 'occurred_at']);
-    // Left open like the test above: openDb hands back a shared handle here, so
-    // closing it takes the other tests' database with it.
-    for (const sfx of ['', '-wal', '-shm']) {
-      const f = dbPath + sfx; if (fs.existsSync(f)) fs.unlinkSync(f);
-    }
+    expect(idx.map(i => i.name)).toContain('idx_events_org_childnorm_time');
     await db.close();
   });
 

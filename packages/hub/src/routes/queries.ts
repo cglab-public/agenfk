@@ -10,7 +10,7 @@ import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
-import { childHubPredicate, childHubClause } from '../queries/childHub.js';
+import { childHubPredicate, childHubClause, selectedHubIds } from '../queries/childHub.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -233,9 +233,16 @@ export function queriesRouter(ctx: HubServerContext): Router {
    * every-hub list already exists for administration (/hub/admin/child-hubs);
    * this one answers a different question.
    *
-   * Every other filter is honoured (so the picker narrows as the view narrows),
-   * except childHubId itself — a picker must not hide the options next to the
-   * one currently selected.
+   * Only the time window is applied. Not childHubId — a picker must not hide
+   * the options next to the one selected — and not users/types/projects/
+   * itemTypes either, for the same reason /event-types and /projects keep their
+   * chip lists whole: narrowing to a local-only developer would empty this
+   * picker and strand the reader on one hub with no control to leave it. The
+   * hubs a caller has ALREADY selected are always offered, even with nothing in
+   * the window, or narrowing the dates would strand them the same way.
+   *
+   * `childHubs[].events` are therefore counts for the window alone, unqualified
+   * by any other filter the board is showing.
    *
    * `hasLocal` reports whether this hub has events of its own in the window, so
    * the picker can offer "This hub" without inventing a child_hubs row for the
@@ -268,6 +275,11 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // Names come from child_hubs, but the events are the source of truth for
     // WHICH hubs to list: a detached hub's rows stay in the table and must keep
     // their label rather than turning into a bare UUID in the picker.
+    //
+    // The org filter here is defence in depth, not the tenant boundary — that
+    // is the grouping above, which is org-scoped, so no foreign id can reach
+    // this map in the first place. Deliberately unpinned by a test: nothing can
+    // currently make it fail, and a test asserting otherwise would be theatre.
     const named = await ctx.db.all<{ id: string; name: string; detached_at: string | null }>(
       `SELECT id, name, detached_at FROM child_hubs WHERE org_id = ?`, [orgId],
     );
@@ -284,6 +296,12 @@ export function queriesRouter(ctx: HubServerContext): Router {
         detached: byId.get(id)?.detached_at != null,
         events: Number(r.events),
       });
+    }
+    // Whatever the window says, the selection stays selectable.
+    const present = new Set(childHubs.map(c => c.id));
+    for (const id of selectedHubIds(f.childHubs)) {
+      if (present.has(id) || !byId.has(id)) continue;
+      childHubs.push({ id, name: byId.get(id)!.name, detached: byId.get(id)!.detached_at != null, events: 0 });
     }
     childHubs.sort((a, b) => a.name.localeCompare(b.name));
 

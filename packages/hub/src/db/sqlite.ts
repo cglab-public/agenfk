@@ -675,7 +675,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // Filtering the event stream by originating hub (CGLAB-184). Same placement
   // reasoning as the rollups index above: `events.child_hub_id` arrives through
   // an ALTER on an upgraded hub, so the index cannot live in SCHEMA_SQLITE.
-  raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_child_time ON events(org_id, child_hub_id, occurred_at)");
+  // Over COALESCE(child_hub_id, ''), matching the expression every read uses:
+  // SQLite cannot use an index across `(col IS NULL OR col = '')`, so a plain
+  // column index left the "this hub" selection walking the whole org.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");
 
   return new SqliteAdapter(raw);
 }
