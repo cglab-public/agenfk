@@ -426,3 +426,82 @@ describe('a close takes only the closing card\'s files', () => {
     expect(git(repo, 'rev-parse', 'HEAD').trim(), 'it committed anyway').toBe(before);
   });
 });
+
+/**
+ * Declaring what a card owns, over the API (819e7192).
+ *
+ * The field, the storage and the gatekeeper check all landed before this, and
+ * none of it was reachable: PUT /items/:id destructures an explicit allowlist
+ * of fields, so `claims` arrived and was dropped without a word. A card could
+ * only declare anything by writing to storage directly, which is what this
+ * file's own earlier tests had to do.
+ *
+ * THE ROUTE REFUSES RATHER THAN STORING SOMETHING THAT PROTECTS NOTHING. A
+ * glob persisted here is worse than no claim: claims.ts compares it as a
+ * literal, so a card believing it holds `packages/**` holds a file with that
+ * name, and every collision check it takes part in comes back clear.
+ */
+describe('PUT /items/:id and the claims field', () => {
+  it('stores what the card says it owns', async () => {
+    const item = await makeItem('Declares its files');
+    const res = await agent().put(`/items/${item.id}`).send({ claims: ['packages/ui/', 'src/App.tsx'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.claims).toEqual(['packages/ui/', 'src/App.tsx']);
+    // Round-trips, rather than living only in the response.
+    expect((await agent().get(`/items/${item.id}`)).body.claims).toEqual(['packages/ui/', 'src/App.tsx']);
+  });
+
+  it('refuses a glob instead of storing one that protects nothing', async () => {
+    const item = await makeItem('Wants a glob');
+    const res = await agent().put(`/items/${item.id}`).send({ claims: ['packages/**'] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('packages/**');
+    expect((await agent().get(`/items/${item.id}`)).body.claims).toBeUndefined();
+  });
+
+  it('refuses a path that leaves the repository', async () => {
+    const item = await makeItem('Wants to escape');
+    for (const bad of ['../secrets', '/etc/passwd', 'a/../../b']) {
+      const res = await agent().put(`/items/${item.id}`).send({ claims: [bad] });
+      expect(res.status, `${bad} was accepted`).toBe(400);
+    }
+  });
+
+  it('refuses a claim another card already holds, naming the holder', async () => {
+    /*
+     * Refusing at DECLARATION beats refusing at every edit afterwards: the
+     * lead cutting a fan-out finds out while it can still re-cut the split,
+     * rather than each agent discovering it one gatekeeper call at a time.
+     */
+    const holder = await makeItem('Holds the directory');
+    await agent().put(`/items/${holder.id}`).send({ claims: ['packages/ui/'] });
+    await agent().put(`/items/${holder.id}`).send({ status: 'IN_PROGRESS' });
+
+    const late = await makeItem('Wants a file inside it');
+    const res = await agent().put(`/items/${late.id}`).send({ claims: ['packages/ui/src/App.tsx'] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain(holder.id);
+  });
+
+  it('lets a card re-declare its own claims', async () => {
+    // A second dispatch, or a card widening what it owns. Colliding with
+    // yourself is not a collision, and a card that could not re-declare would
+    // be stuck after its first call.
+    const item = await makeItem('Re-declares');
+    await agent().put(`/items/${item.id}`).send({ claims: ['packages/cli/'] });
+    const res = await agent().put(`/items/${item.id}`).send({ claims: ['packages/cli/', 'packages/cli/extra.ts'] });
+    expect(res.status).toBe(200);
+  });
+
+  it('leaves claims alone when the request does not mention them', async () => {
+    // Every other PUT in the app omits the field, and dropping the card's
+    // claims on an unrelated title edit would silently release its files.
+    const item = await makeItem('Keeps its claims');
+    await agent().put(`/items/${item.id}`).send({ claims: ['packages/server/'] });
+    await agent().put(`/items/${item.id}`).send({ title: 'Renamed' });
+    expect((await agent().get(`/items/${item.id}`)).body.claims).toEqual(['packages/server/']);
+  });
+});

@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard } from './closeCommit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2961,11 +2961,48 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims } = req.body;
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
     return res.status(404).json({ error: "Item not found" });
+  }
+
+  /*
+   * What this card says it owns (819e7192), checked BEFORE it is stored.
+   *
+   * A claim that cannot be checked is worse than none: claims.ts compares a
+   * glob as a literal, so a card believing it holds `packages/**` holds a file
+   * with that name, and every collision check it takes part in comes back
+   * clear. Storing one would hand out a guarantee nothing keeps.
+   *
+   * Refusing at DECLARATION rather than at every later edit is the point. A
+   * lead cutting a fan-out finds out while it can still re-cut the split;
+   * refusing later means each agent discovers the same overlap separately, one
+   * gatekeeper call at a time, after the work is already assigned.
+   */
+  if (claims !== undefined) {
+    if (!Array.isArray(claims)) {
+      return res.status(400).json({ error: "claims must be an array of paths." });
+    }
+    const malformed = claims.filter((c: unknown) => !isWellFormedClaim(c));
+    if (malformed.length) {
+      return res.status(400).json({
+        error: `Refusing these claims: ${malformed.map((c: unknown) => JSON.stringify(c)).join(', ')}. `
+          + `A claim is a directory or an exact file, repository-relative. Globs are refused rather than `
+          + `approximated, because whether two PATTERNS can ever match one path is a different and much `
+          + `harder question than whether a path matches one - and a claim that cannot be checked reports `
+          + `safety it has not established.`,
+      });
+    }
+    const siblings = await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 });
+    const gate = gateOnClaims(
+      { id: currentItem.id, claims },
+      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims })),
+    );
+    if (!gate.authorized) {
+      return res.status(409).json({ error: gate.message });
+    }
   }
 
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
@@ -3058,6 +3095,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (prUrl !== undefined) updates.prUrl = prUrl;
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
+  if (claims !== undefined) updates.claims = claims;
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
