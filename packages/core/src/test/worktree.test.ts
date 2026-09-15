@@ -99,3 +99,58 @@ describe('buildWorktreePath', () => {
     expect(a).not.toBe(b);
   });
 });
+
+/**
+ * A path cannot hold the server still (CodeQL, PR #182).
+ *
+ * CodeQL flagged two trailing trims as polynomial regular expressions on
+ * uncontrolled data. They read linear, and my instinct was to dismiss them -
+ * which is why the card said MEASURE rather than reason. Measured:
+ *
+ *   `'/'.repeat(100_000) + 'x'` through the root trim → 4,763 ms
+ *   the same shape through the slug trim               → 0.1 ms
+ *
+ * So ONE alert was real and one was not, and the difference is instructive.
+ * `[-.]+$` has no start anchor, so with a character after the run the `$` never
+ * matches and the engine retries from every position - O(n) starts times O(n)
+ * length. The slug escapes it only because two earlier replaces collapse `--`
+ * and `..` before the trim ever sees a run. That is accidental safety: it
+ * depends on replaces that exist for an unrelated reason, and it would vanish
+ * silently the day somebody decided `--` was acceptable in a directory name.
+ *
+ * Both are loops now. The bounds below are deliberately loose - this is not a
+ * performance measurement, which would be flaky. The broken version took
+ * SECONDS and a linear one takes under a millisecond; nothing lands between
+ * them by accident.
+ */
+describe('a pathological path (CodeQL, PR #182)', () => {
+  it('trims a hostile root without stalling', () => {
+    // The alert that was real. Nothing collapses `root` first.
+    const started = Date.now();
+    buildWorktreePath('/'.repeat(100_000) + 'x', 'repo', 'feat/x');
+    expect(Date.now() - started, 'the root trim is backtracking again').toBeLessThan(1000);
+  });
+
+  it('trims a hostile branch name without stalling', () => {
+    const started = Date.now();
+    buildWorktreePath('/root', 'repo', 'x' + '-'.repeat(200_000) + 'x');
+    expect(Date.now() - started, 'the slug trim is backtracking again').toBeLessThan(1000);
+  });
+
+  it('still trims what it always trimmed', () => {
+    /*
+     * Fast AND correct. A guard that only watched the clock would pass on an
+     * implementation that returned early with nothing, which is the obvious
+     * way to make a slow function fast.
+     */
+    expect(buildWorktreePath('/root///', 'repo', 'feat/x')).toMatch(/^\/root\/repo\//);
+    expect(buildWorktreePath('/root', 'repo', '--feat/x--')).toMatch(/\/feat-x/);
+    expect(buildWorktreePath('/root', 'repo', '...dotted...')).toMatch(/\/dotted/);
+  });
+
+  it('leaves no trailing separator or dot on the segment', () => {
+    const out = buildWorktreePath('/root', 'repo', 'x' + '-'.repeat(200_000) + 'x');
+    expect(out.endsWith('-')).toBe(false);
+    expect(out.endsWith('.')).toBe(false);
+  });
+});
