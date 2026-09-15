@@ -747,6 +747,24 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     `);
   }
 
+  // CGLAB-183 task 3 added reporting bookkeeping to tables task 1 and task 2
+  // created. CREATE TABLE IF NOT EXISTS never adds a column to a table that
+  // already exists, so a hub whose database was made by an earlier commit
+  // would throw "no such column: seq" on every progress path — and on the
+  // parent that happens inside the /deliver transaction, taking the child's
+  // whole delivery batch down with it.
+  for (const [table, column, ddl] of [
+    ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
+  ] as const) {
+    const cols = raw.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some(c => c.name === column)) {
+      raw.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+
+
   // flows.source gains 'parent' — a flow this hub received from its parent hub
   // (CGLAB-182). SQLite cannot ALTER a CHECK constraint, so an upgraded hub
   // needs the table rebuilt; without this every dispatched flow fails its

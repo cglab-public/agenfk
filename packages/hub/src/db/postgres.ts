@@ -597,6 +597,24 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   if (evCols2.length > 0 && !new Set(evCols2.map(c => c.column_name)).has('child_hub_id')) {
     await adapter.exec("ALTER TABLE events ADD COLUMN child_hub_id TEXT");
   }
+  // CGLAB-183 task 3 added reporting bookkeeping to tables task 1 and task 2
+  // created. CREATE TABLE IF NOT EXISTS never adds a column to a table that
+  // already exists, so a hub whose database was made by an earlier commit
+  // throws on every progress path — and on the parent that happens inside the
+  // /deliver transaction, taking the child's whole delivery batch with it.
+  for (const [table, column, ddl] of [
+    ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
+  ] as const) {
+    const cols = await adapter.all<{ column_name: string }>(
+      'SELECT column_name FROM information_schema.columns WHERE table_name = $1', [table],
+    );
+    if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has(column)) {
+      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+
   const rdCols0 = await adapter.all<{ column_name: string }>(
     "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"
   );

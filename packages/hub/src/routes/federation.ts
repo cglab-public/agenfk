@@ -257,6 +257,14 @@ export function federationRouter(ctx: HubServerContext): Router {
     extraColumns: string,
     childHubId: string,
     orgId: string,
+    // Which target states still owe an answer. A flow dispatch is answered
+    // once, so only `pending` is outstanding. A group upgrade reports
+    // repeatedly and is not finished until it says so, so `running` is
+    // outstanding too — and that is what makes a lost report survivable:
+    // being served again is the parent saying it still has no final answer,
+    // and the child re-reports. Without it a single dropped completion left
+    // the board running forever for a fleet that had finished.
+    outstandingStates: readonly string[] = ['pending'],
   ) => ctx.db.get<any>(
     `SELECT d.id, d.created_at, ${extraColumns}
        FROM ${dispatchTable} d
@@ -265,10 +273,10 @@ export function federationRouter(ctx: HubServerContext): Router {
       WHERE d.org_id = ?
         AND d.cancelled_at IS NULL
         AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
-        AND (t.state IS NULL OR t.state = 'pending')
+        AND (t.state IS NULL OR t.state IN (${outstandingStates.map(() => '?').join(',')}))
       ORDER BY d.created_at ASC
       LIMIT 1`,
-    [childHubId, orgId],
+    [childHubId, orgId, ...outstandingStates],
   );
 
   const isUpgradeProgress = (e: any) => e?.type === 'fleet:upgrade-dispatch:progress';
@@ -310,20 +318,46 @@ export function federationRouter(ctx: HubServerContext): Router {
   ): Promise<void> => {
     if (!isUpgradeProgress(e)) return;
     const dispatchId = args.str(e.payload?.dispatchId);
+    // Bounded and integral, not merely finite. This lands in an INTEGER column
+    // — int4 on Postgres — so a float or a nine-digit-plus value throws inside
+    // the deliver transaction and 500s the whole batch; the child then retries
+    // that batch forever and its ENTIRE telemetry stream stops, not just its
+    // upgrade reports. A once-accepted absurd value would also freeze the row
+    // against every later legitimate report. Same trust-boundary reasoning as
+    // the target-version check on the child.
     const seq = Number(e.payload?.seq);
-    if (!dispatchId || !Number.isFinite(seq) || seq <= 0) return;
+    if (!dispatchId || !Number.isSafeInteger(seq) || seq <= 0 || seq > 2_000_000_000) return;
 
     const completed = e.payload?.completed === true;
     const state = completed ? 'completed' : 'running';
     // The counts and skip reasons as the child sent them, stored whole so the
     // board can render what that hub actually saw. Bounded, because it is a
     // remote party's blob.
+    // Built from coerced values rather than stored as the child sent it and
+    // then truncated. Slicing a serialised object cuts mid-structure and
+    // stores syntactically invalid JSON, which the admin API then hands back
+    // as a bare string where every other row is an object — a silent type flip
+    // at the API boundary for whoever renders it.
+    const count = (v: unknown): number => {
+      const n = Number(v);
+      return Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000 ? n : 0;
+    };
+    const rawCounts = (e.payload?.counts ?? {}) as Record<string, unknown>;
+    const rawSkips = Array.isArray(e.payload?.skipped) ? e.payload.skipped : [];
     const detail = JSON.stringify({
-      counts: e.payload?.counts ?? null,
+      counts: {
+        pending: count(rawCounts.pending),
+        updated: count(rawCounts.updated),
+        failed: count(rawCounts.failed),
+        skipped: count(rawCounts.skipped),
+      },
       completed,
-      skipped: Array.isArray(e.payload?.skipped) ? e.payload.skipped.slice(0, 500) : [],
+      skipped: rawSkips.slice(0, 200).map((sk: any) => ({
+        installationId: String(sk?.installationId ?? '').slice(0, 120),
+        reason: String(sk?.reason ?? '').slice(0, 40),
+      })),
       seq,
-    }).slice(0, 20000);
+    });
 
     await ctx.db.run(
       `UPDATE upgrade_dispatch_targets
@@ -524,6 +558,7 @@ export function federationRouter(ctx: HubServerContext): Router {
       // than a UNION, which the pg-mem parity backend does not handle.
       const upgradeRow = await outstandingDispatch(
         'upgrade_dispatches', 'upgrade_dispatch_targets', 'd.target_version, d.confirm_downgrade', childHubId, orgId,
+        ['pending', 'running'],
       );
 
       // Resolve the flow candidate FIRST. A dispatch whose flow has since been
@@ -543,6 +578,8 @@ export function federationRouter(ctx: HubServerContext): Router {
       if (upgradeRow && (!flowCandidate || msOf(upgradeRow.created_at) < msOf(flowCandidate.created_at))) {
         // Serving is not the upgrade landing: the row stays pending until the
         // child reports what its own installations actually did.
+        // INSERT OR IGNORE, so re-serving a dispatch already `running` leaves
+        // its state and counts alone — the re-serve is a prompt, not a reset.
         await ctx.db.run(
           `INSERT OR IGNORE INTO upgrade_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
            VALUES (?, ?, 'pending', ?)`,

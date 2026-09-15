@@ -51,6 +51,11 @@ const countsFor = async (db: DB, directiveId: string | null): Promise<UpgradeCou
   return base;
 };
 
+/** Whether a stored snapshot already says the dispatch finished. */
+const isCompleteSnapshot = (raw: string): boolean => {
+  try { return JSON.parse(raw)?.completed === true; } catch { return false; }
+};
+
 const parseSkips = (raw: string | null): unknown[] => {
   if (!raw) return [];
   try {
@@ -76,6 +81,12 @@ export async function reportUpgradeProgress(db: DB, orgId: string): Promise<numb
 
   let sent = 0;
   for (const row of rows) {
+    // A dispatch already reported complete cannot change again, so it is
+    // skipped before the per-row COUNT query rather than re-derived on every
+    // tick forever. A re-serve clears reported_json, which is what puts a
+    // dispatch back in play when a report was lost.
+    if (row.reported_json && isCompleteSnapshot(row.reported_json)) continue;
+
     const counts = await countsFor(db, row.directive_id);
     const skipped = parseSkips(row.skipped_json);
     counts.skipped = skipped.length;
@@ -88,11 +99,14 @@ export async function reportUpgradeProgress(db: DB, orgId: string): Promise<numb
     if (row.reported_json === snapshot) continue;   // nothing moved
 
     const seq = Number(row.reported_seq ?? 0) + 1;
+    // enqueueOutbox returns false rather than throwing when this hub has no
+    // usable binding or the payload will not serialise. Advancing the
+    // bookkeeping on a report that was never queued loses it for good.
     // The sequence is IN the event id. These reports supersede one another, so
     // a stable per-dispatch id would make every later report a duplicate the
     // parent drops; the sequence is what lets a newer one land while a
     // redelivery of the same one still dedups.
-    await enqueueOutbox(db, 'event', {
+    const queued = await enqueueOutbox(db, 'event', {
       event: {
         eventId: `upgrade-dispatch:${row.dispatch_id}:${seq}`,
         type: 'fleet:upgrade-dispatch:progress',
@@ -101,6 +115,7 @@ export async function reportUpgradeProgress(db: DB, orgId: string): Promise<numb
         payload: { dispatchId: row.dispatch_id, seq, counts, completed, skipped },
       },
     });
+    if (!queued) continue;
     await db.run(
       'UPDATE upgrade_dispatch_fanout SET reported_seq = ?, reported_json = ? WHERE dispatch_id = ? AND org_id = ?',
       [seq, snapshot, row.dispatch_id, orgId],

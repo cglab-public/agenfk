@@ -113,7 +113,19 @@ export async function applyUpgradeDispatch(
   const confirmDowngrade = directive.confirmDowngrade === true;
 
   const recorded = await readFanout(db, orgId, dispatchId);
-  if (recorded) return recorded;
+  if (recorded) {
+    // Being served this dispatch AGAIN is the parent saying it still has no
+    // final answer — the last report was lost (trimmed from the outbox,
+    // rejected, or dropped after repeated refusals). Clearing the reported
+    // snapshot makes the next reporting pass send again; without it the child
+    // stays silent because nothing has changed on its side, and the rollout
+    // stalls forever with nobody logging anything.
+    await db.run(
+      'UPDATE upgrade_dispatch_fanout SET reported_json = NULL WHERE dispatch_id = ? AND org_id = ?',
+      [dispatchId, orgId],
+    );
+    return recorded;
+  }
 
   const directiveId = localDirectiveId(dispatchId);
 

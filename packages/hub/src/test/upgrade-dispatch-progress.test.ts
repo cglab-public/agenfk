@@ -142,6 +142,33 @@ describe('a child reports its upgrade progress upstream', () => {
     await setTarget('i1', 'succeeded');
     expect(await reportUpgradeProgress(db, ORG)).toBe(1);
     expect(await reportUpgradeProgress(db, ORG)).toBe(0);
+    // Silence here must come from the dispatch being COMPLETE, not merely from
+    // the snapshot being unchanged — those are different reasons that look the
+    // same from the outside, and only one of them should end the reporting.
+    expect((await queued())[0].payload.completed).toBe(true);
+  });
+
+  it('counts a cancelled machine as done, not as still pending', async () => {
+    // Retiring an installation cancels its target. Counted as pending, a hub
+    // with one retired machine never reports completion and sits on the
+    // parent's board running forever.
+    await fanOut(['i1', 'i2']);
+    await setTarget('i1', 'succeeded');
+    await setTarget('i2', 'cancelled');
+
+    await reportUpgradeProgress(db, ORG);
+    const [r] = await queued();
+    expect(r.payload.counts).toMatchObject({ updated: 1, failed: 1, pending: 0 });
+    expect(r.payload.completed).toBe(true);
+  });
+
+  it('counts a machine mid-upgrade as still pending', async () => {
+    await fanOut(['i1']);
+    await setTarget('i1', 'in_progress');
+    await reportUpgradeProgress(db, ORG);
+    const [r] = await queued();
+    expect(r.payload.counts.pending).toBe(1);
+    expect(r.payload.completed).toBe(false);
   });
 
   it('reports a fan-out that had nothing to do, so the parent is not left waiting', async () => {
@@ -171,7 +198,7 @@ describe('a child reports its upgrade progress upstream', () => {
     expect(all[0].payload.seq).toBe(1);
     expect(all[1].payload.seq).toBe(2);
     expect(all[0].eventId).not.toBe(all[1].eventId);
-    expect(all[1].eventId).toContain('2');
+    expect(all[1].eventId).toBe(`upgrade-dispatch:d-1:2`);
   });
 
   it('reports each dispatch separately', async () => {
@@ -181,9 +208,47 @@ describe('a child reports its upgrade progress upstream', () => {
       kind: 'upgrade.dispatch', dispatchId: 'd-2', targetVersion: '1.2.3',
     });
 
+    await setTarget('i2', 'succeeded');
     await reportUpgradeProgress(db, ORG);
-    const ids = (await queued()).map(r => r.payload.dispatchId).sort();
-    expect(ids).toEqual(['d-1', 'd-2']);
+    const byDispatch = Object.fromEntries((await queued()).map(r => [r.payload.dispatchId, r.payload.counts]));
+    expect(Object.keys(byDispatch).sort()).toEqual(['d-1', 'd-2']);
+    // Different counts, or a bug reading BOTH dispatches off one directive id
+    // would pass a test that only looked at the ids.
+    expect(byDispatch['d-1']).toMatchObject({ pending: 1, updated: 0 });
+    expect(byDispatch['d-2']).toMatchObject({ pending: 0, updated: 1 });
+  });
+
+  it('re-reports when the parent asks again, because a lost report is otherwise permanent', async () => {
+    // Being served the SAME dispatch again is the parent saying it still has
+    // no answer — the report was lost in the outbox (trimmed, rejected, or
+    // dropped after repeated refusals). Without this the child stays silent
+    // because its snapshot has not changed, and the rollout stalls forever
+    // with nobody logging anything.
+    await fanOut(['i1']);
+    expect(await reportUpgradeProgress(db, ORG)).toBe(1);
+    expect(await reportUpgradeProgress(db, ORG)).toBe(0);
+
+    await applyUpgradeDispatch(db, ORG, {
+      kind: 'upgrade.dispatch', dispatchId: 'd-1', targetVersion: '1.2.3',
+    });
+
+    expect(await reportUpgradeProgress(db, ORG)).toBe(1);
+    const all = await queued();
+    expect(all[all.length - 1].payload.seq).toBe(2);
+  });
+
+  it('does not mark a report as sent when it could not be queued', async () => {
+    // enqueueOutbox returns false rather than throwing when the hub has no
+    // usable binding. Advancing the bookkeeping anyway loses that report for
+    // good.
+    await fanOut(['i1']);
+    await db.run('DELETE FROM system_state WHERE key = ?', ['federation.parent']);
+    expect(await reportUpgradeProgress(db, ORG)).toBe(0);
+
+    await writeParentBinding(db, SECRET, {
+      parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1',
+    });
+    expect(await reportUpgradeProgress(db, ORG)).toBe(1);
   });
 });
 
@@ -337,6 +402,79 @@ describe('the parent records the progress its child reports', () => {
 
     await report(a.token, 1, { counts: { pending: 0, updated: 1, failed: 0, skipped: 0 }, completed: true });
     expect((await target(a.childHubId)).state).toBe('completed');
+  });
+
+  it('keeps serving the directive until the child reports it COMPLETE', async () => {
+    // The parent stopped re-serving as soon as any report landed, which threw
+    // away the self-healing the flow-dispatch path has: a lost completion left
+    // the board running forever for a fleet that had finished.
+    const a = await enroll('alpha');
+    expect((await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${a.token}`)).status).toBe(200);
+
+    await report(a.token, 1, { counts: { pending: 1, updated: 0, failed: 0, skipped: 0 }, completed: false });
+    expect((await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${a.token}`)).status).toBe(200);
+
+    await report(a.token, 2, { counts: { pending: 0, updated: 1, failed: 0, skipped: 0 }, completed: true });
+    expect((await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${a.token}`)).status).toBe(204);
+  });
+
+  it('refuses a sequence that is not a safe, bounded integer', async () => {
+    // seq lands in an INTEGER column — int4 on Postgres. A float or a huge
+    // number throws inside the deliver transaction, which 500s the whole
+    // batch; the child then retries it forever and its entire telemetry
+    // stream stops, not just its upgrade reports. And a once-accepted absurd
+    // value would freeze the row against every later legitimate report.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+
+    for (const [i, bad] of [1.5, 3e9, 1e300, -1, 0, Number.NaN].entries()) {
+      const r = await report(a.token, bad as number,
+        { counts: { pending: 0, updated: 1, failed: 0, skipped: 0 }, completed: true },
+        `bad-seq-${i}`);
+      expect(r.status, String(bad)).toBe(200);
+    }
+    expect((await target(a.childHubId)).state).toBe('pending');
+  });
+
+  it('stores counts as numbers, and nothing else', async () => {
+    // The blob is child-supplied and is handed straight back by the admin API.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    await report(a.token, 1, {
+      counts: { pending: 'lots', updated: { nested: true }, failed: -5, skipped: 2 },
+      completed: false,
+    });
+
+    const detail = JSON.parse((await target(a.childHubId)).detail);
+    expect(detail.counts).toEqual({ pending: 0, updated: 0, failed: 0, skipped: 2 });
+  });
+
+  it('keeps the stored detail valid JSON however much the child sends', async () => {
+    // Truncating a serialised object mid-structure stored syntactically
+    // invalid JSON, and the admin API then handed back a 20000-character
+    // STRING where every other row is an object — a silent type flip at the
+    // API boundary.
+    const a = await enroll('alpha');
+    await supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${a.token}`);
+    await report(a.token, 1, {
+      counts: { pending: 0, updated: 1, failed: 0, skipped: 0 },
+      completed: true,
+      skipped: Array.from({ length: 800 }, (_, i) => ({ installationId: 'x'.repeat(300) + i, reason: 'retired' })),
+    });
+
+    const raw = (await target(a.childHubId)).detail;
+    expect(() => JSON.parse(raw)).not.toThrow();
+    const parsed = JSON.parse(raw);
+    expect(parsed.counts.updated).toBe(1);
+    expect(Array.isArray(parsed.skipped)).toBe(true);
+
+    const list = await supertest(app).get('/v1/admin/upgrade-dispatches').set('Cookie', cookie);
+    const t = list.body.dispatches.find((d: any) => d.id === 'd-1').targets[0];
+    expect(typeof t.detail).toBe('object');
+    expect(t.detail.counts.updated).toBe(1);
   });
 
   it('shows the progress on the admin board', async () => {
