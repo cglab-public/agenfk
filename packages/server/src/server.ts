@@ -355,8 +355,7 @@ const getItemLogDir = (itemId: string): string =>
  * the path, or null when no log can be written safely — which must cost the
  * diagnostics, never the run.
  *
- * Same guarantees as writeValidationLog below, which it replaces on the verify
- * path: 'wx' so the 0600 mode is real (writeFileSync applies `mode` only when
+ * Same guarantees the whole-string writer it replaced had: 'wx' so the 0600 mode is real (writeFileSync applies `mode` only when
  * it CREATES the file, and follows symlinks, so without the exclusive flag a
  * pre-planted name would be overwritten with someone else's permissions), and
  * assertSafeItemId so nothing but a server-minted id reaches a path segment.
@@ -381,34 +380,6 @@ const closeValidationLog = (handle: { fd: number; logPath: string } | null): str
   try { fs.closeSync(handle.fd); } catch { /* already gone */ }
   try { pruneItemLogDir(path.dirname(handle.logPath), path.basename(handle.logPath)); } catch { /* advisory */ }
   return fs.existsSync(handle.logPath) ? handle.logPath : null;
-};
-
-/** Returns the log path, or null when no log could be written safely. */
-const writeValidationLog = (itemId: string, testId: string, output: string): string | null => {
-  const root = ensureVerifyLogRoot();
-  if (!root) return null;
-  let logPath = '';
-  try {
-    // Inside the try: assertSafeItemId throws for a malformed id (legacy
-    // migration ids are inserted verbatim from migration.json). Thrown out here
-    // it escapes into runCommandAndFinalize, where the async path records
-    // "Internal error during background validation" and marks a run whose
-    // command exited 0 as FAILED — a log-path complaint must never cost an item
-    // its transition.
-    const dir = path.join(root, assertSafeItemId(itemId));
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    logPath = path.join(dir, `${testId}.log`);
-    // 'wx' makes the 0600 real. writeFileSync applies `mode` only when it CREATES
-    // the file and follows symlinks, so without the exclusive flag a pre-planted
-    // name would be overwritten with someone else's permissions. The uuid name is
-    // unpredictable today; this stops the safety of the mode depending on that.
-    fs.writeFileSync(logPath, output, { mode: 0o600, flag: 'wx' });
-    pruneItemLogDir(dir, path.basename(logPath));
-    return logPath;
-  } catch {
-    // A failed prune must not report a successful write as "no log".
-    return logPath && fs.existsSync(logPath) ? logPath : null;
-  }
 };
 
 /**
