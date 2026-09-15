@@ -360,7 +360,23 @@ async function boot(): Promise<void> {
         which: async file => whichOnPath(file, (await currentLoginPath()) ?? undefined),
       });
       if (!tmuxStatus.available) {
-        console.log(`[DESKTOP] Terminal sessions will NOT survive quitting: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
+        /*
+         * Two facts, said separately, because the old line said one and got it
+         * wrong: "Terminal sessions will NOT survive quitting".
+         *
+         * The PROCESS does not survive - an agent mid-task is not still
+         * mid-task afterwards, and that is what tmux buys. The CONVERSATION
+         * does: terminals are recorded server-side and reopened, and the agent
+         * itself resumes through --session-id or --resume (a subcommand for
+         * codex). That path is weaker than tmux, not absent.
+         *
+         * Read as one sentence, the old wording said "you will lose what was
+         * in there". Which pushes somebody into installing tmux over a fear
+         * that does not apply, or - worse - into distrusting a restore that
+         * works and copying scrollback out by hand before quitting.
+         */
+        console.log('[DESKTOP] Without tmux, a running agent is stopped when you quit.');
+        console.log(`[DESKTOP] The conversation is restored on reopen. To keep the process alive too: ${tmuxStatus.warning ?? tmuxStatus.hint}`);
       }
 
       const { spawn: spawnPty } = await import('@lydell/node-pty');
