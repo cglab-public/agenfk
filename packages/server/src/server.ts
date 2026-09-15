@@ -837,14 +837,26 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Prom
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const timestamp = () => new Date().toISOString();
 
-  // Porcelain v1: XY PATH. X is the index status, Y the working-tree status.
-  // Anything with a non-space Y, and every '??', is a change the author has not
-  // staged — so it is not ours to commit, but it IS ours to mention.
-  const unstaged = (await gitOut('git status --porcelain', projectRoot))
-    .split('\n')
-    .filter(line => line.length > 3 && (line.startsWith('??') || line[1] !== ' '))
-    .map(line => line.slice(3).trim())
-    .filter(Boolean);
+  // Porcelain v1 with -z: `XY PATH\0`, and for a rename or copy a second
+  // `\0OLDPATH` that must be consumed with it. X is the index status, Y the
+  // working-tree status; anything with a non-space Y, and every '??', is a
+  // change the author has not staged — not ours to commit, but ours to mention.
+  //
+  // -z is not a detail: without it git QUOTES any path containing a space or a
+  // non-ASCII byte, so `with space.txt` comes back wrapped in quotes and an
+  // accented filename as "uni-caf\303\251.txt" — an escape sequence presented
+  // to the reader as the name of their own file.
+  const unstaged: string[] = [];
+  const entries = (await gitOut('git status --porcelain -z', projectRoot)).split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry.length < 4) continue;
+    const [x, y] = [entry[0], entry[1]];
+    const path = entry.slice(3);
+    // A rename/copy carries its source in the following field either way.
+    if (x === 'R' || x === 'C') i++;
+    if (entry.startsWith('??') || y !== ' ') unstaged.push(path);
+  }
 
   const staged = (await gitOut('git diff --cached --name-only', projectRoot))
     .split('\n').map(l => l.trim()).filter(Boolean);

@@ -166,6 +166,38 @@ describe('an empty index is not a failure', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('names awkward paths as the author would recognise them', async () => {
+    // git quotes any path with a space or a non-ASCII byte, so without -z the
+    // report hands the reader "uni-caf\303\251.txt" — an escape sequence
+    // presented as the name of their own file — and every spaced path wrapped
+    // in quotes it does not have.
+    const { dir } = repo();
+    try {
+      fs.writeFileSync(path.join(dir, 'with space.txt'), 'a\n');
+      fs.writeFileSync(path.join(dir, 'café.txt'), 'b\n');
+      const r = await close(dir);
+      expect(r.unstaged).toEqual(expect.arrayContaining(['with space.txt', 'café.txt']));
+      expect(r.unstaged.some(p => p.includes('\\3') || p.startsWith('"'))).toBe(false);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('reports a rename as one path, not as a mangled arrow', async () => {
+    // A rename entry is `R  new` with the OLD path in the following field; not
+    // consuming it makes the source look like a separate unstaged file.
+    const { dir, git } = repo();
+    try {
+      fs.writeFileSync(path.join(dir, 'a.txt'), 'x\n');
+      git('add a.txt'); git('commit -q -m a');
+      git('mv a.txt b.txt');       // staged rename
+      fs.writeFileSync(path.join(dir, 'loose.txt'), 'y\n'); // the only unstaged thing
+
+      const r = await close(dir, 'abc129', 'TASK', 'renames');
+      expect(r.committed).toBe(true);
+      expect(r.unstaged).toEqual(['loose.txt']);
+      expect(r.unstaged.join(' ')).not.toContain('->');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('still names what it declined to carry, so nothing is lost silently', async () => {
     // Dropping a file the author expected to land is the same defect as
     // silently adding one they did not.
