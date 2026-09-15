@@ -1471,7 +1471,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   });
 
   router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
-    const owned = await ctx.db.get<FlowRow>(
+    const owned = await ctx.db.get<{ source: string }>(
       'SELECT source FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
     );
