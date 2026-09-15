@@ -14,7 +14,7 @@
  * it is a pure function of the rows drawn there, so the two agree by
  * construction rather than by discipline.
  */
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { AppShell } from '../components/AppShell';
@@ -40,8 +40,23 @@ vi.mock('../api', () => ({
     getGitStatus: vi.fn(async () => ({ changed: 0, staged: 0, files: [] })),
   },
 }));
+/*
+ * The handlers are captured, not discarded. `running` is NOT read off
+ * AgentRun.status - the hook never closes a run, so status would light every
+ * card that ever had one - it is recency of `run:event`. Without emitting one
+ * there is no way to produce the state at all, and a counter tested only on
+ * idle rows is a counter tested on the case that does not matter.
+ */
+const socketHandlers: Record<string, ((p: unknown) => void) | undefined> = {};
 vi.mock('socket.io-client', () => ({
-  io: vi.fn(() => ({ connected: true, connect: vi.fn(), on: vi.fn(), off: vi.fn(), emit: vi.fn(), disconnect: vi.fn() })),
+  io: vi.fn(() => ({
+    connected: true,
+    connect: vi.fn(),
+    on: vi.fn((event: string, cb: (p: unknown) => void) => { socketHandlers[event] = cb; }),
+    off: vi.fn(),
+    emit: vi.fn(),
+    disconnect: vi.fn(),
+  })),
 }));
 
 beforeEach(() => {
@@ -244,5 +259,91 @@ describe('which card a process is drawn under', () => {
     const owner = rows[0].closest('li')!;
     expect(owner.textContent).toMatch(/The card with the agent/);
     expect(owner.textContent).not.toMatch(/The quiet card/);
+  });
+});
+
+/**
+ * The totals on the PROJECTS header (1a1b8df6).
+ *
+ * The SESSIONS section carried two things the tree cannot: a count of what was
+ * running, and a list sorted so failures came first. Losing the sorted list is
+ * the real cost of drawing processes under their cards - a stuck agent is now
+ * wherever its card happens to sit, which may be inside a collapsed project.
+ *
+ * These counters are the deliberate replacement rather than decoration. The
+ * "need you" half is a BUTTON that jumps to the first stuck card, which is
+ * what the failures-first sort was actually for: not reading a list, but
+ * getting to the one thing that stopped.
+ */
+describe('the totals on the projects header', () => {
+  const twoCards = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'Stuck card', status: 'IN_PROGRESS' },
+    ] as never);
+  };
+
+  it('counts what is running and what wants a person', async () => {
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+      { id: 'b', itemId: 'i2', projectId: 'p1', harness: 'codex', status: 'failed', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    expect(await screen.findByText(/1 need you/i)).toBeInTheDocument();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(async () => expect(await screen.findByText(/1 running/i)).toBeInTheDocument());
+  });
+
+  it('counts PROCESSES, not cards', async () => {
+    // Two agents on one card is two things running. Counting cards would
+    // under-report exactly when the most is happening.
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+      { id: 'b', itemId: 'i1', projectId: 'p1', harness: 'codex', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findAllByTestId('process-row');
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(async () => expect(await screen.findByText(/2 running/i)).toBeInTheDocument());
+  });
+
+  it('says nothing at all when nothing is happening', async () => {
+    // A row of zeroes above a quiet tree is noise, and it trains the eye to
+    // skip the one place that is supposed to catch it.
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([] as never);
+    renderShell();
+    await waitFor(() => expect(screen.getByRole('heading', { name: /projects/i })).toBeInTheDocument());
+    expect(screen.queryByText(/running/i)).toBeNull();
+    expect(screen.queryByText(/need you/i)).toBeNull();
+  });
+
+  it('makes the stuck count a button, because reading it is not the point', async () => {
+    /*
+     * What the failures-first sort was FOR. Without a way through, this
+     * replaces a list that got you to the problem with a number that tells you
+     * one exists.
+     */
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'b', itemId: 'i2', projectId: 'p1', harness: 'codex', status: 'failed', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    const jump = await screen.findByRole('button', { name: /need you/i });
+    expect(jump).toBeInTheDocument();
+  });
+
+  it('does not make the running count a button, since there is nothing to do', async () => {
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findAllByTestId('process-row');
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await screen.findByText(/1 running/i);
+    expect(screen.queryByRole('button', { name: /running/i })).toBeNull();
   });
 });

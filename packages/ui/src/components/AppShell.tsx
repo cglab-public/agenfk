@@ -1590,6 +1590,46 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
           <NewProjectButton onCreated={id => setActiveProjectId(id)} />
         </div>
       </div>
+      {/* What the SESSIONS section carried that the tree cannot.
+      
+          Its real value was never the list itself but the failures-first sort:
+          a way to GET to the one agent that stopped. Drawing processes under
+          their cards puts a stuck agent wherever its card happens to sit, which
+          may be inside a collapsed project - so the count alone would replace
+          something that took you there with something that tells you it exists.
+          Hence the button.
+      
+          Silent when nothing is happening. A row of zeroes over a quiet tree
+          trains the eye to skip the one place meant to catch it. */}
+      {(() => {
+        const running = sessionRows.filter(r => r.state === 'running').length;
+        const stuck = sessionRows.filter(r => r.state === 'failed' || r.state === 'blocked');
+        if (running === 0 && stuck.length === 0) return null;
+        return (
+          <div className="flex shrink-0 items-center gap-1.5 px-1 pb-1 font-mono text-[10px]">
+            {running > 0 && (
+              // Not a button: there is nothing to do about an agent that is
+              // working, and a control that leads nowhere is worse than text.
+              <span className="text-emerald-400">{running} running</span>
+            )}
+            {running > 0 && stuck.length > 0 && <span className="text-ink-tertiary">·</span>}
+            {stuck.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const first = stuck[0];
+                  revealOnBoard({ itemId: first.itemId, projectId: first.projectId });
+                }}
+                title="Go to the first card that needs you"
+                className="rounded text-amber-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-amber-300"
+              >
+                {stuck.length} need you
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       <ul
         data-testid="project-list"
         className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim"
@@ -1641,7 +1681,12 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                     ? <FolderOpen size={13} />
                     : <Folder size={13} className={work.length === 0 ? 'opacity-50' : undefined} />}
                 </span>
-                <span data-testid="project-name" className="truncate">{project.name}</span>
+                {/* flex-1, or `justify-between` above shares the free space between all
+                    four children and the name floats in the middle of the row -
+                    which reads as a centred column and makes a list of projects
+                    hard to scan down. Taking the space itself keeps the name
+                    against its folder icon and pushes the count and age right. */}
+                <span data-testid="project-name" className="min-w-0 flex-1 truncate text-left">{project.name}</span>
                 {work.length > 0 && (
                   // Visible without expanding: the whole point of a folder is
                   // to say how much is inside before you open it.
@@ -1832,17 +1877,44 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
 
                           No chevron to collapse these: a card must never be
                           able to hide an agent that is stuck. */}
-                      {sessionRows
-                        .filter(row => row.itemId === item.id)
-                        .sort((a, b) => ORDER[a.state] - ORDER[b.state])
-                        .map(row => (
-                          <CardProcessRow
-                            key={row.runId}
-                            row={row}
-                            onOpen={openSession}
-                            onStop={stopSession}
-                          />
-                        ))}
+                      {(() => {
+                        const mine = sessionRows
+                          .filter(row => row.itemId === item.id)
+                          .sort((a, b) => ORDER[a.state] - ORDER[b.state]);
+                        if (mine.length === 0) return null;
+                        return (
+                          /* A BRACKET, not just an indent. The rule says these
+                             rows hang off the card above rather than being the
+                             next cards in the list - which a bare indent leaves
+                             ambiguous once the tree is deep enough to have
+                             indentation of its own.
+
+                             The offset is measured, not chosen: 7px is the
+                             card's dot column, so the rule starts under the
+                             dot and the process marks land under the card's
+                             TITLE. That is what makes the card's own mark read
+                             as the head of the group rather than as a fourth
+                             peer in it. */
+                          <div
+                            data-testid="process-group"
+                            /* The bottom margin is not decoration: without it the last
+                               process of one card sits flush against the next
+                               card's title and the eye reads it as belonging to
+                               the card BELOW, which is the one mistake this
+                               layout must not invite. */
+                            className="ml-[7px] mb-1.5 flex flex-col border-l border-border-soft pl-2"
+                          >
+                            {mine.map(row => (
+                              <CardProcessRow
+                                key={row.runId}
+                                row={row}
+                                onOpen={openSession}
+                                onStop={stopSession}
+                              />
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </li>
                   ))}
                 </ul>
