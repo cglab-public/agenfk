@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import type { DB } from '../../db.js';
-import { readParentBinding, markBindingRevoked, PARENT_BINDING_KEY, type ParentBinding } from './parentBinding.js';
+import {
+  readParentBinding, markBindingRevoked, writeParentBinding, PARENT_BINDING_KEY,
+  type ParentBinding, type IdentityPolicy,
+} from './parentBinding.js';
 
 /**
  * The child half of hub federation (CGLAB-181).
@@ -212,14 +215,23 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
 
   const creds = { parentUrl: binding.parentUrl, token: binding.token };
 
+  let pong: any;
   try {
-    await transport.ping({ ...creds, hubVersion });
+    pong = await transport.ping({ ...creds, hubVersion });
   } catch (err) {
     if (isRevocation(err)) {
       await markBindingRevoked(db, secretKey);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
+  }
+
+  // The parent owns the identity policy; persist whatever it just told us so
+  // the next batch of forwarded events is stamped correctly. A parent that
+  // says nothing leaves the cached value alone.
+  const told = pong?.identityPolicy;
+  if ((told === 'keep' || told === 'pseudonymize') && told !== binding.identityPolicy) {
+    await writeParentBinding(db, secretKey, { ...binding, identityPolicy: told as IdentityPolicy });
   }
 
   const result: TickResult = { ok: true, delivered: 0 };

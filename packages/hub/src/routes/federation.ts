@@ -4,6 +4,7 @@ import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
+import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { issueFederationKey, requireFederationKey } from '../auth/federationKey.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { rateLimit } from '../util/rateLimit.js';
@@ -109,7 +110,23 @@ export function federationRouter(ctx: HubServerContext): Router {
         'UPDATE child_hubs SET last_seen = ?, hub_version = COALESCE(?, hub_version) WHERE id = ? AND org_id = ?',
         [new Date().toISOString(), hubVersion, childHubId, orgId],
       );
-      res.json({ ok: true, childHubId, orgId });
+      // The effective identity policy rides back on the heartbeat, so the
+      // child learns of a change within a tick without a new endpoint or a
+      // directive kind. Group default, overridden per child in either
+      // direction.
+      const group = await ctx.db.get<{ identity_policy: string | null }>(
+        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
+      );
+      const child = await ctx.db.get<{ identity_policy: string | null }>(
+        'SELECT identity_policy FROM child_hubs WHERE id = ? AND org_id = ?', [childHubId, orgId],
+      );
+      res.json({
+        ok: true, childHubId, orgId,
+        identityPolicy: effectiveIdentityPolicy(
+          group?.identity_policy as any ?? null,
+          child?.identity_policy as any ?? null,
+        ),
+      });
     } catch (err) {
       next(err);
     }

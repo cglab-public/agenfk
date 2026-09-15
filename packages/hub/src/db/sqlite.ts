@@ -135,7 +135,8 @@ const SCHEMA_SQLITE = `
     detached_by_user_id TEXT,
     detached_by_email TEXT,
     release_requested_at TEXT,
-    release_reason TEXT
+    release_reason TEXT,
+    identity_policy TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
@@ -191,6 +192,7 @@ const SCHEMA_SQLITE = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TEXT,
+    identity_policy TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 

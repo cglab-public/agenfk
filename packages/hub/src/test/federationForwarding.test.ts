@@ -82,10 +82,14 @@ describe('forwardEvents', () => {
     expect(await outboxDepth(db)).toBe(2);
   });
 
-  it('queues nothing once the parent has released the hub', async () => {
+  it('does not even try to queue once the parent has released the hub', async () => {
+    // enqueueOutbox refuses a revoked binding too, so "nothing was queued"
+    // alone cannot tell which layer refused. `failed: 0` says this one did:
+    // had it tried and been turned away downstream, the event would count as
+    // a failure rather than never having been offered.
     await writeParentBinding(db, SECRET, { ...binding, state: 'revoked' });
     const out = await forwardEvents(db, SECRET, [ev('e1')]);
-    expect(out.forwarded).toBe(0);
+    expect(out).toMatchObject({ forwarded: 0, failed: 0 });
     expect(await outboxDepth(db)).toBe(0);
   });
 

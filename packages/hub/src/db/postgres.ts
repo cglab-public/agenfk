@@ -133,7 +133,8 @@ const SCHEMA_PG = `
     detached_by_user_id TEXT,
     detached_by_email TEXT,
     release_requested_at TIMESTAMPTZ,
-    release_reason TEXT
+    release_reason TEXT,
+    identity_policy TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
 
@@ -184,6 +185,7 @@ const SCHEMA_PG = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TIMESTAMPTZ,
+    identity_policy TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 

@@ -56,6 +56,27 @@ describe('federationSync: heartbeat', () => {
     expect(out.skipped).toBeUndefined();
   });
 
+  it('adopts the identity policy the parent hands back, and keeps it between ticks', async () => {
+    await writeParentBinding(db, SECRET, binding);
+    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('keep');
+
+    const told = (policy: unknown) => transport({ ping: async () => ({ ok: true, identityPolicy: policy }) });
+    await federationTick({ db, secretKey: SECRET, transport: told('pseudonymize') as any });
+    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+
+    // a parent that says nothing must not silently reset it
+    await federationTick({ db, secretKey: SECRET, transport: transport() as any });
+    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+
+    // nor must a value we do not recognise
+    await federationTick({ db, secretKey: SECRET, transport: told('anonymous-ish') as any });
+    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('pseudonymize');
+
+    // and it switches back when the parent says so
+    await federationTick({ db, secretKey: SECRET, transport: told('keep') as any });
+    expect((await readParentBinding(db, SECRET))!.identityPolicy).toBe('keep');
+  });
+
   it('a directive kind it does not understand is ignored, not fatal', async () => {
     // Flow dispatch (CGLAB-182) and upgrades (CGLAB-183) add kinds later; a
     // child on an older build must not wedge when a newer parent sends one.

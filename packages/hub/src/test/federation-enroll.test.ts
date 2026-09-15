@@ -263,7 +263,9 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
         .set('Authorization', `Bearer ${e.body.token}`)
         .send({ hubVersion: '1.2.0' });
       expect(r.status).toBe(200);
-      expect(r.body).toEqual({ ok: true, childHubId: e.body.childHubId, orgId: 'org' });
+      // identityPolicy rides on the heartbeat (CGLAB-184) — 'keep' unless an
+      // admin has opted out group-wide or for this child.
+      expect(r.body).toEqual({ ok: true, childHubId: e.body.childHubId, orgId: 'org', identityPolicy: 'keep' });
       const row = await ctx.db.get('SELECT last_seen, hub_version FROM child_hubs WHERE id = ?', [e.body.childHubId]);
       expect(new Date(row.last_seen).getTime()).toBeGreaterThan(Date.now() - 60_000);
       expect(row.hub_version).toBe('1.2.0');
@@ -277,6 +279,30 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
       expect(r.status).toBe(200);
       const row = await ctx.db.get('SELECT hub_version FROM child_hubs WHERE id = ?', [e.body.childHubId]);
       expect(row.hub_version).toBe('1.1.19');
+    });
+
+    it('tells the child the identity policy, group default overridden per child', async () => {
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      const ping = (token: string) => supertest(app).post('/v1/federation/ping').set('Authorization', `Bearer ${token}`).send({});
+
+      // default: real identities, because a group is usually one organisation
+      expect((await ping(a.body.token)).body.identityPolicy).toBe('keep');
+
+      // group-wide opt-out reaches every child
+      await ctx.db.run("INSERT INTO org_settings (org_id, identity_policy) VALUES ('org','pseudonymize') ON CONFLICT(org_id) DO UPDATE SET identity_policy = 'pseudonymize'");
+      expect((await ping(a.body.token)).body.identityPolicy).toBe('pseudonymize');
+      expect((await ping(b.body.token)).body.identityPolicy).toBe('pseudonymize');
+
+      // a per-child setting overrides it, in both directions
+      await ctx.db.run("UPDATE child_hubs SET identity_policy = 'keep' WHERE id = ?", [a.body.childHubId]);
+      expect((await ping(a.body.token)).body.identityPolicy).toBe('keep');
+      expect((await ping(b.body.token)).body.identityPolicy).toBe('pseudonymize');
+
+      await ctx.db.run("UPDATE org_settings SET identity_policy = 'keep' WHERE org_id = 'org'");
+      await ctx.db.run("UPDATE child_hubs SET identity_policy = 'pseudonymize' WHERE id = ?", [b.body.childHubId]);
+      expect((await ping(a.body.token)).body.identityPolicy).toBe('keep');
+      expect((await ping(b.body.token)).body.identityPolicy).toBe('pseudonymize');
     });
 
     it('GET /v1/federation/directives answers 204 for an enrolled child hub (no directive kinds yet)', async () => {

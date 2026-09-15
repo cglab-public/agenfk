@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { SEMVER_TAG_RE } from '../util/semver.js';
+import { forwardEvents } from '../services/federation/forwarding.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
@@ -183,6 +184,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
     let rejected = 0;
     let hiddenDropped = 0;
     const seenInstallations = new Set<string>();
+    // Events kept locally, queued for the parent after the transaction. This
+    // hub is a child only when it has a parent binding; on a standalone hub
+    // forwardEvents is a no-op and nothing is queued.
+    const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
     // Best-effort eventId for events that fail isValidEvent: they may lack it
     // entirely, which is often the very reason they are invalid.
@@ -338,6 +343,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
           JSON.stringify(e),
         ]);
         if (result.changes === 0) { skipped++; continue; }
+        // Only events this hub actually KEPT are forwarded: a duplicate the
+        // local insert ignored is not news for the parent either.
+        forwardable.push({ ...e, userKey });
         ingested++;
         await ctx.db.run(UPSERT_INSTALLATION_SQL, [
           e.installationId, e.orgId, now, now,
@@ -491,6 +499,22 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // Federation (CGLAB-184). Deliberately AFTER the ingest transaction and
+    // outside it: queueing for the parent is a side effect of having stored an
+    // event, never a condition of storing it.
+    //
+    // forwardEvents is total by construction — it catches per event and
+    // reports failure as a value — so this catch is unreachable today and no
+    // test can reach it either. It stays because the property it protects is
+    // the load-bearing one: if someone later makes that function throw, a
+    // developer's `agenfk` should still not start failing because of a parent
+    // hub they have never heard of.
+    try {
+      await forwardEvents(ctx.db, ctx.config.secretKey, forwardable);
+    } catch (err) {
+      console.warn('[FEDERATION] could not queue events for the parent:', (err as Error).message);
+    }
+
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
   });
 
