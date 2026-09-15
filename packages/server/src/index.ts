@@ -18,6 +18,7 @@ import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
+import { resolveBranchHint } from './branchHint';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -805,26 +806,19 @@ async function callToolHandler(request: any): Promise<any> {
           'call validate_progress(itemId, evidence)',
         );
 
-        // Branch hint
-        let branchHint = '';
-        if (task.branchName) {
-          try {
-            // execFileSync with an argument array, never a template literal in a
-            // shell: branchName is stored data, and this runs implicitly on every
-            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
-            // break out of the command. `--` stops it being read as an option.
-            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
-            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
-            if (currentBranch !== task.branchName) {
-              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
-              branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-            } else {
-              branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-            }
-          } catch {
-            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Work on the current branch or ask the user to create it.`;
-          }
-        }
+        /*
+         * In the ITEM'S tree, never the server's own cwd.
+         *
+         * These three git commands used to run with no cwd and no -C, so the
+         * gatekeeper read the branch of one repository and checked out in
+         * another - whichever the server process was started in. Extracted to
+         * branchHint.ts, where the cwd can be asserted rather than assumed;
+         * see the header there for why a write in the wrong tree is worse than
+         * a read in one.
+         */
+        const branchHint = resolveBranchHint(task, {
+          run: args => execFileSync('git', args, { encoding: 'utf8' }),
+        });
 
         return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
       }
