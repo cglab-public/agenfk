@@ -273,6 +273,15 @@ interface FlowDispatch {
  * at-least-once, so it happens routinely) and a late redelivery of an OLDER
  * version cannot walk the flow backwards.
  *
+ * `OR flows.source <> 'parent'` is what makes a RE-JOIN work. A hub that left
+ * the group kept these rows at the parent's id and the parent's version, but
+ * released to source='hub' (see releaseParentFlows). If the parent has not
+ * bumped the flow since, re-dispatching it carries the SAME version, so the
+ * monotonic guard alone would decline to re-lock it — leaving the child freely
+ * editing a flow the parent owns again while the parent's board reports it
+ * landed. The version guard still holds for a flow that is already ours: this
+ * clause only fires when the row is NOT currently parent-owned.
+ *
  * `org_available = 1` because a dispatched flow exists to be picked up
  * org-wide; that is the whole point of sending it.
  */
@@ -296,11 +305,27 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
        version = excluded.version,
        org_available = 1,
        updated_at = excluded.updated_at
-     WHERE excluded.version > flows.version`,
+     WHERE excluded.version > flows.version OR flows.source <> 'parent'`,
     [flow.id, orgId, flow.name, flow.description ?? null,
      JSON.stringify(flow.definition), version, new Date().toISOString()],
   );
   return true;
+}
+
+/**
+ * Record that the parent has let this hub go, and hand its flows back in the
+ * same breath.
+ *
+ * These two belong together and the pairing is easy to forget: a tick can
+ * discover the revocation on any of its three legs, and once the binding reads
+ * 'revoked' every LATER tick returns early before it reaches the first leg
+ * again. So a leg that revokes without releasing does not get a second chance
+ * — the flows stay locked to a parent that is gone until an admin happens to
+ * click Leave, which is the exact stranding the release exists to prevent.
+ */
+async function revokeAndRelease(db: DB, secretKey: string): Promise<void> {
+  await markBindingRevoked(db, secretKey);
+  await releaseParentFlows(db);
 }
 
 export async function federationTick(args: TickArgs): Promise<TickResult> {
@@ -325,12 +350,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
     pong = await transport.ping({ ...creds, hubVersion });
   } catch (err) {
     if (isRevocation(err)) {
-      await markBindingRevoked(db, secretKey);
-      // The parent let this hub go. Its flows become ordinary local flows now,
-      // not whenever an admin next happens to click Leave — until then they
-      // would be locked to a parent that is no longer there. See
-      // releaseParentFlows.
-      await releaseParentFlows(db);
+      await revokeAndRelease(db, secretKey);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
@@ -368,7 +388,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
     }
   } catch (err) {
     if (isRevocation(err)) {
-      await markBindingRevoked(db, secretKey);
+      await revokeAndRelease(db, secretKey);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
@@ -385,7 +405,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   try {
     const outcome = await deliverBatch(db, transport, creds, rows);
     if (outcome.revoked) {
-      await markBindingRevoked(db, secretKey);
+      await revokeAndRelease(db, secretKey);
       return { ok: false, revoked: true, error: outcome.error };
     }
     result.delivered = outcome.delivered;

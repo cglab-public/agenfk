@@ -2,7 +2,7 @@
 // The server refuses the write; this is the part that tells the admin WHY
 // before they click, instead of letting them draft an edit into a 409.
 import { describe, it, expect } from 'vitest';
-import { parentFlowLock } from '../pages/parentFlowLock';
+import { parentFlowLock, PARENT_FLOW_LOCK_REASON } from '../pages/parentFlowLock';
 
 describe('parentFlowLock', () => {
   it('locks a parent-origin flow and explains where it came from', () => {
@@ -11,10 +11,10 @@ describe('parentFlowLock', () => {
     expect(s.reason).toMatch(/parent hub/i);
   });
 
-  it('says the flows stay and become editable if the hub leaves the group', () => {
-    // The promise the detach path keeps. An admin reading "you cannot edit
-    // this" needs to know the exit is not "lose the flow".
-    expect(parentFlowLock('parent').reason).toMatch(/leaves the group|detach/i);
+  it('hands back the shared reason rather than a sentence of its own', () => {
+    // Pins the WIRING, not the wording: re-asserting the prose here would be a
+    // text-rubric test that can only fail when someone rephrases it.
+    expect(parentFlowLock('parent').reason).toBe(PARENT_FLOW_LOCK_REASON);
   });
 
   it('leaves this hub\'s own flows alone', () => {

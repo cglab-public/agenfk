@@ -25,7 +25,7 @@ import { drainApp } from './helpers/drainApp';
 import { openDb } from '../db';
 import type { HubDb } from '../db/types';
 import { writeParentBinding, readParentBinding } from '../services/federation/parentBinding';
-import { federationTick } from '../services/federation/federationSync';
+import { federationTick, installDispatchedFlow } from '../services/federation/federationSync';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flow-ro-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -172,6 +172,44 @@ describe('a parent-origin flow is read-only on the child', () => {
     expect(left.status).toBe(200);
     expect((await row('flow-local')).source).toBe('hub');
   });
+
+  it('releases the flows even when the binding is already gone', async () => {
+    // The repair path. If a crash lands between clearing the binding and
+    // releasing the flows, this is the retry that finishes the job — and the
+    // admin has no OTHER way to reach it, because hub-ui renders the join form
+    // the moment a hub reads as unbound, so the Leave button is gone.
+    const left = await supertest(app).delete('/v1/admin/federation').set('Cookie', cookie);
+    expect(left.status).toBe(200);
+    expect((await row('flow-from-parent')).source).toBe('hub');
+  });
+
+  it('releases the flows BEFORE it forgets the parent, so a crash between them is recoverable', async () => {
+    // Ordering is the whole guard here: there is no transaction around the
+    // two writes. Clear-then-release leaves a crash victim reading as unbound
+    // with its flows still locked to a parent it can no longer name, and no
+    // control anywhere in the product to unlock them. Release-then-clear
+    // leaves it still bound and still able to retry.
+    await writeParentBinding(ctx.db, SECRET, {
+      parentUrl: 'https://parent.example.com',
+      token: 'fed_' + 'f'.repeat(64),
+      childHubId: 'ch-1',
+      state: 'revoked',
+    });
+
+    const seen: string[] = [];
+    const realRun = ctx.db.run.bind(ctx.db);
+    ctx.db.run = async (sql: string, params?: unknown[]) => {
+      if (/UPDATE flows SET source/i.test(sql)) seen.push('release');
+      if (/DELETE FROM system_state/i.test(sql) && String(params?.[0]) === 'federation.parent') seen.push('clear');
+      return realRun(sql, params);
+    };
+    try {
+      await supertest(app).delete('/v1/admin/federation').set('Cookie', cookie);
+    } finally {
+      ctx.db.run = realRun;
+    }
+    expect(seen).toEqual(['release', 'clear']);
+  });
 });
 
 // The other way out of the group: the parent detaches, and this hub finds out
@@ -209,6 +247,74 @@ describe('the parent detaching also unlocks the flows it sent', () => {
     const after = await db.get<any>('SELECT * FROM flows WHERE id = ?', ['flow-from-parent']);
     expect(after).toBeTruthy();
     expect(after.source).toBe('hub');
+  });
+
+  it('releases them however the revocation is discovered, not only on the ping', async () => {
+    // A parent that detaches a child BETWEEN its ping and its next call revokes
+    // on the directives or deliver leg instead. Those legs matter more than
+    // they look: once the binding reads 'revoked' every later tick returns
+    // early before it ever pings again, so a leg that revokes without
+    // releasing strands the flows until an admin happens to click Leave —
+    // exactly the state the release exists to prevent.
+    for (const leg of ['directives', 'deliver'] as const) {
+      const db2 = await openDb(':memory:');
+      await writeParentBinding(db2, SECRET, binding);
+      await db2.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, org_available)
+         VALUES (?, ?, ?, ?, ?, 'parent', 2, 1)`,
+        ['flow-from-parent', 'org', 'Group TDD', null, JSON.stringify(def('Group TDD'))],
+      );
+      // The deliver leg only runs with something queued to deliver.
+      await db2.run(
+        `INSERT INTO federation_outbox (id, kind, payload, created_at, next_attempt_at)
+         VALUES (?, 'event', ?, ?, ?)`,
+        ['ob-1', JSON.stringify({ kind: 'event' }), new Date(0).toISOString(), new Date(0).toISOString()],
+      );
+      const unauthorized = () => {
+        const err: any = new Error('Invalid, revoked or detached federation key');
+        err.response = { status: 401, data: { error: 'detached' } };
+        throw err;
+      };
+      const t = {
+        async ping() { return { ok: true }; },
+        async directives() { if (leg === 'directives') unauthorized(); return null; },
+        async deliver(rows: any[]) { if (leg === 'deliver') unauthorized(); return { accepted: rows.length }; },
+      };
+      await federationTick({ db: db2, secretKey: SECRET, transport: t, orgId: 'org' } as any);
+      const after = await db2.get<any>('SELECT source FROM flows WHERE id = ?', ['flow-from-parent']);
+      expect(after.source, `revoked on the ${leg} leg`).toBe('hub');
+      await db2.close();
+    }
+  });
+
+  it('re-locks a released flow when the hub re-joins the same parent', async () => {
+    // After a detach the flow keeps the PARENT's id and version but reads as
+    // local. If the parent has not bumped it since, re-dispatching it carries
+    // the SAME version — so a monotonic version guard alone silently declines
+    // to re-lock, and the child is left freely editing a flow the parent owns
+    // again while the parent's board says it landed.
+    await db.run("UPDATE flows SET source = 'hub' WHERE id = ?", ['flow-from-parent']);
+
+    const applied = await installDispatchedFlow(db, 'org', {
+      kind: 'flow.dispatch', dispatchId: 'd-2', flowVersion: 2,
+      flow: { id: 'flow-from-parent', name: 'Group TDD', version: 2, definition: def('Group TDD') },
+    } as any);
+
+    expect(applied).toBe(true);
+    expect((await db.get<any>('SELECT source FROM flows WHERE id = ?', ['flow-from-parent'])).source).toBe('parent');
+  });
+
+  it('still refuses to walk a flow BACKWARDS to an older version', async () => {
+    // The guard the re-lock must not throw away: a late redelivery of an older
+    // version cannot overwrite a newer one.
+    await db.run("UPDATE flows SET version = 9, name = 'Newer' WHERE id = ?", ['flow-from-parent']);
+    await installDispatchedFlow(db, 'org', {
+      kind: 'flow.dispatch', dispatchId: 'd-3', flowVersion: 2,
+      flow: { id: 'flow-from-parent', name: 'Older', version: 2, definition: def('Older') },
+    } as any);
+    const after = await db.get<any>('SELECT name, version FROM flows WHERE id = ?', ['flow-from-parent']);
+    expect(after.name).toBe('Newer');
+    expect(after.version).toBe(9);
   });
 
   it('a transport failure that is NOT a revocation leaves them locked', async () => {

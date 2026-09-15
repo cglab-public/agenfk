@@ -2606,10 +2606,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       if (!present) {
         // Nothing usable to leave: an absent or unparseable row. Release the
         // flows anyway — a hub with no readable binding is a hub with no
-        // parent, and leaving them locked would strand them permanently.
+        // parent, and leaving them locked would strand them permanently. This
+        // is also the repair path for a crash in the ordered pair below.
+        await releaseParentFlows(ctx.db);
         await clearParentBinding(ctx.db);
         await setReleaseRequestedFlag(ctx.db, false);
-        await releaseParentFlows(ctx.db);
         res.json({ bound: false });
         return;
       }
@@ -2622,11 +2623,20 @@ export function adminRouter(ctx: HubServerContext): Router {
       // The outbox is deliberately left in place: it is this hub's own record
       // of what it never managed to send, and discarding it here would destroy
       // data as a side effect of tidying up a relationship.
-      await clearParentBinding(ctx.db);
-      await setReleaseRequestedFlag(ctx.db, false);
       // The flows the parent sent STAY, and become this hub's own — detaching
       // must not take away what a team is working under.
+      //
+      // ORDER MATTERS, and there is deliberately no transaction: release
+      // first, forget the parent second. These two writes are not atomic, and
+      // the other order is unrecoverable — a crash between them would leave a
+      // hub reading as unbound with its flows still locked to a parent it can
+      // no longer name, and hub-ui renders the JOIN form the moment a hub
+      // reads unbound, so the Leave button that would retry is gone. This way
+      // a crash leaves the hub still bound and still revoked, so the admin's
+      // retry finishes the job. Releasing a fraction early is harmless.
       await releaseParentFlows(ctx.db);
+      await clearParentBinding(ctx.db);
+      await setReleaseRequestedFlag(ctx.db, false);
       res.json({ bound: false });
     } catch (err) { next(err); }
   });

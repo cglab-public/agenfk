@@ -16,8 +16,9 @@ import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AdminFlows } from '../pages/AdminFlows';
+import { AdminFlows, flowClient } from '../pages/AdminFlows';
 import { PUBLIC_REGISTRY_REPO } from '../pages/adminFlowRegistry';
+import { PARENT_FLOW_LOCK_REASON } from '../pages/parentFlowLock';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
 
@@ -98,9 +99,40 @@ describe('Admin → Flows: a flow the parent hub sent', () => {
     expect(screen.queryByTestId('flow-editor-modal')).toBeNull();
   });
 
-  it('promises the flow stays and becomes editable if the hub leaves the group', async () => {
+  it('renders the shared lock reason, so the promise reaches the admin verbatim', async () => {
     await expand('f-parent');
-    expect(screen.getByTestId('admin-flow-parent-lock').textContent).toMatch(/leaves the group|detach/i);
+    expect(screen.getByTestId('admin-flow-parent-lock').textContent).toBe(PARENT_FLOW_LOCK_REASON);
+  });
+
+  it('refuses a save or delete of a parent flow reached through the editor modal', async () => {
+    // Disabling one button is not the control and is not even the whole
+    // explanation: "New / Import" opens the shared FlowEditorModal, whose
+    // sidebar lists EVERY flow and offers Save and Delete on whichever is
+    // selected. The server refuses both, but the admin would get a raw 409
+    // after drafting the edit — the exact thing parentFlowLock exists to
+    // prevent. So the client refuses first, with the sentence.
+    renderPage();
+    await waitFor(() => screen.getByTestId('admin-flows-new-btn'));
+    fireEvent.click(screen.getByTestId('admin-flows-new-btn'));
+    await waitFor(() => screen.getByTestId('flow-editor-modal'));
+    await waitFor(() => screen.getByTestId('flow-item-f-parent'));
+
+    await expect(flowClient.updateFlow('f-parent', { name: 'x', steps } as any))
+      .rejects.toThrow(PARENT_FLOW_LOCK_REASON);
+    await expect(flowClient.deleteFlow('f-parent')).rejects.toThrow(PARENT_FLOW_LOCK_REASON);
+    expect(api.put).not.toHaveBeenCalledWith('/v1/admin/flows/f-parent', expect.anything());
+    expect(api.delete).not.toHaveBeenCalled();
+  });
+
+  it('still lets the editor save and delete the child\'s own flow', async () => {
+    renderPage();
+    await waitFor(() => screen.getByTestId('admin-flows-new-btn'));
+    fireEvent.click(screen.getByTestId('admin-flows-new-btn'));
+    await waitFor(() => screen.getByTestId('flow-editor-modal'));
+    await waitFor(() => screen.getByTestId('flow-item-f-local'));
+
+    await flowClient.deleteFlow('f-local');
+    expect(api.delete).toHaveBeenCalledWith('/v1/admin/flows/f-local');
   });
 
   it('still lets the child choose whether to offer it in the picker', async () => {

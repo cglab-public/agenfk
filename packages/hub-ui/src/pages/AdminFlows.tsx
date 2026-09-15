@@ -48,8 +48,34 @@ interface Assignment {
 interface ProjectInfo { projectId: string; lastSeen: string; remoteUrl: string | null }
 interface ApiKeyRow { tokenHashPreview: string; label: string | null; installationId: string | null; gitName: string | null; gitEmail: string | null; revokedAt: string | null }
 
-const flowClient: FlowClient = {
-  listFlows: async () => ((await api.get('/v1/admin/flows')).data as any[]).map(flattenAdminFlow),
+/**
+ * Which flows the parent hub owns, as of the last list.
+ *
+ * Disabling the Edit button on the flow row is not the whole explanation:
+ * "New / Import" opens the shared FlowEditorModal, whose sidebar lists EVERY
+ * flow and offers Save and Delete on whichever is selected. The server refuses
+ * both either way — that is the control and it does not depend on this — but
+ * without this the admin drafts an edit and collects a raw 409, which is the
+ * exact experience parentFlowLock exists to prevent. Refusing here turns it
+ * back into the sentence.
+ *
+ * Repopulated on every listFlows, which is what the editor calls on open, so
+ * it cannot go stale behind the modal.
+ */
+const parentOwnedIds = new Set<string>();
+
+const refuseIfParentOwned = (id: string) => {
+  const lock = parentFlowLock(parentOwnedIds.has(id) ? 'parent' : 'hub');
+  if (lock.locked) throw new Error(lock.reason!);
+};
+
+export const flowClient: FlowClient = {
+  listFlows: async () => {
+    const rows = (await api.get('/v1/admin/flows')).data as any[];
+    parentOwnedIds.clear();
+    for (const r of rows) if (r?.source === 'parent' && r.id) parentOwnedIds.add(r.id);
+    return rows.map(flattenAdminFlow);
+  },
   getDefaultFlow: async () => (await api.get('/v1/admin/flows/default')).data,
   createFlow: async (payload) => {
     const { id: _id, createdAt: _c, updatedAt: _u, ...definition } = payload as any;
@@ -57,11 +83,15 @@ const flowClient: FlowClient = {
     return flattenAdminFlow(r.data);
   },
   updateFlow: async (id, payload) => {
+    refuseIfParentOwned(id);
     const { id: _id, createdAt: _c, updatedAt: _u, ...definition } = payload as any;
     const r = await api.put(`/v1/admin/flows/${id}`, { definition });
     return flattenAdminFlow(r.data);
   },
-  deleteFlow: async (id) => { await api.delete(`/v1/admin/flows/${id}`); },
+  deleteFlow: async (id) => {
+    refuseIfParentOwned(id);
+    await api.delete(`/v1/admin/flows/${id}`);
+  },
   setProjectFlow: async (_projectId, flowId) => {
     await api.put('/v1/admin/flow-assignments', { flowId });
   },
