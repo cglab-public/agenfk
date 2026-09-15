@@ -11,6 +11,7 @@ import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -76,7 +77,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
   router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret);
 
-  router.get('/users', guard, async (req: Request, res: Response) => {
+  router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
     const { where, params } = applyEventFilters(req.session!.orgId, { ...f, users: null });
     const rows = await ctx.db.all(
@@ -89,9 +90,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
       params,
     );
     res.json(rows);
-  });
+  }));
 
-  router.get('/timeline', guard, async (req: Request, res: Response) => {
+  router.get('/timeline', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
     const limit = Math.min(Number.parseInt((req.query.limit as string) ?? '100', 10) || 100, 500);
     const offset = Math.max(Number.parseInt((req.query.offset as string) ?? '0', 10) || 0, 0);
@@ -109,9 +110,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
       events: rows.map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })),
       limit, offset,
     });
-  });
+  }));
 
-  router.get('/metrics', guard, async (req: Request, res: Response) => {
+  router.get('/metrics', guard, asyncRoute(async (req: Request, res: Response) => {
     await recomputeRollups(ctx.db);
     const f = readEventFilters(req);
     const orgId = req.session!.orgId;
@@ -160,9 +161,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
       params,
     );
     res.json({ bucket: 'day', series: rows.map(coerceMetricsRow) });
-  });
+  }));
 
-  router.get('/event-types', guard, async (req: Request, res: Response) => {
+  router.get('/event-types', guard, asyncRoute(async (req: Request, res: Response) => {
     // Scoped by child hub but by nothing else: the chip list stays org-wide
     // across users/projects/time so a selection never removes its own chip.
     // The hub is different in kind — it partitions the data, it does not narrow
@@ -175,9 +176,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, ...hub.params],
     );
     res.json({ types: rows.map(r => r.type) });
-  });
+  }));
 
-  router.get('/projects', guard, async (req: Request, res: Response) => {
+  router.get('/projects', guard, asyncRoute(async (req: Request, res: Response) => {
     // Same reasoning as /event-types: partitioned by hub, not narrowed by the
     // other filters. This also gives the repo list the provenance it lacked —
     // two hubs reporting unrelated repos no longer present one undifferentiated
@@ -190,9 +191,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, ...hub.params],
     );
     res.json({ projects: rows.map(r => r.remote_url) });
-  });
+  }));
 
-  router.get('/item-types', guard, async (req: Request, res: Response) => {
+  router.get('/item-types', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
 
     const f = readEventFilters(req);
@@ -222,7 +223,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     for (const r of countRows) counts[r.item_type] = Number(r.n);
 
     res.json({ itemTypes: allRows.map(r => r.item_type), counts });
-  });
+  }));
 
   /**
    * Which hubs actually carry data in the current view — the options a child-hub
@@ -250,7 +251,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
    * parent. A standalone hub answers with an empty `childHubs`, and its UI can
    * drop the control entirely.
    */
-  router.get('/child-hubs', guard, async (req: Request, res: Response) => {
+  router.get('/child-hubs', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const f = readEventFilters(req);
     // Time window only. Not childHubId — a picker must not hide the options
@@ -307,9 +308,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
     childHubs.sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({ childHubs, hasLocal: localEvents > 0 });
-  });
+  }));
 
-  router.get('/histogram', guard, async (req: Request, res: Response) => {
+  router.get('/histogram', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const bucket = (req.query.bucket as string | undefined) ?? 'day';
     if (bucket !== 'day' && bucket !== 'hour') {
@@ -338,13 +339,13 @@ export function queriesRouter(ctx: HubServerContext): Router {
     );
 
     res.json({ bucket, buckets: aggregateHistogramRows(rows) });
-  });
+  }));
 
   // PR Overview: total PRs per developer per size (XS–XL, derived from leaf
   // items), per period, total + daily, with a model breakdown/filter. pr.updated
   // re-sizes the same PR (counted once, at its latest sizing, attributed to the
   // opener).
-  router.get('/prs/overview', guard, async (req: Request, res: Response) => {
+  router.get('/prs/overview', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const f = readEventFilters(req);
     // Multi-select: a CSV of models, same parseList semantics as users/projects.
@@ -467,7 +468,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     }
 
     res.json({ period, ...result, previous });
-  });
+  }));
 
   return router;
 }

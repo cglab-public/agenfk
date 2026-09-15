@@ -6,6 +6,7 @@ import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 // Plug-and-play hub onboarding endpoints — see the STORY for context.
 //
@@ -81,7 +82,7 @@ export function connectRouter(ctx: HubServerContext): Router {
 
   // ── Device-code flow ──────────────────────────────────────────────────────
 
-  router.post('/device/start', deviceStartRateLimit, async (req: Request, res: Response) => {
+  router.post('/device/start', deviceStartRateLimit, asyncRoute(async (req: Request, res: Response) => {
     const nowIso = new Date().toISOString();
     // Prune expired rows so the table self-cleans, then refuse if the pending
     // backlog is already saturated (cheap DoS guard). (bug 72f8da10.)
@@ -119,9 +120,9 @@ export function connectRouter(ctx: HubServerContext): Router {
       expiresIn: DEVICE_CODE_TTL_S,
       interval: DEVICE_POLL_INTERVAL_S,
     });
-  });
+  }));
 
-  router.post('/device/poll', async (req: Request, res: Response) => {
+  router.post('/device/poll', asyncRoute(async (req: Request, res: Response) => {
     const { deviceCode } = req.body ?? {};
     if (typeof deviceCode !== 'string' || !deviceCode) { res.status(400).json({ error: 'deviceCode required' }); return; }
     const row = await ctx.db.get<{ org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string }>(
@@ -148,13 +149,13 @@ export function connectRouter(ctx: HubServerContext): Router {
       orgId: row.org_id,
       hubUrl: publicHubUrl(req),
     });
-  });
+  }));
 
   // adminGuard, not guard: approving mints a live bearer token via issueApiKey
   // below, exactly like /invite/create. /device/start needs no auth at all, so a
   // merely-signed-in viewer could otherwise start a code, approve it, redeem it,
   // and escalate read-only access to ingest-and-fleet-write. (Security: CGLAB-75.)
-  router.post('/device/approve', adminGuard, async (req: Request, res: Response) => {
+  router.post('/device/approve', adminGuard, asyncRoute(async (req: Request, res: Response) => {
     const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
     if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
     const row = await ctx.db.get<{
@@ -203,7 +204,7 @@ export function connectRouter(ctx: HubServerContext): Router {
         gitEmail: bind.gitEmail,
       },
     });
-  });
+  }));
 
   // ── Magic-link invite ─────────────────────────────────────────────────────
 
