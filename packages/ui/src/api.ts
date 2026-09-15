@@ -69,7 +69,7 @@ export const api = {
       const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);
       return data;
     } catch (e) {
-      console.error(`API Error listing agent runs for ${itemId}:`, e);
+      console.error('API Error listing agent runs for', itemId, e);
       throw e;
     }
   },
@@ -78,7 +78,7 @@ export const api = {
       const { data } = await axios.get(`${API_URL}/agent-runs/${runId}/events`);
       return data;
     } catch (e) {
-      console.error(`API Error listing run events for ${runId}:`, e);
+      console.error('API Error listing run events for', runId, e);
       throw e;
     }
   },
@@ -111,7 +111,7 @@ export const api = {
     try {
       await axios.delete(`${API_URL}/projects/${id}`);
     } catch (e) {
-      console.error(`API Error deleting project ${id}:`, e);
+      console.error('API Error deleting project', id, e);
       throw e;
     }
   },
@@ -134,7 +134,7 @@ export const api = {
       const { data } = await axios.get(`${API_URL}/items/${id}`);
       return data;
     } catch (e) {
-      console.error(`API Error getting item ${id}:`, e);
+      console.error('API Error getting item', id, e);
       throw e;
     }
   },
@@ -163,7 +163,7 @@ export const api = {
       const { data } = await axios.get(`${API_URL}/items/${itemId}/git-status`);
       return data;
     } catch (e) {
-      console.error(`API Error reading git status for ${itemId}:`, e);
+      console.error('API Error reading git status for', itemId, e);
       throw e;
     }
   },
@@ -206,7 +206,7 @@ export const api = {
     try {
       await axios.delete(`${API_URL}/terminal-sessions/${id}`);
     } catch (e) {
-      console.error(`API Error forgetting terminal session ${id}:`, e);
+      console.error('API Error forgetting terminal session', id, e);
       throw e;
     }
   },
@@ -248,7 +248,7 @@ export const api = {
       const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
       return data;
     } catch (e) {
-      console.error(`API Error updating item ${id}:`, e);
+      console.error('API Error updating item', id, e);
       throw e;
     }
   },
@@ -265,7 +265,7 @@ export const api = {
     try {
       await axios.delete(`${API_URL}/items/${id}`);
     } catch (e) {
-      console.error(`API Error deleting item ${id}:`, e);
+      console.error('API Error deleting item', id, e);
       throw e;
     }
   },
@@ -274,7 +274,7 @@ export const api = {
       const { data } = await axios.post(`${API_URL}/items/${id}/move`, { targetProjectId });
       return data;
     } catch (e) {
-      console.error(`API Error moving item ${id} to project ${targetProjectId}:`, e);
+      console.error('API Error moving item', id, 'to project', targetProjectId, e);
       throw e;
     }
   },
@@ -283,7 +283,7 @@ export const api = {
       const { data } = await axios.post(`${API_URL}/items/trash-archived`, { projectId });
       return data;
     } catch (e) {
-      console.error(`API Error trashing archived items for project ${projectId}:`, e);
+      console.error('API Error trashing archived items for project', projectId, e);
       throw e;
     }
   },
@@ -373,7 +373,7 @@ export const api = {
       const { data } = await axios.put(`${API_URL}/flows/${id}`, flowData);
       return data;
     } catch (e) {
-      console.error(`API Error updating flow ${id}:`, e);
+      console.error('API Error updating flow', id, e);
       throw e;
     }
   },
@@ -381,7 +381,7 @@ export const api = {
     try {
       await axios.delete(`${API_URL}/flows/${id}`);
     } catch (e) {
-      console.error(`API Error deleting flow ${id}:`, e);
+      console.error('API Error deleting flow', id, e);
       throw e;
     }
   },
@@ -389,7 +389,7 @@ export const api = {
     try {
       await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId });
     } catch (e) {
-      console.error(`API Error setting flow for project ${projectId}:`, e);
+      console.error('API Error setting flow for project', projectId, e);
       throw e;
     }
   },
@@ -398,7 +398,7 @@ export const api = {
       const { data } = await axios.get(`${API_URL}/projects/${projectId}/flow`);
       return data;
     } catch (e) {
-      console.error(`API Error getting flow for project ${projectId}:`, e);
+      console.error('API Error getting flow for project', projectId, e);
       throw e;
     }
   },
@@ -415,7 +415,7 @@ export const api = {
     try {
       await axios.post(`${API_URL}/projects/${projectId}/flow/select-org`, { flowId });
     } catch (e) {
-      console.error(`API Error selecting org flow for project ${projectId}:`, e);
+      console.error('API Error selecting org flow for project', projectId, e);
       throw e;
     }
   },
@@ -442,7 +442,7 @@ export const api = {
       const { data } = await axios.post(`${API_URL}/registry/flows/install`, { filename });
       return data;
     } catch (e) {
-      console.error(`API Error installing flow from registry (${filename}):`, e);
+      console.error('API Error installing flow from registry:', filename, e);
       throw e;
     }
   },
@@ -451,7 +451,7 @@ export const api = {
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId });
       return data;
     } catch (e) {
-      console.error(`API Error publishing flow ${flowId} to registry:`, e);
+      console.error('API Error publishing flow to registry:', flowId, e);
       throw e;
     }
   },

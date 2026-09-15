@@ -763,7 +763,10 @@ export const KanbanBoard: React.FC = () => {
     // here is current — no functional updater needed, and persistence is the
     // context's job now.
     if (selectedProjectId !== projectId) {
-      console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
+      // projectId goes AFTER the styles, never into the format string: the two
+      // %c here are deliberate, and an id carrying its own %c would eat one of
+      // the colours and slide the rest onto the wrong segments.
+      console.log('%c[WS_PROJECT] %cSwitching to active project:', 'color: #10b981; font-weight: bold', 'color: inherit', projectId);
     }
     // navPath and persistence follow from the id change — see the effect above.
     setSelectedProjectId(projectId);
@@ -1106,7 +1109,10 @@ export const KanbanBoard: React.FC = () => {
         const orderDiff = Math.abs(toStep.order - fromStep.order);
         if (orderDiff > 1) {
           // Invalid transition: revert (do nothing — drag is already cancelled visually)
-          console.warn(`[FLOW] Blocked transition ${draggedItem.status} → ${status} (order diff ${orderDiff})`);
+          // Step names come from the project's flow, which may have been
+          // installed from a community registry — so they stay out of the
+          // format string. orderDiff is ours, but it rides along after it too.
+          console.warn('[FLOW] Blocked transition', draggedItem.status, '→', status, `(order diff ${orderDiff})`);
           return;
         }
       }
