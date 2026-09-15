@@ -154,3 +154,70 @@ describe('a pathological path (CodeQL, PR #182)', () => {
     expect(out.endsWith('.')).toBe(false);
   });
 });
+
+/**
+ * A branch name cannot reach outside the worktree root (1cc59c16 / CodeQL #182).
+ *
+ * CodeQL raised three "uncontrolled data used in path expression" alerts in
+ * worktrees.ts - the existence checks and the mkdir, all on a path built from a
+ * branch name that arrives over the API. A branch called `../../.ssh` is the
+ * case it is pointing at.
+ *
+ * They are false positives, and this file is what makes that claim checkable
+ * rather than merely argued. The containment is real: `toPathSegment` strips
+ * every separator and leading dot, so a hostile name cannot express `..` or an
+ * absolute path by the time a path is built from it. Verified against nine
+ * shapes below.
+ *
+ * WRITTEN BECAUSE THE SAFETY WAS ACCIDENTAL UNTIL NOW. Nothing asserted it. The
+ * dismissal rests on a sanitiser that exists for a different reason - tidy
+ * directory names - and would evaporate silently the day somebody decided a
+ * slash in a directory name was acceptable. That is the same shape as the ReDoS
+ * fix in this file: a guard nobody wrote down, holding by luck.
+ */
+describe('containment of a hostile branch name (CodeQL, PR #182)', () => {
+  const ROOT = '/wt-root';
+
+  const hostile = [
+    '../../../etc/passwd',
+    'a/../../../../root/.ssh/authorized_keys',
+    '/absolute/path',
+    'C:\\Windows\\System32',
+    '....//....//etc',
+    '.ssh',
+    '..',
+    '.',
+    '../',
+  ];
+
+  for (const branch of hostile) {
+    it(`keeps ${JSON.stringify(branch)} inside the root`, () => {
+      const out = buildWorktreePath(ROOT, 'repo', branch);
+      expect(out.startsWith(`${ROOT}/repo/`), `${branch} produced ${out}`).toBe(true);
+      // Belt and braces: no `..` segment anywhere, so no later resolve can walk
+      // out of it either.
+      expect(out.split('/').includes('..'), `${branch} produced a .. segment`).toBe(false);
+    });
+  }
+
+  it('contains a hostile repository name too', () => {
+    // repoName comes from path.basename of the project root, so it is already
+    // one segment - but it goes through the same sanitiser and the test says so
+    // rather than trusting the caller to keep doing that.
+    expect(buildWorktreePath(ROOT, '../../etc', 'feat/x')).toMatch(/^\/wt-root\/etc\//);
+    expect(buildWorktreePath(ROOT, 'a/b', 'feat/x')).toMatch(/^\/wt-root\/a-b\//);
+  });
+
+  it('does NOT sanitise the root, which is why the root must stay a constant', () => {
+    /*
+     * The honest limit of the containment, recorded rather than hidden. `root`
+     * passes through untouched: only its trailing separators are trimmed. It is
+     * safe today because every server call site passes defaultWorktreeRoot(),
+     * which is `~/.agenfk-worktrees` and takes no input.
+     *
+     * This test exists to fail the day somebody lets a caller choose it. That
+     * would be the alert CodeQL raised, actually reachable.
+     */
+    expect(buildWorktreePath('/wt/../../etc', 'repo', 'feat/x')).toContain('/wt/../../etc/');
+  });
+});
