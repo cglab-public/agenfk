@@ -1,9 +1,10 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
+import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { shortRemote } from '../components/facetSearch';
@@ -114,6 +115,15 @@ export function UserDetailPage() {
   const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  // The child hub arrives in the link, not from a picker on this page: you got
+  // here by clicking a person out of a board that was already scoped, and a
+  // person page aggregating them across the whole federation would quietly
+  // contradict the board you came from (BUG b0167566). Read-only here — the
+  // scope is the caller's, and there is nothing on this page to change it with.
+  const [searchParams] = useSearchParams();
+  const childHubs = csvParam(searchParams, 'childHubId');
+  const hubCsv = childHubs.length ? childHubs.join(',') : null;
+
   const [range, setRange] = useState<RangeKey>('30d');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -135,8 +145,9 @@ export function UserDetailPage() {
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     return p.toString();
-  }, [decoded, projectSel.set, eventTypeSel.set]);
+  }, [decoded, projectSel.set, eventTypeSel.set, hubCsv]);
   const itemTypes = useQuery<ItemTypesResponse>({
     queryKey: ['item-types', itemTypesQs],
     queryFn: async () => (await api.get(`/v1/item-types?${itemTypesQs}`)).data,
@@ -148,23 +159,25 @@ export function UserDetailPage() {
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
     p.set('limit', '200');
     return p;
-  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
+  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
   const metricsQs = useMemo(() => {
     const p = new URLSearchParams();
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
     return p.toString();
-  }, [decoded, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
+  }, [decoded, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', metricsQs],
@@ -287,6 +300,7 @@ export function UserDetailPage() {
         types={[...eventTypeSel.set]}
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
+        childHubs={childHubs}
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}

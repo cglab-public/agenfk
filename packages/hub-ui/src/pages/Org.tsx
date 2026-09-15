@@ -252,7 +252,10 @@ export function OrgPage() {
           {(users.data ?? []).map(u => (
             <Link
               key={u.user_key}
-              to={`/users/${encodeURIComponent(u.user_key)}`}
+              // Carry the hub scope through the click-through: landing on a
+              // person aggregated across every hub would contradict the board
+              // just left, with nothing saying the scope had been dropped.
+              to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
               className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-chip/50 transition-colors"
             >
               <div className="flex items-center gap-3 min-w-0">
