@@ -19,6 +19,8 @@ interface Props {
   types?: string[];
   projects?: string[];
   itemTypes?: string[];
+  /** Originating hubs (CGLAB-184). Absent means every hub, matching the server. */
+  childHubs?: string[];
   className?: string;
   title?: string;
   range?: RangeKey;
@@ -71,7 +73,7 @@ function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: 
   return out;
 }
 
-export function TimelineBar({ users, types, projects, itemTypes, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride }: Props) {
+export function TimelineBar({ users, types, projects, itemTypes, childHubs, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
   const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
@@ -96,13 +98,14 @@ export function TimelineBar({ users, types, projects, itemTypes, className, titl
   if (types?.length) params.set('types', types.join(','));
   if (projects?.length) params.set('projects', projects.join(','));
   if (itemTypes?.length) params.set('itemTypes', itemTypes.join(','));
+  if (childHubs?.length) params.set('childHubId', childHubs.join(','));
   params.set('from', fromIso);
   if (toIsoOverride) params.set('to', toIsoOverride);
   params.set('bucket', bucket);
   params.set('tzOffsetMin', String(tzOffsetMin));
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 

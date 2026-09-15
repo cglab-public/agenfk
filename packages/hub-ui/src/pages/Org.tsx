@@ -85,7 +85,7 @@ export function OrgPage() {
   // is a thing one person sends another, and localStorage cannot be shared.
   const [searchParams, setSearchParams] = useSearchParams();
   const childHubSel = useToggleSet(csvParam(searchParams, 'childHubId'));
-  const childHubs = useChildHubs();
+  const childHubs = useChildHubs(childHubSel.set);
 
   useEffect(() => {
     const p = new URLSearchParams(searchParams);
@@ -128,8 +128,19 @@ export function OrgPage() {
     queryKey: ['users', qs],
     queryFn: async () => (await api.get(`/v1/users${qs ? `?${qs}` : ''}`)).data,
   });
-  const eventTypes = useQuery<EventTypesResponse>({ queryKey: ['event-types'], queryFn: async () => (await api.get('/v1/event-types')).data });
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  // Both chip lists are partitioned by hub — offering a repo or an event type
+  // from a hub the board is not showing is a dead end.
+  const hubQs = childHubSel.set.size
+    ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
+    : '';
+  const eventTypes = useQuery<EventTypesResponse>({
+    queryKey: ['event-types', hubQs],
+    queryFn: async () => (await api.get(`/v1/event-types${hubQs}`)).data,
+  });
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
   const itemTypes = useQuery<ItemTypesResponse>({
     queryKey: ['item-types', itemTypesQs],
     queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
@@ -226,6 +237,7 @@ export function OrgPage() {
         types={[...eventTypeSel.set]}
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
+        childHubs={[...childHubSel.set]}
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}

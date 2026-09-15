@@ -311,7 +311,7 @@ export function PrOverviewPage() {
   const devSel = useToggleSet(csv('developers'));
   const modelSel = useToggleSet(csv('model'));
   const childHubSel = useToggleSet(csv('childHubId'));
-  const childHubs = useChildHubs();
+  const childHubs = useChildHubs(childHubSel.set);
   const [range, setRange] = useState<RangeKey>(initRange);
   const urlGran = searchParams.get('gran');
   const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
@@ -494,7 +494,15 @@ export function PrOverviewPage() {
   const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
   const modelOptions = universe?.byModel.map(m => m.model) ?? [];
   const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  // Partitioned by hub, like the model and developer lists: a repo chip from a
+  // hub the board is not showing is a dead end.
+  const hubQs = childHubSel.set.size
+    ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
+    : '';
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
 
   // Picking a preset clears any explicit date range so the two don't fight.
   const pickRange = (r: RangeKey) => { setRange(r); setCustomFrom(''); setCustomTo(''); };
@@ -580,6 +588,11 @@ export function PrOverviewPage() {
   const activeFilters = useMemo(() => {
     const out: string[] = [];
     if (searchActive) out.push(`PR #${prNumber}`);
+    // Listed even during a PR search, like projects: the hub is not superseded
+    // by the search — it still scopes which hub's #57 is being asked about.
+    if (childHubSel.set.size) {
+      out.push(`${childHubSel.set.size} child hub${childHubSel.set.size === 1 ? '' : 's'}`);
+    }
     if (projectSel.set.size) {
       out.push(`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`);
     }
@@ -590,7 +603,7 @@ export function PrOverviewPage() {
       out.push(`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`);
     }
     return out;
-  }, [searchActive, prNumber, projectSel.set, devSel.set, modelSel.set]);
+  }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
