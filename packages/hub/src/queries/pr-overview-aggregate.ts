@@ -1,4 +1,5 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
+import { LOCAL_HUB } from './childHub.js';
 import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
 import type { ModelMeta } from '../util/modelMeta';
 import { prUrlFor } from '../util/remoteUrl.js';
@@ -50,9 +51,6 @@ interface NormRow {
   remoteUrl: string | null;
   childHubId: string;
 }
-
-/** Stands in for "this hub's own events", where the column is NULL or ''. */
-const LOCAL_HUB = 'local';
 
 const toIso = (v: unknown): string =>
   v instanceof Date ? v.toISOString()
