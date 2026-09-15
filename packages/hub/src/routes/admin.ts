@@ -2158,11 +2158,39 @@ export function adminRouter(ctx: HubServerContext): Router {
       );
       if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
-      const ids: string[] = Array.isArray(req.body?.childHubIds)
-        ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
-        : [];
+      // De-duplicated: a repeated id from a multi-select is an ordinary client
+      // bug, and without this the second target insert violates the primary
+      // key, rolls the transaction back and turns it into a 500.
+      const ids: string[] = Array.from(new Set(
+        Array.isArray(req.body?.childHubIds)
+          ? req.body.childHubIds.filter((v: unknown): v is string => typeof v === 'string' && !!v)
+          : [],
+      ));
       if (scope === 'selected' && !ids.length) {
         return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
+      }
+
+      // Refuse the whole batch naming anything we cannot target, the way the
+      // upgrade twin does. Skipping them silently produced a dispatch with NO
+      // targets — the directive feed requires scope 'all' or an explicit
+      // target row — that could never be served to anyone, returned 200, and
+      // was indistinguishable in the listing from an 'all' dispatch nobody had
+      // polled yet.
+      if (scope === 'selected') {
+        const found = new Set<string>();
+        for (const id of ids) {
+          const hub = await ctx.db.get<{ id: string }>(
+            'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
+          );
+          if (hub) found.add(id);
+        }
+        const missing = ids.filter(id => !found.has(id));
+        if (missing.length) {
+          return res.status(404).json({
+            error: 'One or more child hubs are not in this group, or have detached',
+            missing,
+          });
+        }
       }
 
       const dispatchId = randomUUID();
@@ -2182,13 +2210,8 @@ export function adminRouter(ctx: HubServerContext): Router {
            req.session!.userId ?? null, actor?.email ?? null, now],
         );
         if (scope === 'selected') {
-          // Only hubs that are actually this org's and still attached. A
-          // silently-ignored id would otherwise look like a delivered target.
+          // Every id was validated above, so each one becomes a target.
           for (const id of ids) {
-            const hub = await ctx.db.get<{ id: string }>(
-              'SELECT id FROM child_hubs WHERE id = ? AND org_id = ? AND detached_at IS NULL', [id, orgId],
-            );
-            if (!hub) continue;
             await ctx.db.run(
               `INSERT INTO flow_dispatch_targets (dispatch_id, child_hub_id, state, updated_at)
                VALUES (?, ?, 'pending', ?)`,
