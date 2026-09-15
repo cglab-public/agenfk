@@ -84,6 +84,10 @@ const overview = {
 const renderPage = () => {
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: ['cglab-PRIVATE/smartshot'] } };
+    // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+    // these fixtures otherwise treat every non-projects URL as an overview call,
+    // and a standalone hub is the right default for a suite about PR filters.
+    if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
     return { data: overview };
   });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -241,6 +245,10 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     try {
       get.mockImplementation(async (url: string) => {
         if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/web'] } };
+        // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+        // these fixtures otherwise treat every non-projects URL as an overview call,
+        // and a standalone hub is the right default for a suite about PR filters.
+        if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
         return { data: collided };
       });
       const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

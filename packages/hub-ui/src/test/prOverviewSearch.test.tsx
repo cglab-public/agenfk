@@ -101,6 +101,10 @@ const mount = (entry: string) => {
 const renderPage = (entry = '/prs') => {
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+    // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+    // these fixtures otherwise treat every non-projects URL as an overview call,
+    // and a standalone hub is the right default for a suite about PR filters.
+    if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
     const q = new URLSearchParams(url.split('?')[1] ?? '');
     const pr = q.get('pr');
     return { data: pr ? makeSearchHit(Number(pr)) : makeOverview(['claude-opus-4-8', 'glm-5.2']) };
@@ -123,6 +127,10 @@ function renderRouted(
   let held = 0;
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+    // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+    // these fixtures otherwise treat every non-projects URL as an overview call,
+    // and a standalone hub is the right default for a suite about PR filters.
+    if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
     const q = new URLSearchParams(url.split('?')[1] ?? '');
     const r = routes(q);
     if (r === 'HOLD') { held += 1; return hold.promise; }
@@ -312,6 +320,10 @@ describe('Superseded controls read as inactive', () => {
     // project selected resolves in two repos, opened by two different runtimes.
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       if (!q.get('pr')) return { data: makeOverview(['claude-opus-4-8', 'glm-5.2']) };
       const two = makeOverview(['claude-opus-4-8', 'glm-5.2']);
@@ -372,6 +384,10 @@ describe('Project stays live under the search', () => {
     // — a stale filter you cannot see.
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE, OTHER] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       const pr = q.get('pr');
       return { data: pr ? makeSearchHit(Number(pr)) : makeOverview(['claude-opus-4-8', 'glm-5.2']) };
@@ -406,6 +422,10 @@ describe('PR search result state', () => {
   it('names the PR in the empty state when nothing matches', async () => {
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       const pr = q.get('pr');
       if (!pr) return { data: makeOverview(['claude-opus-4-8', 'glm-5.2']) };
@@ -459,6 +479,10 @@ describe('PR search result state', () => {
     };
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       return { data: twoRepos };
     });
     render(
@@ -556,6 +580,10 @@ describe('Licence-weight chips follow the same disable rule', () => {
     // leaves a chip that looks clickable while its selection changes nothing.
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       return { data: twoModels(q.get('pr') ? 2 : 2) };
     });
@@ -621,6 +649,10 @@ describe('Search URL and axis stay honest', () => {
     };
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       return { data: two };
     });
     render(
@@ -845,6 +877,10 @@ describe('Superseded facets stay on screen', () => {
     // of the agreed "disabled and greyed, not hidden".
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       if (q.get('pr')) {
         const none = makeOverview([]);
@@ -880,6 +916,10 @@ describe('Superseded facets stay on screen', () => {
     // include the thing selected — a control misreporting its own state.
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: [REMOTE] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       const q = new URLSearchParams(url.split('?')[1] ?? '');
       if (q.get('pr')) return { data: makeSearchHit(57) };
       return { data: makeOverview(['claude-opus-4-8', 'glm-5.2']) };

@@ -8,6 +8,8 @@ import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion
 import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
+import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -301,13 +303,15 @@ export function PrOverviewPage() {
   // or a shared link restores the exact same view. State is seeded from the URL
   // on first render and written back (replace) whenever a filter changes.
   const [searchParams, setSearchParams] = useSearchParams();
-  const csv = (k: string) => (searchParams.get(k) ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const csv = (k: string) => csvParam(searchParams, k);
   const urlRange = searchParams.get('range');
   const initRange = (RANGES.some(r => r.key === urlRange) ? urlRange : '30d') as RangeKey;
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
   const modelSel = useToggleSet(csv('model'));
+  const childHubSel = useToggleSet(csv('childHubId'));
+  const childHubs = useChildHubs();
   const [range, setRange] = useState<RangeKey>(initRange);
   const urlGran = searchParams.get('gran');
   const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
@@ -349,6 +353,8 @@ export function PrOverviewPage() {
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
+    // Same spelling the server reads, so a shared link needs no translation.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     if (customFrom || customTo) {
       // Explicit range takes precedence over the preset in the URL too.
       if (customFrom) p.set('from', customFrom);
@@ -368,7 +374,7 @@ export function PrOverviewPage() {
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
     setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, setSearchParams]);
+  }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, setSearchParams]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -383,10 +389,15 @@ export function PrOverviewPage() {
   const baseQs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    // Sits with `projects`, not with model/developer: the hub partitions the
+    // data rather than narrowing a view of it, so the options query must be
+    // partitioned too — otherwise the model and developer lists offer names
+    // from hubs the board is not showing.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
     return p;
-  }, [projectSel.set, from, toParam]);
+  }, [projectSel.set, childHubSel.set, from, toParam]);
 
   const dataQs = useMemo(() => {
     // Search mode: projects + the number, and nothing else. The superseded
@@ -400,6 +411,10 @@ export function PrOverviewPage() {
     if (queryPrNumber !== null) {
       const p = new URLSearchParams();
       if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+      // Kept through a PR search, like `projects` and for the same reason: #57
+      // exists in every repo AND on every hub, so dropping this would make one
+      // search return two unrelated PRs that merely share a number.
+      if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
       p.set('pr', String(queryPrNumber));
       return p.toString();
     }
@@ -407,7 +422,7 @@ export function PrOverviewPage() {
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set, projectSel.set, queryPrNumber]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -713,6 +728,19 @@ export function PrOverviewPage() {
           )}
         </p>
       </div>
+
+      {childHubs.show && (
+        <FacetMultiselect
+          label="Child hub"
+          options={childHubs.options}
+          selected={childHubSel.set}
+          onToggle={childHubSel.toggle}
+          onClear={childHubSel.clear}
+          optionLabel={childHubs.label}
+          inlineThreshold={6}
+          placeholder="Search hubs…"
+        />
+      )}
 
       <FacetMultiselect
         label="Project (git remote)"

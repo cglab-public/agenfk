@@ -62,6 +62,10 @@ function UrlProbe() {
 const renderPage = (entry: string, models: string[] = THREE_MODELS) => {
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+    // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+    // these fixtures otherwise treat every non-projects URL as an overview call,
+    // and a standalone hub is the right default for a suite about PR filters.
+    if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
     return { data: makeOverview(models) };
   });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
