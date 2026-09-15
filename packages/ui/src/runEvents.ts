@@ -74,7 +74,6 @@ export function appendEvent<T extends Sequenced>(
    * guess dressed as a correction. Scanned only on the rare path; the common
    * one returned above without looking at the list at all.
    */
-  if (list.some(e => e.seq === undefined)) return [...list, event];
 
   // The overwhelmingly common case: the newest event, arriving newest-last.
   // One comparison, no scan, no sort.
@@ -93,5 +92,19 @@ export function appendEvent<T extends Sequenced>(
    * that.
    */
   if (list.some(e => e.seq === event.seq)) return list;
-  return [...list, event].sort((a, z) => a.seq - z.seq);
+
+  /*
+   * Below the dedup checks, deliberately — this was placed above them at
+   * first, and that made every event on a partly-unnumbered list append,
+   * INCLUDING one already there. A duplicate has to return `prev` unchanged
+   * whatever the rest of the list looks like, or the transcript repaints to
+   * show nothing new.
+   *
+   * Here it guards only the SORT, which is the thing that cannot cope: a
+   * missing position makes `a.seq - z.seq` return NaN, and a NaN comparator
+   * neither throws nor orders. Those events never carried an order, so
+   * appending is the only honest answer.
+   */
+  if (list.some(e => e.seq === undefined)) return [...list, event];
+  return [...list, event].sort((a, z) => (a.seq as number) - (z.seq as number));
 }

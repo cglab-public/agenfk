@@ -93,8 +93,37 @@ export function cardState(
   itemId: string,
   live: ReadonlySet<string>,
   needsPerson: ReadonlySet<string>,
+  rows: ReadonlyArray<{ itemId: string; state: SessionState }> = [],
 ): CardState {
   if (needsPerson.has(itemId)) return 'needs-person';
-  if (live.has(itemId)) return 'working';
-  return 'quiet';
+
+  /*
+   * The ROWS decide, and liveness is only the fallback.
+   *
+   * `live` is the recency of terminal OUTPUT, and that made the tree
+   * contradict the rail about the same card at the same moment. The rail's
+   * first rule is that a dead process is a fact — a rule added because "the
+   * row stayed green for the full TTL after the session died, which is what
+   * was reported". The tree had no such override, so a crashed agent read as
+   * actively working for ninety seconds, and so did every finished turn,
+   * because finishing produces output too.
+   *
+   * Deriving both from the same rows makes the two lists agree by
+   * construction rather than by two sets of rules kept in step by hand.
+   */
+  let hasRow = false;
+  for (const row of rows) {
+    if (row.itemId !== itemId) continue;
+    hasRow = true;
+    // One working agent is enough: rows are keyed by card AND agent.
+    if (row.state === 'running') return 'working';
+  }
+  if (hasRow) return 'quiet';
+
+  /*
+   * No session of ours for this card — a run recorded by the hook has a
+   * transcript and no terminal here. There is nothing to agree with, so
+   * recency is all there is.
+   */
+  return live.has(itemId) ? 'working' : 'quiet';
 }

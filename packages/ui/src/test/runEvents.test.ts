@@ -182,3 +182,33 @@ describe('a positionless event stranded mid-list', () => {
       .toEqual(['a', 'b', 'c']);
   });
 });
+
+describe('a duplicate still de-duplicates once a position is missing', () => {
+  /*
+   * The regression the positionless guard introduced. It was placed BEFORE
+   * both dedup checks, so once any element in the list lacked a seq, every
+   * later event took the append path — including one already present.
+   *
+   * That breaks the module's own stated contract: a duplicate must return
+   * `prev` UNCHANGED, because React Query re-renders on identity and a copy
+   * repaints the whole transcript to show nothing new.
+   */
+  const bare = (t: string) => ({ text: t } as { seq?: number; text: string });
+  const num = (seq: number, t: string) => ({ seq, text: t });
+
+  it('returns the same array for a repeat of the newest', () => {
+    const prev = [bare('gap'), num(5, 'a'), num(6, 'b')];
+    expect(appendEvent(prev, num(6, 'b'))).toBe(prev);
+  });
+
+  it('returns the same array for a repeat of an older one', () => {
+    const prev = [bare('gap'), num(5, 'a'), num(6, 'b')];
+    expect(appendEvent(prev, num(5, 'a'))).toBe(prev);
+  });
+
+  it('still appends a genuinely new event', () => {
+    // The dedup must not become "reject everything" on a mixed list.
+    const prev = [bare('gap'), num(5, 'a')];
+    expect(appendEvent(prev, num(9, 'c')).map(e => e.text)).toEqual(['gap', 'a', 'c']);
+  });
+});

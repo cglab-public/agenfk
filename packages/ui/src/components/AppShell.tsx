@@ -1787,7 +1787,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                             carries per-session colour; a tree that repeated it
                             would give the same screen two colour vocabularies
                             for one fact. */}
-                        <CardStateDot state={cardState(item.id, liveItems, needsPerson)} />
+                        <CardStateDot state={cardState(item.id, liveItems, needsPerson, sessionRows)} />
 
                         <span className="min-w-0">
                           <span

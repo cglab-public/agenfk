@@ -111,3 +111,77 @@ describe('CARD_STATE_LABEL', () => {
     expect(CARD_STATE_LABEL['needs-person']).not.toMatch(/an agent is working/i);
   });
 });
+
+/**
+ * The tree and the rail must not contradict each other (review follow-up).
+ *
+ * `working` was resolved from the liveness set, which is the recency of
+ * terminal OUTPUT. The rail resolves the same card through a four-source
+ * precedence whose FIRST rule is that a dead process is a fact — a rule added
+ * because "the row stayed green for the full TTL after the session died,
+ * which is what was reported".
+ *
+ * The tree had no such override, so for the same card, at the same moment:
+ *
+ *   agent crashes  → rail: failed (sorted first)  · tree: WORKING for 90s
+ *   turn finishes  → rail: idle                   · tree: WORKING for 90s
+ *   agent wedges   → rail: running                · tree: quiet
+ *
+ * The first is the one that made the previous commit message wrong in the
+ * worse direction: it said a crashed agent "reads as nothing running". It read
+ * as actively working, and told a screen reader so out loud.
+ *
+ * The fix is not another special case. Both lists now derive from the same
+ * rows, so they agree by construction, and liveness is used only for cards
+ * that have no session here at all.
+ */
+describe('agreeing with the rail', () => {
+  const live = (...ids: string[]) => new Set(ids);
+  const none = new Set<string>();
+
+  it('does not call a crashed agent working', () => {
+    // The reported bug, in the tree this time.
+    const rows = [{ itemId: 'i1', state: 'failed' as const }];
+    expect(cardState('i1', live('i1'), none, rows)).not.toBe('working');
+  });
+
+  it('does not call a finished turn working', () => {
+    // The commonest path of all: every completed turn leaves output behind,
+    // so liveness alone said "working" until the window expired.
+    const rows = [{ itemId: 'i1', state: 'idle' as const }];
+    expect(cardState('i1', live('i1'), none, rows)).toBe('quiet');
+  });
+
+  it('calls a wedged agent working when the rail does', () => {
+    /*
+     * The contradiction in the other direction. An agent that stopped
+     * emitting but still publishes a working title is `running` to the rail,
+     * and the tree used to draw it quiet because nothing had arrived lately.
+     */
+    const rows = [{ itemId: 'i1', state: 'running' as const }];
+    expect(cardState('i1', none, none, rows)).toBe('working');
+  });
+
+  it('still answers for a card with no session here at all', () => {
+    // A run recorded by the hook has a transcript and no terminal of ours, so
+    // there is no row to agree with and recency is all there is.
+    expect(cardState('i1', live('i1'), none, [])).toBe('working');
+  });
+
+  it('keeps needs-person ahead of everything', () => {
+    // Unchanged and still load-bearing: a blocked agent has just produced
+    // output, so it is live too, and the other order makes amber unreachable.
+    const rows = [{ itemId: 'i1', state: 'blocked' as const }];
+    expect(cardState('i1', live('i1'), new Set(['i1']), rows)).toBe('needs-person');
+  });
+
+  it('takes one running agent as enough when a card has two', () => {
+    // Rows are keyed by card AND agent, so a card can appear twice. One
+    // working agent means something is happening to that card.
+    const rows = [
+      { itemId: 'i1', state: 'idle' as const },
+      { itemId: 'i1', state: 'running' as const },
+    ];
+    expect(cardState('i1', none, none, rows)).toBe('working');
+  });
+});

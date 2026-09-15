@@ -53,6 +53,8 @@ export async function tailRunsOnce(
     const offsetKey = `agentrun:${run.id}`;
     const state = await storage.getIngestionState(offsetKey);
     const consumed = state ? state.lastOffset : 0;
+    // Where this run's writes start, so the offset can count them.
+    const appendedBefore = appended.length;
     for (let i = consumed; i < parsed.length; i++) {
       const p = parsed[i];
       /*
@@ -95,13 +97,40 @@ export async function tailRunsOnce(
        * never retried: silent, permanent loss.
        */
       const seq = await storage.appendRunEvent(event);
-      if (seq === null) continue;
+      if (seq === null) {
+        /*
+         * STOP, do not skip.
+         *
+         * The previous version continued, and the offset below still advanced
+         * by `parsed.length` — what was READ — so a refused line was passed
+         * over on this pass and never reconsidered on any future one. That was
+         * the silent permanent loss the commit claimed to have fixed, still
+         * intact and now less visible, because the event no longer even
+         * appears on screen once.
+         *
+         * Stopping rather than continuing is the ordering half: writing the
+         * lines AFTER a refused one would leave a hole no later pass can fill,
+         * since the offset would already be beyond it.
+         */
+        console.warn(`[agenfk] run ${run.id}: store refused event at ${i}; will retry`);
+        break;
+      }
       const stored = { ...event, seq };
       emit({ itemId: run.itemId, runId: run.id, event: stored });
       appended.push(stored);
     }
-    if (parsed.length > consumed) {
-      await storage.setIngestionState({ sourcePath: offsetKey, lastOffset: parsed.length, lastRunAt: now() });
+    /*
+     * The offset records what was WRITTEN, not what was read.
+     *
+     * `consumed + written` rather than `parsed.length`: the two are the same
+     * on the happy path and differ exactly when something was refused, which
+     * is the case that used to lose events for good.
+     */
+    const written = appended.length - appendedBefore;
+    if (written > 0) {
+      await storage.setIngestionState({
+        sourcePath: offsetKey, lastOffset: consumed + written, lastRunAt: now(),
+      });
     }
   }
   return appended;

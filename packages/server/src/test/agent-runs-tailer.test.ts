@@ -225,3 +225,86 @@ describe('a position that is already taken', () => {
     expect(stored.map(e => e.text)).toEqual(['first', 'second', 'third'].map(t => expect.stringContaining(t)));
   });
 });
+
+/**
+ * The offset must not run ahead of what was written (review follow-up).
+ *
+ * The previous commit removed the phantom broadcast and claimed to have fixed
+ * the silent permanent loss. It did not. The offset still advanced by
+ * `parsed.length` — what was READ — so a line the store refused was skipped on
+ * this pass and never reconsidered on any future one.
+ *
+ * That is worse than before, not better: the event used to at least appear on
+ * screen once. Now it appears nowhere and is recorded nowhere, and nothing
+ * logs it — `startRunTailer`'s catch swallows throws too.
+ */
+describe('the ingestion offset', () => {
+  let storage: SQLiteStorageProvider;
+  let emitted: RunEventBroadcast[];
+  const emit = (b: RunEventBroadcast) => emitted.push(b);
+  beforeEach(async () => {
+    storage = new SQLiteStorageProvider();
+    await storage.init({ path: ':memory:' });
+    emitted = [];
+  });
+
+  const refusing = (s: SQLiteStorageProvider) => new Proxy(s, {
+    get: (t, k) => (k === 'appendRunEvent' ? async () => null : Reflect.get(t, k).bind(t)),
+  }) as unknown as SQLiteStorageProvider;
+
+  it('does not move past a line the store refused', async () => {
+    /*
+     * THE assertion the previous test stopped one step short of. It said in
+     * prose that "the ingestion offset moves on regardless and the event never
+     * comes back", then asserted only what was emitted and stored.
+     */
+    await seedRun(storage);
+    const content = [asst('bash', 'npx vitest', 100)].join('\n');
+    await tailRunsOnce(refusing(storage), emit, {
+      readFile: () => content, now: () => '2026-07-21T10:00:01.000Z',
+    });
+    const state = await storage.getIngestionState('agentrun:run-1');
+    expect(state?.lastOffset ?? 0).toBe(0);
+  });
+
+  it('retries that line on the next pass', async () => {
+    // The point of not advancing: a refusal has to be recoverable. A store
+    // that was briefly unhappy must not cost the session its history.
+    await seedRun(storage);
+    const content = [asst('bash', 'npx vitest', 100)].join('\n');
+    const deps = { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' };
+    await tailRunsOnce(refusing(storage), emit, deps);
+    const second = await tailRunsOnce(storage, emit, deps);
+    expect(second).toHaveLength(1);
+  });
+
+  it('still advances past what it did write', async () => {
+    // The guard must not turn into "never advance", which would replay the
+    // whole transcript on every poll.
+    await seedRun(storage);
+    const content = [asst('bash', 'one', 10), asst('bash', 'two', 10)].join('\n');
+    await tailRunsOnce(storage, emit, { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' });
+    const state = await storage.getIngestionState('agentrun:run-1');
+    expect(state?.lastOffset).toBe(2);
+  });
+
+  it('stops at the first refusal rather than skipping past it', async () => {
+    /*
+     * Order matters more than throughput here. Continuing past a refused line
+     * and writing the ones after it would leave a hole in the transcript that
+     * no later pass can fill, because the offset would already be beyond it.
+     */
+    let calls = 0;
+    const refuseSecond = new Proxy(storage, {
+      get: (t, k) => (k === 'appendRunEvent'
+        ? async (e: unknown) => { calls += 1; return calls === 2 ? null : (Reflect.get(t, k) as never).call(t, e); }
+        : Reflect.get(t, k).bind(t)),
+    }) as unknown as SQLiteStorageProvider;
+
+    await seedRun(storage);
+    const content = [asst('bash', 'one', 10), asst('bash', 'two', 10), asst('bash', 'three', 10)].join('\n');
+    await tailRunsOnce(refuseSecond, emit, { readFile: () => content, now: () => '2026-07-21T10:00:01.000Z' });
+    const state = await storage.getIngestionState('agentrun:run-1');
+    expect(state?.lastOffset).toBe(1);
+  });
+});
