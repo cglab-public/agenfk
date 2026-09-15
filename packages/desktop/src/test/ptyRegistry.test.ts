@@ -1051,3 +1051,77 @@ describe('killing the whole tree', () => {
     expect(reaped).toHaveLength(1);
   });
 });
+
+/**
+ * The fourth reaping path: the agent exits on its own (review follow-up).
+ *
+ * Three paths went through `reap()`. The one that happens most — somebody
+ * types `exit`, or the agent crashes — did not, so its MCP servers and
+ * subprocesses survived exactly as they had before the group kill existed.
+ *
+ * POSIX only sends SIGHUP to the terminal's FOREGROUND group when the session
+ * leader dies, so anything backgrounded or daemonised was untouched.
+ */
+describe('a session that ends by itself', () => {
+  const withReaper = () => {
+    const reaped: Array<{ pid: number; opts?: unknown }> = [];
+    const reg = new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+      emit: () => {},
+      killTree: (pid: number, _signal?: string, opts?: unknown) => { reaped.push({ pid, opts }); },
+    } as never);
+    return { reg, reaped };
+  };
+
+  it('still reaps the group it leaves behind', async () => {
+    const { reg, reaped } = withReaper();
+    await open(reg, 1);
+    spawned[0].pty.emitExit?.(0);
+    expect(reaped.map(r => r.pid)).toEqual([spawned[0].pty.pid]);
+  });
+
+  it('does not fall back to the bare pid, which may be recycled by then', () => {
+    /*
+     * The leader is gone, so its pid carries no evidence of who owns it now —
+     * and this app spawns pty children that are themselves group leaders, so a
+     * recycled pid is disproportionately likely to be a live pgid. The group
+     * is safe because POSIX keeps it alive while a member remains; the bare
+     * pid is not.
+     */
+    const { reg, reaped } = withReaper();
+    return open(reg, 1).then(() => {
+      spawned[0].pty.emitExit?.(1);
+      expect((reaped[0].opts as { fallbackToPid?: boolean })?.fallbackToPid).toBe(false);
+    });
+  });
+
+  it('is signalled once, not again when the window closes after', async () => {
+    // Because the exit removes it from the map, not because of any flag - an
+    // 'exited' guard was tried and was dead code. The recycled-pid window the
+    // review describes is NOT closed by this; see the comment on reap().
+    const { reg, reaped } = withReaper();
+    await open(reg, 1);
+    spawned[0].pty.emitExit?.(0);
+    reg.killAllForWindow(1);
+    expect(reaped).toHaveLength(1);
+  });
+
+  it('reaps nothing when a failed resume is replaced', async () => {
+    /*
+     * The relaunch path keeps the session id and gets a NEW pty. Nothing is
+     * signalled, and that is right rather than an oversight: a resume that
+     * died on the spot printed "no conversation found" and exited before it
+     * could start anything, so there is no group to collect — and signalling
+     * would risk reaching the replacement, which shares the id.
+     */
+    const { reg, reaped } = withReaper();
+    await reg.spawn({
+      itemId: 'i1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+      agentSessionId: '11111111-2222-3333-4444-555555555555', resume: true,
+    });
+    spawned[0].pty.emitExit?.(1);
+    expect(reaped).toEqual([]);
+    expect(spawned).toHaveLength(2);
+  });
+});

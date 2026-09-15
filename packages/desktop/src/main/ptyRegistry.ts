@@ -81,7 +81,7 @@ export interface PtyRegistryDeps {
    * spawn MCP servers, npx and language servers, and `pty.kill()` reaches none
    * of them — see processTree.ts, where the dangerous half lives.
    */
-  readonly killTree?: (pid: number, signal?: string) => void;
+  readonly killTree?: (pid: number, signal?: string, options?: { fallbackToPid?: boolean }) => void;
 }
 
 /** What a spawn gives back: a live process, and the conversation it holds. */
@@ -192,9 +192,39 @@ export class PtyRegistry {
    * group. The direct child therefore gets the hangup twice, which costs
    * nothing: it is already on its way out from the first.
    */
+  /**
+   * The group killer, injected or real.
+   *
+   * An adapter because the two signatures differ: the injected dep takes
+   * options third, the real function takes its own deps there. Calling the
+   * default with the options in the wrong slot typechecked as a `KillDeps`
+   * missing `kill` — caught by tsc, and the reason this is one place rather
+   * than two call sites.
+   */
+  private get killTree(): (pid: number, signal?: string, options?: { fallbackToPid?: boolean }) => void {
+    return this.deps.killTree ?? ((pid, signal, options) => killProcessTree(pid, signal, undefined, options));
+  }
+
   private reap(session: Session): void {
     session.flow.dispose();
-    (this.deps.killTree ?? killProcessTree)(session.pty.pid);
+    /*
+     * NOT GUARDED against a recycled pid, and that is a known gap rather than
+     * an oversight.
+     *
+     * Between the OS reaping the child and node-pty delivering its exit — it
+     * defers until the socket closes, up to 200ms — the session is still in
+     * this map holding a pid the OS may already have handed to something else.
+     * This app is an unusually bad place for that, because every pty child it
+     * spawns is itself a group leader, so a recycled pid is disproportionately
+     * likely to be a live pgid.
+     *
+     * An `exited` flag was tried and was dead code: by the time the exit is
+     * known, the session has already been removed from the map, and during the
+     * window itself there is nothing to set the flag from. Closing this
+     * properly needs a liveness check at signal time, which is its own piece
+     * of work rather than a line here.
+     */
+    this.killTree(session.pty.pid);
     session.pty.kill();
   }
 
@@ -406,9 +436,24 @@ export class PtyRegistry {
           launch(freshArgs, false);
           return;
         }
-        // The user typed `exit`, or the agent died. Drop the entry first so a
-        // later write cannot reach a dead pty, then tell the window, or the tab
-        // simply stops responding and looks hung.
+        /*
+         * The user typed `exit`, or the agent died — which is how a session
+         * ends MOST of the time, and this path did not reap.
+         *
+         * POSIX only sends SIGHUP to the terminal's FOREGROUND group when the
+         * session leader dies, so anything the agent backgrounded or
+         * daemonised — its MCP servers, an `npx` still running — survived
+         * exactly as it did before the group kill existed.
+         *
+         * Signalled WITHOUT the bare-pid fallback: the leader is gone, so its
+         * pid carries no evidence of who owns it now. The group is still safe,
+         * because POSIX keeps a group alive while any member remains and the
+         * kernel will not reuse a pid that is still a pgid.
+         */
+        const current = this.sessions.get(sessionId);
+        if (current?.pty === pty) this.killTree(pty.pid, undefined, { fallbackToPid: false });
+        // Dropped first so a later write cannot reach a dead pty, then the
+        // window is told, or the tab simply stops responding and looks hung.
         this.sessions.delete(sessionId);
         this.deps.emit(req.windowId, 'pty:exit', { sessionId, exitCode });
       });

@@ -53,10 +53,24 @@ function isSignallable(pid: unknown): pid is number {
  * error because the agent had already exited, and a teardown loop must not
  * abort part-way through because one session was gone.
  */
+export interface KillOptions {
+  /**
+   * Signal the bare pid when the group is gone.
+   *
+   * True for a process that is still alive: the pid is unambiguously ours and
+   * falling back keeps the old reach. FALSE once the leader has exited, where
+   * the pid may already belong to something else and carries no evidence of
+   * who it is — there the group is the only safe target, and if the group has
+   * gone there is nothing left to reach.
+   */
+  readonly fallbackToPid?: boolean;
+}
+
 export function killProcessTree(
   pid: number,
   signal: string = 'SIGHUP',
   deps: KillDeps = defaultDeps,
+  options: KillOptions = {},
 ): void {
   // Before any negation. See the header.
   if (!isSignallable(pid)) return;
@@ -71,6 +85,8 @@ export function killProcessTree(
      * only ever reach MORE than before and never less.
      */
   }
+
+  if (options.fallbackToPid === false) return;
 
   try {
     deps.kill(pid, signal);

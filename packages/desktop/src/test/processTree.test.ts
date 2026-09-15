@@ -126,3 +126,55 @@ describe('when the group is not there', () => {
     expect(() => killProcessTree(4242, 'SIGHUP', { kill: s.kill })).not.toThrow();
   });
 });
+
+/**
+ * Reaping the children of a process that has already gone (review follow-up).
+ *
+ * The three explicit reaping paths were covered; the fourth — the agent
+ * exiting on its own, which is how a session ends most of the time — was not.
+ * Its MCP servers and subprocesses survived exactly as before, so the commit's
+ * own premise ("a missed path is a leak that only ever shows up as 'my fans
+ * are on'") was not satisfied by the common case.
+ *
+ * The group is still the right target, and the timing is safer than it looks:
+ * POSIX keeps a process group alive while any member remains, and the kernel
+ * will not hand the leader's pid to a new process while it is still a pgid. So
+ * signalling `-pid` here reaches the orphans without the recycled-pid hazard.
+ *
+ * WHAT MUST NOT HAPPEN is the fallback. If the group is gone — no children
+ * left — falling back to the bare pid would signal whatever the OS has since
+ * given that number to.
+ */
+describe('when the leader has already exited', () => {
+  it('still signals the group, to reach the orphans', () => {
+    const s = spy();
+    killProcessTree(4242, 'SIGHUP', { kill: s.kill }, { fallbackToPid: false });
+    expect(s.calls).toEqual([{ pid: -4242, signal: 'SIGHUP' }]);
+  });
+
+  it('does NOT fall back to the bare pid', () => {
+    /*
+     * The whole reason this variant exists. The leader is dead, so the pid may
+     * already belong to something else — and unlike the group, a bare pid
+     * carries no evidence of who it is.
+     */
+    const s = spy(pid => (pid < 0 ? Object.assign(new Error('gone'), { code: 'ESRCH' }) : undefined));
+    killProcessTree(4242, 'SIGHUP', { kill: s.kill }, { fallbackToPid: false });
+    expect(s.calls).toEqual([]);
+  });
+
+  it('keeps the guards, which do not depend on the variant', () => {
+    const s = spy();
+    killProcessTree(0, 'SIGHUP', { kill: s.kill }, { fallbackToPid: false });
+    killProcessTree(1, 'SIGHUP', { kill: s.kill }, { fallbackToPid: false });
+    expect(s.calls).toEqual([]);
+  });
+
+  it('still falls back by default, for a process that is still alive', () => {
+    // The explicit paths keep the old reach: there the leader is alive and the
+    // bare pid is unambiguously ours.
+    const s = spy(pid => (pid < 0 ? Object.assign(new Error('gone'), { code: 'ESRCH' }) : undefined));
+    killProcessTree(4242, 'SIGHUP', { kill: s.kill });
+    expect(s.calls).toEqual([{ pid: 4242, signal: 'SIGHUP' }]);
+  });
+});
