@@ -147,10 +147,69 @@ server (the UI, CLI, install script) reads that file rather than assuming
 | `AGENFK_HUB_INITIAL_ADMIN_EMAIL` / `_PASSWORD` | no | Bootstraps the first admin without the `/setup` wizard. |
 | `AGENFK_HUB_UI_DIR` | no | Override for the SPA bundle path (auto-detected). |
 | `AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS` | no | How recently an installation must have reported to block an identity merge (default `48`). A machine dormant longer stops blocking; the alias the merge records is what prevents it resurrecting the key. |
+| `AGENFK_HUB_ALLOW_PRIVATE_PARENT` | no | Set to `1` to let this hub enrol with a parent on a private or loopback address. Off by default — see §2.7. |
 
 For staging deployments, secrets typically live in AWS Secrets Manager (or
 equivalent) under `agenfk-hub-<env>/{pg-url,hub-secret-key,hub-session-secret}`
 and project into the task as env vars.
+
+### 2.7 Group mode (federation)
+
+A hub can enrol with another hub, becoming a **child**; the other is the
+**parent**. For what that relationship actually means — what a parent can and
+cannot see or do — read the Hub Federation section of `AFK_ARCHITECTURE.md`
+first. This section is only what an operator has to set.
+
+**The short version: almost nothing.** Neither role needs configuration that
+the other does not already have.
+
+- **A standalone hub needs nothing.** The federation worker starts
+  unconditionally and every tick is a no-op without a binding, so a hub that
+  never joins a group pays one cheap query a minute. There is no flag to turn
+  it off because there is nothing to turn off.
+- **A parent needs nothing beyond being reachable** by its children, which is
+  the same requirement it already has for its own fleet.
+- **A child needs nothing** unless its parent is on a private network — see
+  below.
+
+**Enrolment is deliberately not configuration.** An admin pastes the parent's
+URL and a single-use invite token into the UI, and the resulting credential is
+stored encrypted under `AGENFK_HUB_SECRET_KEY`. Putting a parent URL or a token
+in the environment would mean a credential in a process listing and a
+relationship no one approved, and it would make joining a redeploy rather than
+a decision.
+
+| Variable | Who sets it | Why |
+|---|---|---|
+| `AGENFK_HUB_ALLOW_PRIVATE_PARENT` | a child, rarely | Permits enrolling with a parent whose URL resolves to a private or loopback address. |
+
+`AGENFK_HUB_ALLOW_PRIVATE_PARENT=1` exists because a parent hub on a corporate
+network is a legitimate deployment, and without it the join is refused. It is
+off by default because the check it disables is the one that stops an admin
+being talked into pointing their hub at an address inside their own perimeter.
+Turn it on when your parent genuinely is on that network, and leave it off
+otherwise.
+
+Two things that look like configuration and are not:
+
+- **The federation tick interval** (60s) is a constant, not an environment
+  variable. It is injectable in tests, which is how the standalone guarantee is
+  exercised against a parent that hangs, but it is not an operator knob: a
+  shorter interval buys nothing a parent notices and a longer one silently
+  delays every rollout.
+- **The outbox ceiling** (50,000 rows) is likewise fixed. Worth knowing rather
+  than tuning: a child whose parent is unreachable keeps what it could not send,
+  and past the ceiling trims the OLDEST rows first.
+
+**Reverse proxies matter slightly more in group mode.** A child's default name on
+its parent's roster, and the invite URL a parent hands out, are both derived from
+`X-Forwarded-Proto` / `X-Forwarded-Host` (falling back to `Host`). A proxy that
+does not set them gives children names like `localhost` on the roster. Set them,
+or name the child explicitly when joining.
+
+**The image needs no federation-specific changes.** `packages/hub/Dockerfile`
+already carries everything both roles use; the only variable above is an
+ordinary `-e` flag on the container.
 
 ---
 

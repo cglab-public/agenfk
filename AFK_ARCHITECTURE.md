@@ -214,6 +214,11 @@ A hub needs no configuration to be standalone: the federation worker starts
 unconditionally and every tick is a no-op without a binding, so a hub that never
 joins a group pays one cheap query a minute (`FEDERATION_TICK_MS`, 60s).
 
+Neither role needs much more than that. `HUB_ARCHITECTURE.md` §2.7 covers what an
+operator actually sets — which is almost nothing, plus one flag for a parent on a
+private network — and why enrolment is deliberately a decision made in the UI
+rather than a variable in the environment.
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io
