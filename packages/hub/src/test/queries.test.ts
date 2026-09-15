@@ -366,6 +366,34 @@ describe('hub query endpoints', () => {
     expect(row.tokens_out).toBe(0);
   });
 
+  it('GET /v1/metrics with types= filters instead of failing on a column that is not there', async () => {
+    // BUG 61bdbd45: applyEventFilters emits `type IN (...)`, but with neither
+    // projects nor itemTypes set this endpoint read rollups_daily, which has no
+    // `type` column — org_id, user_key, day, the counters and child_hub_id. So
+    // the types filter has never worked here, and because the handler forwarded
+    // no rejection the request did not even fail: it hung.
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.series)).toBe(true);
+  });
+
+  it('GET /v1/metrics?types= actually narrows the numbers', async () => {
+    // A 200 alone would pass against a filter that is silently ignored.
+    const all = await supertest(app).get('/v1/metrics').set('Cookie', cookie);
+    const filtered = await supertest(app).get('/v1/metrics?types=pr.opened').set('Cookie', cookie);
+    expect(filtered.status).toBe(200);
+    const total = (b: any) => b.series.reduce((n: number, s: any) => n + Number(s.events_count), 0);
+    expect(total(all.body)).toBeGreaterThan(0);
+    expect(total(filtered.body)).toBeGreaterThan(0);
+    expect(total(filtered.body)).toBeLessThan(total(all.body));
+  });
+
+  it('GET /v1/metrics with types= AND users= narrows on both', async () => {
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened&users=alice@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.series.every((s: any) => s.user_key === 'alice@acme.com')).toBe(true);
+  });
+
   it('rollup ignores tokens.logged events', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test');
     const ingest = await supertest(app).post('/v1/events')
