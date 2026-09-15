@@ -248,6 +248,45 @@ describe('PG parity: parent-side ingest of forwarded events (CGLAB-184)', () => 
     expect(Number(rolled[0].events_count)).toBe(2);
     expect(Number(rolled[1].events_count)).toBe(1);
 
+    // --- the childHubId query facet (CGLAB-184, task 3) on Postgres ---
+    //
+    // The filter is the one place the two backends can silently disagree:
+    // `child_hub_id` is NULLable on events and NOT NULL DEFAULT '' on
+    // rollups_daily, so "this hub's own rows" is an IS NULL / = '' disjunction
+    // that the dialect translator has to carry through alongside an IN list.
+    const token = await issueApiKey(db, 'org', 'pg-local');
+    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({
+      events: [{
+        eventId: 'pg-local-1', orgId: 'org', installationId: 'inst-local',
+        occurredAt: '2026-09-14T08:00:00.000Z',
+        actor: { osUser: 'zoe', gitName: 'Z', gitEmail: 'zoe@acme.com' },
+        type: 'item.created', itemType: 'TASK', itemId: 'i-pg-1',
+        remoteUrl: 'git@github.com:acme/pg.git', payload: {},
+      }],
+    });
+    await recomputeRollups(db, { full: true });
+
+    const q = (url: string) => supertest(app).get(url).set('Cookie', cookie);
+
+    const localUsers = await q('/v1/users?childHubId=local');
+    expect(localUsers.status).toBe(200);
+    expect(localUsers.body.map((u: any) => u.user_key)).toEqual(['zoe@acme.com']);
+
+    const alphaUsers = await q(`/v1/users?childHubId=${a.childHubId}`);
+    expect(alphaUsers.body.map((u: any) => u.user_key)).toEqual(['alice@acme.com']);
+
+    // The rollups path, where the column is NOT NULL DEFAULT ''.
+    const localMetrics = await q('/v1/metrics?childHubId=local');
+    expect(localMetrics.status).toBe(200);
+    expect(localMetrics.body.series.map((s: any) => s.user_key)).toEqual(['zoe@acme.com']);
+
+    const facet = await q('/v1/child-hubs');
+    expect(facet.status).toBe(200);
+    expect(facet.body.childHubs.map((c: any) => c.id).sort())
+      .toEqual([a.childHubId, b.childHubId].sort());
+    expect(facet.body.childHubs.every((c: any) => typeof c.events === 'number')).toBe(true);
+    expect(facet.body.hasLocal).toBe(true);
+
     await db.close();
   });
 });
