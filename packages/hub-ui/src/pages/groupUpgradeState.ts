@@ -75,3 +75,20 @@ export function groupUpgradeRow(
     summary: parts.join(' · '),
   };
 }
+
+/**
+ * Whether the board still has something to wait for, and so should keep
+ * refreshing.
+ *
+ * A dispatch with NO targets counts as live, not settled. Under scope 'all' a
+ * hub appears only once it polls, so an empty list is the first seconds of
+ * every group upgrade — treating it as finished froze the board on "nobody has
+ * picked this up yet" and it never updated when they did.
+ */
+export function groupUpgradesLive(
+  dispatches: ReadonlyArray<{ targets: ReadonlyArray<{ state: string }> }>,
+): boolean {
+  return dispatches.some(d =>
+    d.targets.length === 0 || d.targets.some(t => !groupUpgradeRow(t.state, null).settled),
+  );
+}

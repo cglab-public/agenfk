@@ -195,9 +195,16 @@ const SCHEMA_PG = `
   );
   CREATE INDEX IF NOT EXISTS idx_upgrade_dispatches_org_time ON upgrade_dispatches(org_id, created_at);
 
-  -- state: pending | running | completed | failed. Only a report from the
-  -- child moves it off pending — serving a directive is not the upgrade
-  -- landing. detail carries the child's aggregate counts and skip reasons.
+  -- state: pending | running | cancel-pending | completed | cancelled.
+  --
+  -- Only a report from the child moves it off pending — serving a directive is
+  -- not the upgrade landing. 'cancel-pending' means the parent has ASKED this
+  -- hub to stop and has not been told it did; it is deliberately distinct from
+  -- 'cancelled', which the child confirmed. detail carries the child's
+  -- aggregate counts and skip reasons.
+  --
+  -- cancel_attempts bounds how often a cancel is re-offered, so a hub that
+  -- never answers one cannot starve every other directive behind it.
   CREATE TABLE IF NOT EXISTS upgrade_dispatch_targets (
     dispatch_id TEXT NOT NULL,
     child_hub_id TEXT NOT NULL,
@@ -207,6 +214,7 @@ const SCHEMA_PG = `
     -- reports supersede one another and can arrive out of order, so the guard
     -- is monotonic in this rather than "latest write wins".
     seq INTEGER NOT NULL DEFAULT 0,
+    cancel_attempts INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (dispatch_id, child_hub_id)
   );
@@ -604,6 +612,7 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // /deliver transaction, taking the child's whole delivery batch with it.
   for (const [table, column, ddl] of [
     ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
   ] as const) {

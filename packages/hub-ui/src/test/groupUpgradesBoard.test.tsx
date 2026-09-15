@@ -7,12 +7,13 @@
  * the screen, and that the one distinction the board exists to keep — asked to
  * stop versus stopped — survives rendering.
  */
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GroupUpgrades } from '../pages/AdminUpgrades';
+import { groupUpgradesLive } from '../pages/groupUpgradeState';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
 
@@ -50,6 +51,12 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
+// NOT tested here, deliberately: that a stale cancel error is cleared when a
+// new cancel is attempted. The behaviour is implemented (onMutate/onSuccess
+// clear it), but every test I could write for it passed against the unfixed
+// component too — the error element had already gone by the time any
+// assertion could run, for a reason I could not pin down. A test that cannot
+// tell the two behaviours apart is worse than none, so there isn't one.
 describe('Admin → Upgrades: the group-upgrade board', () => {
   it('shows each child hub, its state and its counts', async () => {
     renderBoard();
@@ -100,6 +107,45 @@ describe('Admin → Upgrades: the group-upgrade board', () => {
     }]));
     renderBoard();
     await waitFor(() => screen.getByTestId('group-dispatch-unpolled-d-3'));
+  });
+
+  it('says so when the board cannot be loaded, instead of looking like an empty group', async () => {
+    // Failing silently to null made a 500 or an expired session
+    // indistinguishable from "this hub has no children" — the admin is shown
+    // no error, no retry, and no hint the section exists at all.
+    get.mockImplementation(async () => { throw new Error('boom'); });
+    renderBoard();
+    await waitFor(() => screen.getByTestId('group-upgrades-error'));
+    expect(screen.queryByTestId('group-upgrades')).toBeTruthy();
+  });
+
+  it('keeps polling while a dispatch nobody has picked up is outstanding', async () => {
+    // The first seconds of every scope-'all' dispatch look exactly like this,
+    // and an empty target list made the board decide everything was settled
+    // and stop refreshing — so it froze on "nobody has picked this up".
+    get.mockImplementation(async () => dispatches([{
+      id: 'd-4', targetVersion: '1.2.3', scope: 'all', cancelledAt: null, targets: [],
+    }]));
+    renderBoard();
+    await waitFor(() => screen.getByTestId('group-dispatch-unpolled-d-4'));
+    expect(groupUpgradesLive([{ targets: [] } as any])).toBe(true);
+  });
+
+  it('stops polling once every hub has settled', async () => {
+    expect(groupUpgradesLive([{ targets: [{ state: 'completed' }, { state: 'cancelled' }] } as any])).toBe(false);
+    expect(groupUpgradesLive([{ targets: [{ state: 'completed' }, { state: 'running' }] } as any])).toBe(true);
+    expect(groupUpgradesLive([{ targets: [{ state: 'cancel-pending' }] } as any])).toBe(true);
+  });
+
+  it('tells the admin when a hub was asked to stop but never confirmed', async () => {
+    // The distinction the board exists for has to be visible, not just
+    // computed — "Stopping…" alone reads as "in progress, all fine".
+    get.mockImplementation(async () => dispatches([{
+      id: 'd-5', targetVersion: '1.2.3', scope: 'all', cancelledAt: '2026-09-15T10:00:00Z',
+      targets: [{ childHubId: 'ch-c', name: 'gamma', state: 'cancel-pending', detail: null }],
+    }]));
+    renderBoard();
+    await waitFor(() => screen.getByTestId('group-target-awaiting-d-5-ch-c'));
   });
 
   it('renders nothing at all on a hub with no child hubs', async () => {

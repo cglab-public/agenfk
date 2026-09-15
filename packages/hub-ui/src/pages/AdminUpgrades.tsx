@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
-import { groupUpgradeRow } from './groupUpgradeState';
+import { groupUpgradeRow, groupUpgradesLive } from './groupUpgradeState';
 
 interface UpgradeTarget {
   installationId: string;
@@ -470,19 +470,39 @@ export function GroupUpgrades() {
     refetchInterval: (query) => {
       const rows = (query.state.data as { dispatches: GroupDispatch[] } | undefined)?.dispatches ?? [];
       // Poll only while something is genuinely unresolved, the same rule the
-      // local directive list uses.
-      const live = rows.some(d => d.targets.some(t => !groupUpgradeRow(t.state, null).settled));
-      return live ? 5_000 : false;
+      // local directive list uses. See groupUpgradesLive for why an empty
+      // target list counts as unresolved.
+      return groupUpgradesLive(rows) ? 5_000 : false;
     },
   });
 
   const cancelMut = useMutation({
     mutationFn: async (id: string) => (await api.post(`/v1/admin/upgrade-dispatches/${id}/cancel`, {})).data,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-upgrade-dispatches'] }),
+    // Clearing on success matters: without it one failed cancel left a red
+    // line under the heading for the life of the page, including after a
+    // later cancel worked.
+    onMutate: () => setError(null),
+    onSuccess: () => {
+      setError(null);
+      qc.invalidateQueries({ queryKey: ['admin-upgrade-dispatches'] });
+    },
     onError: (e: any) => setError(e?.response?.data?.error ?? 'Could not cancel the group upgrade'),
   });
 
   const dispatches = q.data?.dispatches ?? [];
+  // A failed load must not look like an empty group. Rendering null on error
+  // made a 500 or an expired session indistinguishable from "this hub has no
+  // children" — no error, no retry, no sign the section existed.
+  if (q.isError) {
+    return (
+      <div className="mt-8" data-testid="group-upgrades">
+        <h2 className="text-sm font-semibold text-ink mb-2">Group upgrades (child hubs)</h2>
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="group-upgrades-error">
+          Could not load group upgrades. Reload to try again.
+        </p>
+      </div>
+    );
+  }
   if (!q.isLoading && dispatches.length === 0) return null;
 
   return (
@@ -511,7 +531,9 @@ export function GroupUpgrades() {
               {!d.cancelledAt && (
                 <button
                   onClick={() => cancelMut.mutate(d.id)}
-                  disabled={cancelMut.isPending}
+                  // Scoped to THIS dispatch: one shared isPending greyed out
+                  // every other Cancel button on the board.
+                  disabled={cancelMut.isPending && cancelMut.variables === d.id}
                   className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
                   data-testid={`group-dispatch-cancel-${d.id}`}
                 >
@@ -539,6 +561,14 @@ export function GroupUpgrades() {
                       <span className="font-medium text-ink">{t.name}</span>
                       <span className="px-1.5 py-0.5 rounded bg-chip">{row.label}</span>
                       <span>{row.summary}</span>
+                      {row.awaiting && (
+                        <span
+                          className="text-amber-700 dark:text-amber-300"
+                          data-testid={`group-target-awaiting-${d.id}-${t.childHubId}`}
+                        >
+                          not confirmed
+                        </span>
+                      )}
                       {(t.detail?.skipped?.length ?? 0) > 0 && (
                         <span
                           className="text-ink-tertiary"

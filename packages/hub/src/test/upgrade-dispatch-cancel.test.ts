@@ -169,6 +169,82 @@ describe('the parent asks its children to stop', () => {
     expect((await directives(a.token)).status).toBe(204);
   });
 
+  it('a progress report in flight cannot erase the cancel', async () => {
+    // The killer case. The child queues a report, the admin cancels, then the
+    // report drains. If it is allowed to move the row out of cancel-pending,
+    // the cancel is never served again (no cancel-pending row) and the upgrade
+    // is never re-served either (the dispatch is cancelled) — the child hears
+    // nothing, upgrades the whole fleet, and its eventual completion is then
+    // stamped 'cancelled' on the board. The parent would be reporting the
+    // exact opposite of what happened.
+    const a = await enroll('alpha');
+    const d = await dispatch();
+    await directives(a.token);
+    await progress(a.token, d, 4, { pending: 2, updated: 0, failed: 0, skipped: 0 }, false);
+    await cancel(d);
+    expect((await target(d, a.childHubId)).state).toBe('cancel-pending');
+
+    // The in-flight report, with a HIGHER sequence, arriving after the cancel.
+    await progress(a.token, d, 5, { pending: 1, updated: 1, failed: 0, skipped: 0 }, false);
+    expect((await target(d, a.childHubId)).state).toBe('cancel-pending');
+
+    // And the cancel is still on offer, so the child still finds out.
+    expect((await directives(a.token)).body.kind).toBe('upgrade.cancel');
+  });
+
+  it('a completed report still settles a cancelled dispatch as stopped', async () => {
+    const a = await enroll('alpha');
+    const d = await dispatch();
+    await directives(a.token);
+    await cancel(d);
+    await progress(a.token, d, 3, { pending: 0, updated: 0, failed: 2, skipped: 0 }, true);
+    expect((await target(d, a.childHubId)).state).toBe('cancelled');
+  });
+
+  it('stops re-serving a cancel a child never answers, instead of wedging its whole feed', async () => {
+    // A cancel outranks every other directive and is re-served until answered.
+    // An older child that does not understand the kind never answers — so
+    // without a bound, that hub would be handed the same cancel forever and
+    // every flow dispatch and future upgrade to it would starve behind it.
+    // The target stays cancel-pending, because the parent still does not know
+    // what happened; it just stops shouting.
+    const a = await enroll('alpha');
+    const d = await dispatch();
+    await directives(a.token);
+    await cancel(d);
+
+    let served = 0;
+    for (let i = 0; i < 12; i++) {
+      const r = await directives(a.token);
+      if (r.status === 200 && r.body.kind === 'upgrade.cancel') served++;
+      else break;
+    }
+    expect(served).toBeGreaterThan(0);
+    expect(served).toBeLessThan(12);
+
+    // Honest: still not confirmed.
+    expect((await target(d, a.childHubId)).state).toBe('cancel-pending');
+  });
+
+  it('an unanswered cancel does not starve a later flow dispatch to that hub', async () => {
+    const a = await enroll('alpha');
+    const d = await dispatch();
+    await directives(a.token);
+    await cancel(d);
+    for (let i = 0; i < 12; i++) await directives(a.token);
+
+    await ctx.db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES (?, ?, ?, ?, 'hub', 1)`,
+      ['f1', ORG, 'F', JSON.stringify({ name: 'F', steps: [{ id: 's0', name: 'T', order: 0 }] })],
+    );
+    expect((await supertest(app).post('/v1/admin/flow-dispatches')
+      .set('Cookie', cookie).send({ flowId: 'f1', scope: 'all' })).status).toBe(200);
+
+    expect((await directives(a.token)).body.kind).toBe('flow.dispatch');
+    expect(d).toBeTruthy();
+  });
+
   it('shows the cancellation on the admin board', async () => {
     const a = await enroll('alpha');
     const d = await dispatch();
@@ -235,6 +311,21 @@ describe('a child told to stop', () => {
     expect(byId.waiting).toBe('cancelled');
   });
 
+  it('leaves a machine mid-upgrade alone, exactly as the local cancel does', async () => {
+    // Deliberate, and worth pinning because it differs from the local route,
+    // which offers a force option. A machine already installing cannot be
+    // called back, and claiming otherwise would be a worse lie than the delay.
+    await fanOut(['busy', 'waiting']);
+    await db.run("UPDATE upgrade_directive_targets SET state = 'in_progress' WHERE installation_id = 'busy'");
+
+    const out = await applyUpgradeCancel(db, ORG, { kind: 'upgrade.cancel', dispatchId: 'd-1' });
+
+    expect(out.cancelled).toBe(1);
+    const byId = Object.fromEntries((await states()).map(t => [t.installation_id, t.state]));
+    expect(byId.busy).toBe('in_progress');
+    expect(byId.waiting).toBe('cancelled');
+  });
+
   it('makes the child report again, so the parent learns it stopped', async () => {
     await fanOut(['i1']);
     const { reportUpgradeProgress } = await import('../services/federation/upgradeProgress');
@@ -245,10 +336,22 @@ describe('a child told to stop', () => {
     expect(await reportUpgradeProgress(db, ORG)).toBe(1);
   });
 
-  it('is harmless for a dispatch this hub never carried out', async () => {
+  it('is harmless for a dispatch this hub never carried out — but still ANSWERS it', async () => {
+    // The parent created the target row when it served the directive, so it is
+    // waiting on a hub that may have no record of it at all (the fan-out was
+    // refused, or crashed, or the response was lost). Saying nothing leaves
+    // the parent re-serving that cancel ahead of everything else forever.
+    const { reportUpgradeProgress } = await import('../services/federation/upgradeProgress');
     const out = await applyUpgradeCancel(db, ORG, { kind: 'upgrade.cancel', dispatchId: 'never' });
     expect(out.cancelled).toBe(0);
     expect(out.error).toBeFalsy();
+
+    expect(await reportUpgradeProgress(db, ORG)).toBe(1);
+    const [r] = (await db.all<any>('SELECT payload FROM federation_outbox ORDER BY seq'))
+      .map(x => JSON.parse(x.payload)?.event)
+      .filter((e: any) => e?.type === 'fleet:upgrade-dispatch:progress');
+    expect(r.payload.dispatchId).toBe('never');
+    expect(r.payload.completed).toBe(true);
   });
 
   it('refuses a cancel with no dispatch id rather than cancelling everything', async () => {

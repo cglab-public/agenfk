@@ -46,6 +46,12 @@ const MAX_DELIVER_ROWS = 500;
  * diverges in type from the other, a bare `<` between a Date and a string
  * silently yields false and serves the wrong directive forever.
  */
+/**
+ * How many times a cancel is offered to one hub before the parent gives up
+ * asking. See the cancel arm of the directive feed for why this is bounded.
+ */
+const MAX_CANCEL_ATTEMPTS = 8;
+
 export function msOf(v: unknown): number {
   if (v instanceof Date) return v.getTime();
   const t = Date.parse(String(v ?? ''));
@@ -366,11 +372,23 @@ export function federationRouter(ctx: HubServerContext): Router {
       seq,
     });
 
+    // Which states this report may move. Completed and cancelled are terminal
+    // either way. `cancel-pending` is the one that matters: only a COMPLETED
+    // report may lift a row out of it. Letting an ordinary in-flight progress
+    // report do so — and the outbox makes that routine, not a race — silently
+    // erased the cancel: no cancel-pending row means the cancel is never
+    // served again, and a cancelled dispatch is never re-served either, so the
+    // child heard nothing, upgraded the whole fleet, and its eventual
+    // completion was then stamped 'cancelled' on the board. The exact opposite
+    // of what happened.
+    const fromStates = completed
+      ? `('pending', 'running', 'cancel-pending')`
+      : `('pending', 'running')`;
     await ctx.db.run(
       `UPDATE upgrade_dispatch_targets
           SET state = ?, detail = ?, seq = ?, updated_at = ?
         WHERE dispatch_id = ? AND child_hub_id = ? AND seq < ?
-          AND state <> 'completed' AND state <> 'cancelled'
+          AND state IN ${fromStates}
           AND dispatch_id IN (SELECT id FROM upgrade_dispatches WHERE org_id = ?)`,
       [state, detail, seq, args.now, dispatchId, args.childHubId, seq, args.orgId],
     );
@@ -594,14 +612,27 @@ export function federationRouter(ctx: HubServerContext): Router {
           WHERE d.org_id = ?
             AND d.cancelled_at IS NOT NULL
             AND t.state = 'cancel-pending'
+            AND t.cancel_attempts < ?
           ORDER BY d.cancelled_at ASC
           LIMIT 1`,
-        [childHubId, orgId],
+        [childHubId, orgId, MAX_CANCEL_ATTEMPTS],
       );
       if (cancelRow) {
-        // Nothing is recorded here. The target stays `cancel-pending` until
-        // the child's ordinary progress report says it actually stopped, which
-        // is also what keeps this being re-served until it answers.
+        // Bounded on purpose. A cancel outranks every other directive and is
+        // re-served until answered, so a child that never answers — an older
+        // build that does not understand the kind, which this design is
+        // supposed to tolerate — would be handed the same cancel forever and
+        // every flow dispatch and future upgrade to it would starve behind it.
+        //
+        // After the bound the parent stops asking, and the target stays
+        // `cancel-pending`: it still does not know what happened, and saying
+        // so is the point. It just stops shouting.
+        await ctx.db.run(
+          `UPDATE upgrade_dispatch_targets
+              SET cancel_attempts = cancel_attempts + 1, updated_at = ?
+            WHERE dispatch_id = ? AND child_hub_id = ?`,
+          [new Date().toISOString(), cancelRow.id, childHubId],
+        );
         res.json({ kind: 'upgrade.cancel', dispatchId: cancelRow.id });
         return;
       }
