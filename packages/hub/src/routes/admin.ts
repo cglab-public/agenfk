@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
+import { eligibleInstallations } from '../services/fleetUpgrade.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
@@ -1915,22 +1916,13 @@ export function adminRouter(ctx: HubServerContext): Router {
     type Inst = { id: string; agenfk_version: string | null };
     let installations: Inst[];
     if (scope.type === 'all') {
-      // CGLAB-31: fleet-wide directives skip hidden people's installations —
-      // a departed user's machine must not receive upgrade pushes.
-      // CGLAB-64: and retired installations. Their keys were revoked when they
-      // were retired, so they can never poll or report — targeting them hangs
-      // the upgrade board on machines that are never coming back, which is the
-      // exact failure retirement exists to prevent.
-      installations = await ctx.db.all<Inst>(
-        `SELECT i.id, i.agenfk_version FROM installations i
-          WHERE i.org_id = ?
-            AND i.retired_at IS NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM hidden_users h
-               WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
-            )`,
-        [orgId],
-      );
+      // The rules (skip hidden people's machines, CGLAB-31; skip retired ones,
+      // CGLAB-64) now live in services/fleetUpgrade so the child-hub fan-out
+      // for a group upgrade uses the SAME definition of "which machines count"
+      // rather than a second copy that can drift from this one. The policy
+      // stays here: an admin naming a machine explicitly still gets a 409
+      // below, where a child hub skips and reports instead.
+      installations = await eligibleInstallations(ctx.db, orgId);
     } else if (scope.type === 'installation') {
       const inst = await ctx.db.get<Inst>(
         'SELECT id, agenfk_version FROM installations WHERE id = ? AND org_id = ?',
@@ -2002,6 +1994,10 @@ export function adminRouter(ctx: HubServerContext): Router {
            AND t.state IN ('pending', 'in_progress')`,
         [orgId, ...ids],
       );
+      // NB: the child-hub fan-out asks the same question through
+      // inFlightInstallationIds in services/fleetUpgrade. This one also needs
+      // WHICH directive conflicts, to name it in the 409, so it keeps its own
+      // projection over the identical predicate.
       if (conflicts.length > 0) {
         return res.status(409).json({
           error: 'One or more installations already have an upgrade in progress',

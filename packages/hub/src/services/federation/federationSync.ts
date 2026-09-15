@@ -5,6 +5,7 @@ import {
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
 import { releaseParentFlows } from './parentFlows.js';
+import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
 
 /**
  * The child half of hub federation (CGLAB-181).
@@ -70,6 +71,9 @@ export interface TickResult {
   ok: boolean;
   /** Set when the tick did no work: there is nothing to do, not a failure. */
   skipped?: 'no-binding' | 'revoked';
+  /** What a pulled upgrade.dispatch did to this hub's own fleet (CGLAB-183). */
+  upgradeFanout?: UpgradeFanoutResult;
+  upgradeDispatchError?: string;
   delivered?: number;
   error?: string;
   /** The parent said 401 — we have been detached at the other end. */
@@ -430,10 +434,21 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
         } catch (err) {
           result.flowDispatchError = result.flowDispatchError ?? messageOf(err);
         }
+      } else if (directive.kind === 'upgrade.dispatch') {
+        // The parent named a version; which of THIS hub's machines that means
+        // is ours to work out. Same shape as the flow arm: a bad directive
+        // must not take the tick down, because the outbox drain below still
+        // has to run. Reporting the outcome upstream is task 3.
+        try {
+          result.upgradeFanout = await applyUpgradeDispatch(
+            db, args.orgId ?? DEFAULT_ORG, directive as UpgradeDispatch,
+          );
+        } catch (err) {
+          result.upgradeDispatchError = messageOf(err);
+        }
       } else {
-        // A kind this build does not implement — upgrade dispatch (CGLAB-183)
-        // is the next one. Recording rather than throwing is what lets an older
-        // child sit safely under a newer parent.
+        // A kind this build does not implement. Recording rather than throwing
+        // is what lets an older child sit safely under a newer parent.
         result.unknownDirectiveKind = directive.kind;
       }
     }
