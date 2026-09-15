@@ -46,6 +46,7 @@ const INTEGRATION_ALIASES: Record<string, string> = {
   codex: 'codex',
   gemini: 'gemini',
   'gemini-cli': 'gemini',
+  pi: 'pi',
 };
 const INTEGRATION_LABELS: Record<string, string> = {
   claude: 'Claude Code',
@@ -53,6 +54,20 @@ const INTEGRATION_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   gemini: 'Gemini CLI',
+  /*
+   * pi was missing, and it is the client with the DEEPEST integration here: a
+   * native extension carrying the pre-edit gatekeeper, the mcp-enforcer and the
+   * PR-sizing reminder. The installer has always known how to install it -
+   * `shouldRun('pi')` - so `integration install all` reached it while
+   * `integration install pi` said it was unsupported.
+   *
+   * Not a cosmetic omission. This map is read as the answer to "which clients
+   * does AgEnFK support", and during CGLAB-169 it was taken as the source of
+   * truth for the terminal's agent picker: pi was left out and opencode put in.
+   * integration-list-covers-what-ships.test.ts now derives the expected set
+   * from the installer so the next divergence fails instead of misleading.
+   */
+  pi: 'Pi',
 };
 
 const telemetry = new TelemetryClient();
