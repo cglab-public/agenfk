@@ -38,6 +38,32 @@ const preloadChannels = (): string[] => {
   return [...src.matchAll(/ipcRenderer\.(?:invoke|on|off)\(\s*'([^']+)'/g)].map(m => m[1]);
 };
 
+/**
+ * Channels the preload SUBSCRIBES to, through the demux.
+ *
+ * A separate reader because the demux took these out of the old one's sight:
+ * they are no longer arguments to `ipcRenderer.on`, they are arguments to
+ * `demux.on`. The regex above stopped matching them and nothing failed, which
+ * is precisely the drift this file exists to catch.
+ */
+const preloadSubscriptions = (): string[] => {
+  const src = read('preload/index.ts');
+  return [...src.matchAll(/demux\.on\(\s*'([^']+)'/g)].map(m => m[1]).sort();
+};
+
+/**
+ * Channels the main process PUSHES, read from the registry's emit calls.
+ *
+ * These were never guarded at all. The old exemption below named two of them
+ * and let them through, so renaming `pty:activity` on either side left the
+ * whole suite green and agent state silently dead — the exact "producer and
+ * consumer agreeing with nobody" failure this file's header describes.
+ */
+const emittedChannels = (): string[] => {
+  const src = read('main/ptyRegistry.ts');
+  return [...new Set([...src.matchAll(/emit\([^,]+,\s*'([^']+)'/g)].map(m => m[1]))].sort();
+};
+
 describe('the IPC surface is reachable from the renderer', () => {
   it('registers at least one channel, so a broken regex fails loudly', () => {
     // Both sides are read with regular expressions. If one silently matched
@@ -59,11 +85,45 @@ describe('the IPC surface is reachable from the renderer', () => {
   it('does not invoke channels nothing handles', () => {
     // The mirror image: a preload method calling a channel that was renamed or
     // removed fails at runtime, in the user's hands, with no compile error.
-    const dangling = preloadChannels().filter(c => {
-      // Events pushed FROM main are not registered with ipc.handle.
-      if (c.startsWith('pty:data') || c.startsWith('pty:exit')) return false;
-      return !registeredChannels().includes(c);
-    });
+    /*
+     * Push channels are excluded by SOURCE now, not by name. The old version
+     * listed two of them as string prefixes, which quietly stopped being
+     * exhaustive the day a third was added and became dead code entirely once
+     * the demux moved them out of this reader's sight.
+     */
+    const pushed = new Set(emittedChannels());
+    const dangling = preloadChannels().filter(c => !pushed.has(c) && !registeredChannels().includes(c));
     expect(dangling, 'the preload calls channels no handler serves').toEqual([]);
+  });
+});
+
+/**
+ * The push channels, which had no guard at all.
+ *
+ * `invoke`/`handle` pairs were covered from the start; the channels main
+ * pushes to the renderer were exempted by name and never checked. Renaming
+ * one on either side breaks agent state or terminal output in production and
+ * nothing anywhere goes red.
+ */
+describe('what main pushes is what the renderer listens for', () => {
+  it('finds channels on both sides, so a broken regex fails loudly', () => {
+    // The same protection the reader above has. Two empty lists would make
+    // every assertion here pass while checking nothing.
+    expect(emittedChannels().length).toBeGreaterThan(0);
+    expect(preloadSubscriptions().length).toBeGreaterThan(0);
+  });
+
+  it('subscribes to every channel main emits', () => {
+    // A channel nobody listens for is output that never reaches a terminal,
+    // or an exit that never closes a tab.
+    const unheard = emittedChannels().filter(c => !preloadSubscriptions().includes(c));
+    expect(unheard, 'main emits these and the preload listens to none of them').toEqual([]);
+  });
+
+  it('listens for nothing main does not emit', () => {
+    // The mirror: a subscription to a renamed channel is a feature that went
+    // silently dead.
+    const unheard = preloadSubscriptions().filter(c => !emittedChannels().includes(c));
+    expect(unheard, 'the preload waits for channels nothing sends').toEqual([]);
   });
 });

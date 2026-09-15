@@ -56,6 +56,7 @@ let bridge: {
   kill: ReturnType<typeof vi.fn>;
   onData: ReturnType<typeof vi.fn>;
   onExit: ReturnType<typeof vi.fn>;
+  onActivity: ReturnType<typeof vi.fn>;
   ack: ReturnType<typeof vi.fn>;
 };
 let dataSubscribers: Array<(e: { sessionId: string; data: string }) => void>;
@@ -115,6 +116,9 @@ beforeEach(() => {
     write: vi.fn(async () => true),
     resize: vi.fn(async () => true),
     kill: vi.fn(async () => true),
+    // Present in the fake because the pane's routing is now asserted on it;
+    // it is optional on the real bridge and the pane still guards for that.
+    onActivity: vi.fn(() => () => {}),
     ack: vi.fn(async () => true),
     onData: vi.fn((_sessionId: string, cb: (e: { sessionId: string; data: string }) => void) => {
       dataSubscribers.push(cb);
@@ -456,5 +460,61 @@ describe('the options the pane builds its terminal with', () => {
     // Stated here as well as in terminalOptions.test.ts, because this is the
     // side that proves it reaches a terminal rather than merely existing.
     expect((TERMINAL_OPTIONS as { scrollback?: number }).scrollback).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * WHICH session the pane subscribes with (review follow-up).
+ *
+ * Routing became this design's load-bearing invariant and was the one thing
+ * nothing checked. Every fake discarded the key — `_sessionId` in all of them
+ * — and `bridge.onData` never appeared inside an expectation.
+ *
+ * The reviewer's scenario: change the subscribe call to `result.agentSessionId`
+ * instead of `result.sessionId`. Both are strings, both come back from the same
+ * spawn, and the registry has a comment explaining that people confuse them.
+ * tsc green, the whole UI suite green — and in production every terminal is
+ * permanently blank with no exit banner and no error.
+ */
+describe('the session id it routes on', () => {
+  const spawnedIds = { sessionId: 'pty-handle-1', agentSessionId: 'conversation-9' };
+
+  const renderWithIds = () => {
+    bridge.spawn = vi.fn(async () => spawnedIds);
+    renderPane({});
+  };
+
+  it('subscribes for output with the PTY handle, not the conversation id', async () => {
+    /*
+     * The two are different kinds of thing and the registry says so: one
+     * addresses a live process and dies with it, the other addresses a
+     * CONVERSATION and is the reason a restored terminal is worth anything.
+     */
+    renderWithIds();
+    await waitFor(() => expect(bridge.onData).toHaveBeenCalled());
+    expect(bridge.onData.mock.calls[0][0]).toBe('pty-handle-1');
+  });
+
+  it('subscribes for the exit with the same id', async () => {
+    // A tab that never hears its exit shows no banner and waits forever.
+    renderWithIds();
+    await waitFor(() => expect(bridge.onExit).toHaveBeenCalled());
+    expect(bridge.onExit.mock.calls[0][0]).toBe('pty-handle-1');
+  });
+
+  it('subscribes for activity with the same id', async () => {
+    renderWithIds();
+    await waitFor(() => expect(bridge.onActivity).toHaveBeenCalled());
+    expect(bridge.onActivity.mock.calls[0][0]).toBe('pty-handle-1');
+  });
+
+  it('never routes on the conversation id', async () => {
+    // Stated as its own assertion because it is the specific mistake that
+    // would otherwise pass every test in this file.
+    renderWithIds();
+    await waitFor(() => expect(bridge.onData).toHaveBeenCalled());
+    const keys = [bridge.onData, bridge.onExit, bridge.onActivity]
+      .flatMap(fn => fn.mock.calls.map((c: unknown[]) => c[0]));
+    expect(keys).not.toContain('conversation-9');
   });
 });
