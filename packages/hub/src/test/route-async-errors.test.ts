@@ -14,9 +14,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
-import { createHubApp } from '../server';
+import { createHubApp, hubErrorHandler } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+import { asyncRoute } from '../util/asyncRoute';
 
 const DB = path.join(os.tmpdir(), `agenfk-hub-asyncerr-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -112,6 +113,25 @@ describe('a database error answers 500 instead of hanging the client', () => {
     });
   }
 
+  // The SSO routers were not in the card's scope and the first sweep missed
+  // them — an unauthenticated front door that hangs the browser on a DB blip is
+  // the worst placement of this bug in the whole hub. Found by the adversarial
+  // review of this card.
+  const SSO_ENDPOINTS = [
+    '/auth/google/start',
+    '/auth/google/callback',
+    '/auth/entra/start',
+    '/auth/entra/callback',
+  ];
+
+  for (const url of SSO_ENDPOINTS) {
+    it(`GET ${url} answers 500`, async () => {
+      breakTheDatabase();
+      const r = await supertest(app).get(url).timeout({ deadline: DEADLINE_MS });
+      expect(r.status).toBe(500);
+    });
+  }
+
   // A key-guarded router needs a live key to reach the handler at all — and
   // requireKey does its OWN db.get, which already answers 500 when everything
   // is broken. Breaking only db.all therefore gets past the guard and fails
@@ -125,5 +145,80 @@ describe('a database error answers 500 instead of hanging the client', () => {
       .set('Authorization', `Bearer ${key.body.token}`)
       .timeout({ deadline: DEADLINE_MS });
     expect(r.status).toBe(500);
+  });
+});
+
+// ── The wrapper itself, and what the error handler does with what it gets ────
+//
+// Three findings from the adversarial review of this card, each pinned here
+// rather than left as a claim in a commit message.
+describe('the wrapper hands express something express reads as an error', () => {
+  const build = async (handler: (req: any, res: any) => Promise<unknown>) => {
+    const express = (await import('express')).default;
+    const app = express();
+    app.get('/boom', asyncRoute(handler));
+    // The same shape as the hub's own fallback: a request that falls THROUGH
+    // the route answers 200 HTML, which is the failure this pins.
+    app.use((_req: any, res: any) => res.status(200).send('<html>spa</html>'));
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(500).json({ error: err?.message ?? 'internal error' });
+    });
+    return app;
+  };
+
+  it('a rejection with undefined is an error, not "carry on"', async () => {
+    // next(undefined) means "no error, continue" to express, so a handler that
+    // rejects with a falsy value would fall through to the SPA fallback and
+    // answer 200 HTML for an API path.
+    const app = await build(async () => { throw undefined; });
+    const r = await supertest(app).get('/boom').timeout({ deadline: DEADLINE_MS });
+    expect(r.status).toBe(500);
+  });
+
+  it("a rejection with the string 'route' is an error, not a routing directive", async () => {
+    // next('route') and next('router') are directives express acts on.
+    const app = await build(async () => { throw 'route'; });
+    const r = await supertest(app).get('/boom').timeout({ deadline: DEADLINE_MS });
+    expect(r.status).toBe(500);
+  });
+});
+
+describe('the hub error handler', () => {
+  let app: any; let ctx: any; let cookie: string;
+  const env = process.env.NODE_ENV;
+
+  beforeEach(async () => {
+    cleanup();
+    const out = await createHubApp({ dbPath: DB, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org' });
+    app = out.app; ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    cookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' }))
+      .headers['set-cookie']?.[0] ?? '';
+  });
+  afterEach(async () => {
+    process.env.NODE_ENV = env;
+    ctx.stopWorkers?.(); await drainApp(app); await ctx.db.close(); cleanup();
+  });
+
+  it('logs an error even when the response has already gone out', async () => {
+    // The one case the client can never see. The headersSent guard used to
+    // return BEFORE the log line, so exactly these errors vanished. Driven
+    // against the real handler, because a route registered after createHubApp
+    // lands behind the SPA fallback and never runs.
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { seen.push(a.map(String).join(' ')); });
+    try {
+      const res: any = { headersSent: true, status: () => { throw new Error('must not answer twice'); } };
+      hubErrorHandler(new Error('thrown after the send'), {} as any, res, (() => {}) as any);
+      expect(seen.some(l => l.includes('thrown after the send'))).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('does not echo a driver error message to an anonymous caller in production', async () => {
+    process.env.NODE_ENV = 'production';
+    ctx.db.get = async () => { throw new Error('relation "auth_config" does not exist'); };
+    const r = await supertest(app).get('/auth/providers').timeout({ deadline: DEADLINE_MS });
+    expect(r.status).toBe(500);
+    expect(JSON.stringify(r.body)).not.toContain('auth_config');
   });
 });

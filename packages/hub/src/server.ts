@@ -316,13 +316,28 @@ export async function createHubApp(
   (app as any).hubCtx = ctx;
 
   // Default error handler — never leak stack traces.
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    if (res.headersSent) return;
-    console.error('[HUB_ERROR]', err?.message ?? err);
-    res.status(500).json({ error: err?.message ?? 'internal error' });
-  });
+  app.use(hubErrorHandler);
 
   return { app, ctx };
+}
+
+/**
+ * The hub's last word on a request.
+ *
+ * Two deliberate orderings. The log line comes BEFORE the headersSent guard: a
+ * handler that throws after answering is the one case the client can never see,
+ * so returning early swallowed exactly the errors that most needed recording.
+ * And the response body is the message only outside production — every
+ * unauthenticated route reaches here too, and a driver error names tables and
+ * columns ('relation "x" does not exist') to whoever asked.
+ */
+export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
+  console.error('[HUB_ERROR]', err?.message ?? err);
+  if (res.headersSent) return;
+  const body = process.env.NODE_ENV === 'production'
+    ? 'internal error'
+    : (err?.message ?? 'internal error');
+  res.status(500).json({ error: body });
 }
 
 export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {

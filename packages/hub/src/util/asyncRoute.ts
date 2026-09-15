@@ -16,5 +16,13 @@ import { Request, Response, NextFunction, RequestHandler } from 'express';
 export function asyncRoute(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
 ): RequestHandler {
-  return (req, res, next) => { handler(req, res, next).catch(next); };
+  // Never hand express a falsy rejection or a bare string: next(undefined) means
+  // "carry on", so the request would fall through to the SPA fallback and answer
+  // 200 HTML for an API path, and next('route') / next('router') are routing
+  // DIRECTIVES rather than errors. Anything that is not an Error becomes one.
+  return (req, res, next) => {
+    handler(req, res, next).catch((err: unknown) => {
+      next(err instanceof Error ? err : new Error(`handler rejected: ${String(err)}`));
+    });
+  };
 }

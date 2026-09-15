@@ -4,6 +4,7 @@ import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
 import { checkEmailAllowlist, completeSsoLogin, findInvitedSsoUser, issueOAuthState, verifyOAuthState } from './oauth.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
@@ -30,7 +31,7 @@ export function googleRouter(ctx: HubServerContext): Router {
   // caller can drive config reads and redirects in a loop.
   router.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many sign-in requests, slow down.' }));
 
-  router.get('/start', async (req: Request, res: Response) => {
+  router.get('/start', asyncRoute(async (req: Request, res: Response) => {
     const cfg = await readGoogleConfig(ctx);
     if (!cfg?.google_enabled || !cfg.google_client_id) {
       return res.status(404).json({ error: 'Google sign-in is not enabled' });
@@ -43,9 +44,9 @@ export function googleRouter(ctx: HubServerContext): Router {
     url.searchParams.set('scope', 'openid email profile');
     url.searchParams.set('state', state);
     res.redirect(url.toString());
-  });
+  }));
 
-  router.get('/callback', async (req: Request, res: Response) => {
+  router.get('/callback', asyncRoute(async (req: Request, res: Response) => {
     const cfg = await readGoogleConfig(ctx);
     if (!cfg?.google_enabled || !cfg.google_client_id || !cfg.google_client_secret_enc) {
       return res.status(404).json({ error: 'Google sign-in is not enabled' });
@@ -86,7 +87,7 @@ export function googleRouter(ctx: HubServerContext): Router {
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
     res.redirect('/');
-  });
+  }));
 
   return router;
 }
