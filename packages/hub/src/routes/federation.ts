@@ -329,7 +329,14 @@ export function federationRouter(ctx: HubServerContext): Router {
     if (!dispatchId || !Number.isSafeInteger(seq) || seq <= 0 || seq > 2_000_000_000) return;
 
     const completed = e.payload?.completed === true;
-    const state = completed ? 'completed' : 'running';
+    // A child confirming it stopped reports through the ordinary progress
+    // path, so the dispatch's own cancellation is what distinguishes
+    // "finished" from "stopped" — the counts look the same from here.
+    const cancelledDispatch = await ctx.db.get<{ id: string }>(
+      'SELECT id FROM upgrade_dispatches WHERE id = ? AND org_id = ? AND cancelled_at IS NOT NULL',
+      [dispatchId, args.orgId],
+    );
+    const state = completed ? (cancelledDispatch ? 'cancelled' : 'completed') : 'running';
     // The counts and skip reasons as the child sent them, stored whole so the
     // board can render what that hub actually saw. Bounded, because it is a
     // remote party's blob.
@@ -363,6 +370,7 @@ export function federationRouter(ctx: HubServerContext): Router {
       `UPDATE upgrade_dispatch_targets
           SET state = ?, detail = ?, seq = ?, updated_at = ?
         WHERE dispatch_id = ? AND child_hub_id = ? AND seq < ?
+          AND state <> 'completed' AND state <> 'cancelled'
           AND dispatch_id IN (SELECT id FROM upgrade_dispatches WHERE org_id = ?)`,
       [state, detail, seq, args.now, dispatchId, args.childHubId, seq, args.orgId],
     );
@@ -574,6 +582,29 @@ export function federationRouter(ctx: HubServerContext): Router {
           )
         : null;
       const flowCandidate = flow ? row : null;
+
+      // A cancel outranks everything. It is the parent taking work BACK, so
+      // making it queue behind an older directive would keep a fleet upgrading
+      // that an admin has already stopped.
+      const cancelRow = await ctx.db.get<any>(
+        `SELECT d.id
+           FROM upgrade_dispatches d
+           JOIN upgrade_dispatch_targets t
+             ON t.dispatch_id = d.id AND t.child_hub_id = ?
+          WHERE d.org_id = ?
+            AND d.cancelled_at IS NOT NULL
+            AND t.state = 'cancel-pending'
+          ORDER BY d.cancelled_at ASC
+          LIMIT 1`,
+        [childHubId, orgId],
+      );
+      if (cancelRow) {
+        // Nothing is recorded here. The target stays `cancel-pending` until
+        // the child's ordinary progress report says it actually stopped, which
+        // is also what keeps this being re-served until it answers.
+        res.json({ kind: 'upgrade.cancel', dispatchId: cancelRow.id });
+        return;
+      }
 
       if (upgradeRow && (!flowCandidate || msOf(upgradeRow.created_at) < msOf(flowCandidate.created_at))) {
         // Serving is not the upgrade landing: the row stays pending until the

@@ -2399,10 +2399,24 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.post('/upgrade-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
+      const now = new Date().toISOString();
       const result = await ctx.db.run(
         `UPDATE upgrade_dispatches SET cancelled_at = ?
           WHERE id = ? AND org_id = ? AND cancelled_at IS NULL`,
-        [new Date().toISOString(), req.params.id, orgId],
+        [now, req.params.id, orgId],
+      );
+      // Hubs that already took the directive have to be TOLD. Moving them to
+      // `cancel-pending` is what puts the cancel on the feed for them, and it
+      // is deliberately not `cancelled`: the parent never assumes, so a hub
+      // that never polls keeps showing as still being asked rather than being
+      // claimed as stopped. Terminal states are untouched — a cancel cannot
+      // un-upgrade a fleet that already finished.
+      await ctx.db.run(
+        `UPDATE upgrade_dispatch_targets
+            SET state = 'cancel-pending', updated_at = ?
+          WHERE dispatch_id = ? AND state IN ('pending', 'running')
+            AND dispatch_id IN (SELECT id FROM upgrade_dispatches WHERE org_id = ?)`,
+        [now, req.params.id, orgId],
       );
       if (Number(result.changes ?? 0) === 0) {
         const exists = await ctx.db.get<{ id: string }>(

@@ -527,8 +527,18 @@ describe('PG parity: group upgrade dispatch (CGLAB-183)', () => {
     const cancelled = await supertest(app)
       .post(`/v1/admin/upgrade-dispatches/${created.body.id}/cancel`).set('Cookie', cookie);
     expect(cancelled.status).toBe(200);
-    expect((await supertest(app).get('/v1/federation/directives')
-      .set('Authorization', `Bearer ${token}`)).status).toBe(204);
+
+    // This hub was already served the dispatch, so cancelling it does not go
+    // quiet — it hands the hub an upgrade.cancel to stop what it started
+    // (CGLAB-183 task 4), and the target says it has been ASKED rather than
+    // claiming it stopped.
+    const afterCancel = await supertest(app).get('/v1/federation/directives')
+      .set('Authorization', `Bearer ${token}`);
+    expect(afterCancel.status).toBe(200);
+    expect(afterCancel.body.kind).toBe('upgrade.cancel');
+    expect((await db.get<any>(
+      'SELECT state FROM upgrade_dispatch_targets WHERE dispatch_id = ? AND child_hub_id = ?',
+      [created.body.id, childHubId])).state).toBe('cancel-pending');
   });
 
   it('picks the older of the two directive kinds on Postgres, where created_at is a Date', async () => {

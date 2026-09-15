@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
+import { groupUpgradeRow } from './groupUpgradeState';
 
 interface UpgradeTarget {
   installationId: string;
@@ -47,6 +48,24 @@ interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | n
 import { canIssueDirective } from './adminUpgradesGate';
 import { installationDisplayName } from './installationDisplayName';
 import { filterInstallationOptions } from './filterInstallationOptions';
+
+interface GroupTarget {
+  childHubId: string;
+  name: string;
+  state: string;
+  detail: {
+    counts?: { pending: number; updated: number; failed: number; skipped: number };
+    skipped?: Array<{ installationId: string; reason: string }>;
+  } | null;
+}
+
+interface GroupDispatch {
+  id: string;
+  targetVersion: string;
+  scope: string;
+  cancelledAt: string | null;
+  targets: GroupTarget[];
+}
 
 export function AdminUpgrades() {
   const qc = useQueryClient();
@@ -425,6 +444,117 @@ export function AdminUpgrades() {
             </div>
           );
         })}
+      </div>
+      <GroupUpgrades />
+    </div>
+  );
+}
+
+/**
+ * Group upgrades dispatched to CHILD hubs (CGLAB-183).
+ *
+ * Deliberately a section of this page rather than its own: an admin asking
+ * "what version is my estate on" should not have to know whether a machine is
+ * reached directly or through a child hub.
+ *
+ * It renders nothing at all when this hub has no children, so a standalone hub
+ * is not shown a control it can never use.
+ */
+export function GroupUpgrades() {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const q = useQuery<{ dispatches: GroupDispatch[] }>({
+    queryKey: ['admin-upgrade-dispatches'],
+    queryFn: async () => (await api.get('/v1/admin/upgrade-dispatches')).data,
+    refetchInterval: (query) => {
+      const rows = (query.state.data as { dispatches: GroupDispatch[] } | undefined)?.dispatches ?? [];
+      // Poll only while something is genuinely unresolved, the same rule the
+      // local directive list uses.
+      const live = rows.some(d => d.targets.some(t => !groupUpgradeRow(t.state, null).settled));
+      return live ? 5_000 : false;
+    },
+  });
+
+  const cancelMut = useMutation({
+    mutationFn: async (id: string) => (await api.post(`/v1/admin/upgrade-dispatches/${id}/cancel`, {})).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-upgrade-dispatches'] }),
+    onError: (e: any) => setError(e?.response?.data?.error ?? 'Could not cancel the group upgrade'),
+  });
+
+  const dispatches = q.data?.dispatches ?? [];
+  if (!q.isLoading && dispatches.length === 0) return null;
+
+  return (
+    <div className="mt-8" data-testid="group-upgrades">
+      <h2 className="text-sm font-semibold text-ink mb-2">Group upgrades (child hubs)</h2>
+      {error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400 mb-2" data-testid="group-upgrade-error">{error}</p>
+      )}
+      <div className="border border-border-soft rounded-lg divide-y divide-border-soft">
+        {dispatches.map(d => (
+          <div key={d.id} className="p-3" data-testid={`group-dispatch-${d.id}`}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-ink">{d.targetVersion}</span>
+              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-secondary">
+                {d.scope}
+              </span>
+              {d.cancelledAt && (
+                <span
+                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-tertiary"
+                  data-testid={`group-dispatch-cancelled-${d.id}`}
+                >
+                  cancelled
+                </span>
+              )}
+              <span className="flex-1" />
+              {!d.cancelledAt && (
+                <button
+                  onClick={() => cancelMut.mutate(d.id)}
+                  disabled={cancelMut.isPending}
+                  className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
+                  data-testid={`group-dispatch-cancel-${d.id}`}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {d.targets.length === 0 ? (
+              // Under scope 'all' a hub appears only once it has polled, so an
+              // empty list means nobody has asked yet — not that nobody is
+              // targeted. Saying so beats rendering a blank space.
+              <p className="mt-1 text-xs text-ink-tertiary" data-testid={`group-dispatch-unpolled-${d.id}`}>
+                No child hub has picked this up yet.
+              </p>
+            ) : (
+              <div className="mt-2 space-y-1">
+                {d.targets.map(t => {
+                  const row = groupUpgradeRow(t.state, t.detail?.counts ?? null);
+                  return (
+                    <div
+                      key={t.childHubId}
+                      className={'flex items-center gap-2 text-xs ' + (row.settled ? 'text-ink-tertiary' : 'text-ink-secondary')}
+                      data-testid={`group-target-${d.id}-${t.childHubId}`}
+                    >
+                      <span className="font-medium text-ink">{t.name}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-chip">{row.label}</span>
+                      <span>{row.summary}</span>
+                      {(t.detail?.skipped?.length ?? 0) > 0 && (
+                        <span
+                          className="text-ink-tertiary"
+                          title={t.detail!.skipped!.map(sk => `${sk.installationId}: ${sk.reason}`).join('\n')}
+                          data-testid={`group-target-skips-${d.id}-${t.childHubId}`}
+                        >
+                          ({t.detail!.skipped!.length} skipped — hover for why)
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

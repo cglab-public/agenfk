@@ -5,7 +5,10 @@ import {
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
 import { releaseParentFlows } from './parentFlows.js';
-import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
+import {
+  applyUpgradeDispatch, applyUpgradeCancel,
+  type UpgradeDispatch, type UpgradeCancel, type UpgradeFanoutResult, type UpgradeCancelResult,
+} from './upgradeFanout.js';
 import { reportUpgradeProgress } from './upgradeProgress.js';
 
 /**
@@ -75,6 +78,8 @@ export interface TickResult {
   /** What a pulled upgrade.dispatch did to this hub's own fleet (CGLAB-183). */
   upgradeFanout?: UpgradeFanoutResult;
   upgradeDispatchError?: string;
+  /** What a pulled upgrade.cancel stopped (CGLAB-183). */
+  upgradeCancel?: UpgradeCancelResult;
   delivered?: number;
   error?: string;
   /** The parent said 401 — we have been detached at the other end. */
@@ -450,6 +455,15 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
           // never accept comes back every tick. Surfacing it here is what
           // stops that being a silent, permanent loop.
           if (fanout.outcome === 'invalid') result.upgradeDispatchError = fanout.error;
+        } catch (err) {
+          result.upgradeDispatchError = messageOf(err);
+        }
+      } else if (directive.kind === 'upgrade.cancel') {
+        try {
+          result.upgradeCancel = await applyUpgradeCancel(
+            db, args.orgId ?? DEFAULT_ORG, directive as UpgradeCancel,
+          );
+          if (result.upgradeCancel.error) result.upgradeDispatchError = result.upgradeCancel.error;
         } catch (err) {
           result.upgradeDispatchError = messageOf(err);
         }
