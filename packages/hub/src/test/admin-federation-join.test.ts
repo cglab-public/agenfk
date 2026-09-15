@@ -159,6 +159,53 @@ describe('child hub: join, request release, leave', () => {
     });
   });
 
+  describe('a parent on a private network', () => {
+    const PRIVATE = 'http://192.168.0.5:3100';
+
+    afterEach(() => { delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT; });
+
+    it('is refused by default, before any invite is spent', async () => {
+      const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/private or loopback/i);
+      // The invite is untouched: nothing was sent to the parent.
+      expect(enrollCalls).toHaveLength(0);
+    });
+
+    it('SUCCEEDS once the flag is set — the whole point of the flag', async () => {
+      // The flag used to get the join past the route's own check and then fail
+      // inside the binding write, which re-validated WITHOUT it. By then the
+      // invite had been spent and the parent had a named row for a child that
+      // could never store its credential — and the error told the operator to
+      // set the flag they had already set. Every retry burnt another invite.
+      process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
+
+      const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+      expect(r.status).toBe(200);
+      expect(r.body.childHubId).toBe('ch-1');
+      expect(r.body.state).toBe('active');
+
+      // And the binding is actually usable afterwards.
+      const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
+      expect(status.body.bound).toBe(true);
+      expect(status.body.parentUrl).toBe(PRIVATE);
+    });
+
+    it('works for loopback too, which is what a local trial run uses', async () => {
+      process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
+      const r = await join({ parentUrl: 'http://127.0.0.1:4100', inviteToken: 'tok' });
+      expect(r.status).toBe(200);
+    });
+
+    it('still refuses a private parent when the flag is anything but exactly 1', async () => {
+      for (const v of ['true', 'yes', 'TRUE', '0', '']) {
+        process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = v;
+        const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+        expect(r.status, v).toBe(400);
+      }
+    });
+  });
+
   describe('GET /v1/admin/federation', () => {
     it('reports an unbound hub as unbound', async () => {
       const r = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);

@@ -103,7 +103,15 @@ export async function writeParentBinding(
   secretKey: string,
   input: { parentUrl: string; token: string; childHubId: string; enrolledAt?: string; state?: BindingState; identityPolicy?: IdentityPolicy },
 ): Promise<void> {
-  const parentUrl = assertHttpUrl(input.parentUrl);
+  // The SAME allowance the join route applies, because this runs after the
+  // parent has already accepted the enrolment. Re-validating more strictly here
+  // made AGENFK_HUB_ALLOW_PRIVATE_PARENT useless and destructive: the join got
+  // past the route's check, the invite was spent, the parent created a named
+  // row — and then this threw, telling the operator to set the flag they had
+  // already set. Every retry burnt another invite and stranded another row.
+  const parentUrl = assertHttpUrl(input.parentUrl, {
+    allowPrivate: process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT === '1',
+  });
   const stored: StoredBinding = {
     parentUrl,
     encToken: encryptSecret(input.token, secretKey),

@@ -168,9 +168,15 @@ the other does not already have.
   never joins a group pays one cheap query a minute. There is no flag to turn
   it off because there is nothing to turn off.
 - **A parent needs nothing beyond being reachable** by its children, which is
-  the same requirement it already has for its own fleet.
-- **A child needs nothing** unless its parent is on a private network — see
-  below.
+  the same requirement it already has for its own fleet. One caveat: the invite
+  it hands out embeds a URL derived from the request's forwarded headers, NOT
+  from `AGENFK_HUB_PUBLIC_URL` — that variable does not feed this path, however
+  reasonable it looks. See the proxy note below.
+- **A child needs no inbound anything.** Every federation call is made BY the
+  child: it polls, it delivers, it reports. No ingress rule, no public URL, no
+  open port. A hub behind a firewall can join a group as long as it can reach
+  out. What it may need is the flag below, and possibly trust for the parent's
+  certificate.
 
 **Enrolment is deliberately not configuration.** An admin pastes the parent's
 URL and a single-use invite token into the UI, and the resulting credential is
@@ -186,9 +192,28 @@ a decision.
 `AGENFK_HUB_ALLOW_PRIVATE_PARENT=1` exists because a parent hub on a corporate
 network is a legitimate deployment, and without it the join is refused. It is
 off by default because the check it disables is the one that stops an admin
-being talked into pointing their hub at an address inside their own perimeter.
-Turn it on when your parent genuinely is on that network, and leave it off
-otherwise.
+being talked into pointing their hub at an address inside their own perimeter —
+the blocked set is loopback, RFC1918, link-local (including cloud metadata at
+`169.254.*`) and `.local`/`.internal`. Turn it on when your parent genuinely is
+on that network, and leave it off otherwise.
+
+It must be exactly `1`. `true`, `yes` and `TRUE` are all off, which is
+deliberate for a flag that relaxes an SSRF guard.
+
+**If the parent's certificate is not publicly trusted** — a private CA, or a
+TLS-inspecting proxy, both common on exactly the networks this flag is for —
+the join and every later tick fail on certificate validation. Node ignores the
+OS trust store, so point `NODE_EXTRA_CA_CERTS` at the CA bundle in the
+container. `HTTPS_PROXY` / `NO_PROXY` are honoured the same way. This failure is
+quiet: the hub keeps serving its own people and only logs `[FEDERATION] tick
+failed:` once a minute.
+
+**Rotating `AGENFK_HUB_SECRET_KEY` breaks an existing group membership.** The
+parent credential is encrypted under it, so after a rotation the binding cannot
+be read: forwarding stops, the tick fails every minute, and the admin page
+reports the binding as unreadable rather than pretending the hub has no parent.
+That is the one environment variable that can quietly end a relationship, and
+re-joining needs a fresh invite.
 
 Two things that look like configuration and are not:
 
@@ -201,15 +226,31 @@ Two things that look like configuration and are not:
   than tuning: a child whose parent is unreachable keeps what it could not send,
   and past the ceiling trims the OLDEST rows first.
 
-**Reverse proxies matter slightly more in group mode.** A child's default name on
-its parent's roster, and the invite URL a parent hands out, are both derived from
-`X-Forwarded-Proto` / `X-Forwarded-Host` (falling back to `Host`). A proxy that
-does not set them gives children names like `localhost` on the roster. Set them,
-or name the child explicitly when joining.
+**Reverse proxies matter slightly more in group mode.** The invite URL a parent
+hands out is built from `X-Forwarded-Proto` and `X-Forwarded-Host` (the host
+falling back to `Host`, the scheme to whether the connection was TLS), and a
+child's default name on the roster is that host. A proxy that does not set them
+gives you whatever the upstream sees — `hub:4000`, a container hostname, an IP
+and port — which is both unhelpful and prone to collide between siblings. Set
+the headers, or name the child explicitly when joining, which the join form
+allows.
+
+**On a multi-org hub, dispatched flows land in `AGENFK_HUB_ORG_ID` only.** The
+federation worker is wired to the default org, so a child hosting several orgs
+receives its parent's flows into that one. Worth knowing before assuming group
+mode is org-agnostic.
 
 **The image needs no federation-specific changes.** `packages/hub/Dockerfile`
 already carries everything both roles use; the only variable above is an
 ordinary `-e` flag on the container.
+
+**Telling whether a group is healthy.** There is no dashboard for this yet, so
+the signals are: `GET /v1/admin/federation` on the child, which reports the
+binding state, whether it is readable, and the outbox depth — a depth that only
+grows is the symptom to watch; and the hub log, which prints `[FEDERATION] tick
+failed:` for a parent it cannot reach, `tick threw:` for a bug, and `parent
+rejected our credential` when the parent has detached this hub. On the parent,
+a child's last-seen and hub version are on the child-hubs page.
 
 ---
 
