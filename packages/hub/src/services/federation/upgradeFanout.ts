@@ -1,4 +1,3 @@
-
 import type { DB } from '../../db.js';
 import { compareSemver } from '../../util/semver.js';
 import { eligibleInstallations, inFlightInstallationIds } from '../fleetUpgrade.js';
@@ -21,7 +20,7 @@ import { eligibleInstallations, inFlightInstallationIds } from '../fleetUpgrade.
  * Out of scope, deliberately: upgrading the child hub's own Docker image.
  */
 
-export type SkipReason = 'retired' | 'hidden' | 'in-flight' | 'downgrade';
+export type SkipReason = 'retired' | 'hidden' | 'in-flight' | 'downgrade' | 'ineligible';
 
 export interface UpgradeSkip {
   installationId: string;
@@ -88,13 +87,23 @@ export async function applyUpgradeDispatch(
 
   // Everything this org has, so the ones left out can be NAMED. The shared
   // eligibility query says who is in; the difference is who is out, and why.
-  const all = await db.all<{ id: string; agenfk_version: string | null; retired_at: string | null }>(
-    'SELECT id, agenfk_version, retired_at FROM installations WHERE org_id = ? ORDER BY id',
+  const all = await db.all<{
+    id: string; agenfk_version: string | null; retired_at: string | null; git_email: string | null;
+  }>(
+    'SELECT id, agenfk_version, retired_at, git_email FROM installations WHERE org_id = ? ORDER BY id',
     [orgId],
   );
   const eligible = await eligibleInstallations(db, orgId);
-  const eligibleById = new Map(eligible.map(i => [i.id, i]));
+  const eligibleIds = new Set(eligible.map(i => i.id));
   const inFlight = await inFlightInstallationIds(db, orgId, eligible.map(i => i.id));
+  // Read explicitly rather than inferred from non-eligibility. The shared
+  // query stays the authority on who is IN; deriving the REASON by subtracting
+  // it would silently relabel any future exclusion as "hidden", and the reason
+  // is the part a human reads off the parent's board.
+  const hiddenRows = await db.all<{ user_key: string }>(
+    'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
+  );
+  const hidden = new Set(hiddenRows.map(r => r.user_key));
 
   const skipped: UpgradeSkip[] = [];
   const targets: string[] = [];
@@ -103,7 +112,13 @@ export async function applyUpgradeDispatch(
     // belonging to a hidden person is one skip, not two, or the counts the
     // parent renders would not add up to the fleet.
     if (inst.retired_at) { skipped.push({ installationId: inst.id, reason: 'retired' }); continue; }
-    if (!eligibleById.has(inst.id)) { skipped.push({ installationId: inst.id, reason: 'hidden' }); continue; }
+    if (hidden.has((inst.git_email ?? '').toLowerCase())) {
+      skipped.push({ installationId: inst.id, reason: 'hidden' }); continue;
+    }
+    // Excluded by the shared rules for a reason this code does not know about
+    // yet. Naming it honestly beats guessing, and it keeps the counts adding
+    // up to the fleet either way.
+    if (!eligibleIds.has(inst.id)) { skipped.push({ installationId: inst.id, reason: 'ineligible' }); continue; }
     if (inFlight.has(inst.id)) { skipped.push({ installationId: inst.id, reason: 'in-flight' }); continue; }
     // A machine with no known version is upgradable: absent is not "newer",
     // and refusing it would strand exactly the installations that have never
