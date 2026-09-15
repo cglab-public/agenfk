@@ -494,3 +494,56 @@ describe('DELETE /projects/:id — purges verify logs with the project (BUG b233
     expect(fs.existsSync(dir)).toBe(false);
   });
 });
+
+describe('POST /items/:id/validate — a verbose command is streamed, not buffered (BUG 24c679df)', () => {
+  beforeEach(async () => { await initStorage(); setVerifyLogRootForTests(LOG_ROOT); clearLogRoot(); });
+  afterEach(() => { clearLogRoot(); rmrf(dbLogsDir()); setVerifyLogRootForTests(LOG_ROOT); });
+
+  /**
+   * ~8MB of output from a command that then fails, so the failure path runs too.
+   *
+   * `process.exitCode` rather than `process.exit()`: writes to a pipe are
+   * asynchronous, and exiting outright discards whatever has not drained — an
+   * earlier spelling of this delivered 797KB of the 8MB and the test "failed"
+   * on the fixture rather than on the code.
+   */
+  const LOUD_AND_FAILING =
+    `node -e "const l='x'.repeat(1023)+String.fromCharCode(10); for(let i=0;i<8192;i++) process.stdout.write(l); console.log('THE_REAL_LAST_LINE'); process.exitCode = 1"`;
+
+  it('names the true output size, and still points at a log holding it', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItem('LoudVerify');
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: LOUD_AND_FAILING });
+
+    expect(res.status).toBe(422);
+    // The size is reported, so "the preview looks odd" has an explanation.
+    expect(res.body.message).toMatch(/8[.,]\d+ MB|8388\d{3} bytes|\b8 MB\b/i);
+    // The tail is still the tail: the last line survives 8MB of noise.
+    expect(res.body.message).toContain('THE_REAL_LAST_LINE');
+
+    const dir = itemLogDir(item.id);
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    const size = fs.statSync(path.join(dir, files[0])).size;
+    // The FILE holds it all, which is the whole point of not keeping it in RAM.
+    expect(size).toBeGreaterThan(8 * 1024 * 1024);
+  }, 60_000);
+
+  it('keeps the preview bounded regardless of how much was printed', async () => {
+    if (!VERIFY_TOKEN) return;
+    const { item } = await setupItem('LoudPreview');
+
+    const res = await request(app)
+      .post(`/items/${item.id}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: LOUD_AND_FAILING });
+
+    // A few KB of head+tail plus the trailer — not a fraction of 8MB.
+    expect(res.body.output.length).toBeLessThan(64 * 1024);
+    expect(res.body.message.length).toBeLessThan(64 * 1024);
+  }, 60_000);
+});
