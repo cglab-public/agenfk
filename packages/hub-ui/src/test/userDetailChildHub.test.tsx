@@ -9,7 +9,7 @@
  * saying the scope had been dropped — the same "two panels disagree" defect
  * CGLAB-184 fixed one level up.
  */
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -129,5 +129,58 @@ describe('UserDetail honours a child hub arriving in the link', () => {
     for (const u of all) {
       expect(new URLSearchParams(u.split('?')[1] ?? '').has('childHubId')).toBe(false);
     }
+  });
+});
+
+// ── Findings from the adversarial review of this card ────────────────────────
+
+describe('the page SAYS which hub it is showing', () => {
+  // The card's own framing is "nothing saying the scope was dropped". Scoping
+  // the data without naming the scope is the same defect wearing the other
+  // face, and it contradicts the invariant this feature wrote down twice in
+  // hooks/useChildHubs.ts: a filter must never be applied invisibly.
+  it('names the hub the link scoped it to', async () => {
+    renderAt(`/users/alice%40acme.com?childHubId=${ALPHA}`);
+    // The hub's NAME, not its uuid — the same label the Org facet shows.
+    expect(await screen.findByText('alpha')).toBeInTheDocument();
+  });
+
+  it('shows the raw id when the hub is unknown, rather than nothing', async () => {
+    // A detached or mistyped id matches no rows, so every tile reads zero and
+    // the event list says "no events match the current filters" — pointing at
+    // a Filters panel that shows no filter explaining it. The reader concludes
+    // the person did nothing.
+    const GONE = '9f1c7e2a-0000-4000-8000-00000000dead';
+    renderAt(`/users/alice%40acme.com?childHubId=${GONE}`);
+    expect(await screen.findByText(GONE)).toBeInTheDocument();
+  });
+
+  it('says nothing at all when the link carries no hub', async () => {
+    renderAt('/users/alice%40acme.com');
+    await screen.findByText('alice@acme.com');
+    expect(screen.queryByText('alpha')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Showing/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('the click-through itself', () => {
+  it('carries the scope from a filtered Org board into the person page', async () => {
+    // Org and UserDetail were only ever rendered in separate routers, so a
+    // route-level regression — a <Link> swapped for navigate('/users/'+k),
+    // which drops the search — passed both halves while the journey broke.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[`/?childHubId=${ALPHA}`]}>
+          <Routes>
+            <Route path="/" element={<OrgPage />} />
+            <Route path="/users/:userKey" element={<UserDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole('link', { name: /alice@acme\.com/i }));
+    await screen.findByText('alice@acme.com');
+    await waitFor(() => expect(sent('/v1/timeline', ALPHA)).toBe(true));
   });
 });

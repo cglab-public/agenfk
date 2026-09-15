@@ -20,7 +20,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
-import { MemoryRouter, useNavigate, useSearchParams } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { api } from '../api';
@@ -54,10 +54,14 @@ const OVERVIEW = {
 function Probe() {
   const nav = useNavigate();
   const [sp] = useSearchParams();
+  const loc = useLocation();
   return (
     <>
       <span data-testid="url">{sp.toString()}</span>
+      <span data-testid="hash">{loc.hash}</span>
       <button onClick={() => nav(-1)}>go-back</button>
+      <button onClick={() => nav('/prs')}>push-bare</button>
+      <button onClick={() => nav('/prs?range=today&gran=weekly')}>push-today</button>
     </>
   );
 }
@@ -157,5 +161,59 @@ describe('Back reaches the scalar controls, not just the chips', () => {
     await waitFor(() => expect(url().get('range')).toBe('7d'));
     await new Promise(r => setTimeout(r, 20));
     expect(url().get('range')).toBe('7d');
+  });
+});
+
+// ── Findings from the adversarial review of this card ────────────────────────
+
+describe('a PUSH is a navigation too', () => {
+  // Keying the follow on POP alone left every PUSH broken, and the sidebar's
+  // own "PR overview" link is a PUSH: clicking it while already on a filtered
+  // /prs cleared the chips, kept the mount-time range, and rewrote the bare
+  // /prs that was actually asked for.
+  it('a push to bare /prs resets the scalars too, not just the chips', async () => {
+    renderAt([`/prs?range=7d&childHubId=${ALPHA}`], 0);
+    await waitFor(() => expect(url().get('range')).toBe('7d'));
+
+    fireEvent.click(screen.getByText('push-bare'));
+    await waitFor(() => expect(url().has('childHubId')).toBe(false));
+    // 30d is the default, and the default is written as no param at all.
+    expect(url().has('range')).toBe(false);
+  });
+
+  it('a push that names new scalars keeps them instead of deleting them', async () => {
+    renderAt(['/prs?range=7d'], 0);
+    await waitFor(() => expect(url().get('range')).toBe('7d'));
+
+    fireEvent.click(screen.getByText('push-today'));
+    await waitFor(() => expect(url().get('gran')).toBe('weekly'));
+    expect(url().get('range')).toBe('today');
+  });
+});
+
+describe('a navigation is not typing', () => {
+  it('does not drop ?pr= from the address bar while the debounce catches up', async () => {
+    // The pop sets the raw box, but the write-back writes the DEBOUNCED number,
+    // so for 350ms it published a URL with no `pr` at all — and made that
+    // permanent if the reader navigated again inside the window.
+    renderAt(['/prs?pr=57', '/prs?range=90d'], 1);
+    await waitFor(() => expect(url().get('range')).toBe('90d'));
+
+    fireEvent.click(screen.getByText('go-back'));
+    // Sampled tightly: there must be no window in which pr is missing.
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 10));
+      if (url().get('pr') === '57') return;
+      expect(url().get('range')).not.toBe('90d');
+    }
+    expect(url().get('pr')).toBe('57');
+  });
+});
+
+describe('the write-back leaves the rest of the URL alone', () => {
+  it('keeps the fragment', async () => {
+    renderAt(['/prs?range=7d#chart'], 0);
+    await waitFor(() => expect(url().get('range')).toBe('7d'));
+    expect(screen.getByTestId('hash').textContent).toBe('#chart');
   });
 });

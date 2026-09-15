@@ -9,10 +9,15 @@
  *
  * An absent or empty param yields [], which every facet reads as "no selection"
  * and the server reads as "all" — the same default from both directions.
+ *
+ * Every occurrence is read, not just the first. The server accepts the repeated
+ * spelling too — parseList joins an array before splitting it — so reading only
+ * `params.get` made ?childHubId=a&childHubId=b scope the page to `a` alone: a
+ * NARROWER view than the URL states, with nothing on screen to reveal it.
  */
 export function csvParam(params: URLSearchParams, key: string): string[] {
-  return (params.get(key) ?? '')
-    .split(',')
+  return params.getAll(key)
+    .flatMap(v => v.split(','))
     .map(s => s.trim())
     .filter(Boolean);
 }

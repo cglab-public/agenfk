@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigationType, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
@@ -302,7 +302,8 @@ export function PrOverviewPage() {
   // The URL query string is the source of truth for every filter, so a refresh
   // or a shared link restores the exact same view. State is seeded from the URL
   // on first render and written back (replace) whenever a filter changes.
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const csv = (k: string) => csvParam(searchParams, k);
   const readRange = (sp: URLSearchParams): RangeKey => {
     const v = sp.get('range');
@@ -353,35 +354,47 @@ export function PrOverviewPage() {
   // with no time bound (see routes/queries.ts), so four keystrokes is four full
   // scans to answer one question. Cold load is unaffected: the hook starts
   // settled, so a shared ?pr=57 link is not one tick slower.
-  const queryPrNumber = useDebouncedValue(prNumber, 350);
-
-  // Follow the URL on a POP, the way the chip facets already do (BUG 8e40e463).
   //
-  // These six controls are plain state mirrored INTO the query string, so on a
-  // Back they were not merely stale: react-router hands back a fresh
+  // A navigation is not typing. `navPr` is the PR number most recently
+  // delivered BY a navigation; while the box still holds it the debounce is
+  // bypassed, so a Back onto ?pr=57 does not spend 350ms with the box saying 57
+  // and the URL write-back publishing an address bar with no `pr` in it — which
+  // became permanent if the reader navigated again inside that window.
+  const [navPr, setNavPr] = useState<number | null>(() => parsePrQuery(readPrQuery(searchParams)));
+  const queryPrNumber = useDebouncedValue(prNumber, 350, navPr);
+
+  // Follow the URL, the way the chip facets already do (BUG 8e40e463).
+  //
+  // These six controls are plain state mirrored INTO the query string, so they
+  // were not merely stale on a navigation: react-router hands back a fresh
   // setSearchParams on every location change, which re-runs the write-back
   // effect below and rewrites the whole query string from mount-time state.
-  // The popped values were deleted, not ignored.
+  // The incoming values were deleted, not ignored.
   //
-  // Keyed on the navigation TYPE rather than on the values, unlike useToggleSet.
-  // A value-keyed sync cannot work here: the write-back omits a control at its
-  // default (no `range` when it is 30d, no `range` at all while an explicit
-  // from/to is set), so "absent from the URL" does not mean "default" and a
+  // The discriminator is "did WE write this?", not the navigation type. A
+  // value-keyed follow cannot work, because the write-back omits a control at
+  // its default (no `range` when it is 30d, no `range` at all while an explicit
+  // from/to is set) — so "absent from the URL" does not mean "default", and a
   // naive follow would reset the range every time a custom date range is used.
-  // A POP is unambiguous, and our own writes are REPLACE.
-  const navType = useNavigationType();
+  // And keying on POP alone left every PUSH broken: clicking the sidebar's own
+  // "PR overview" link while already on a filtered /prs cleared the chips,
+  // kept the range, and rewrote the bare /prs you asked for.
   const location = useLocation();
+  const lastWritten = useRef<string | null>(null);
   useEffect(() => {
-    if (navType !== 'POP') return;
-    const sp = new URLSearchParams(location.search);
+    const incoming = location.search.replace(/^\?/, '');
+    if (lastWritten.current === incoming) return; // our own write-back
+    const sp = new URLSearchParams(incoming);
     setRange(readRange(sp));
     setGran(readGran(sp));
     setCustomFrom(sp.get('from') ?? '');
     setCustomTo(sp.get('to') ?? '');
     setFiltersOpen(parseFiltersOpen(sp.get('filters')));
-    setPrQuery(readPrQuery(sp));
+    const pr = readPrQuery(sp);
+    setPrQuery(pr);
+    setNavPr(parsePrQuery(pr));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navType, location.key]);
+  }, [location.key, location.search]);
 
   useEffect(() => {
     const p = new URLSearchParams();
@@ -408,8 +421,13 @@ export function PrOverviewPage() {
     if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
-    setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, setSearchParams]);
+    // Remembered so the follow-the-URL effect above can tell our own write from
+    // somebody else's navigation.
+    lastWritten.current = p.toString();
+    // navigate rather than setSearchParams: the latter resolves to a bare
+    // "?query", which drops any fragment the URL arrived with.
+    navigate({ search: p.toString() ? `?${p}` : '', hash: location.hash }, { replace: true });
+  }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, navigate, location.hash]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),

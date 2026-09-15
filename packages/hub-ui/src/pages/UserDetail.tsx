@@ -1,7 +1,7 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
+import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
@@ -11,6 +11,7 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
@@ -123,6 +124,14 @@ export function UserDetailPage() {
   const [searchParams] = useSearchParams();
   const childHubs = csvParam(searchParams, 'childHubId');
   const hubCsv = childHubs.length ? childHubs.join(',') : null;
+  // Named on the page, not merely applied to it. The scope arrives in a link
+  // and there is no control here to clear it, so without a label this is the
+  // one page in the app that filters invisibly — which is exactly what
+  // useChildHubs says must never happen. An id the server does not know still
+  // shows, as the raw id: a detached or mistyped hub matches no rows, so every
+  // tile reads zero and the event list blames "the current filters" while the
+  // Filters panel shows no filter that would explain it.
+  const hubLabels = useChildHubs(new Set(childHubs));
 
   const [range, setRange] = useState<RangeKey>('30d');
   const [customStart, setCustomStart] = useState('');
@@ -234,6 +243,18 @@ export function UserDetailPage() {
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">User</p>
           <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          {childHubs.length > 0 && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
+              <Server className="w-3 h-3" />
+              <span>Scoped to</span>
+              {childHubs.map(id => (
+                <span key={id}
+                  className="inline-flex items-center rounded-full bg-surface-raised px-2 py-0.5 font-medium text-ink-secondary">
+                  {hubLabels.label(id)}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
       </header>
 
