@@ -9,7 +9,7 @@
  * be trustworthy — a panel that shows a clean tree when the tree is not clean
  * is worse than no panel, because it is the one thing you would have checked.
  */
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -23,17 +23,17 @@ vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
 beforeEach(() => { vi.clearAllMocks(); });
 afterEach(cleanup);
 
-const renderPanel = (itemId: string | null = 'i1') => {
+const renderPanel = (itemId: string | null = 'i1', view: 'changed' | 'staged' = 'changed') => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <WorktreePanel itemId={itemId} />
+      <WorktreePanel itemId={itemId} view={view} />
     </QueryClientProvider>,
   );
 };
 
 describe('what it shows', () => {
-  it('counts what is changed and what is staged', async () => {
+  const mixed = () => {
     vi.mocked(api.getGitStatus).mockResolvedValue({
       changed: 2, staged: 1,
       files: [
@@ -42,9 +42,48 @@ describe('what it shows', () => {
         { path: 'c.ts', staged: true, state: 'added' },
       ],
     } as never);
+  };
+
+  it('carries no header of its own any more', async () => {
+    /*
+     * `CHANGED (n)` and `STAGED (n)` used to be two static labels at the top of
+     * this panel. They are buttons in the terminal's top bar now, and the row
+     * has to be GONE rather than restyled in place: the terminal only gains
+     * the space if nothing is left occupying it.
+     */
+    mixed();
     renderPanel();
-    expect(await screen.findByText(/changed \(2\)/i)).toBeInTheDocument();
-    expect(await screen.findByText(/staged \(1\)/i)).toBeInTheDocument();
+    await screen.findByText('a.ts');
+    expect(screen.queryByText(/changed \(\d+\)/i)).toBeNull();
+    expect(screen.queryByText(/staged \(\d+\)/i)).toBeNull();
+  });
+
+  it('shows one list at a time, named by the button that opened it', async () => {
+    // The split the two buttons imply. A panel that showed both lists whichever
+    // button was pressed would make the pair decoration.
+    mixed();
+    renderPanel('i1', 'changed');
+    expect(await screen.findByText('a.ts')).toBeInTheDocument();
+    expect(screen.getByText('b.ts')).toBeInTheDocument();
+    expect(screen.queryByText('c.ts')).toBeNull();
+  });
+
+  it('shows the staged files, and only those, on the staged view', async () => {
+    mixed();
+    renderPanel('i1', 'staged');
+    expect(await screen.findByText('c.ts')).toBeInTheDocument();
+    expect(screen.queryByText('a.ts')).toBeNull();
+  });
+
+  it('says which list is empty, rather than one sentence for both', async () => {
+    // "No changes in this worktree" under the Staged button would be answering
+    // a question the user did not ask.
+    vi.mocked(api.getGitStatus).mockResolvedValue({
+      changed: 1, staged: 0,
+      files: [{ path: 'a.ts', staged: false, state: 'modified' }],
+    } as never);
+    renderPanel('i1', 'staged');
+    expect(await screen.findByText(/nothing staged/i)).toBeInTheDocument();
   });
 
   it('lists the files, so the counts can be checked against something', async () => {
@@ -61,7 +100,7 @@ describe('what it shows', () => {
       changed: 0, staged: 1,
       files: [{ path: 'new.ts', staged: true, state: 'renamed', from: 'old.ts' }],
     } as never);
-    renderPanel();
+    renderPanel('i1', 'staged');
     expect(await screen.findByText(/old\.ts/)).toBeInTheDocument();
   });
 });

@@ -152,6 +152,21 @@ const renderShell = () => {
   );
 };
 
+/**
+ * Into the Terminal view, the only way there now is.
+ *
+ * It used to be a click on the Terminal tab. That tab is gone, so this takes
+ * the route a user has: the sessions rail in the sidebar, which lists agents,
+ * and clicking one means "take me to it". Restoring deliberately does NOT
+ * switch to the terminal - reopening the app should not yank you off the
+ * board - so the view still has to be asked for rather than waited for.
+ */
+const goToTerminalView = async () => {
+  fireEvent.click((await screen.findAllByTestId('session-title'))[0]);
+  await waitFor(() =>
+    expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
+};
+
 const openTerminal = async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
   fireEvent.click(await screen.findByTitle('Something in agenfk'));
@@ -317,10 +332,7 @@ describe('naming the tabs', () => {
     vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
     renderShell();
     await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
-    // Restoring puts the terminals back WITHOUT switching to them: reopening
-    // the app should not yank the user off the board. So the strip has to be
-    // looked at, not waited for.
-    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    await goToTerminalView();
     expect(await screen.findByRole('tab', { name: /Claude Code 1/ })).toBeInTheDocument();
   });
 
@@ -330,7 +342,7 @@ describe('naming the tabs', () => {
     vi.mocked(api.listTerminalSessions).mockResolvedValue(stored as never);
     renderShell();
     await waitFor(() => expect(spawnCalls.length).toBeGreaterThan(0));
-    fireEvent.click(await screen.findByRole('tab', { name: /^terminal$/i }));
+    await goToTerminalView();
     expect(await screen.findAllByText('Something in agenfk')).not.toHaveLength(0);
   });
 });
@@ -727,12 +739,6 @@ describe('opening another terminal from the strip', () => {
     id: 'row-1', itemId: 'i1', projectId: 'p1', agentId: 'claude-code',
     itemTitle: 'Something in agenfk', openedAt: new Date().toISOString(),
   }];
-
-  /** The strip lives in the Terminal view, which a restore does not switch to. */
-  const goToTerminalView = async () => {
-    fireEvent.click(within(await screen.findByRole('tablist', { name: /views/i }))
-      .getByRole('tab', { name: /terminal/i }));
-  };
 
   it('asks which card, instead of assuming the one you are on', async () => {
     vi.mocked(api.listActiveItems).mockResolvedValue(ACTIVE as never);

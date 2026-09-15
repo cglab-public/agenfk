@@ -17,6 +17,7 @@
 import { render, cleanup } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 /*
  * The real pane boots xterm and talks to the desktop bridge. Neither is what
@@ -39,6 +40,17 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+/*
+ * A provider, because the tab's top bar now asks git for the worktree counts.
+ * Nothing here is about that query — `showWorktree` is off, so it never runs —
+ * but the hook is called unconditionally, as a hook has to be.
+ */
+const renderTab = (ui: React.ReactElement) => render(
+  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    {ui}
+  </QueryClientProvider>,
+);
+
 const props = (onExited: (sessionId: string, exitCode: number) => void) => ({
   sessions: [{
     id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code',
@@ -57,7 +69,7 @@ describe('a terminal process ending', () => {
     // id is required because two agents can share a card; the exit code is
     // required because a crash and an `exit` are not the same event.
     const onExited = vi.fn();
-    render(<TerminalTab {...props(onExited)} />);
+    renderTab(<TerminalTab {...props(onExited)} />);
     exitPane?.(1);
     expect(onExited).toHaveBeenCalledWith('s1', 1);
   });
@@ -66,7 +78,7 @@ describe('a terminal process ending', () => {
     // The ordinary case must still arrive, and arrive distinguishable: zero is
     // what tells the shell above to call the row idle instead of failed.
     const onExited = vi.fn();
-    render(<TerminalTab {...props(onExited)} />);
+    renderTab(<TerminalTab {...props(onExited)} />);
     exitPane?.(0);
     expect(onExited).toHaveBeenCalledWith('s1', 0);
   });

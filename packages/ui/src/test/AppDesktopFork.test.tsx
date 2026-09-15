@@ -78,10 +78,14 @@ describe('App — in a browser', () => {
 
 describe('App — in the desktop app', () => {
   it('wraps the board in the shell', () => {
+    // Asserted through the sidebar's WORK nav rather than through a tablist.
+    // The shell used to be recognisable by its tab strip; the strip is gone -
+    // Kanban, Terminal and Runs all moved to the sidebar - so the nav is the
+    // chrome that says the board is wrapped rather than standing alone.
     asDesktop(true);
     renderApp();
     expect(screen.getByText('THE BOARD')).toBeDefined();
-    expect(screen.getByRole('tablist')).toBeDefined();
+    expect(screen.getByRole('navigation', { name: /work/i })).toBeDefined();
   });
 
   it('shows the sidebar and the status bar', () => {

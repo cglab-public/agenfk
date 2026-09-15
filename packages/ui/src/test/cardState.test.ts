@@ -60,15 +60,18 @@ describe('itemsNeedingAPerson', () => {
     expect([...itemsNeedingAPerson(rows)]).toEqual(['i1']);
   });
 
-  it('leaves a failed run to the rail, which is where the legend puts it', () => {
-    /*
-     * The tree has three states and 'failed' is not one of them — it is a
-     * per-SESSION fact, and the rail draws it. Folding it in here would put a
-     * second vocabulary on the tree and re-create exactly the duplication this
-     * design exists to avoid.
-     */
-    expect([...itemsNeedingAPerson([{ itemId: 'i1', state: 'failed' }])]).toEqual([]);
-  });
+  /*
+   * A test used to sit here asserting the opposite - that a failed run was left
+   * to the rail, because the tree had three states and 'failed' was a
+   * per-session fact the rail already drew. It was right while the rail
+   * existed. The rail is gone (1a1b8df6): processes are drawn beneath their
+   * card, so that reasoning expired with the section it depended on.
+   *
+   * Recorded rather than quietly deleted, because "this assertion was
+   * deliberately reversed" and "somebody dropped a test to make a change pass"
+   * look identical in a diff a year from now. The replacement lives in the
+   * block at the end of this file.
+   */
 
   it('flags the card when any one of two agents sharing it is blocked', () => {
     // Sessions are keyed by card AND agent, so one card can appear twice. The
@@ -183,5 +186,64 @@ describe('agreeing with the rail', () => {
       { itemId: 'i1', state: 'running' as const },
     ];
     expect(cardState('i1', none, none, rows)).toBe('working');
+  });
+});
+
+/**
+ * A crashed agent needs a person (1a1b8df6).
+ *
+ * `failed` was deliberately excluded, and the reasoning was sound at the time:
+ * a failure is a per-session fact, the sessions rail is where it was drawn, and
+ * folding it in would have put a fourth state on a three-state mark. The cost
+ * was written down rather than hidden - "a card whose agent has just crashed
+ * draws the quiet ring until someone looks at the rail".
+ *
+ * That cost was payable because the rail existed. The rail is being removed:
+ * processes move under the card they belong to, so the crashed agent's row and
+ * the card's own mark now sit one line apart. A grey ring directly above a rose
+ * "Failed" row is not a considered trade-off any more, it is a contradiction
+ * the user can see in a single glance.
+ *
+ * So the premise expired with the section, and this is the assertion that says
+ * so. It is NOT a fourth state: `failed` maps onto the same needs-person the
+ * blocked rows already use, because what a person does about a crashed agent
+ * and about a blocked one is the same thing - look at it.
+ */
+describe('a crashed agent is a card that needs a person', () => {
+  it('flags a card whose agent failed', () => {
+    expect(itemsNeedingAPerson([{ itemId: 'i1', state: 'failed' }]).has('i1')).toBe(true);
+  });
+
+  it('still flags a blocked one, which was never in question', () => {
+    expect(itemsNeedingAPerson([{ itemId: 'i1', state: 'blocked' }]).has('i1')).toBe(true);
+  });
+
+  it('leaves a card alone when nothing on it wants attention', () => {
+    // The guard against the lazy fix of returning every card that has any row.
+    expect(itemsNeedingAPerson([
+      { itemId: 'i1', state: 'running' },
+      { itemId: 'i2', state: 'idle' },
+    ]).size).toBe(0);
+  });
+
+  it('flags the card with the failure and not its neighbour', () => {
+    const flagged = itemsNeedingAPerson([
+      { itemId: 'i1', state: 'failed' },
+      { itemId: 'i2', state: 'running' },
+    ]);
+    expect([...flagged]).toEqual(['i1']);
+  });
+
+  it('wins over a sibling that is merely running', () => {
+    /*
+     * The roll-up rule the design rests on: the card shows the most demanding
+     * state beneath it. A card with one crashed agent and one healthy one is
+     * amber, because the healthy agent is not the one you need to know about.
+     */
+    const rows = [
+      { itemId: 'i1', state: 'running' as const },
+      { itemId: 'i1', state: 'failed' as const },
+    ];
+    expect(itemsNeedingAPerson(rows).has('i1')).toBe(true);
   });
 });

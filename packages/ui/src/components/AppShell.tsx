@@ -24,6 +24,7 @@ import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
+import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import {
@@ -47,49 +48,36 @@ import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal } from './FlowEditorModal';
 import { WhatsNewModal } from './WhatsNewModal';
-import { moveTab } from '../tabReorder';
 import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
 import { cardState, itemsNeedingAPerson } from '../cardState';
 
-type TabId = 'kanban' | 'terminal' | 'runs' | 'settings' | 'agents';
-
-interface Tab {
-  id: TabId;
-  label: string;
-}
-
 /**
- * The views the shell can show, and the order it falls back to.
+ * A view the main column can show.
  *
- * The ORDER is the user's, not this list's — see `useShellTabs`. This is the
- * set of what exists, which is a different question from what order they sit
- * in, and conflating the two is why the bar was a constant in the first place.
+ * Called an id rather than a TAB id because there is no tab bar any more. The
+ * Kanban button went first, Terminal followed it, and with Runs docked below
+ * the board there was nothing left to put in a strip - so the strip went too.
+ * Every view here is reached from the sidebar or from a session, and each one
+ * is a panel that stays mounted and is hidden rather than unmounted.
  */
-const TABS: Tab[] = [
-  /*
-   * No Kanban. The sidebar's WORK group opens the board through Tasks, and two
-   * routes to one place is what this removes.
-   *
-   * The VIEW still exists and its panel stays mounted - only the button is
-   * gone. The strip's row stays too, and not for looks: it carries the window
-   * drag region and the padding that keeps the first control clear of the
-   * macOS traffic lights.
-   */
-  { id: 'terminal', label: 'Terminal' },
-  { id: 'runs', label: 'Runs' },
-];
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
  *
  * Navigation belongs beside the thing being navigated, not in a strip floating
  * over the content — so picking a view moved here. `Tasks` is the board, which
- * is the view that is always there; `Agents` is a placeholder that lands on a
- * stated empty state, because a nav row that lands on nothing reads as a broken
- * app, and it is owned by its own card: the run feed that replaces the empty
- * Runs panel.
+ * is the view that is always there; `Agents` is the run feed, and is no longer
+ * a placeholder for it. It used to say the feed "is not here yet" beside a
+ * Runs TAB that showed the feed, which was the same destination described two
+ * ways. The tab is gone and Agents is what it was standing in for.
+ *
+ * Agents is therefore also THE way to open Runs. With no tab to click it is
+ * the only one, which is why it is an ordinary always-visible sidebar row
+ * rather than a control on the feed itself: a button that appears only once
+ * the thing it opens is already open is not a way in.
  *
  * Not every row here is a view. `Flows` opens the flow editor over whatever you
  * are looking at and leaves you there, which is why the rows carry a `kind`:
@@ -98,13 +86,13 @@ const TABS: Tab[] = [
  * alternative — a separate list rendered after this one — would have fixed the
  * order of the group to "views first", and Flows belongs in the second slot.
  *
- * Deliberately NOT the same list as `TABS`, and deliberately not exported. The
- * content-level tab strip still exists — retiring it is a separate, larger
- * change — so for now there are two routes to the board, both of which set the
- * same `active` view. What must never differ is the panel they select.
+ * This is now the ONLY list of top-level destinations. It used to sit beside a
+ * `TABS` constant that named the same views again for the tab strip, so there
+ * were two routes to the board and two lists to keep in step; the strip is
+ * gone and this list is what is left.
  */
 type WorkRow =
-  | { kind: 'view'; id: TabId; label: string; Icon: LucideIcon }
+  | { kind: 'view'; id: ViewId; label: string; Icon: LucideIcon }
   | { kind: 'action'; id: 'flows'; label: string; Icon: LucideIcon };
 
 const WORK_ROWS: WorkRow[] = [
@@ -118,7 +106,6 @@ const WORK_ROWS: WorkRow[] = [
 type Connection = 'connecting' | 'connected' | 'offline';
 
 const SIDEBAR_KEY = 'agenfk_shell_sidebar';
-const TABS_KEY = 'agenfk_shell_tabs';
 const RUNS_DOCK_KEY = 'agenfk_runs_dock';
 
 /**
@@ -133,7 +120,7 @@ const RUNS_DOCK_KEY = 'agenfk_runs_dock';
 const APP_STARTED_AT = Date.now();
 
 /**
- * Where the Runs view sits.
+ * Where the run feed sits.
  *
  * A CLOSED set, and that is the design rather than a limitation. Free layout
  * becomes window management: state that is hard to persist and easy to leave
@@ -141,58 +128,42 @@ const APP_STARTED_AT = Date.now();
  * the perceived freedom at a fraction of that cost.
  *
  * `bottom` exists because live logs are something you follow WHILE looking at
- * the board, and a sibling tab makes that a choice between them.
+ * the board, and a full screen makes that a choice between them.
+ *
+ * `screen` was called `tab` until the tab strip was removed. Only the name
+ * changed: it always meant "the whole of the main column", and the column is
+ * now reached from the sidebar's Agents row instead of from a tab.
  */
-type RunsDock = 'tab' | 'bottom';
-const RUNS_DOCKS: RunsDock[] = ['tab', 'bottom'];
+type RunsDock = 'screen' | 'bottom';
+const RUNS_DOCKS: RunsDock[] = ['screen', 'bottom'];
 
 function readRunsDock(): RunsDock {
   try {
     const stored = JSON.parse(localStorage.getItem(RUNS_DOCK_KEY) ?? 'null');
     // An unrecognised zone — another version, or a hand-edited value — must
-    // not put the view nowhere.
-    return RUNS_DOCKS.includes(stored) ? stored : 'tab';
-  } catch { return 'tab'; }
+    // not put the view nowhere. `"tab"` is the one that matters in practice:
+    // every build with a tab strip wrote it, so it is in the storage of
+    // everyone upgrading, and it needs no case of its own because it is not a
+    // zone this build has and `screen` is where it meant to point anyway.
+    return RUNS_DOCKS.includes(stored) ? stored : 'screen';
+  } catch { return 'screen'; }
 }
 
-/**
- * The tab bar's order, remembered.
+/*
+ * WHAT THE TAB STRIP TOOK WITH IT.
  *
- * Rearranging something that resets on the next launch is worse than not being
- * able to rearrange it at all, so the order is stored — but the stored value is
- * treated as a SUGGESTION and not as the truth:
+ * Kanban left the bar for the sidebar's Tasks, Terminal followed it, and Runs
+ * - the last tab - became the Agents screen. A bar with nothing in it orders
+ * nothing, so everything built to order it is gone: the `agenfk_shell_tabs`
+ * order and the reader that repaired it across versions, `moveTab` and its
+ * module, the drag reorder, the move-left button, the live region that
+ * announced a tab's new position, and the `visibleOrder` filter that kept the
+ * announcement's count honest while Runs was docked away.
  *
- *  - an id it names that this build does not have is dropped, because
- *    rendering a tab with no panel is a hole in the bar;
- *  - a tab this build has that it does not name is appended, because a build
- *    that adds a view must not hide it from everyone who has ever reordered;
- *  - anything that is not a list of strings is ignored entirely.
- *
- * All three are "written by a different version", which is the ordinary case
- * for anything kept in localStorage across upgrades.
+ * Written down because a deleted mechanism leaves nothing behind to notice. If
+ * two top-level views ever have to be on screen at once, this is the list to
+ * rebuild from.
  */
-/**
- * The tabs actually on screen, in order.
- *
- * Docked below, Runs is not a tab — so the stored order and the rendered bar
- * disagree, and anything that counts or steps through tabs has to use THIS one.
- * Two places got that wrong at once: the move-left button stepped to a hidden
- * neighbour and did nothing visible, and the screen-reader announcement
- * described a bar with a tab in it that nobody could see.
- */
-function visibleOrder(order: readonly TabId[], dock: RunsDock): TabId[] {
-  return order.filter(id => !(id === 'runs' && dock === 'bottom'));
-}
-
-function readTabOrder(): TabId[] {
-  const known = TABS.map(t => t.id);
-  let stored: unknown;
-  try { stored = JSON.parse(localStorage.getItem(TABS_KEY) ?? 'null'); } catch { stored = null; }
-  if (!Array.isArray(stored)) return known;
-  const kept = stored.filter((id): id is TabId => typeof id === 'string' && (known as string[]).includes(id));
-  const missing = known.filter(id => !kept.includes(id));
-  return [...kept, ...missing];
-}
 
 const CONNECTION_LABEL: Record<Connection, string> = {
   connecting: 'Connecting…',
@@ -201,81 +172,24 @@ const CONNECTION_LABEL: Record<Connection, string> = {
 };
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const [active, setActive] = React.useState<TabId>('kanban');
+  const [active, setActive] = React.useState<ViewId>('kanban');
   // A latch, not a mirror of `active`. Opening a terminal launches an agent
   // CLI, so it must not happen before the user asks — but once it has, the
-  // session outlives every tab switch.
+  // session outlives every view switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
-  // The bar's order, seeded from storage in the initializer so there is no
-  // first paint in an order the user already changed away from.
-  const [tabOrder, setTabOrder] = React.useState<TabId[]>(() => readTabOrder());
   const [runsDock, setRunsDock] = React.useState<RunsDock>(() => readRunsDock());
   const moveRunsTo = React.useCallback((dock: RunsDock) => {
     setRunsDock(dock);
     try { localStorage.setItem(RUNS_DOCK_KEY, JSON.stringify(dock)); } catch { /* a lost preference */ }
-    // Leaving the tab while it is the selected one would show an empty main
-    // area; the board is the only view that is always there.
-    if (dock === 'bottom') setActive(cur => (cur === 'runs' ? 'kanban' : cur));
+    // Sending the feed to the strip while its own screen is the one showing
+    // would leave the main area empty; the board is the only view that is
+    // always there. Bringing it back the other way has to navigate TO it, or
+    // the control reports success while the user still sees the board.
+    setActive(cur => {
+      if (dock === 'bottom') return cur === 'agents' ? 'kanban' : cur;
+      return 'agents';
+    });
   }, []);
-  const orderedTabs = React.useMemo(
-    // Docked below, Runs is not a tab. Two places to reach one view is how the
-    // rail and the terminal came to disagree earlier in this epic — and the
-    // same filter has to be the one `placeTab` counts with, or the bar and the
-    // announcement describe different things.
-    () => visibleOrder(tabOrder, runsDock).map(id => TABS.find(t => t.id === id)!).filter(Boolean),
-    [tabOrder, runsDock],
-  );
-  /**
-   * The tab under the pointer during a drag, for the drop line.
-   *
-   * Local to the bar and never persisted: it is where the pointer IS, not a
-   * preference. `dragging` is kept as state rather than read back out of the
-   * DataTransfer because `dragover` is not allowed to read it — the drag data
-   * store is in protected mode until the drop.
-   */
-  const [dragTab, setDragTab] = React.useState<TabId | null>(null);
-  const [dragOverTab, setDragOverTab] = React.useState<TabId | null>(null);
-  /**
-   * What a screen reader is told after a move.
-   *
-   * Dragging is silent for anyone not watching the pointer, and this feature
-   * only earns its place as an ADDITION to the arrow button — so the outcome
-   * has to be announced rather than merely rendered.
-   */
-  const [tabMoveAnnouncement, setTabMoveAnnouncement] = React.useState('');
-  /**
-   * Put `id` where `target` currently is, and remember it.
-   *
-   * The single writer for BOTH reorder affordances. The arrow button had its
-   * own splice and dragging would have added a second one — two versions of one
-   * rule that agree right up until somebody edits one of them, which is the
-   * failure this epic kept producing.
-   */
-  const placeTab = React.useCallback((id: TabId, target: TabId) => {
-    // Read from state and write once, rather than computing inside the updater.
-    // The updater runs twice under StrictMode, and announcing a move from
-    // inside one would announce it twice and set state during another
-    // component's render.
-    const next = moveTab(tabOrder, id, target);
-    setTabOrder(next);
-    try { localStorage.setItem(TABS_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
-    const label = TABS.find(t => t.id === id)?.label ?? id;
-    /*
-     * Counted over the VISIBLE bar, not over the stored order.
-     *
-     * They differ whenever Runs is docked below: the stored order still has
-     * three ids and the bar shows two. Announcing "position 2 of 3" to a
-     * screen reader while a sighted user sees two tabs describes a bar that is
-     * not on screen — which is worse than announcing nothing, because it is
-     * the only description that user gets.
-     *
-     * The POSITION and not "moved left", because after a drag across the bar
-     * the direction is not the useful part. 1-based, which is how it is read
-     * aloud.
-     */
-    const shown = visibleOrder(next, runsDock);
-    setTabMoveAnnouncement(`${label} moved to position ${shown.indexOf(id) + 1} of ${shown.length}`);
-  }, [tabOrder, runsDock]);
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
@@ -962,36 +876,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // and expires the highlight off-screen.
   //
   // Both values start null and are nonced, so this fires on a real navigation
-  // and never on mount: the Runs tab stays selected until the user actually
-  // asks for a card.
+  // and never on mount: whatever view the user is on stays selected until they
+  // actually ask for a card.
   React.useEffect(() => {
     if (!focusedItemId && !newItemRequest) return;
     setActive('kanban');
   }, [focusedItemId, newItemRequest]);
 
-  // One place, so the latch cannot be missed by a new route into the tab —
-  // there are already two (click and arrow keys).
+  // One place, so the latch cannot be missed by a new route into the view -
+  // the sessions rail, the sidebar's card list and the board all reach it.
   React.useEffect(() => {
     if (active === 'terminal') setTerminalOpened(true);
   }, [active]);
-
-  const onTablistKeyDown = (event: React.KeyboardEvent): void => {
-    const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
-    let next: TabId | null = null;
-    if (delta !== 0) {
-      const at = TABS.findIndex(t => t.id === active);
-      next = TABS[(at + delta + TABS.length) % TABS.length].id;
-    } else if (event.key === 'Home') {
-      next = TABS[0].id;
-    } else if (event.key === 'End') {
-      next = TABS[TABS.length - 1].id;
-    }
-    if (!next) return;
-    event.preventDefault();
-    setActive(next);
-    // Follow focus, as the ARIA tabs pattern requires for automatic activation.
-    document.getElementById(`tab-${next}`)?.focus();
-  };
 
   // The sidebar normally clears the window buttons on its own; collapsed, it
   // is narrower than they are, so the main column has to make room instead.
@@ -1033,157 +929,54 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <div
-            role="tablist"
-            aria-label="Views"
-            onKeyDown={onTablistKeyDown}
-            // The main column's top row IS the title bar here, so it drags the
-            // window like one. Without this the only handle is the sliver of
-            // rail left over beside the traffic lights when collapsed.
-            data-app-region={isMac ? 'drag' : undefined}
-            // Collapsed, the sidebar rail is ~40px while the macOS traffic
-            // lights occupy ~78px from the window edge. Without reserving the
-            // difference the first tab renders UNDER the window buttons —
-            // unclickable, with the OS window menu opening on top of it.
-            data-reserves-window-controls={reservesWindowControls ? 'true' : undefined}
-            className={clsx(
-              'flex shrink-0 gap-1 border-b border-border-soft bg-nav-surface pt-2 pr-3',
-              reservesWindowControls ? 'pl-12' : 'pl-3',
-            )}
-          >
-            {orderedTabs.map((tab, index) => (
-              <div
-                key={tab.id}
-                className={clsx(
-                  'group relative flex items-end',
-                  /*
-                   * Where it would land. A line rather than a filled box: the
-                   * question during a drag is which SLOT the tab is taking,
-                   * and a highlighted tab reads as "this one is selected".
-                   *
-                   * The SIDE follows the direction, and getting that wrong is
-                   * not cosmetic. A tab dragged rightward lands AFTER the
-                   * target, so a line on the target's left edge promises a gap
-                   * the tab will not land in — a drop that looks like it
-                   * missed by one, on exactly the case that is already the
-                   * least obvious.
-                   */
-                  dragOverTab === tab.id && dragTab !== tab.id && (
-                    orderedTabs.findIndex(t => t.id === dragTab) < index
-                      ? 'after:absolute after:inset-y-1 after:-right-0.5 after:w-0.5 after:rounded after:bg-accent-text'
-                      : 'before:absolute before:inset-y-1 before:-left-0.5 before:w-0.5 before:rounded before:bg-accent-text'
-                  ),
-                  dragTab === tab.id && 'opacity-50',
-                )}
-                // Dragging the TAB, not the window. Without this the macOS
-                // title-bar drag region above wins and the whole window moves.
-                data-app-region="no-drag"
-                draggable
-                onDragStart={e => {
-                  setDragTab(tab.id);
-                  e.dataTransfer.effectAllowed = 'move';
-                  // Some browsers refuse to start a drag with an empty data
-                  // store. The id is not read back on drop — `dragTab` is —
-                  // because the store is unreadable until then anyway.
-                  try { e.dataTransfer.setData('text/plain', tab.id); } catch { /* not fatal to the drag */ }
-                }}
-                onDragEnd={() => { setDragTab(null); setDragOverTab(null); }}
-                onDragOver={e => {
-                  // Only for a tab of ours. Without the guard the bar accepts a
-                  // file or a text selection dropped on it and moves nothing,
-                  // which looks like the drop was understood.
-                  if (!dragTab) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  setDragOverTab(tab.id);
-                }}
-                onDragLeave={() => setDragOverTab(cur => (cur === tab.id ? null : cur))}
-                onDrop={e => {
-                  e.preventDefault();
-                  const moved = dragTab;
-                  setDragTab(null);
-                  setDragOverTab(null);
-                  if (moved && moved !== tab.id) placeTab(moved, tab.id);
-                }}
-              >
-              <button
-                role="tab"
-                id={`tab-${tab.id}`}
-                aria-selected={active === tab.id}
-                aria-controls={`panel-${tab.id}`}
-                // Roving tabindex: one stop for the whole tablist, then arrows
-                // move between tabs. Without it Tab walks every tab one by one,
-                // which is the behaviour the ARIA pattern exists to avoid.
-                /* When Settings is active, no member of TABS matches — which gave every
-                 tab tabIndex -1 and dropped the whole tablist out of the keyboard
-                 order, with no way back to the board without a mouse. The first tab
-                 holds the stop in that case. */
-              tabIndex={active === tab.id || (!TABS.some(t => t.id === active) && tab.id === orderedTabs[0]?.id) ? 0 : -1}
-                // Opt back out: a drag region swallows pointer events.
-                data-app-region="no-drag"
-                onClick={() => setActive(tab.id)}
-                className={clsx(
-                  'rounded-t-lg border border-b-0 px-3 py-1.5 text-xs font-semibold transition-colors',
-                  active === tab.id
-                    ? '-mb-px border-border-soft bg-canvas text-ink'
-                    : 'border-transparent text-ink-tertiary hover:text-ink-secondary',
-                )}
-              >
-                {tab.label}
-              </button>
-              {/* No move-left on the first tab: it has nowhere to go, and a
-                  control that does nothing is worse than its absence. The
-                  built-in views have no close button either — closing Kanban
-                  would leave no way back to the board, and a bar that can be
-                  emptied is a dead end. */}
-              {index > 0 && (
-                <button
-                  data-app-region="no-drag"
-                  aria-label={`Move ${tab.label} left`}
-                  title={`Move ${tab.label} left`}
-                  // The neighbour ON SCREEN, taken from the list being
-                  // rendered. Re-deriving it from the stored order stepped to
-                  // a tab that is not shown when Runs is docked below: the bar
-                  // did not move, and the live region still said it had.
-                  onClick={() => placeTab(tab.id, orderedTabs[index - 1].id)}
-                  className="absolute -left-1 bottom-1.5 rounded px-0.5 font-mono text-[9px] text-ink-tertiary opacity-0 transition-opacity hover:text-ink focus:opacity-100 group-hover:opacity-100"
-                >
-                  ‹
-                </button>
+          {/*
+            THE TITLE-BAR ROW, and all that is left of it.
+
+            This row WAS the view tab strip. The tabs are gone and the row is
+            empty, and it still has to be here: on macOS `titleBarStyle:
+            'hiddenInset'` removes the native bar, so without an explicit drag
+            region the top edge of the main column cannot move the window at
+            all. The sidebar's own top row is a handle too, but only over its
+            own width - grabbing the window anywhere to the right of it would
+            do nothing.
+
+            Only on macOS. Windows and Linux still draw their own title bar, so
+            a row here would stack a second empty one under the real one.
+
+            The left padding is the traffic-light reserve. Collapsed, the
+            sidebar rail is ~40px against the ~78px the lights occupy from the
+            window edge, so this column's top-left corner is underneath them -
+            and anything put in this row without the reserve would render under
+            the window buttons: unclickable, with the OS window menu opening on
+            top of it. Nothing sits here today, which is exactly why the
+            reserve is written down rather than discovered again by whatever is
+            put here next.
+          */}
+          {/* Only while the sidebar is COLLAPSED, which is the only time this row
+              earns its 36px. Open, the sidebar is wider than the traffic lights
+              and already carries its own drag region with the wordmark in it -
+              so this row would be reserving space for buttons that are not over
+              it and offering a second handle for a window that already has one.
+              Collapsed, the rail is ~40px against the lights' ~78px, and
+              without this the first control renders underneath them.
+
+              The 36px goes to the terminal, which is the whole reason the git
+              panel moved into a button as well. */}
+          {reservesWindowControls && (
+            <div
+              data-app-region="drag"
+              data-reserves-window-controls="true"
+              className={clsx(
+                'flex h-9 shrink-0 items-center border-b border-border-soft bg-nav-surface',
+                'pl-12',
               )}
-              </div>
-            ))}
+            />
+          )}
 
-            {/* A BUTTON, not a drag target. Keyboard parity is in the card,
-                and a drag-only affordance is unreachable without a pointer.
-                Only while Runs IS a tab: once it is docked, the way back lives
-                on the strip itself, where the user is already looking. Two
-                controls for one action is two things to keep in step. */}
-            {runsDock === 'tab' && (
-              <button
-                data-app-region="no-drag"
-                onClick={() => moveRunsTo('bottom')}
-                aria-label="Dock Runs below the board"
-                title="Dock Runs below the board"
-                className="ml-auto self-center rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
-              >
-                Runs ↓
-              </button>
-            )}
-          </div>
-
-          {/* Outside the tablist: a live region inside it would be a child of
-              role="tablist", where only tabs belong. Polite, because a reorder
-              is never urgent enough to cut off what is being read. */}
-          <div role="status" aria-live="polite" className="sr-only">
-            {tabMoveAnnouncement}
-          </div>
-
-          {/* The panels and the Runs strip share this column. The board stays
-              exactly where it is in the tree whichever position Runs is in —
-              moving `children` to a different parent would unmount and remount
-              it, losing scroll position, open menus and anything half-typed,
-              which is the one cost this feature must not have. */}
+          {/* The panels and the Runs strip share this column, and the board
+              stays exactly where it is in the tree: moving `children` to a
+              different parent would unmount and remount it, losing scroll
+              position, open menus and anything half-typed. */}
           {/* Rendered, not conditionally mounted — see rule 1 above. */}
           {/* A REGION, not a tabpanel. It was a tabpanel labelled by `tab-kanban`
               until the Kanban tab was removed, and then the label pointed at a
@@ -1233,10 +1026,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               mid-run and take the whole scrollback with it. Holding a shell
               open for a card the user stepped away from is by far the cheaper
               mistake. */}
+          {/* A REGION, not a tabpanel, for the same reason the board became one
+              when the Kanban tab went: this was labelled by `tab-terminal`, and
+              with that button deleted the reference dangled - a panel with no
+              accessible name, claiming a role whose whole contract is to be
+              paired with a tab in a tablist.
+
+              Named "Terminal" rather than for a route into it, because there
+              are several: the sessions rail, a card in the sidebar tree, and
+              the board's own request. */}
           <div
-            role="tabpanel"
+            role="region"
             id="panel-terminal"
-            aria-labelledby="tab-terminal"
+            aria-label="Terminal"
             tabIndex={0}
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
@@ -1296,36 +1098,70 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
-          <WorkPlaceholder
-            view="agents"
-            active={active}
-            label="Agents"
-            /* Its own words, not the Runs panel's. Both said "No agent runs
-               open", and with Runs docked at the bottom the user got the same
-               sentence twice on one screen, 200px apart — which reads as a
-               rendering fault and tells a reader nothing about why there are
-               two destinations. */
-            title="The full-height run feed is not here yet"
-            body="Every agent you have running will get a row here, with its log. For now the Sessions rail in the sidebar is the live view."
-          />
+          {/*
+            THE AGENTS SCREEN IS THE RUN FEED.
 
+            It used to be a placeholder that said the feed "is not here yet",
+            sitting beside a Runs TAB that showed the feed - the same
+            destination described two ways, 200px apart, which reads as a
+            rendering fault rather than as two features. The tab is gone and
+            this is what it was standing in for.
+
+            A REGION, not a tabpanel: no tab controls it any more. The sidebar
+            row that opens it is an ordinary button, and a tabpanel with no
+            owning tab reports a tablist with nothing selected.
+          */}
           <div
-            role="tabpanel"
-            id="panel-runs"
-            aria-labelledby="tab-runs"
+            role="region"
+            id="panel-agents"
+            aria-label="Agents"
             tabIndex={0}
-            hidden={active !== 'runs'}
-            className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6"
+            hidden={active !== 'agents'}
+            className="flex min-h-0 flex-1 flex-col"
           >
-            <EmptyState
-              title="No agent runs open"
-              body="Runs started from a card appear here. Open a card and start work to see its live log."
-            />
+            <header className="flex shrink-0 items-center gap-2 border-b border-border-soft px-4 py-2">
+              <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
+                Runs
+              </h2>
+              {/* A BUTTON, not a drag target: a drag-only affordance is
+                  unreachable without a pointer. It lived in the tab strip
+                  until the strip was removed, and belongs on the thing it
+                  moves anyway - which also makes it symmetric with the control
+                  on the docked strip that sends the feed back here. */}
+              {runsDock === 'screen' && (
+                <button
+                  onClick={() => moveRunsTo('bottom')}
+                  aria-label="Dock Runs below the board"
+                  title="Dock Runs below the board"
+                  className="ml-auto rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
+                >
+                  Runs ↓
+                </button>
+              )}
+            </header>
+            <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6">
+              {runsDock === 'screen' ? (
+                <EmptyState
+                  title="No agent runs open"
+                  body="Runs started from a card appear here. Open a card and start work to see its live log."
+                />
+              ) : (
+                /* Says where the feed went rather than showing an empty
+                   screen. Landing on nothing after clicking Agents reads as a
+                   broken app, and the way back has to be visible from the
+                   state the user is in - which is this one, because the strip
+                   they docked it to is behind the board they are not on. */
+                <EmptyState
+                  title="Runs is docked below the board"
+                  body="It is the strip under the board, so a live log can be watched while the board is being read."
+                />
+              )}
+            </div>
           </div>
 
           {/* Below the board, in the same column, so both are visible at once —
-              which is the whole reason the card calls a sibling tab the wrong
-              place for a live log. */}
+              which is the whole reason the previous card called a full screen
+              the wrong place for a live log. */}
           {runsDock === 'bottom' && (
             <section
               data-testid="runs-dock"
@@ -1337,8 +1173,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   Runs
                 </h2>
                 <button
-                  onClick={() => moveRunsTo('tab')}
-                  aria-label="Put Runs back to a tab"
+                  onClick={() => moveRunsTo('screen')}
+                  aria-label="Put Runs back to its own screen"
+                  title="Put Runs back to its own screen"
                   className="ml-auto rounded px-1.5 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
                 >
                   ↑
@@ -1532,9 +1369,9 @@ interface SidebarProps {
   /** Opens the settings screen. Pinned, so it is reachable at any list length. */
   openSettings: () => void;
   /** Which view the main pane is showing, so WORK can mark it. */
-  activeView: TabId;
+  activeView: ViewId;
   /** Picking a WORK row. The shell owns `active`; the sidebar only asks. */
-  onSelectView: (view: TabId) => void;
+  onSelectView: (view: ViewId) => void;
   /**
    * Opening the flow editor over the app.
    *
@@ -1643,11 +1480,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
         data-app-region={isMac ? 'drag' : undefined}
         className={clsx('flex h-9 shrink-0 items-center', isMac ? 'pl-[76px]' : 'pl-3')}
       >
-        {open && (
-          <span className="select-none font-sans text-[13px] font-extrabold tracking-tight text-ink">
-            Ag<span className="text-brand">En</span>FK
-          </span>
-        )}
+        {open && <AgenfkWordmark size={13} />}
       </div>
 
       {/* The toggle's OWN row, and the only thing in it.
@@ -2196,23 +2029,16 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
  * above are the panel set's and a second placeholder should inherit them rather
  * than be written again.
  */
-function WorkPlaceholder(
-  { view, active, label, title, body }:
-  { view: TabId; active: TabId; label: string; title: string; body: string },
-): React.ReactElement {
-  return (
-    <div
-      role="region"
-      id={`panel-${view}`}
-      aria-label={label}
-      tabIndex={0}
-      hidden={active !== view}
-      className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6"
-    >
-      <EmptyState title={title} body={body} />
-    </div>
-  );
-}
+/*
+ * DELETED: `WorkPlaceholder`.
+ *
+ * A stated empty state for a sidebar row whose screen did not exist yet, so
+ * that a nav row never landed on nothing. It had two users: Inbox, retired
+ * when Flows took its place, and Agents, which now renders the run feed it was
+ * standing in for. With no row left waiting on a screen there is nothing for
+ * it to hold, and a helper with no caller is a shape for the next placeholder
+ * to be poured into rather than questioned.
+ */
 
 function SidebarLabel({ children }: { children: React.ReactNode }) {
   return (

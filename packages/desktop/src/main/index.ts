@@ -438,6 +438,15 @@ if (!app.requestSingleInstanceLock()) {
    * exactly where it is being worked on. Best effort: a missing file here must
    * not stop the app from starting.
    */
+  /*
+   * The name macOS shows in the menu bar and the about panel. Packaged, it
+   * comes from electron-builder's productName; run from `electron dist/main`
+   * it falls back to the binary's own name, so the menu bar reads "Electron"
+   * while every other surface says AgEnFK. Set before `whenReady` because the
+   * default menu is built from it.
+   */
+  app.setName('AgEnFK');
+
   void app.whenReady().then(() => {
     if (process.platform !== 'darwin' || app.isPackaged) return;
     try {

@@ -186,35 +186,69 @@ describe('AppShell — chrome', () => {
     expect(drag).not.toBeNull();
   });
 
-  it('makes every control inside a drag region opt back out', () => {
-    // A drag region swallows pointer events, so a control left inside one
-    // silently stops responding. The tab bar IS a drag region (it doubles as
-    // the title bar), so this walks every region and every control in them —
-    // an earlier version only looked at the first region, which was empty,
-    // and therefore could never fail.
+  it('traps no control inside a drag region', () => {
+    /*
+     * A drag region swallows pointer events, so a control left inside one
+     * silently stops responding.
+     *
+     * Walked from the CONTROLS rather than from the regions, which is the
+     * change the tab strip's removal forced. The old version listed every
+     * control inside a drag region and asserted each had opted out, guarded by
+     * "at least one was checked" — and the tabs were what made that guard
+     * true. With the strip gone both drag regions are empty, so the old loop
+     * would have checked nothing and passed for the wrong reason, which is the
+     * exact defect its own comment says an earlier version had.
+     *
+     * This asks the question of every control in the app instead: whichever
+     * region encloses it most tightly must not be a drag one. That has teeth
+     * today, and it fails the moment a control is put in the title bar.
+     */
     const { container } = renderShell();
-    const regions = container.querySelectorAll('[data-app-region="drag"]');
-    expect(regions.length).toBeGreaterThan(0);
+    const controls = Array.from(container.querySelectorAll('button, a, input'));
+    expect(controls.length).toBeGreaterThan(0);
 
-    let checked = 0;
-    for (const region of Array.from(regions)) {
-      for (const el of Array.from(region.querySelectorAll('button, a, input'))) {
-        checked += 1;
-        expect(el.closest('[data-app-region="no-drag"]'), `${el.textContent} would be unclickable`).not.toBeNull();
-      }
+    for (const el of controls) {
+      const nearest = el.closest('[data-app-region="drag"], [data-app-region="no-drag"]');
+      expect(
+        nearest?.getAttribute('data-app-region'),
+        `${el.getAttribute('aria-label') ?? el.textContent} would be unclickable`,
+      ).not.toBe('drag');
     }
-    // Proof the loop actually ran: the tabs are controls inside a drag region.
-    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('gives the main column no row of its own while the sidebar is open', async () => {
+    /*
+     * The 36px this change is about. Open, the sidebar is wider than the
+     * traffic lights, so a row in the main column reserves space for buttons
+     * that are not above it - dead chrome directly over the terminal, which is
+     * the thing the user wanted more of.
+     *
+     * Asserted together with the second half, because dropping the row is only
+     * safe while the sidebar still carries a handle. Checking the absence
+     * alone would pass just as happily on a window that cannot be moved at all.
+     */
+    setBridge('darwin');
+    const { container } = renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+
+    const sidebar = container.querySelector('aside')!;
+    const regions = [...container.querySelectorAll('[data-app-region="drag"]')];
+    expect(regions.length, 'no drag handle at all - the window cannot be moved').toBeGreaterThan(0);
+    expect(
+      regions.every(r => sidebar.contains(r)),
+      'the main column still draws a title bar of its own while the sidebar is open',
+    ).toBe(true);
   });
 
   it('keeps a real drag handle when the sidebar is collapsed', async () => {
     // Collapsed, the rail is 40px and the traffic lights cover half of it.
-    // The tab row has to be draggable or the window is moved by a ~20px sliver.
+    // The main column's top row has to be draggable or the window is moved by
+    // a ~20px sliver. That row used to be the tab strip; the tabs are gone and
+    // the row stays, because it is the title bar.
     const { container } = renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
-    const tablist = screen.getByRole('tablist');
-    expect(tablist.getAttribute('data-app-region')).toBe('drag');
+    expect(container.querySelector('main > [data-app-region="drag"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-app-region="drag"]').length).toBeGreaterThan(1);
   });
 
@@ -703,33 +737,33 @@ describe('AppShell — footer chrome', () => {
 });
 
 describe('AppShell — window controls (CGLAB-168)', () => {
-  it('keeps the tabs clear of the traffic lights when the sidebar is collapsed', async () => {
+  it('keeps the main column clear of the traffic lights when the sidebar is collapsed', async () => {
     // The collapsed rail is ~40px but macOS traffic lights occupy ~78px from
-    // the window edge, so without reserving that space the first tab renders
-    // UNDER the close/minimise/zoom buttons: unclickable, and the OS window
-    // menu opens on top of it.
-    renderShell();
+    // the window edge, so without reserving that space anything in this
+    // column's top row renders UNDER the close/minimise/zoom buttons:
+    // unclickable, and the OS window menu opens on top of it.
+    const { container } = renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
 
     /*
-     * Asked of the strip's FIRST element rather than of the tablist. The brand
-     * mark now opens that row, so the tablist is no longer what sits against
-     * the window edge - and a reserve on the tablist would leave the mark
-     * itself under the traffic lights, which is the same defect one element to
-     * the left.
+     * Asked of the column's FIRST element. The row is empty now that the tab
+     * strip is gone, so there is no control to find the reserve through — but
+     * the reserve is a property of the element sitting against the window
+     * edge, which is what this asserts, and it is what makes the row safe to
+     * put a control back into.
      */
     const reserving = document.querySelector('[data-reserves-window-controls="true"]');
     expect(reserving, 'nothing reserves the space the window buttons occupy').not.toBeNull();
-    const strip = screen.getByRole('tablist').parentElement!;
-    expect(strip.firstElementChild, 'the reserve is not on the element against the window edge')
+    const main = container.querySelector('main')!;
+    expect(main.firstElementChild, 'the reserve is not on the element against the window edge')
       .toBe(reserving);
   });
 
   it('reserves nothing while the sidebar is open — it already clears them', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    expect(screen.getByRole('tablist').getAttribute('data-reserves-window-controls')).toBeNull();
+    expect(document.querySelector('[data-reserves-window-controls="true"]')).toBeNull();
   });
 
   it('reserves nothing off macOS, where the native title bar is still there', async () => {
@@ -737,7 +771,7 @@ describe('AppShell — window controls (CGLAB-168)', () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
-    expect(screen.getByRole('tablist').getAttribute('data-reserves-window-controls')).toBeNull();
+    expect(document.querySelector('[data-reserves-window-controls="true"]')).toBeNull();
   });
 });
 
@@ -747,8 +781,8 @@ describe('AppShell — tabs', () => {
     expect(boardMounts).toBe(1);
   });
 
-  it('does not remount or reset the board when another tab is selected', () => {
-    // The point of tabs here: a session pane must not cost you the board's
+  it('does not remount or reset the board when another view is selected', async () => {
+    // The point of the panels here: another view must not cost you the board's
     // React state — filters, expanded cards, a half-typed title. (Scroll
     // position is NOT preserved: `hidden` removes the layout box and with it
     // scrollTop. Claiming otherwise in this test would be a lie the assertions
@@ -757,115 +791,88 @@ describe('AppShell — tabs', () => {
     const input = screen.getByLabelText('board-state') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'unsaved work' } });
 
-    // Away to another view and back. Returning is via the sidebar now that
-    // the board is not a tab; what is under test is the mount count, which is
-    // the same question either way.
-    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
+    // Away to another view and back, both through the sidebar. Neither is a
+    // tab any more; what matters here is the mount count, which is the same
+    // question whichever route is taken.
+    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
 
     expect(boardMounts).toBe(1);
     expect((screen.getByLabelText('board-state') as HTMLInputElement).value).toBe('unsaved work');
   });
 
-  it('moves between tabs with the arrow keys, wrapping at the ends', () => {
-    renderShell();
-    // Enter the bar first. The board is not a tab, so on a fresh render the
-    // active view is not in the bar at all and there is nothing to step FROM.
-    fireEvent.click(screen.getAllByRole('tab')[0]);
+  /*
+   * DELETED: the five tablist tests - arrow keys wrapping at the ends,
+   * Home/End, the roving tabindex that gave the list a single tab stop,
+   * "leaves other keys alone", and "marks exactly one tab selected at a time".
+   *
+   * All five are the ARIA tabs keyboard pattern, and the pattern needs a
+   * tablist. There is none: Kanban left the strip for the sidebar's Tasks,
+   * Terminal followed, and Runs became the Agents screen. The sidebar rows
+   * that replaced them are ordinary buttons in a <nav>, where Tab reaches each
+   * one and no roving index is wanted.
+   *
+   * Two of them were written defensively, against the bug CGLAB-169 hit when
+   * the Terminal tab landed and "wraps at the end" quietly became "moves to
+   * the second tab" - they read the tab list rather than naming tabs. That
+   * care is why they are being deleted rather than rewritten: there is nothing
+   * left for them to read.
+   *
+   * Restore them with the strip if one ever returns. What replaces them for
+   * now is "marks which WORK view you are on, and only that one", further
+   * down, which holds the same one-destination-at-a-time rule over the sidebar.
+   */
 
-    // Written against the tab LIST rather than named tabs, so adding one does
-    // not silently turn "wraps at the end" into "moves to the second tab" —
-    // which is what happened when the Terminal tab landed (CGLAB-169).
-    const tabs = screen.getAllByRole('tab');
-    for (let i = 1; i < tabs.length; i += 1) {
-      fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
-      expect(screen.getAllByRole('tab')[i].getAttribute('aria-selected')).toBe('true');
-    }
-
-    // Wraps rather than dead-ending at the last tab. Back to the FIRST tab,
-    // read off the list, because which view that is has changed twice already.
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
-    expect(screen.getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
-  });
-
-  it('jumps to the first and last tab with Home and End', () => {
-    renderShell();
-    const labels = screen.getAllByRole('tab').map(t => t.textContent);
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'End' });
-    expect(screen.getAllByRole('tab').at(-1)!.getAttribute('aria-selected')).toBe('true');
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'Home' });
-    expect(screen.getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
-    // Read off the list rather than named, so adding a view does not quietly
-    // turn "the last tab" into "the second one" - the trap CGLAB-169 hit.
-    expect(screen.getAllByRole('tab').map(t => t.textContent)).toEqual(labels);
-  });
-
-  it('gives the tablist a single tab stop, not one per tab', () => {
-    // Roving tabindex: without it Tab walks every tab one at a time, which is
-    // the behaviour the ARIA pattern exists to avoid.
-    renderShell();
-    const stops = screen.getAllByRole('tab').filter(t => t.getAttribute('tabindex') === '0');
-    expect(stops).toHaveLength(1);
-  });
-
-  it('leaves other keys alone', () => {
-    // Typing into the bar must not navigate. Asserted as "nothing became
-    // selected", which is the honest form now that the opening view is the
-    // board and therefore no tab is selected to begin with.
-    renderShell();
-    fireEvent.keyDown(screen.getByRole('tablist'), { key: 'a' });
-    expect(screen.getAllByRole('tab').map(t => t.getAttribute('aria-selected'))).not.toContain('true');
-  });
-
-  it('marks exactly one tab selected at a time', () => {
-    renderShell();
-    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
-    const selected = screen.getAllByRole('tab').filter(t => t.getAttribute('aria-selected') === 'true');
-    expect(selected).toHaveLength(1);
-    expect(selected[0].textContent).toMatch(/runs/i);
-  });
-
-  it('hides the inactive panel from assistive tech rather than just visually', () => {
+  it('hides the inactive panel from assistive tech rather than just visually', async () => {
     /*
      * `hidden` and not merely off-screen: a panel that is only visually hidden
      * is still read out and still focusable, so a screen reader walks a view
      * nobody is looking at.
      *
-     * Counted with a tab SELECTED. On a fresh render the board is showing and
-     * the board is no longer a tabpanel, so no tabpanel is visible at all -
-     * which is correct, and would make "exactly one" the wrong assertion for
-     * the wrong reason.
+     * Counted over REGIONS, not tabpanels. Every panel was a tabpanel once;
+     * each became a region as its tab was deleted, because a tabpanel whose
+     * `aria-labelledby` points at a button that no longer exists has no
+     * accessible name at all and claims a role whose whole contract is to be
+     * paired with a tab.
      */
     renderShell();
-    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
-    const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    expect(panels.length).toBeGreaterThan(1);
+    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
+    const panels = ['kanban', 'terminal', 'settings', 'agents']
+      .map(id => document.getElementById(`panel-${id}`)!);
+    expect(panels.every(Boolean)).toBe(true);
     const visible = panels.filter(p => !p.hasAttribute('hidden'));
-    expect(visible).toHaveLength(1);
+    expect(visible.map(p => p.id)).toEqual(['panel-agents']);
   });
 });
 
 describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
-  // The board lives in a tabpanel with `hidden`, and the card-detail modal is
+  // The board lives in a panel with `hidden`, and the card-detail modal is
   // rendered inside the board tree — so it is hidden too. Navigating from the
-  // sidebar while another tab is selected therefore opens a draft nobody can
+  // sidebar while another view is showing therefore opens a draft nobody can
   // see, scrolls a board nobody is looking at, and burns the 3s highlight
   // off-screen. From the user's side the sidebar is simply broken.
 
-  const onRunsTab = async () => {
+  /*
+   * Parked on ANOTHER view first, which is the state the defect needs.
+   *
+   * It used to be the Runs tab. Runs is the Agents screen now and there is no
+   * tab to click, so the route is the sidebar row that replaced it — the same
+   * destination, reached the only way there is.
+   */
+  const onAnotherView = async () => {
     renderShell();
     await screen.findByText('agenfk');
-    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
-    expect(screen.getByRole('tab', { name: /runs/i }).getAttribute('aria-selected')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: /^agents$/i }));
+    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(false);
   };
 
   const kanbanPanel = () => document.getElementById('panel-kanban')!;
 
-  it('goes to the Terminal tab when a card is opened from the sidebar', async () => {
+  it('goes to the Terminal view when a card is opened from the sidebar', async () => {
     vi.mocked(api.listActiveItems).mockResolvedValue([
       { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
     ] as never);
-    await onRunsTab();
+    await onAnotherView();
     fireEvent.click(screen.getByRole('button', { name: 'Expand agenfk', hidden: true }));
     fireEvent.click(await screen.findByTitle('Some work'));
 
@@ -876,15 +883,15 @@ describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
   });
 
   it('comes back to the board when + creates a card from the sidebar', async () => {
-    await onRunsTab();
+    await onAnotherView();
     fireEvent.click(screen.getByRole('button', { name: /New card in agenfk/i }));
     await waitFor(() => expect(kanbanPanel().hasAttribute('hidden')).toBe(false));
   });
 
-  it('does not steal the tab on its own', async () => {
+  it('does not steal the view on its own', async () => {
     // The effect must react to a navigation, not to mounting — otherwise the
-    // Runs tab becomes unusable, snapping back on every render.
-    await onRunsTab();
+    // Agents screen becomes unusable, snapping back on every render.
+    await onAnotherView();
     await new Promise(r => setTimeout(r, 20));
     expect(kanbanPanel().hasAttribute('hidden')).toBe(true);
   });
@@ -907,22 +914,33 @@ describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
     expect(document.getElementById('panel-terminal')!.childElementCount).toBe(0);
   });
 
-  it('keeps the terminal panel mounted when another tab is selected', async () => {
+  it('keeps the terminal panel mounted when another view is selected', async () => {
+    /*
+     * Reached by OPENING a terminal rather than by clicking a Terminal tab,
+     * which no longer exists. That is not a workaround: opening one is the
+     * only thing that puts a session in the panel, and a panel with no session
+     * has nothing to lose on a switch, so this is the honest setup for what
+     * the test claims.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
+    ] as never);
     renderShell();
-    await screen.findByText('agenfk');
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    fireEvent.click(await screen.findByTitle('Some work'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
 
-    fireEvent.click(screen.getByRole('tab', { name: /terminal/i }));
     const panel = document.getElementById('panel-terminal')!;
-    expect(panel.hasAttribute('hidden')).toBe(false);
+    await waitFor(() => expect(panel.hasAttribute('hidden')).toBe(false));
     expect(panel.childElementCount, 'terminal panel rendered nothing').toBeGreaterThan(0);
 
-    // Back to the board, which is the sidebar's job now that it is not a tab.
+    // Away to the board, which is the sidebar's job now that it is not a tab.
     // The switch is what matters here, not the route taken to it.
     fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
     expect(panel.hasAttribute('hidden')).toBe(true);
     expect(
       panel.childElementCount,
-      'the terminal was unmounted on tab switch — the session dies and the scrollback goes with it',
+      'the terminal was unmounted on a view switch — the session dies and the scrollback goes with it',
     ).toBeGreaterThan(0);
   });
 });
@@ -1151,7 +1169,9 @@ describe('the Sessions rail (CGLAB-170)', () => {
     // No terminal exists for that card yet, so it offers to open one there
     // rather than doing nothing.
     expect(await screen.findByRole('dialog')).toBeDefined();
-    expect(document.getElementById('panel-runs')!.hasAttribute('hidden')).toBe(true);
+    // The run feed is the Agents screen now; `panel-runs` was its tab's panel
+    // and went with the tab. Same assertion, same view, current id.
+    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(true);
   });
 
   it('shows how many terminals are open beside the Sessions header', async () => {
@@ -1612,7 +1632,10 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
   it('shows the board when Tasks is picked', async () => {
     renderShell();
     await screen.findByText('agenfk');
-    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
+    // Away first, so "shows the board" is a change rather than the state the
+    // shell already opens in. Agents, because it is the only other view a
+    // sidebar row reaches without opening a terminal.
+    fireEvent.click(workRow(/agents/i));
     expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
 
     fireEvent.click(workRow(/tasks/i));
@@ -1629,10 +1652,16 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     expect(workRow(/tasks/i).getAttribute('aria-current')).toBeNull();
   });
 
-  it('gives Agents somewhere to land instead of a blank pane', async () => {
+  it('opens the run feed on Agents, which is what it was a placeholder for', async () => {
     /*
-     * A placeholder on purpose — the real run feed is a separate card. A nav
-     * row that lands on nothing reads as a broken app.
+     * Agents used to say the run feed "is not here yet" while a Runs TAB
+     * showed the feed - one destination described two ways, and the user got
+     * the same "No agent runs open" sentence twice on one screen. The tab is
+     * gone and this row is the feed.
+     *
+     * It is also THE way to open Runs, and the only one: with no tab to click,
+     * a run feed reachable only from a control inside itself would be a view
+     * with no way in.
      *
      * This used to cover the Inbox panel too. Inbox was removed in favour of
      * Flows, which opens the flow editor and has no panel at all, so the Inbox
@@ -1646,7 +1675,10 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     fireEvent.click(workRow(/agents/i));
     const agents = document.getElementById('panel-agents')!;
     expect(agents.hasAttribute('hidden')).toBe(false);
-    expect(agents.textContent!.trim().length).toBeGreaterThan(0);
+    // The feed itself, not a note about a feed that does not exist yet.
+    expect(agents.textContent).toMatch(/no agent runs open/i);
+    expect(agents.textContent, 'Agents is still describing itself as unbuilt')
+      .not.toMatch(/not here yet/i);
 
     fireEvent.click(workRow(/tasks/i));
     expect(agents.hasAttribute('hidden')).toBe(true);

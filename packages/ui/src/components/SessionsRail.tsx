@@ -21,7 +21,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
-import { subscribeToFrames, SPINNER_FRAMES } from '../sharedTick';
+import { DOT, ORDER, STATE_LABEL, Spinner } from './sessionPresentation';
 
 export type SessionState = 'running' | 'blocked' | 'failed' | 'idle';
 
@@ -120,68 +120,12 @@ export interface SessionsRailProps {
  * agents that are merrily working is exactly the burial this order exists to
  * prevent.
  */
-const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, running: 2, idle: 3 };
-
-/**
- * A spinner for running, a dot for everything else.
- *
- * A static dot only says "a session exists". The question the rail is there to
- * answer is "is it thinking right now" — and a spinner answers it at a glance,
- * which is the difference between looking at the sidebar and having to open the
- * terminal. Braille dots because they are a single character, so the row does
- * not reflow between states.
+/*
+ * ORDER, DOT, STATE_LABEL and Spinner used to be defined here. They moved to
+ * sessionPresentation so the card's own process row can use the SAME ones
+ * (1a1b8df6) - copying them would have made two renderings of one fact, which
+ * is the defect this whole epic keeps producing.
  */
-
-
-function Spinner(): React.ReactElement {
-  const [frame, setFrame] = React.useState(0);
-  /*
-   * One clock for every spinner, not one each.
-   *
-   * This used to own a `setInterval`, so a board with thirty running sessions
-   * ran thirty timers and 375 React renders a second, continuously — which
-   * `liveAgents.ts` had already argued against in its own header, two files
-   * away. The shared tick is the same lifecycle that module uses: it exists
-   * only while something is watching.
-   *
-   * It also makes the spinners turn in step with each other, which separate
-   * timers could not: they drifted apart within seconds.
-   */
-  React.useEffect(() => subscribeToFrames(setFrame), []);
-  return (
-    <span
-      data-testid="session-spinner"
-      aria-hidden="true"
-      className="mt-0.5 w-2 shrink-0 text-center font-mono text-[11px] leading-none text-emerald-400 motion-reduce:animate-none"
-    >
-      {/* Reduced motion gets a still frame rather than nothing: the row must
-          not shift, and the state is still carried by data-state and the
-          dot's aria-label. */}
-      <span className="motion-reduce:hidden">{SPINNER_FRAMES[frame]}</span>
-      <span className="hidden motion-reduce:inline">{SPINNER_FRAMES[0]}</span>
-    </span>
-  );
-}
-
-const DOT: Record<SessionState, string> = {
-  running: 'bg-emerald-400',
-  // A hollow ring rather than a filled dot: waiting is not a kind of running,
-  // and the shape says so without relying on hue — these are drawn at 6px,
-  // where colour is the weakest channel and fails outright for the ~8% of men
-  // with a colour vision deficiency.
-  blocked: 'border-2 border-amber-400',
-  failed: 'bg-rose-400',
-  idle: 'border border-ink-tertiary',
-};
-
-const STATE_LABEL: Record<SessionState, string> = {
-  running: 'Running',
-  // "Waiting for you", not "Blocked": the point of the row is that it needs
-  // something FROM THE READER, and a one-word status does not say that.
-  blocked: 'Waiting for you',
-  failed: 'Failed',
-  idle: 'Idle',
-};
 
 /** Compact elapsed time. Seconds below a minute, then minutes, then hours. */
 export function elapsedSince(iso: string, now = Date.now()): string {

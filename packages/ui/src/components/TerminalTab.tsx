@@ -15,6 +15,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
+import { useGitStatus, type WorktreeView } from '../gitStatus';
 import { X, Plus, GitBranch } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
@@ -159,6 +160,29 @@ export interface TerminalTabProps {
   readonly showWorktree?: boolean;
 }
 
+/**
+ * Whether the worktree panel is open, and on which list.
+ *
+ * `null` is closed, which is the third state the pair of buttons has to be
+ * able to be in: neither list is showing, and neither button is pressed.
+ *
+ * Remembered, because a panel that reopens itself on the next launch was never
+ * closed - and closing it is the point, since it is a fixed 288px the terminal
+ * does not get back any other way. Same treatment the sidebar and the Runs
+ * dock already get.
+ */
+const WORKTREE_PANEL_KEY = 'agenfk_worktree_panel';
+const WORKTREE_VIEWS: WorktreeView[] = ['changed', 'staged'];
+
+function readWorktreeView(): WorktreeView | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem(WORKTREE_PANEL_KEY) ?? 'null');
+    // Anything this build does not recognise reads as closed. Closed is the
+    // state with a way out of it in one click, so it is the safe fallback.
+    return WORKTREE_VIEWS.includes(stored) ? stored : null;
+  } catch { return null; }
+}
+
 export function TerminalTab({
   sessions,
   activeId,
@@ -174,6 +198,39 @@ export function TerminalTab({
   onOpenInEditor,
   showWorktree,
 }: TerminalTabProps): React.ReactElement {
+  // Seeded from storage in the initializer, so there is no first paint with
+  // the panel open for someone who closed it.
+  const [panelView, setPanelView] = React.useState<WorktreeView | null>(() => readWorktreeView());
+  const current = sessions.find(s => s.id === activeId);
+  /*
+   * Asked even with the panel CLOSED, which is what makes moving the counts
+   * out of the panel worth anything: shut, these two numbers are the only
+   * thing on screen saying the worktree has changes at all.
+   *
+   * Still gated on `showWorktree`, because that flag is a caller saying it
+   * does not want a git poll every four seconds - and the counts are part of
+   * the same feature, so they must not be what starts one.
+   */
+  const { data: git } = useGitStatus(current?.itemId ?? null, Boolean(showWorktree));
+
+  /**
+   * Open on `view`, or close if that view is already the one showing.
+   *
+   * A TOGGLE rather than open-only. The alternative is a separate close
+   * control on the panel, which is two controls for one piece of state — and
+   * this pair already carries three states between them.
+   */
+  const togglePanel = React.useCallback((view: WorktreeView) => {
+    setPanelView(cur => {
+      const next = cur === view ? null : view;
+      try { localStorage.setItem(WORKTREE_PANEL_KEY, JSON.stringify(next)); } catch { /* a lost preference, not a failure */ }
+      return next;
+    });
+  }, []);
+
+  // AFTER the hooks, never before: an early return above them would change how
+  // many run between a render with sessions and one without, which React
+  // rejects outright.
   if (sessions.length === 0) {
     return (
       <div className="p-6">
@@ -184,8 +241,6 @@ export function TerminalTab({
       </div>
     );
   }
-
-  const current = sessions.find(s => s.id === activeId);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -210,6 +265,46 @@ export function TerminalTab({
           // Said, not hidden. A card with no branch yet is a worktree that has
           // not been created, and that is worth knowing BEFORE you type.
           <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-tertiary">no branch yet</span>
+        )}
+
+        {/* Its OWN group, separated from the editor button by a divider.
+            "Open in VS Code" launches an application; these two change what is
+            on screen, and three identical buttons in a row would read as three
+            of the same kind of control.
+
+            Buttons with `aria-pressed`, not a tablist. A tablist has to have a
+            selected tab, and the state this pair spends most of its time in is
+            the one where neither list is showing. */}
+        {showWorktree && (
+          <div
+            role="group"
+            aria-label="Worktree"
+            className="flex shrink-0 items-center gap-1 border-r border-border-soft pr-2"
+          >
+            {WORKTREE_VIEWS.map(view => {
+              const pressed = panelView === view;
+              const count = (view === 'staged' ? git?.staged : git?.changed) ?? 0;
+              return (
+                <button
+                  key={view}
+                  type="button"
+                  aria-pressed={pressed}
+                  onClick={() => togglePanel(view)}
+                  title={pressed
+                    ? `Hide the ${view} files`
+                    : `Show the ${view} files beside the terminal`}
+                  className={clsx(
+                    'shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
+                    pressed
+                      ? 'border-brand bg-canvas font-semibold text-ink'
+                      : 'border-transparent text-ink-tertiary hover:text-ink',
+                  )}
+                >
+                  {view === 'staged' ? 'Staged' : 'Changed'} ({count})
+                </button>
+              );
+            })}
+          </div>
         )}
 
         {/* Here because this is where the user already is when they want it:
@@ -321,8 +416,16 @@ export function TerminalTab({
 
       {/* Asks about the session you are LOOKING at, not all of them: the panel
           answers "what has this agent touched", and that question only has a
-          meaning for one worktree at a time. */}
-      {showWorktree && <WorktreePanel itemId={current?.itemId ?? null} />}
+          meaning for one worktree at a time.
+
+          Absent rather than hidden when closed, which is the whole point: it
+          is a fixed 288px of the row, and hiding it would leave the terminal
+          exactly as narrow as before. Nothing is lost by unmounting it - it
+          holds a query, not a process, and the query is the shared one the
+          bar's counts keep alive anyway. */}
+      {showWorktree && panelView && (
+        <WorktreePanel itemId={current?.itemId ?? null} view={panelView} />
+      )}
       </div>
     </div>
   );

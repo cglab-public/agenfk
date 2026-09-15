@@ -16,11 +16,22 @@
  * while it is still asking, or because the read failed, is worse than no panel
  * at all: a clean tree is precisely the thing you opened it to check, and
  * being told it confidently is how you stop checking.
+ *
+ * It no longer carries its own header. `CHANGED (n)` and `STAGED (n)` were two
+ * static labels at the top of this panel, over a list that showed both kinds
+ * together with a badge on the staged rows. They are buttons in the terminal's
+ * top bar now, and the reason is not the row of pixels they gave back: this
+ * panel is a fixed 288px beside the terminal and there was no way to be rid of
+ * it. Moving the counts out is what lets the panel close, and a closed panel
+ * is the window's full width back for the terminal.
+ *
+ * So this shows ONE of the two lists at a time, named by the button that
+ * opened it, and the staged badge on a row went with the split - a list called
+ * Staged does not need to say it on every line.
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../api';
+import { useGitStatus, type WorktreeView } from '../gitStatus';
 
 /** Colour carries the kind, and the letter carries it again for greyscale. */
 const STATE_MARK: Record<string, { letter: string; className: string }> = {
@@ -32,33 +43,21 @@ const STATE_MARK: Record<string, { letter: string; className: string }> = {
 };
 
 
-export function WorktreePanel({ itemId }: { itemId: string | null }): React.ReactElement {
-  const { data, isError, isPending } = useQuery({
-    queryKey: ['git-status', itemId],
-    queryFn: () => api.getGitStatus(itemId!),
-    // Nothing to ask about without a session, and asking anyway would 404 on
-    // every render of an empty terminal panel.
-    enabled: Boolean(itemId),
-    // The agent is editing while you watch. Stale-by-default would show the
-    // state from whenever you last opened the tab.
-    refetchInterval: 4000,
-  });
+export function WorktreePanel({ itemId, view }: {
+  itemId: string | null;
+  view: WorktreeView;
+}): React.ReactElement {
+  const { data, isError, isPending } = useGitStatus(itemId);
 
-  const files = data?.files ?? [];
+  // One list at a time, named by the button that opened it. `staged` is the
+  // git distinction itself, so this is a filter rather than a second request.
+  const files = (data?.files ?? []).filter(f => (view === 'staged' ? f.staged : !f.staged));
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l border-border-soft bg-nav-surface">
-      <header className="border-b border-border-soft">
-        <div className="flex items-center gap-3 px-3 py-2">
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
-            Changed ({data?.changed ?? 0})
-          </span>
-          <span className="font-mono text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary">
-            Staged ({data?.staged ?? 0})
-          </span>
-        </div>
-      </header>
-
+    <aside
+      aria-label="Worktree"
+      className="flex h-full w-72 shrink-0 flex-col border-l border-border-soft bg-nav-surface"
+    >
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-slim">
         {isError && (
           <div
@@ -73,7 +72,9 @@ export function WorktreePanel({ itemId }: { itemId: string | null }): React.Reac
         {/* Only once the answer is in. "No changes" while still asking would be
             the panel asserting the one thing it has not checked. */}
         {!isError && !isPending && files.length === 0 && (
-          <p className="px-3 py-4 text-[11px] text-ink-tertiary">No changes in this worktree.</p>
+          <p className="px-3 py-4 text-[11px] text-ink-tertiary">
+            {view === 'staged' ? 'Nothing staged in this worktree.' : 'No changes in this worktree.'}
+          </p>
         )}
 
         <ul className="flex flex-col">
@@ -99,9 +100,6 @@ export function WorktreePanel({ itemId }: { itemId: string | null }): React.Reac
                     </span>
                   )}
                 </span>
-                {file.staged && (
-                  <span className="shrink-0 font-mono text-[9px] uppercase text-ink-tertiary">staged</span>
-                )}
               </li>
             );
           })}

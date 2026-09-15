@@ -63,18 +63,29 @@ export const CARD_STATE_LABEL: Record<Exclude<CardState, 'quiet'>, string> = {
  * Rows are keyed by card AND agent upstream, so one card can appear more than
  * once here — one blocked agent is enough to flag it.
  *
- * `failed` is NOT folded in. A failure is a per-session fact and the rail is
- * where it is drawn; carrying it here would put a fourth state on a three-state
- * mark and re-create exactly the duplication this design exists to remove. The
- * cost is real and was weighed: a card whose agent has just crashed draws the
- * quiet ring until someone looks at the rail.
+ * `failed` IS folded in, and it did not used to be. The old reasoning was that
+ * a failure is a per-session fact drawn on the sessions rail, so carrying it
+ * here would duplicate what the rail already said. The cost was written down
+ * rather than hidden: a card whose agent had just crashed drew the quiet ring
+ * until somebody looked at the rail.
+ *
+ * That cost was payable only because the rail existed. It does not any more -
+ * processes are drawn beneath the card they belong to (1a1b8df6), so a crashed
+ * agent's row and this mark sit one line apart. A grey ring directly above a
+ * rose `Failed` row stops being a considered trade-off and becomes a plain
+ * contradiction, visible in a single glance.
+ *
+ * This is not a fourth state. `failed` lands on the same needs-person that
+ * blocked rows already use, because what a person does about a crashed agent
+ * and about a blocked one is the same thing: look at it.
  */
 export function itemsNeedingAPerson(
   rows: ReadonlyArray<{ itemId: string; state: SessionState }>,
 ): ReadonlySet<string> {
   const blocked = new Set<string>();
   for (const row of rows) {
-    if (row.state === 'blocked') blocked.add(row.itemId);
+    // Both mean "this one is not going to move on its own".
+    if (row.state === 'blocked' || row.state === 'failed') blocked.add(row.itemId);
   }
   return blocked;
 }
