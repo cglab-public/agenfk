@@ -20,21 +20,28 @@ describe('cardState', () => {
   it('is quiet when nothing is running on the card', () => {
     // A ring, not an absence: the row still has to line up with its
     // neighbours. But it claims nothing.
-    expect(cardState('i1', none, none)).toBe('quiet');
+    expect(cardState('i1', none, none, [])).toBe('quiet');
   });
 
-  it('is working while an agent is live on that card', () => {
-    expect(cardState('i1', new Set(['i1']), none)).toBe('working');
+  it('is working when a row on that card says so', () => {
+    /*
+     * This used to pass the live set alone and expect 'working'. That route is
+     * gone: liveness no longer decides on its own, because it is touched on
+     * every run:event while the rows only refetch on run:updated - so it could
+     * paint a card green with nothing drawn beneath it. See the block at the
+     * end of this file.
+     */
+    expect(cardState('i1', new Set(['i1']), none, [{ itemId: 'i1', state: 'running' }])).toBe('working');
   });
 
   it('stays quiet for a card the live set is not about', () => {
     // The whole point of the dot. Without this it is the old always-on dot in
     // a different colour.
-    expect(cardState('i1', new Set(['somebody-else']), none)).toBe('quiet');
+    expect(cardState('i1', new Set(['somebody-else']), none, [])).toBe('quiet');
   });
 
   it('needs a person when a session on that card is blocked', () => {
-    expect(cardState('i1', none, new Set(['i1']))).toBe('needs-person');
+    expect(cardState('i1', none, new Set(['i1']), [])).toBe('needs-person');
   });
 
   it('puts needs-a-person ahead of working, because that is the one you must act on', () => {
@@ -46,7 +53,7 @@ describe('cardState', () => {
      * state is unreachable in practice: the one row that needs a human would
      * be drawn as the one row that needs nobody.
      */
-    expect(cardState('i1', new Set(['i1']), new Set(['i1']))).toBe('needs-person');
+    expect(cardState('i1', new Set(['i1']), new Set(['i1']), [])).toBe('needs-person');
   });
 });
 
@@ -165,11 +172,19 @@ describe('agreeing with the rail', () => {
     expect(cardState('i1', none, none, rows)).toBe('working');
   });
 
-  it('still answers for a card with no session here at all', () => {
-    // A run recorded by the hook has a transcript and no terminal of ours, so
-    // there is no row to agree with and recency is all there is.
-    expect(cardState('i1', live('i1'), none, [])).toBe('working');
-  });
+  /*
+   * A test asserting the opposite stood here: a card with no rows read as
+   * 'working' from liveness alone, justified by "a run recorded by the hook has
+   * a transcript and no terminal of ours, so there is no row to agree with".
+   *
+   * That premise expired twice over. sessionRows is built from the RUNS as well
+   * as from terminals, so a hook-recorded run does produce a row; and the rail
+   * that made this dot a standalone summary is gone, so the dot now sits
+   * directly above the rows it was allowed to disagree with.
+   *
+   * Reversed deliberately, recorded in place. The replacement is in the block
+   * at the end of this file.
+   */
 
   it('keeps needs-person ahead of everything', () => {
     // Unchanged and still load-bearing: a blocked agent has just produced
@@ -245,5 +260,56 @@ describe('a crashed agent is a card that needs a person', () => {
       { itemId: 'i1', state: 'failed' as const },
     ];
     expect(itemsNeedingAPerson(rows).has('i1')).toBe(true);
+  });
+});
+
+/**
+ * The card's mark is a function of the rows drawn beneath it (a36f7bac).
+ *
+ * The design was challenged on exactly this before it was built: putting a
+ * process under its own card places the two marks one line apart, so a
+ * disagreement that was survivable at three inches becomes obvious. The answer
+ * given was that the card's mark is a pure function of those rows, "so the two
+ * agree by construction rather than by discipline".
+ *
+ * It was not. With no rows for a card, the rule fell through to the liveness
+ * set - and liveness is touched on every `run:event` while only `run:updated`
+ * refetches the rows. So a card could draw green, announcing "an agent is
+ * working on this now", with nothing underneath it.
+ *
+ * That fallback made sense when it was written: the rail drew the sessions and
+ * the tree's dot was a separate summary, so there was nothing on screen for it
+ * to contradict. The rail is gone. The claim has to become true or stop being
+ * made.
+ */
+describe('the mark never claims more than the rows show', () => {
+  it('stays quiet for a card with no rows, however live it looks', () => {
+    /*
+     * THE assertion. `live` says something arrived; `rows` says there is
+     * nothing to point at. Drawing "working" here is the contradiction the
+     * whole layout was challenged on.
+     */
+    expect(cardState('i1', new Set(['i1']), new Set(), [])).toBe('quiet');
+  });
+
+  it('still works from a row, which is where the state belongs', () => {
+    expect(cardState('i1', new Set(), new Set(), [
+      { itemId: 'i1', state: 'running' },
+    ])).toBe('working');
+  });
+
+  it('does not need liveness to agree before it says working', () => {
+    // A row is enough. Requiring both would invent the opposite failure: a
+    // running agent drawn quiet because the clock had not caught up.
+    expect(cardState('i1', new Set(), new Set(), [
+      { itemId: 'i1', state: 'running' },
+    ])).toBe('working');
+  });
+
+  it('still lets a blocked row win over a working one', () => {
+    // The roll-up rule survives the change: most demanding state wins.
+    expect(cardState('i1', new Set(['i1']), new Set(['i1']), [
+      { itemId: 'i1', state: 'running' },
+    ])).toBe('needs-person');
   });
 });

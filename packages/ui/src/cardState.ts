@@ -104,7 +104,13 @@ export function cardState(
   itemId: string,
   live: ReadonlySet<string>,
   needsPerson: ReadonlySet<string>,
-  rows: ReadonlyArray<{ itemId: string; state: SessionState }> = [],
+  /*
+   * REQUIRED, and it did not used to be. With the liveness fallback gone the
+   * rows are the only source of the working state, so a caller that omits them
+   * would get 'quiet' for everything - a silent, total failure that a default
+   * of [] would have hidden behind a plausible answer.
+   */
+  rows: ReadonlyArray<{ itemId: string; state: SessionState }>,
 ): CardState {
   if (needsPerson.has(itemId)) return 'needs-person';
 
@@ -122,19 +128,29 @@ export function cardState(
    * Deriving both from the same rows makes the two lists agree by
    * construction rather than by two sets of rules kept in step by hand.
    */
-  let hasRow = false;
   for (const row of rows) {
     if (row.itemId !== itemId) continue;
-    hasRow = true;
     // One working agent is enough: rows are keyed by card AND agent.
     if (row.state === 'running') return 'working';
   }
-  if (hasRow) return 'quiet';
-
   /*
-   * No session of ours for this card — a run recorded by the hook has a
-   * transcript and no terminal here. There is nothing to agree with, so
-   * recency is all there is.
+   * No rows means QUIET, even when liveness says otherwise.
+   *
+   * This used to fall through to `live.has(itemId)`, and that was right while
+   * the sessions rail existed: the rail drew the agents, this dot was a
+   * separate summary, and there was nothing on screen for it to contradict.
+   *
+   * Processes are drawn under their own card now (1a1b8df6), so the two marks
+   * sit one line apart - and liveness is touched on every `run:event` while
+   * only `run:updated` refetches the rows. The fallback therefore painted a
+   * card green, announcing "an agent is working on this now", with nothing
+   * beneath it to point at. That is the contradiction this layout was
+   * challenged on before it was built, and the answer given was that the mark
+   * is a function of the rows. This is what makes that answer true.
+   *
+   * The cost is a lag in the other direction: a brand new run reads as quiet
+   * until its row arrives. A mark that is late is recoverable; a mark that is
+   * confidently wrong about something visible next to it is not.
    */
-  return live.has(itemId) ? 'working' : 'quiet';
+  return 'quiet';
 }
