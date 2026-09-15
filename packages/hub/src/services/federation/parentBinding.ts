@@ -26,6 +26,16 @@ export type BindingState = 'active' | 'revoked';
  */
 export type IdentityPolicy = 'keep' | 'pseudonymize';
 
+/**
+ * Coerce an untrusted value to a policy. Anything unrecognised — a corrupt
+ * row, an older parent, a typo in a column — reads as 'keep'. Never guess
+ * towards 'pseudonymize': silently anonymising a group's data because a value
+ * did not parse is the worse failure of the two, and the harder to notice.
+ */
+export function asIdentityPolicy(v: unknown): IdentityPolicy {
+  return v === 'pseudonymize' ? 'pseudonymize' : 'keep';
+}
+
 export interface ParentBinding {
   parentUrl: string;
   token: string;
@@ -100,7 +110,7 @@ export async function writeParentBinding(
     childHubId: input.childHubId,
     enrolledAt: input.enrolledAt ?? new Date().toISOString(),
     state: input.state ?? 'active',
-    identityPolicy: input.identityPolicy === 'pseudonymize' ? 'pseudonymize' : 'keep',
+    identityPolicy: asIdentityPolicy(input.identityPolicy),
   };
   // One row, replaced, in one transaction. Delete-then-insert unguarded left a
   // window in which a concurrent reader saw NO binding — which would downgrade
@@ -134,9 +144,7 @@ export async function readParentBinding(db: DB, secretKey: string): Promise<Pare
     childHubId: stored.childHubId,
     enrolledAt: stored.enrolledAt,
     state: stored.state === 'revoked' ? 'revoked' : 'active',
-    // Anything unrecognised reads as 'keep' rather than being guessed at: a
-    // corrupted value must not silently start anonymising a group's data.
-    identityPolicy: stored.identityPolicy === 'pseudonymize' ? 'pseudonymize' : 'keep',
+    identityPolicy: asIdentityPolicy(stored.identityPolicy),
   };
 }
 

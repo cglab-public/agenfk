@@ -230,7 +230,8 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   // the next batch of forwarded events is stamped correctly. A parent that
   // says nothing leaves the cached value alone.
   const told = pong?.identityPolicy;
-  if ((told === 'keep' || told === 'pseudonymize') && told !== binding.identityPolicy) {
+  const recognised = told === 'keep' || told === 'pseudonymize';
+  if (recognised && told !== binding.identityPolicy) {
     await writeParentBinding(db, secretKey, { ...binding, identityPolicy: told as IdentityPolicy });
   }
 
