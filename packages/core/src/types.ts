@@ -335,6 +335,21 @@ export interface BaseItem {
    * "created, then deleted by hand".
    */
   worktreePath?: string;
+  /**
+   * Files and directories this item owns while it is being worked (819e7192).
+   *
+   * Only meaningful because several agents share one worktree: there, two of
+   * them editing one file is a race rather than a merge conflict, and the
+   * loser's edit is gone with nobody told. A claim is a directory or an exact
+   * file; globs are refused rather than approximated, because overlap between
+   * two patterns is a different and much harder question than whether a path
+   * matches one. See claims.ts and claimGate.ts.
+   *
+   * Absent on every item that predates the field, and absence authorizes - a
+   * gate that read it as a conflict would refuse all work on the deploy that
+   * introduced it.
+   */
+  claims?: string[];
   prUrl?: string; // Pull request URL
   prNumber?: number; // Pull request number
   prStatus?: 'open' | 'merged' | 'closed' | 'draft'; // Pull request status

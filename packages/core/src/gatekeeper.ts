@@ -9,6 +9,8 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
+import { gateOnClaims } from './claimGate';
+
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
   name?: string;
@@ -21,6 +23,8 @@ export interface GatekeeperItem {
   type: string;
   title?: string;
   branchName?: string;
+  /** Paths this item owns while worked. See claimGate.ts. */
+  claims?: string[];
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -293,6 +297,30 @@ export function decideGatekeeperAuthorization(
     };
   } else {
     task = actionable[0];
+  }
+
+  /*
+   * The claim gate (819e7192), and it runs LAST: being on an active step is
+   * the question of whether this card may work at all, and colliding with
+   * somebody else is the question of whether it may work HERE. Answering the
+   * second first would refuse a card for a file conflict when its real problem
+   * is that it never started.
+   *
+   * Holders come from `items`, NOT `workingItems`. getActiveStepItems drops
+   * PAUSED and BLOCKED, and a paused card is exactly the one whose half-edited
+   * files must not be handed to somebody else - it finds out on resume, which
+   * is the worst moment. claimGate decides release by terminal status instead.
+   */
+  const gate = gateOnClaims(
+    { id: task.id, claims: task.claims },
+    items.map(i => ({ id: i.id, status: i.status, claims: i.claims })),
+  );
+  if (!gate.authorized) {
+    return {
+      authorized: false,
+      task: null,
+      message: `❌ CLAIM CONFLICT on [${task.id.substring(0, 8)}] "${task.title}".\n\n${gate.message}`,
+    };
   }
 
   // Surface the step contract via the shared resolver, so this and the MCP

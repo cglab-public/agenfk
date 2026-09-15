@@ -714,3 +714,72 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d.message).toContain('Current step: IN_PROGRESS');
   });
 });
+
+/**
+ * The claim gate, reached through the gatekeeper (819e7192).
+ *
+ * claimGate.test.ts proves the decision is right. This proves it is REACHED:
+ * the branch was added to decideGatekeeperAuthorization and the whole core
+ * suite stayed green, which says nothing about a path nothing walks.
+ *
+ * It also pins the two things easiest to get wrong in the wiring rather than
+ * in the decision - the ORDER of the two questions, and which list the holders
+ * come from.
+ */
+describe('claim conflicts reach the gatekeeper', () => {
+  const claiming = (id: string, status: string, claims?: string[]): GatekeeperItem =>
+    ({ ...item(id, status), claims });
+
+  it('refuses a card whose claim another card already holds', () => {
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'the claim gate is not wired in').toBe(false);
+    expect(decision.message).toContain('CLAIM CONFLICT');
+    expect(decision.message).toContain('theirs');
+  });
+
+  it('still authorizes when nothing is claimed, which is every card today', () => {
+    // The wiring must not turn into an outage on the deploy that adds it.
+    const decision = decideGatekeeperAuthorization(
+      [item('mine', 'IN_PROGRESS'), item('theirs', 'REVIEW')],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(true);
+  });
+
+  it('holds files for a PAUSED card, which getActiveStepItems drops', () => {
+    /*
+     * THE wiring test. The holders list must be `items`, not `workingItems`:
+     * getActiveStepItems filters PAUSED out, so passing it would hand a paused
+     * agent's half-edited files to somebody else, and it would find out on
+     * resume. Using the wrong list authorizes here, and the defect is invisible
+     * in claimGate.test.ts because that layer never sees the filter.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'PAUSED', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'a paused card lost its files through the gatekeeper').toBe(false);
+  });
+
+  it('answers "may it work at all" before "may it work here"', () => {
+    /*
+     * Order matters for the message, not the verdict. A card sitting on TODO
+     * with a colliding claim has two problems, and being told about the file
+     * conflict would send it to renegotiate a claim when what it needs is to
+     * start the card.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'TODO', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(false);
+    expect(decision.message).not.toContain('CLAIM CONFLICT');
+  });
+});
