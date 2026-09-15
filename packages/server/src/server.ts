@@ -795,36 +795,76 @@ const findProjectRoot = (startDir: string): string => {
 /**
  * The commit the server makes when an item reaches its final flow step.
  *
- * `git add -u`, NOT `git add -A` (BUG 315edc11 / CGLAB-22). `-A` staged every
- * untracked file in the repository, so closing one item swept in whatever
- * happened to be lying around — including work in progress belonging to a
- * DIFFERENT task or branch. Observed: closing a bug produced a close(bug)
- * commit carrying another item's WIP test, which had no implementation on that
- * branch and would have failed CI under someone else's name. It is not a
- * theoretical risk either: a reviewer's scratch file was swept into an
- * unrelated commit during the very session this was fixed in.
+ * It commits the INDEX and stages nothing itself (BUG 315edc11 / CGLAB-22).
  *
- * `-u` stages modifications and deletions of files git already tracks, which is
- * the part the server can attribute to the item with a straight face. A NEW
- * file is the author's to add: the server cannot tell whose it is, and guessing
- * wrong misattributes someone else's work rather than merely omitting yours.
+ * It used to run `git add -A`, which staged every untracked file in the
+ * repository — so closing one item swept in whatever happened to be lying
+ * around, including work in progress belonging to a DIFFERENT task or branch.
+ * Observed: a close(bug) commit carrying another item's WIP test, which had no
+ * implementation on that branch and would have failed CI under someone else's
+ * name.
+ *
+ * `git add -u` was tried and rejected: it narrows to TRACKED files, which is an
+ * orthogonal axis to "whose work is this". It leaves the same leak open for
+ * tracked modifications (and since git 2.0 it stages the whole repository, not
+ * the directory it runs in), while turning a rename into a commit that deletes
+ * the old path and never adds the new one — a commit that does not build,
+ * pushed under the item's name.
+ *
+ * The index is the only thing here that actually carries provenance: it is the
+ * author's explicit statement of what belongs to this change, renames and new
+ * files included. So nothing is staged automatically, and anything left
+ * unstaged is REPORTED rather than guessed at — silently dropping a file the
+ * author expected to land is the same defect as silently adding one they did
+ * not.
  *
  * Exported for the test; nothing else outside this module should call it.
  */
-export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
+export interface AutoGitCommitResult {
+  success: boolean;
+  /** False when the index was empty — nothing to commit is not a failure. */
+  committed: boolean;
+  output: string;
+  /** Paths git can see changes in that the author did not stage. */
+  unstaged: string[];
+  error?: string;
+}
+
+const gitOut = (cmd: string, cwd: string): Promise<string> =>
+  new Promise((resolve) => exec(cmd, { cwd }, (err, stdout) => resolve(err ? '' : stdout)));
+
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<AutoGitCommitResult> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
-  const cmd = `git add -u && git commit -m ${JSON.stringify(message)}`;
-  
+  const timestamp = () => new Date().toISOString();
+
+  // Porcelain v1: XY PATH. X is the index status, Y the working-tree status.
+  // Anything with a non-space Y, and every '??', is a change the author has not
+  // staged — so it is not ours to commit, but it IS ours to mention.
+  const unstaged = (await gitOut('git status --porcelain', projectRoot))
+    .split('\n')
+    .filter(line => line.length > 3 && (line.startsWith('??') || line[1] !== ' '))
+    .map(line => line.slice(3).trim())
+    .filter(Boolean);
+
+  const staged = (await gitOut('git diff --cached --name-only', projectRoot))
+    .split('\n').map(l => l.trim()).filter(Boolean);
+  if (!staged.length) {
+    // Not a failure, and it must not be logged as one: an author who committed
+    // their own work first is the well-behaved case, and crying wolf on every
+    // clean close teaches everyone to ignore the line that matters.
+    console.log(`[${timestamp()}] [AUTO_GIT] Nothing staged; no close commit made.`);
+    return { success: true, committed: false, output: '', unstaged };
+  }
+
   return new Promise((resolve) => {
-    exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
-      const timestamp = new Date().toISOString();
+    exec(`git commit -m ${JSON.stringify(message)}`, { cwd: projectRoot }, (err, stdout, stderr) => {
       if (err) {
         const errMsg = err.message.trim();
-        console.log(`[${timestamp}] [AUTO_GIT] Commit failed: ${errMsg}`);
-        resolve({ success: false, output: stderr || stdout, error: errMsg });
+        console.log(`[${timestamp()}] [AUTO_GIT] Commit failed: ${errMsg}`);
+        resolve({ success: false, committed: false, output: stderr || stdout, unstaged, error: errMsg });
       } else {
-        console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
-        resolve({ success: true, output: stdout.trim() });
+        console.log(`[${timestamp()}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
+        resolve({ success: true, committed: true, output: stdout.trim(), unstaged });
       }
     });
   });
@@ -3302,9 +3342,28 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
-  const pushInstruction = nextStatus === Status.DONE
-    ? `\n\n🚀 **Push your branch**: The server has auto-committed the changes. Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
-    : '';
+  /**
+   * What to tell the agent after DONE.
+   *
+   * It used to say flatly that "the server has auto-committed the changes",
+   * which stopped being true the moment the close commit stopped staging for
+   * you (BUG 315edc11): a file the author never staged does not land, and an
+   * agent told otherwise pushes and leaves it behind. Built from what the
+   * commit ACTUALLY did, and it names anything left behind.
+   */
+  const describePush = (git?: AutoGitCommitResult): string => {
+    if (nextStatus !== Status.DONE) return '';
+    const left = git?.unstaged?.length
+      ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n${git.unstaged.map(f => `- \`${f}\``).join('\n')}\nStage and commit them yourself if they belong to this item.`
+      : '';
+    const made = git
+      ? (git.committed
+        ? 'The server committed what you had staged.'
+        : 'Nothing was staged, so the server made no close commit.')
+      : 'The server commits whatever you have staged.';
+    return `${left}\n\n🚀 **Push your branch**: ${made} Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``;
+  };
+  const pushInstruction = describePush();
 
   // A command is only required for the final step (→ DONE). For intermediate
   // steps the command is optional — omitting it advances without running anything.
@@ -3334,8 +3393,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()));
-        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${pushInstruction}`, output: 'Sibling propagation' });
+        // Awaited, unlike before: the response describes what the commit did,
+        // so it cannot be written before the commit has been attempted.
+        const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
+          ? await autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()))
+          : undefined;
+        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${describePush(gitResult)}`, output: 'Sibling propagation' });
       }
     } else {
       const passedSibling = siblings.find(s => {
@@ -3482,10 +3545,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
+      let gitResult: AutoGitCommitResult | undefined;
       if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
-        // (whose transition already landed) as failed to the run follower.
-        try { await autoGitCommit(updated, projectRoot); }
+        // (whose transition already landed) as failed to the run follower. The
+        // catch is belt-and-braces — autoGitCommit resolves rather than throws,
+        // returning success:false — but exec's callback is not the only way
+        // this can go wrong, and the transition must survive all of them.
+        try { gitResult = await autoGitCommit(updated, projectRoot); }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }
       recordHubEvent({
@@ -3516,7 +3583,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
