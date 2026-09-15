@@ -675,12 +675,15 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // Filtering the event stream by originating hub (CGLAB-184). Same placement
   // reasoning as the rollups index above: `events.child_hub_id` arrives through
   // an ALTER on an upgraded hub, so the index cannot live in SCHEMA_SQLITE.
-  // Over COALESCE(child_hub_id, ''), matching the expression every read uses:
+  // A plain-column index from an earlier, unreleased commit on this branch.
+  // Superseded by the expression index below; dropping it only tidies dev and
+  // CI databases, since no released hub ever created it.
+  raw.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
+  // Over COALESCE(child_hub_id, ''), matching the expression EVENTS reads use:
   // SQLite cannot use an index across `(col IS NULL OR col = '')`, so a plain
   // column index left the "this hub" selection walking the whole org.
-  // Superseded by the expression index below; only ever created by an
-  // unreleased commit on this branch, so this only tidies dev and CI databases.
-  raw.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
+  // rollups_daily is the other case — NOT NULL there, so it keeps the plain
+  // column and its own idx_rollups_child.
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");
 
   return new SqliteAdapter(raw);

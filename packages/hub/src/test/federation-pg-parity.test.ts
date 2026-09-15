@@ -250,10 +250,11 @@ describe('PG parity: parent-side ingest of forwarded events (CGLAB-184)', () => 
 
     // --- the childHubId query facet (CGLAB-184, task 3) on Postgres ---
     //
-    // The filter is the one place the two backends can silently disagree:
+    // The filter is the one place the two backends can silently disagree.
     // `child_hub_id` is NULLable on events and NOT NULL DEFAULT '' on
-    // rollups_daily, so "this hub's own rows" is an IS NULL / = '' disjunction
-    // that the dialect translator has to carry through alongside an IN list.
+    // rollups_daily, so the two tables get different SQL for the same question —
+    // COALESCE(child_hub_id,'') on events, the plain column on rollups_daily —
+    // and the dialect translator has to carry both through, alongside an IN list.
     const token = await issueApiKey(db, 'org', 'pg-local');
     await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({
       events: [{
@@ -275,10 +276,22 @@ describe('PG parity: parent-side ingest of forwarded events (CGLAB-184)', () => 
     const alphaUsers = await q(`/v1/users?childHubId=${a.childHubId}`);
     expect(alphaUsers.body.map((u: any) => u.user_key)).toEqual(['alice@acme.com']);
 
-    // The rollups path, where the column is NOT NULL DEFAULT ''.
+    // The rollups path, where the column is NOT NULL DEFAULT '' and the
+    // predicate is therefore the plain column. Both spellings of the selection:
+    // the sentinel, and an actual child hub id — the IN-list form had no
+    // Postgres assertion at all, which is the half that regressed once.
     const localMetrics = await q('/v1/metrics?childHubId=local');
     expect(localMetrics.status).toBe(200);
     expect(localMetrics.body.series.map((s: any) => s.user_key)).toEqual(['zoe@acme.com']);
+
+    const childMetrics = await q(`/v1/metrics?childHubId=${a.childHubId}`);
+    expect(childMetrics.status).toBe(200);
+    expect(childMetrics.body.series.map((s: any) => s.user_key)).toEqual(['alice@acme.com']);
+    expect(childMetrics.body.series.reduce((n: number, s: any) => n + s.events_count, 0)).toBe(2);
+
+    const bothMetrics = await q(`/v1/metrics?childHubId=local,${a.childHubId}`);
+    expect(bothMetrics.body.series.map((s: any) => s.user_key).sort())
+      .toEqual(['alice@acme.com', 'zoe@acme.com']);
 
     const facet = await q('/v1/child-hubs');
     expect(facet.status).toBe(200);

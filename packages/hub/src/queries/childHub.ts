@@ -31,9 +31,6 @@ export const LOCAL_HUB = 'local';
 export const HUB_COL_EVENTS = `COALESCE(child_hub_id, '')`;
 export const HUB_COL_ROLLUPS = `child_hub_id`;
 
-/** Rows this hub produced itself, on the events table. */
-export const OWN_ROWS_SQL = `${HUB_COL_EVENTS} = ''`;
-
 /** Lower-cased for comparison. Hub ids are `randomUUID()` — lowercase hex — so
  *  normalising costs nothing and stops a case-normalised or hand-edited link
  *  (`?childHubId=LOCAL`, or an upper-cased UUID) from matching nothing and
@@ -43,16 +40,21 @@ const norm = (h: string) => h.toLowerCase();
 /**
  * SQL for a child-hub selection, or null when there is nothing to constrain.
  *
- * `col` picks the spelling for the table being queried — see HUB_COL_EVENTS /
- * HUB_COL_ROLLUPS. Getting it wrong costs an index, not a correct answer, which
- * is why it is a named constant and a test rather than a convention.
+ * `col` is REQUIRED, and deliberately has no default. The regression this guards
+ * against was a rollups query silently getting the events spelling by omission —
+ * a wrong plan, never a wrong answer, so nothing failed and nothing complained.
+ * A required parameter turns the next occurrence into a compile error instead.
+ * Pass HUB_COL_EVENTS or HUB_COL_ROLLUPS to match the table you are querying.
  */
 export function childHubPredicate(
   hubs: string[] | null,
-  col: string = HUB_COL_EVENTS,
+  col: string,
 ): { sql: string; params: string[] } | null {
   if (!hubs || !hubs.length) return null;
-  const ids = [...new Set(hubs.map(norm).filter(h => h !== LOCAL_HUB))];
+  // Not de-duplicated: a repeated id costs a placeholder and changes no row, and
+  // the one place duplication is actually visible — the /v1/child-hubs picker —
+  // is guarded in selectedHubIds. One guard, so a test can hold it.
+  const ids = hubs.map(norm).filter(h => h !== LOCAL_HUB);
   const parts: string[] = [];
   if (ids.length) parts.push(`${col} IN (${ids.map(() => '?').join(',')})`);
   if (hubs.some(h => norm(h) === LOCAL_HUB)) parts.push(`${col} = ''`);
