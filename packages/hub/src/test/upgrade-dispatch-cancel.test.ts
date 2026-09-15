@@ -23,7 +23,7 @@ import { openDb } from '../db';
 import type { HubDb } from '../db/types';
 import { writeParentBinding } from '../services/federation/parentBinding';
 import { applyUpgradeDispatch } from '../services/federation/upgradeFanout';
-import { applyUpgradeCancel } from '../services/federation/upgradeFanout';
+import { applyUpgradeCancel } from '../services/federation/upgradeCancel';
 
 const SECRET = 'a'.repeat(64);
 const ORG = 'org';

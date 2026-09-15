@@ -5,10 +5,8 @@ import {
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
 import { releaseParentFlows } from './parentFlows.js';
-import {
-  applyUpgradeDispatch, applyUpgradeCancel,
-  type UpgradeDispatch, type UpgradeCancel, type UpgradeFanoutResult, type UpgradeCancelResult,
-} from './upgradeFanout.js';
+import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
+import { applyUpgradeCancel, type UpgradeCancel, type UpgradeCancelResult } from './upgradeCancel.js';
 import { reportUpgradeProgress } from './upgradeProgress.js';
 
 /**
