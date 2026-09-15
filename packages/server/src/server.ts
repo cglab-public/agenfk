@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
+import { commitStagedForCard } from './closeCommit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
@@ -560,23 +561,31 @@ export const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
+/**
+ * Commit a card's close, from the INDEX rather than from the whole tree.
+ *
+ * This was `git add -A && git commit`, through a shell, in the project root. It
+ * swept everything, and twice in one session it carried other agents'
+ * half-finished edits into a card's commit - once with six failing tests
+ * inside. Agents now share one worktree by design, so that is no longer an
+ * accident between sessions: it is what every close would do.
+ *
+ * See closeCommit.ts for why staging is the signal and why an empty index
+ * declines rather than falling back.
+ */
 const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
-  const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
-  const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
-  
-  return new Promise((resolve) => {
-    exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
-      const timestamp = new Date().toISOString();
-      if (err) {
-        const errMsg = err.message.trim();
-        console.log(`[${timestamp}] [AUTO_GIT] Commit failed: ${errMsg}`);
-        resolve({ success: false, output: stderr || stdout, error: errMsg });
-      } else {
-        console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
-        resolve({ success: true, output: stdout.trim() });
-      }
-    });
+  const result = commitStagedForCard(item, projectRoot, {
+    // execFileSync with an argument array, not a shell: the card's TITLE is in
+    // the message and arrives from a user.
+    run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
   });
+  const timestamp = new Date().toISOString();
+  if (result.committed) {
+    console.log(`[${timestamp}] [AUTO_GIT] Committed the staged changes for ${item.id}\n${result.output ?? ''}`);
+    return { success: true, output: result.output ?? '' };
+  }
+  console.log(`[${timestamp}] [AUTO_GIT] Nothing committed for ${item.id}: ${result.reason}`);
+  return { success: false, output: result.reason ?? '', error: result.reason };
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -3300,7 +3309,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
   const pushInstruction = nextStatus === Status.DONE
-    ? `\n\n🚀 **Push your branch**: The server has auto-committed the changes. Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
+    ? `\n\n🚀 **Push your branch**: the server commits what you STAGED - it no longer stages for you, because several agents share this worktree. If you staged nothing, commit your own files first. Then:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
     : '';
 
   // A command is only required for the final step. For intermediate steps it is
