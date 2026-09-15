@@ -51,6 +51,13 @@ describe('childHubId facet on the query endpoints', () => {
 
   const get = (url: string) => supertest(app).get(url).set('Cookie', cookie);
 
+  const enroll = async (name: string) => {
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name } });
+    expect(r.status).toBe(200);
+    return r.body as { token: string; childHubId: string };
+  };
+
   beforeEach(async () => {
     cleanup();
     const out = await createHubApp({ dbPath: DB, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org' });
@@ -76,12 +83,6 @@ describe('childHubId facet on the query endpoints', () => {
     });
 
     // --- child hub alpha: bob, on acme/api, plus his own acme/web#57 ---
-    const enroll = async (name: string) => {
-      const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
-      const r = await supertest(app).post('/v1/federation/enroll').send({ inviteToken: inv.body.inviteToken, childHub: { name } });
-      expect(r.status).toBe(200);
-      return r.body as { token: string; childHubId: string };
-    };
     const a = await enroll('alpha');
     alpha = a.childHubId;
     const da = await supertest(app).post('/v1/federation/deliver').set('Authorization', `Bearer ${a.token}`).send({
@@ -145,6 +146,50 @@ describe('childHubId facet on the query endpoints', () => {
       const r = await get('/v1/users?childHubId=00000000-0000-0000-0000-000000000000');
       expect(r.status).toBe(200);
       expect(r.body).toEqual([]);
+    });
+
+    it('never reaches across orgs, even given a real hub id from another one', async () => {
+      // The id exists and has events; it just is not this caller's. The answer
+      // must be indistinguishable from a garbage id — no existence oracle.
+      await ctx.db.run(
+        `INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?)`,
+        ['foreign-hub', 'other-org', 'theirs', '2026-05-01', '2026-05-01'],
+      );
+      await ctx.db.run(
+        `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at,
+                             received_at, type, payload, child_hub_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ['foreign-1', 'other-org', 'i9', 'mallory@evil.com', '2026-05-03T10:00:00.000Z',
+         '2026-05-03T10:00:00.000Z', 'item.created', '{}', 'foreign-hub'],
+      );
+      const r = await get('/v1/users?childHubId=foreign-hub');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual([]);
+    });
+
+    it('accepts the repeated-param spelling as well as the CSV one', async () => {
+      const r = await get(`/v1/users?childHubId=local&childHubId=${beta}`);
+      expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'carol@acme.com']);
+    });
+
+    it('treats a present-but-empty childHubId as no filter, like every sibling filter', async () => {
+      // Decided, not accidental: `parseList` drops empty values for users,
+      // types and projects too, and a picker offering "All" must OMIT the param
+      // rather than send it empty. Recorded on task fb34c72d.
+      for (const q of ['', '%20', ',']) {
+        const r = await get(`/v1/users?childHubId=${q}`);
+        expect(r.status).toBe(200);
+        expect(r.body.map((u: any) => u.user_key).sort())
+          .toEqual(['alice@acme.com', 'bob@acme.com', 'carol@acme.com']);
+      }
+    });
+
+    it('matches the local sentinel whatever case a hand-edited link uses', async () => {
+      for (const spelling of ['local', 'LOCAL', 'Local']) {
+        const r = await get(`/v1/users?childHubId=${spelling}`);
+        expect(r.body.map((u: any) => u.user_key)).toEqual(['alice@acme.com']);
+      }
     });
   });
 
@@ -257,6 +302,28 @@ describe('childHubId facet on the query endpoints', () => {
       expect(row).toMatchObject({ name: 'alpha', detached: true, events: 3 });
     });
 
+    it('ignores the other filters, exactly as the sibling facet lists do', async () => {
+      // /event-types and /projects keep their chip lists org-wide so a selection
+      // can never remove its own chip. The hub picker needs the same guarantee
+      // for a different reason: narrowing by a local-only developer would empty
+      // the picker and strand the reader on this hub with no control to leave.
+      const r = await get('/v1/child-hubs?users=alice%40acme.com');
+      expect(r.status).toBe(200);
+      expect(r.body.childHubs.map((c: any) => c.id).sort()).toEqual([alpha, beta].sort());
+      const byType = await get('/v1/child-hubs?types=item.created');
+      expect(byType.body.childHubs.map((c: any) => c.id).sort()).toEqual([alpha, beta].sort());
+    });
+
+    it('lists only this org\'s child hubs', async () => {
+      await ctx.db.run(
+        `INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen)
+         VALUES (?, ?, ?, ?, ?)`,
+        ['other-org-hub', 'other-org', 'intruder', '2026-05-01', '2026-05-01'],
+      );
+      const r = await get('/v1/child-hubs');
+      expect(r.body.childHubs.map((c: any) => c.id)).not.toContain('other-org-hub');
+    });
+
     it('offers no children on a hub that has none, and still reports local', async () => {
       const soloDb = DB.replace('.sqlite', '-solo.sqlite');
       const solo = await createHubApp({ dbPath: soloDb, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org' });
@@ -283,20 +350,52 @@ describe('childHubId facet on the query endpoints', () => {
       expect(r.status).toBe(200);
       expect(r.body.totals.prs).toBe(2);
       expect(r.body.prs.map((p: any) => p.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
+      // The field a picker filters on must actually come back, or the UI cannot
+      // tell the two otherwise-identical rows apart.
+      expect(r.body.prs.map((p: any) => p.childHubId).sort()).toEqual([alpha, 'local'].sort());
     });
 
     it('still collapses a re-size from the SAME hub onto one PR', async () => {
       const r = await get(`/v1/prs/overview?childHubId=${alpha}`);
       expect(r.body.totals.prs).toBe(1);
       // alpha opened at 3 tasks and re-sized to 5 — latest sizing wins.
-      expect(r.body.prs[0]).toMatchObject({ repo: 'acme/web', prNumber: 57, user_key: 'bob@acme.com' });
+      expect(r.body.prs[0]).toMatchObject({ repo: 'acme/web', prNumber: 57, user_key: 'bob@acme.com', childHubId: alpha });
       expect(r.body.prs[0].points).toBe(10);
+    });
+
+    it('carries the filter into the previous-window comparison too', async () => {
+      // A delta computed over the whole federation while the current window
+      // shows one hub is a number nobody asked for. Needs data BEFORE `from`,
+      // or the comparison is zero either way and the assertion proves nothing.
+      const a = await enroll('gamma');
+      await supertest(app).post('/v1/federation/deliver')
+        .set('Authorization', `Bearer ${a.token}`).send({
+          rows: [fwd(a.childHubId, { eventId: 'g1', userKey: 'dan@acme.com', type: 'pr.opened',
+            occurredAt: '2026-05-01T10:00:00.000Z', remoteUrl: 'git@github.com:acme/old.git',
+            payload: prPayload('acme/old', 9, 1) })],
+        });
+      const token = await issueApiKey(ctx.db, 'org', 'prev');
+      await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({
+        events: [{ eventId: 'l-prev', orgId: 'org', installationId: 'inst-local',
+          occurredAt: '2026-05-01T11:00:00.000Z',
+          actor: { osUser: 'alice', gitName: 'A', gitEmail: 'alice@acme.com' },
+          type: 'pr.opened', remoteUrl: 'git@github.com:acme/web.git',
+          payload: prPayload('acme/web', 8, 1) }],
+      });
+
+      const window = 'from=2026-05-02T00:00:00.000Z&to=2026-05-04T00:00:00.000Z';
+      // Both hubs opened one PR in the previous window.
+      expect((await get(`/v1/prs/overview?${window}`)).body.previous.prs).toBe(2);
+      // Filtered, the comparison must count only the selected hub's.
+      expect((await get(`/v1/prs/overview?${window}&childHubId=local`)).body.previous.prs).toBe(1);
+      expect((await get(`/v1/prs/overview?${window}&childHubId=${a.childHubId}`)).body.previous.prs).toBe(1);
+      expect((await get(`/v1/prs/overview?${window}&childHubId=${beta}`)).body.previous.prs).toBe(0);
     });
 
     it('filters to this hub\'s own PRs with local', async () => {
       const r = await get('/v1/prs/overview?childHubId=local');
       expect(r.body.totals.prs).toBe(1);
-      expect(r.body.prs[0]).toMatchObject({ user_key: 'alice@acme.com', points: 2 });
+      expect(r.body.prs[0]).toMatchObject({ user_key: 'alice@acme.com', points: 2, childHubId: 'local' });
     });
   });
 });

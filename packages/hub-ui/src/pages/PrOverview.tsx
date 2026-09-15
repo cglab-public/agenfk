@@ -63,6 +63,13 @@ interface PrOverviewResponse {
   prs: Array<{
     repo: string;
     prNumber: number;
+    /**
+     * CGLAB-184: which hub reported it — a child hub's id, or 'local' for this
+     * hub's own. On a parent hub (repo, prNumber) is NOT unique: two children
+     * can each size acme/web#57, and they are different PRs on different
+     * forges. Optional so a response from an older hub still types.
+     */
+    childHubId?: string;
     url: string | null;
     user_key: string;
     model: string;
@@ -75,6 +82,17 @@ interface PrOverviewResponse {
   previous: { prs: number; sizePoints: number } | null;
 }
 interface ProjectsResponse { projects: string[] }
+
+/**
+ * A stable identity for one PR row.
+ *
+ * Deliberately NOT `repo#number`: on a parent hub that pair collides across
+ * child hubs, and a duplicate React key makes reconciliation reuse one node for
+ * two rows — so a filter change can leave the wrong opener and size on screen.
+ * Falls back to 'local' for a response from a hub that predates the field.
+ */
+const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
+  `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
 const SIZE_META_DESC = [...SIZE_META].reverse();
@@ -255,7 +273,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             // row container, so repo / model / badge / time all open the PR.
             // Rows without a derived link stay inert.
             return p.url ? (
-              <li key={`${p.repo}#${p.prNumber}`}>
+              <li key={prKey(p)}>
                 <a
                   href={p.url}
                   target="_blank"
@@ -267,7 +285,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                 </a>
               </li>
             ) : (
-              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+              <li key={prKey(p)} className="flex items-center gap-3 px-5 py-2.5">
                 {rowBody}
               </li>
             );

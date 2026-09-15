@@ -220,4 +220,47 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     expect(l.style.background).toContain('5, 111, 113'); // #056f71
     expect(l.style.color).toContain('255, 255, 255');
   });
+
+  // CGLAB-184: on a parent hub, (repo, prNumber) is no longer unique — two
+  // child hubs can each size "acme/web#57". The server now returns both, keyed
+  // by the reporting hub.
+  it('renders two hubs\' same-numbered PRs as two distinct rows', async () => {
+    const collided = {
+      ...overview,
+      totals: { ...overview.totals, prs: 2 },
+      prs: [
+        { ...overview.prs[0], repo: 'acme/web', prNumber: 57, url: 'https://github.com/acme/web/pull/57',
+          childHubId: 'local', user_key: 'alice@acme.com', points: 2, bucket: 'xs' },
+        { ...overview.prs[0], repo: 'acme/web', prNumber: 57, url: 'https://github.com/acme/web/pull/57',
+          childHubId: '9f1c7e2a-0000-4000-8000-000000000001', user_key: 'alice@acme.com',
+          openedAt: '2026-08-13T18:12:13Z', points: 16, bucket: 'l' },
+      ],
+    };
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a) => { errors.push(a.join(' ')); });
+    try {
+      get.mockImplementation(async (url: string) => {
+        if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/web'] } };
+        return { data: collided };
+      });
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/prs']}>
+            <PrOverviewPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      const cell = await screen.findByRole('button', { name: '2 PRs by alice@acme.com on 2026-08-13 — open list' });
+      fireEvent.click(cell);
+      const dialog = await screen.findByRole('dialog');
+      // Both survive the render...
+      expect(dialog.querySelectorAll('li')).toHaveLength(2);
+      // ...and React is not reusing one DOM node for both, which is what a
+      // duplicate key causes and what makes a filter change show stale content.
+      expect(errors.join('\n')).not.toMatch(/same key/i);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

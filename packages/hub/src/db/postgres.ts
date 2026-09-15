@@ -509,6 +509,8 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE rollups_daily ADD PRIMARY KEY (org_id, child_hub_id, user_key, day)");
   }
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  // Filtering the event stream by originating hub (CGLAB-184).
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_child_time ON events(org_id, child_hub_id, occurred_at)");
 
   // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
   // See the SQLite block: deployed hubs already have both tables, so the

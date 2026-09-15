@@ -27,13 +27,19 @@ export const LOCAL_HUB = 'local';
  */
 export const OWN_ROWS_SQL = `(child_hub_id IS NULL OR child_hub_id = '')`;
 
+/** Is this the local sentinel? Case-insensitive: a hand-edited or case-normalised
+ *  link spelling it `LOCAL` would otherwise fall through to the id list and match
+ *  nothing, showing an empty board rather than this hub's own data. Hub ids are
+ *  lowercase UUIDs, so no real id can be shadowed by this. */
+const isLocal = (h: string) => h.toLowerCase() === LOCAL_HUB;
+
 /** SQL for a child-hub selection, or null when there is nothing to constrain. */
 export function childHubPredicate(hubs: string[] | null): { sql: string; params: string[] } | null {
   if (!hubs || !hubs.length) return null;
-  const ids = hubs.filter(h => h !== LOCAL_HUB);
+  const ids = hubs.filter(h => !isLocal(h));
   const parts: string[] = [];
   if (ids.length) parts.push(`child_hub_id IN (${ids.map(() => '?').join(',')})`);
-  if (hubs.includes(LOCAL_HUB)) parts.push(OWN_ROWS_SQL);
+  if (hubs.some(isLocal)) parts.push(OWN_ROWS_SQL);
   // An id list matching no hub yields `child_hub_id IN ('nope')`, which matches
   // nothing — deliberately, so a stale link to a hub that has since been removed
   // shows an empty result rather than quietly widening to the whole group.

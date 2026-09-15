@@ -54,6 +54,25 @@ describe('rollups_daily gains child_hub_id on an existing hub', () => {
     const db = await openDb(DB);
     const cols = await db.all<{ name: string }>("SELECT name FROM pragma_table_info('rollups_daily')");
     expect(cols.map(c => c.name)).toEqual(expect.arrayContaining(['child_hub_id', 'prs_opened']));
+  });
+
+  it('indexes events by originating hub, so the childHubId filter is not a scan', async () => {
+    // The filter exists to make a parent hub's board readable one group at a
+    // time; without this index every such read walks the whole org's events.
+    // Its own file: the test above deliberately leaves its handle open.
+    const dbPath = DB.replace('.sqlite', '-idx.sqlite');
+    const db = await openDb(dbPath);
+    const idx = await db.all<{ name: string }>("SELECT name FROM pragma_index_list('events')");
+    expect(idx.map(i => i.name)).toContain('idx_events_org_child_time');
+    const cols = await db.all<{ name: string; seqno: number }>(
+      "SELECT name, seqno FROM pragma_index_info('idx_events_org_child_time') ORDER BY seqno",
+    );
+    expect(cols.map(c => c.name)).toEqual(['org_id', 'child_hub_id', 'occurred_at']);
+    // Left open like the test above: openDb hands back a shared handle here, so
+    // closing it takes the other tests' database with it.
+    for (const sfx of ['', '-wal', '-shm']) {
+      const f = dbPath + sfx; if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
     await db.close();
   });
 

@@ -672,6 +672,10 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // until the migration above has run, and CREATE INDEX over a missing column
   // kills the boot before it gets there.
   raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  // Filtering the event stream by originating hub (CGLAB-184). Same placement
+  // reasoning as the rollups index above: `events.child_hub_id` arrives through
+  // an ALTER on an upgraded hub, so the index cannot live in SCHEMA_SQLITE.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_child_time ON events(org_id, child_hub_id, occurred_at)");
 
   return new SqliteAdapter(raw);
 }

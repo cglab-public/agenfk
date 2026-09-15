@@ -10,7 +10,7 @@ import { rateLimit } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
-import { childHubPredicate, childHubClause, OWN_ROWS_SQL } from '../queries/childHub.js';
+import { childHubPredicate, childHubClause } from '../queries/childHub.js';
 
 function parseList(s: string | undefined): string[] | null {
   // Repeated params (?model=a&model=b) arrive as an array — normalize to the
@@ -245,19 +245,23 @@ export function queriesRouter(ctx: HubServerContext): Router {
   router.get('/child-hubs', guard, async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const f = readEventFilters(req);
-    const { where, params } = applyEventFilters(orgId, { ...f, childHubs: null });
-
-    const rows = await ctx.db.all<{ child_hub_id: string; events: number | string }>(
-      `SELECT child_hub_id, COUNT(*) AS events
-       FROM events
-       WHERE ${where.join(' AND ')} AND NOT ${OWN_ROWS_SQL}
-       GROUP BY child_hub_id`,
-      params,
+    // Time window only. Not childHubId — a picker must not hide the options
+    // next to the one selected — and not users/types/projects/itemTypes either,
+    // for the same reason /event-types and /projects keep their chip lists
+    // whole: narrowing to a local-only developer would empty this picker and
+    // strand the reader on one hub with no visible control to leave it.
+    const { where, params } = applyEventFilters(
+      orgId,
+      { users: null, types: null, projects: null, itemTypes: null, childHubs: null, from: f.from, to: f.to },
     );
 
-    const local = await ctx.db.get<{ n: number | string }>(
-      `SELECT COUNT(*) AS n FROM events
-       WHERE ${where.join(' AND ')} AND ${OWN_ROWS_SQL}`,
+    // One grouped pass over the window rather than a scan per question: the
+    // local rows collapse to a single '' group that is split out below.
+    const rows = await ctx.db.all<{ child_hub_id: string | null; events: number | string }>(
+      `SELECT COALESCE(child_hub_id, '') AS child_hub_id, COUNT(*) AS events
+       FROM events
+       WHERE ${where.join(' AND ')}
+       GROUP BY COALESCE(child_hub_id, '')`,
       params,
     );
 
@@ -269,16 +273,21 @@ export function queriesRouter(ctx: HubServerContext): Router {
     );
     const byId = new Map(named.map(n => [n.id, n]));
 
-    const childHubs = rows
-      .map(r => ({
-        id: r.child_hub_id,
-        name: byId.get(r.child_hub_id)?.name ?? r.child_hub_id,
-        detached: byId.get(r.child_hub_id)?.detached_at != null,
+    let localEvents = 0;
+    const childHubs: Array<{ id: string; name: string; detached: boolean; events: number }> = [];
+    for (const r of rows) {
+      const id = r.child_hub_id ?? '';
+      if (id === '') { localEvents += Number(r.events); continue; }
+      childHubs.push({
+        id,
+        name: byId.get(id)?.name ?? id,
+        detached: byId.get(id)?.detached_at != null,
         events: Number(r.events),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      });
+    }
+    childHubs.sort((a, b) => a.name.localeCompare(b.name));
 
-    res.json({ childHubs, hasLocal: Number(local?.n ?? 0) > 0 });
+    res.json({ childHubs, hasLocal: localEvents > 0 });
   });
 
   router.get('/histogram', guard, async (req: Request, res: Response) => {
