@@ -1536,23 +1536,26 @@ describe('the projects tree row in the new drawing (CGLAB-164)', () => {
     expect(branch).toBeGreaterThan(step);
   });
 
-  it('keeps the flow step as right-aligned text, and gives it no colour of its own', async () => {
+  it('keeps the flow step as plain text, and gives it no colour of its own', async () => {
     /*
-     * Both halves of the name, asserted. The first version checked
-     * `textContent` and that the class list said `uppercase`, which left the
-     * test passing with the step rendered in bright red — the one thing the
-     * design forbids — and asserting nothing whatsoever about alignment.
+     * The alignment half of this test is gone, and deliberately. The step used
+     * to be the row's last COLUMN, sized to its content and pushed right - and
+     * a flow may name a step CREATE_UNIT_TESTS, which left roughly 90px for a
+     * title in a 224px rail and cut real ones to two words. The title has the
+     * row now and the step sits with the branch on the second line, so
+     * "right-aligned" no longer describes anything.
+     *
+     * The COLOUR half is untouched and is the half that was load-bearing: an
+     * earlier version of this test checked only `textContent` and `uppercase`,
+     * and passed with the step rendered in bright red.
      */
     const row = await openTheFolder();
     const step = within(row).getByTestId('card-step');
     expect(step.textContent).toBe('IN_PROGRESS');
 
-    // Right-aligned: it is the last column of the row's grid, pushed to the
-    // end of it. Both halves matter — a last column that stretches is not
-    // right-aligned.
-    expect(row.className, 'the row is not a grid with a content-sized last column')
-      .toMatch(/grid-cols-\[7px_minmax\(0,1fr\)_auto\]/);
-    expect(step.className).toMatch(/justify-self-end/);
+    // With the branch, not with the title. Structure rather than geometry:
+    // jsdom has no layout, so measuring here would be theatre.
+    expect(step.parentElement).toBe(within(row).getByTestId('card-branch').parentElement);
 
     // No colour: it must carry no background, no hue-bearing text class, and
     // no state attribute. The dot is the only thing on this row allowed to

@@ -1799,7 +1799,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           setCardMenu({ item, x: e.clientX, y: e.clientY });
                         }}
                         title={item.title}
-                        className="grid w-full grid-cols-[7px_minmax(0,1fr)_auto] items-start gap-x-1.5 rounded px-1 py-1 text-left text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
+                        className="grid w-full grid-cols-[7px_minmax(0,1fr)] items-start gap-x-1.5 rounded px-1 py-1 text-left text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink"
                       >
                         {/* ONE dot, three states, and none of them the flow
                             step — see cardState.ts. The rail below already
@@ -1809,6 +1809,14 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                         <CardStateDot state={cardState(item.id, liveItems, needsPerson, sessionRows)} />
 
                         <span className="min-w-0">
+                          {/* The TITLE gets the whole row. It used to share it
+                              with the step, in a column sized to its content -
+                              and a flow is free to name a step
+                              CREATE_UNIT_TESTS, which left roughly 90px for a
+                              title in a 224px rail and cut real titles down to
+                              two words. The step is short and fixed in shape;
+                              the title is neither, so the title is the one that
+                              should have the space. */}
                           <span
                             data-testid="card-title"
                             className="block truncate text-[12px] leading-[17px] text-ink-secondary"
@@ -1821,6 +1829,11 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                               branch is an identifier: proportional type makes
                               l/1 and rn/m ambiguous in the strings you have to
                               compare by eye. */}
+                          {/* Branch and step share the second line. They belong
+                              together: both answer "where is this", one in the
+                              repository and one in the flow, and neither is
+                              worth a row of its own. */}
+                          <span className="flex items-baseline gap-1.5">
                           <span
                             data-testid="card-branch"
                             /*
@@ -1846,23 +1859,16 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           >
                             {item.branchName || 'no branch yet'}
                           </span>
+                          <span
+                            data-testid="card-step"
+                            className="shrink-0 font-mono text-[8px] uppercase leading-[14px] tracking-wide"
+                          >
+                            {item.status}
+                          </span>
+                          </span>
                         </span>
 
-                        {/* The step is the thing that says where it is stuck —
-                            and it stays TEXT. */}
-                        <span
-                          data-testid="card-step"
-                          // 8px, and that is the mockup's number rather than a
-                          // guess. The step column is sized to its content, so
-                          // every pixel it takes comes off the title — and a
-                          // flow can name a step CREATE_UNIT_TESTS. At 9px
-                          // that one step left about 90px for a card title in
-                          // a 224px rail, which truncated real titles to two
-                          // words.
-                          className="justify-self-end font-mono text-[8px] uppercase leading-[17px] tracking-wide"
-                        >
-                          {item.status}
-                        </span>
+
                       </button>
 
                       {/* The processes running on THIS card, directly beneath

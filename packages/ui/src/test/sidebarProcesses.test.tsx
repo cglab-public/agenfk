@@ -347,3 +347,45 @@ describe('the totals on the projects header', () => {
     expect(screen.queryByRole('button', { name: /running/i })).toBeNull();
   });
 });
+
+describe('how a card row is laid out', () => {
+  const oneCard = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      {
+        id: 'i1', projectId: 'p1', type: 'TASK', status: 'CREATE_UNIT_TESTS',
+        title: 'agenfk integration list omite o pi, que tem a integracao mais profunda do repo',
+      },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    return screen.findByTestId('card-title');
+  };
+
+  it('gives the title the row, and puts the step with the branch', async () => {
+    /*
+     * The step used to sit in a content-sized column beside the title, and a
+     * flow may name a step CREATE_UNIT_TESTS - which left roughly 90px for a
+     * title in a 224px rail and cut real ones down to two words.
+     *
+     * Asserted structurally rather than by measuring: jsdom has no layout, so
+     * a width assertion here would be theatre. What is real is WHICH ELEMENTS
+     * SHARE A PARENT - the step next to the branch, and the title alone.
+     */
+    const title = await oneCard();
+    const step = screen.getByTestId('card-step');
+    const branch = screen.getByTestId('card-branch');
+
+    expect(step.parentElement, 'the step is not on the branch line').toBe(branch.parentElement);
+    expect(title.parentElement, 'the title still shares its line with the step')
+      .not.toBe(step.parentElement);
+  });
+
+  it('keeps the full title reachable even though the line truncates', async () => {
+    // Truncation is a display choice; the text itself has to stay whole, or a
+    // screen reader gets the two words the rail had room for.
+    const title = await oneCard();
+    expect(title.textContent).toBe(
+      'agenfk integration list omite o pi, que tem a integracao mais profunda do repo',
+    );
+  });
+});
