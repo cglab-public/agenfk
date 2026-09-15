@@ -12,6 +12,7 @@ import { enqueueOutbox, outboxDepth, federationTick } from '../services/federati
 import { applyUpgradeDispatch } from '../services/federation/upgradeFanout';
 import { applyUpgradeCancel } from '../services/federation/upgradeCancel';
 import { reportUpgradeProgress } from '../services/federation/upgradeProgress';
+import { releaseParentFlows } from '../services/federation/parentFlows';
 import { recomputeRollups } from '../rollup';
 import type { HubDb } from '../db/types';
 
@@ -657,8 +658,10 @@ describe('PG parity: the child side of a group upgrade (CGLAB-183, CGLAB-185)', 
     const fanout = await applyUpgradeDispatch(db, 'org', {
       kind: 'upgrade.dispatch', dispatchId: 'pg-fd1', targetVersion: '1.2.3',
     });
-    // 'anon' has a NULL git_email: without the COALESCE in the NOT IN it would
-    // silently drop out of the fleet, which is the trap this covers.
+    // 'anon' has a NULL git_email. On REAL Postgres, dropping the COALESCE
+    // would silently remove it from the fleet — but pg-mem returns it either
+    // way, so this assertion does NOT cover that (see the note above; the
+    // SQLite suite is what guards it).
     expect(fanout.outcome).toBe('applied');
     expect(fanout.upgraded).toBe(2);
     expect(fanout.skipped.map(s => s.reason).sort()).toEqual(['hidden', 'retired']);
@@ -685,6 +688,70 @@ describe('PG parity: the child side of a group upgrade (CGLAB-183, CGLAB-185)', 
     const cancelled = await applyUpgradeCancel(db, 'org', { kind: 'upgrade.cancel', dispatchId: 'pg-fd1' });
     expect(cancelled.cancelled).toBe(2);
     expect(await reportUpgradeProgress(db, 'org')).toBe(1);
+
+    // The other two cancel branches, neither of which the happy path reaches.
+    // This one writes a fanout row through `INSERT OR IGNORE`, whose Postgres
+    // form is an untargeted ON CONFLICT DO NOTHING produced by the dialect
+    // rewrite — a different statement from the one above.
+    const unknown = await applyUpgradeCancel(db, 'org', { kind: 'upgrade.cancel', dispatchId: 'pg-never-seen' });
+    expect(unknown.cancelled).toBe(0);
+    expect(unknown.error).toBeFalsy();
+    const recorded = await db.get<any>(
+      'SELECT outcome FROM upgrade_dispatch_fanout WHERE dispatch_id = ?', ['pg-never-seen'],
+    );
+    expect(recorded.outcome).toBe('nothing-to-do');
+
+    await db.close();
+  });
+
+  it('cancels a fan-out that had nothing to do, on Postgres', async () => {
+    // The `!row.directive_id` branch: a recorded dispatch that wrote no local
+    // directive because every machine was skipped. Its cancel clears the
+    // reported snapshot and nothing else.
+    const { db } = await bootHubOnPg();
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO installations (id, org_id, first_seen, last_seen, git_email, agenfk_version, retired_at)
+       VALUES ('gone', 'org', ?, ?, 'gone@acme.com', '1.0.0', now())`, [now, now],
+    );
+    const out = await applyUpgradeDispatch(db, 'org', {
+      kind: 'upgrade.dispatch', dispatchId: 'pg-empty', targetVersion: '1.2.3',
+    });
+    expect(out.outcome).toBe('nothing-to-do');
+
+    await writeParentBinding(db, SECRET, {
+      parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'pg-c2',
+    });
+    expect(await reportUpgradeProgress(db, 'org')).toBe(1);
+    expect(await reportUpgradeProgress(db, 'org')).toBe(0);
+
+    const cancelled = await applyUpgradeCancel(db, 'org', { kind: 'upgrade.cancel', dispatchId: 'pg-empty' });
+    expect(cancelled.cancelled).toBe(0);
+    // Cleared, so the hub speaks again rather than leaving the parent waiting.
+    expect(await reportUpgradeProgress(db, 'org')).toBe(1);
+
+    await db.close();
+  });
+
+  it('releases parent-origin flows back to local, on Postgres', async () => {
+    // parentFlows' UPDATE is the detach path and was imported by neither
+    // parity suite.
+    const { db } = await bootHubOnPg();
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES ('pg-pf', 'org', 'Group TDD', ?, 'parent', 2)`,
+      [JSON.stringify({ name: 'Group TDD', steps: [{ id: 's0', name: 'TODO', order: 0 }] })],
+    );
+    await db.run(
+      `INSERT INTO flows (id, org_id, name, definition_json, source, version)
+       VALUES ('pg-own', 'org', 'Ours', ?, 'hub', 1)`,
+      [JSON.stringify({ name: 'Ours', steps: [{ id: 's0', name: 'TODO', order: 0 }] })],
+    );
+
+    const released = await releaseParentFlows(db);
+    expect(released).toBe(1);
+    expect((await db.get<any>('SELECT source FROM flows WHERE id = ?', ['pg-pf'])).source).toBe('hub');
+    expect((await db.get<any>('SELECT source FROM flows WHERE id = ?', ['pg-own'])).source).toBe('hub');
 
     await db.close();
   });
@@ -759,6 +826,52 @@ describe('PG parity: the child side of a group upgrade (CGLAB-183, CGLAB-185)', 
       "SELECT directive_id FROM upgrade_directive_targets WHERE installation_id = 'i1' AND state IN ('pending','in_progress')",
     );
     expect(rows).toHaveLength(1);
+    await db.close();
+  });
+});
+
+describe('PG parity: the identity policy that governs forwarded identities (CGLAB-184)', () => {
+  it('sets the group policy and a per-child override, on Postgres', async () => {
+    // The whole premise of the group is that a parent's policy governs how
+    // forwarded identities are shaped — and the WRITE half of it had zero
+    // Postgres execution. The group write is an upsert
+    // (`ON CONFLICT(org_id) DO UPDATE`), which is precisely the shape a
+    // dialect can get wrong, and until now the reads were only ever exercised
+    // against a NULL policy, so effectiveIdentityPolicy was tested on this
+    // backend in its default branch only.
+    const { app, db, cookie } = await bootHubOnPg();
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const { childHubId } = (await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name: 'pg-idp' } })).body;
+
+    // Upsert with no row present…
+    expect((await supertest(app).put('/v1/admin/federation/identity-policy')
+      .set('Cookie', cookie).send({ policy: 'pseudonymize' })).status).toBe(200);
+    expect((await db.get<any>('SELECT identity_policy FROM org_settings WHERE org_id = ?', ['org']))
+      .identity_policy).toBe('pseudonymize');
+
+    // …and again with one, which is the DO UPDATE arm.
+    expect((await supertest(app).put('/v1/admin/federation/identity-policy')
+      .set('Cookie', cookie).send({ policy: 'keep' })).status).toBe(200);
+    expect((await db.get<any>('SELECT identity_policy FROM org_settings WHERE org_id = ?', ['org']))
+      .identity_policy).toBe('keep');
+
+    // The per-child override wins in BOTH directions, so it is set against a
+    // group default that differs from it.
+    expect((await supertest(app).put(`/v1/admin/child-hubs/${childHubId}/identity-policy`)
+      .set('Cookie', cookie).send({ policy: 'pseudonymize' })).status).toBe(200);
+    expect((await db.get<any>('SELECT identity_policy FROM child_hubs WHERE id = ?', [childHubId]))
+      .identity_policy).toBe('pseudonymize');
+
+    const read = await supertest(app).get('/v1/admin/federation/identity-policy').set('Cookie', cookie);
+    expect(read.status).toBe(200);
+    expect(read.body.groupPolicy).toBe('keep');
+    const child = read.body.childHubs.find((c: any) => c.id === childHubId);
+    expect(child.policy).toBe('pseudonymize');
+    // The override wins over a DIFFERENT group default — the direction that
+    // proves it is an override rather than an escalation.
+    expect(child.effective).toBe('pseudonymize');
+
     await db.close();
   });
 });
