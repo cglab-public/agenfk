@@ -18,6 +18,8 @@ interface Recorded { via: string; sql: string }
 /** A pool whose clients are distinguishable, so routing is observable. */
 function makeFakePool() {
   const log: Recorded[] = [];
+  /** Which clients were handed back. A client never released is a pool leak. */
+  const released: string[] = [];
   let clientSeq = 0;
   const pool: any = {
     query: async (sql: string) => {
@@ -31,11 +33,11 @@ function makeFakePool() {
           log.push({ via: name, sql });
           return { rows: [], rowCount: 0 };
         },
-        release: () => { /* returned to pool */ },
+        release: () => { released.push(name); },
       };
     },
   };
-  return { pool, log };
+  return { pool, log, released };
 }
 
 const viasFor = (log: Recorded[], match: string) =>
@@ -160,5 +162,51 @@ describe('PgAdapter transaction routing', () => {
 
     expect(viasFor(log, 'inside_exec')).toEqual(['client-1']);
     expect(viasFor(log, 'outside_exec')).toEqual(['pool']);
+  });
+});
+
+describe('PgAdapter returns its client to the pool', () => {
+  // The failure this guards is the one that takes the hub down: a client not
+  // released is a connection gone from the pool for good, and after `max` of
+  // them every request hangs waiting for one. The existing "releases the
+  // client" test asserts only that a LATER statement routes to the pool, which
+  // the AsyncLocalStorage design guarantees whether or not release() ever runs.
+  it('on the happy path', async () => {
+    const { pool, released } = makeFakePool();
+    const db = __createPgAdapterForTest(pool);
+    await db.transaction(async () => { await db.run('UPDATE t SET x = 1'); });
+    expect(released).toEqual(['client-1']);
+  });
+
+  it('when the callback throws', async () => {
+    const { pool, released } = makeFakePool();
+    const db = __createPgAdapterForTest(pool);
+    await expect(db.transaction(async () => { throw new Error('nope'); })).rejects.toThrow('nope');
+    expect(released).toEqual(['client-1']);
+  });
+
+  it('even when the ROLLBACK itself throws', async () => {
+    const { pool, released } = makeFakePool();
+    const original = pool.connect;
+    pool.connect = async () => {
+      const client = await original();
+      const query = client.query;
+      client.query = async (sql: string) => {
+        if (sql === 'ROLLBACK') throw new Error('connection already gone');
+        return query(sql);
+      };
+      return client;
+    };
+    const db = __createPgAdapterForTest(pool);
+    await expect(db.transaction(async () => { throw new Error('nope'); })).rejects.toThrow('nope');
+    expect(released).toEqual(['client-1']);
+  });
+
+  it('once per transaction, across several', async () => {
+    const { pool, released } = makeFakePool();
+    const db = __createPgAdapterForTest(pool);
+    await db.transaction(async () => { await db.run('UPDATE t SET x = 1'); });
+    await db.transaction(async () => { await db.run('UPDATE t SET x = 2'); });
+    expect(released).toEqual(['client-1', 'client-2']);
   });
 });

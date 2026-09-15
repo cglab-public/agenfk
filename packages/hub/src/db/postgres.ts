@@ -554,6 +554,16 @@ class PgAdapter implements HubDb {
       throw err;
     } finally {
       // Nothing to unset: the client's visibility ended with the async scope.
+      //
+      // The one way to defeat that: async work STARTED inside the callback and
+      // left unawaited — a floating promise, a setTimeout, an event handler
+      // registered here — inherits this context and would route to a client
+      // that has since gone back to the pool, landing a statement inside some
+      // other request's transaction. AsyncLocalStorage only leaks outward like
+      // this; a statement issued outside can never join us, because there is no
+      // context to inherit. No call site does it today (checked across every
+      // db.transaction caller), so this is a rule to keep, not a bug to fix:
+      // await everything you start in here.
       client.release();
     }
   }
