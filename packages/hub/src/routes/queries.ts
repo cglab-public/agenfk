@@ -63,8 +63,17 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
   // timeCol already tells the two tables apart; the hub column follows it.
   const hub = childHubPredicate(f.childHubs, timeCol === 'day' ? HUB_COL_ROLLUPS : HUB_COL_EVENTS);
   if (hub)         { where.push(hub.sql); params.push(...hub.params); }
-  if (f.from)      { where.push(`${timeCol} >= ?`); params.push(f.from); }
-  if (f.to)        { where.push(`${timeCol} <= ?`); params.push(f.to); }
+  // rollups_daily.day is 'YYYY-MM-DD'; events.occurred_at is a full instant. A
+  // bound is compared as a STRING, so '2026-05-03' >= '2026-05-03T00:00:00.000Z'
+  // is FALSE — the shorter string sorts first — and the rollups branch silently
+  // dropped the first day of every window the UI asked for. The Org page's
+  // "Today" range sends exactly that, so in any timezone at or behind UTC it
+  // showed empty tiles. Truncating the bound to a date makes the two branches
+  // answer the same question, which BUG 61bdbd45 made newly load-bearing: the
+  // same window now returns different days depending on whether ?types= is set.
+  const bound = (v: string) => (timeCol === 'day' ? v.slice(0, 10) : v);
+  if (f.from)      { where.push(`${timeCol} >= ?`); params.push(bound(f.from)); }
+  if (f.to)        { where.push(`${timeCol} <= ?`); params.push(bound(f.to)); }
   return { where, params };
 }
 

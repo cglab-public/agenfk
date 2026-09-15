@@ -370,8 +370,10 @@ describe('hub query endpoints', () => {
     // BUG 61bdbd45: applyEventFilters emits `type IN (...)`, but with neither
     // projects nor itemTypes set this endpoint read rollups_daily, which has no
     // `type` column — org_id, user_key, day, the counters and child_hub_id. So
-    // the types filter has never worked here, and because the handler forwarded
-    // no rejection the request did not even fail: it hung.
+    // the types filter has never worked here. The card reported it as a HANG,
+    // which it was when filed — the sibling async-rejection bug 5d98dd55 is
+    // fixed earlier on this branch, so by the time this test was written the
+    // unfixed behaviour was a 500.
     const r = await supertest(app).get('/v1/metrics?types=pr.opened').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.series)).toBe(true);
@@ -388,10 +390,48 @@ describe('hub query endpoints', () => {
     expect(total(filtered.body)).toBeLessThan(total(all.body));
   });
 
-  it('GET /v1/metrics with types= AND users= narrows on both', async () => {
+  it('GET /v1/metrics with types= AND users= narrows on BOTH, not just one', async () => {
+    // The fixture's only pr.opened belongs to bob, so asking for alice's
+    // pr.opened returned [] and `[].every(...)` was true — the assertion was
+    // satisfied by emptiness and passed with the types predicate dropped
+    // entirely. Give alice one of her own and assert the count.
+    const token = await issueApiKey(ctx.db, 'org', 'types-both');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'both1', occurredAt: '2026-05-07T09:00:00Z', type: 'pr.opened',
+          payload: { prNumber: 41, repo: 'acme/web' } }),
+      ]});
     const r = await supertest(app).get('/v1/metrics?types=pr.opened&users=alice@acme.com').set('Cookie', cookie);
     expect(r.status).toBe(200);
-    expect(r.body.series.every((s: any) => s.user_key === 'alice@acme.com')).toBe(true);
+    // Exactly alice's one pr.opened: bob's is excluded by users, and alice's
+    // other events are excluded by types. Dropping EITHER predicate changes it.
+    expect(r.body.series.map((x: any) => x.user_key)).toEqual(['alice@acme.com']);
+    expect(Number(r.body.series[0].events_count)).toBe(1);
+  });
+
+  it('a from= bound means the same day on both branches of /v1/metrics', async () => {
+    // rollups_daily.day is 'YYYY-MM-DD' and the bound is compared as a STRING,
+    // so '2026-05-03' >= '2026-05-03T00:00:00.000Z' is false and the rollups
+    // branch dropped the first day of the window. The UI sends exactly that
+    // instant for its "Today" range. Adding ?types= crosses to the events
+    // branch, so the SAME window answered differently depending on the filter.
+    const from = '2026-05-03T00:00:00.000Z';
+    const rollup = await supertest(app).get(`/v1/metrics?from=${from}`).set('Cookie', cookie);
+    const events = await supertest(app).get(`/v1/metrics?from=${from}&types=item.created,item.closed,pr.opened,validate.passed,validate.failed,step.transitioned`).set('Cookie', cookie);
+    expect(rollup.status).toBe(200);
+    expect(events.status).toBe(200);
+    const days = (b: any) => [...new Set(b.series.map((x: any) => x.day))].sort();
+    expect(days(rollup.body)).toContain('2026-05-03');
+    expect(days(rollup.body)).toEqual(days(events.body));
+  });
+
+  it('GET /v1/metrics?types= honours the child hub filter on the branch it now takes', async () => {
+    // The events branch and the rollups branch read DIFFERENT hub columns, and
+    // ?types= is what newly routes a metrics request to the events one.
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened&childHubId=local').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.series)).toBe(true);
   });
 
   it('rollup ignores tokens.logged events', async () => {
