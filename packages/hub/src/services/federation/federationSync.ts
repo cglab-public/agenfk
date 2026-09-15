@@ -77,6 +77,9 @@ export interface TickResult {
   unknownDirectiveKind?: string;
   /** Rows the parent refused outright, removed rather than retried forever. */
   dropped?: number;
+  /** A flow.dispatch we could not install. Reported, never thrown: the outbox
+   *  drain still has to run, and one bad directive must not stop delivery. */
+  flowDispatchError?: string;
 }
 
 /** Exponential from the tick interval, capped. Mirrors the events flusher. */
@@ -236,6 +239,67 @@ export interface TickArgs {
   transport: FederationTransport;
   hubVersion?: string;
   batchSize?: number;
+  /** Which org a dispatched flow is installed into — this hub's own. */
+  orgId?: string;
+}
+
+/** The org a dispatched flow lands in when the caller does not say. */
+const DEFAULT_ORG = 'default';
+
+interface FlowDispatch {
+  kind: 'flow.dispatch';
+  dispatchId?: string;
+  flowVersion?: number;
+  flow?: {
+    id?: string;
+    name?: string;
+    description?: string | null;
+    version?: number;
+    definition?: unknown;
+  };
+}
+
+/**
+ * Install (or update) a flow the parent hub sent.
+ *
+ * Keyed on the PARENT's flow id, so a re-dispatch updates the same row instead
+ * of piling up copies — and so a flow the child authored with the same NAME is
+ * untouched, which is what the user chose: flows are keyed by id, and nothing
+ * local is ever overwritten by the group.
+ *
+ * Idempotent and monotonic in one statement: `WHERE excluded.version >
+ * flows.version` means a redelivered dispatch is a no-op (delivery is
+ * at-least-once, so it happens routinely) and a late redelivery of an OLDER
+ * version cannot walk the flow backwards.
+ *
+ * `org_available = 1` because a dispatched flow exists to be picked up
+ * org-wide; that is the whole point of sending it.
+ */
+export async function installDispatchedFlow(db: DB, orgId: string, directive: FlowDispatch): Promise<boolean> {
+  const flow = directive.flow;
+  if (!flow || typeof flow.id !== 'string' || !flow.id) return false;
+  if (typeof flow.name !== 'string' || !flow.name) return false;
+  if (!flow.definition || typeof flow.definition !== 'object') return false;
+
+  const version = Number(directive.flowVersion ?? flow.version ?? 1);
+  if (!Number.isFinite(version)) return false;
+
+  await db.run(
+    `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, org_available, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'parent', ?, 1, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       description = excluded.description,
+       definition_json = excluded.definition_json,
+       source = 'parent',
+       version = excluded.version,
+       org_available = 1,
+       updated_at = excluded.updated_at
+     WHERE excluded.version > flows.version`,
+    [flow.id, orgId, flow.name, flow.description ?? null,
+     JSON.stringify(flow.definition), version, new Date().toISOString()],
+  );
+  return true;
 }
 
 export async function federationTick(args: TickArgs): Promise<TickResult> {
@@ -280,10 +344,21 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   try {
     const directive = await transport.directives(creds);
     if (directive && typeof directive.kind === 'string') {
-      // No kinds are implemented yet — flow dispatch (CGLAB-182) and upgrade
-      // dispatch (CGLAB-183) add them. Recording rather than throwing is what
-      // lets an older child sit safely under a newer parent.
-      result.unknownDirectiveKind = directive.kind;
+      if (directive.kind === 'flow.dispatch') {
+        // A malformed or unusable directive must not take the tick down with
+        // it — the outbox drain below still has to run, and a child that
+        // crashes on one bad directive stops delivering anything at all.
+        try {
+          await installDispatchedFlow(db, args.orgId ?? DEFAULT_ORG, directive as FlowDispatch);
+        } catch (err) {
+          result.flowDispatchError = messageOf(err);
+        }
+      } else {
+        // A kind this build does not implement — upgrade dispatch (CGLAB-183)
+        // is the next one. Recording rather than throwing is what lets an older
+        // child sit safely under a newer parent.
+        result.unknownDirectiveKind = directive.kind;
+      }
     }
   } catch (err) {
     if (isRevocation(err)) {
@@ -450,6 +525,7 @@ export function startFederationSync(args: {
   hubVersion?: string;
   intervalMs?: number;
   transport?: FederationTransport;
+  orgId?: string;
 }): () => void {
   const intervalMs = args.intervalMs ?? FEDERATION_TICK_MS;
   let inflight = false;
@@ -463,6 +539,7 @@ export function startFederationSync(args: {
         if (!transport) transport = httpTransport();
         const out = await federationTick({
           db: args.db, secretKey: args.secretKey, transport, hubVersion: args.hubVersion,
+          orgId: args.orgId,
         });
         if (out.revoked) {
           console.warn('[FEDERATION] parent rejected our credential; sync stopped until this hub rejoins');

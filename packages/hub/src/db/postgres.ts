@@ -229,7 +229,7 @@ const SCHEMA_PG = `
     name TEXT NOT NULL,
     description TEXT,
     definition_json TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community')),
+    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -541,6 +541,25 @@ async function bootstrap(adapter: HubDb): Promise<void> {
     await adapter.exec("ALTER TABLE rollups_daily ADD PRIMARY KEY (org_id, child_hub_id, user_key, day)");
   }
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  // flows.source gains 'parent' (CGLAB-182). An inline single-column CHECK gets
+  // a deterministic name from Postgres — <table>_<column>_check — so it can be
+  // dropped and re-added by name without inspecting the catalog.
+  //
+  // Wrapped because this must not be able to stop a boot: on a fresh database
+  // the schema block above already created the three-value constraint, so this
+  // is a no-op, and pg-mem (used by the parity tests) does not implement ALTER
+  // TABLE ... DROP CONSTRAINT at all. A real upgraded Postgres is the only case
+  // where it does work, which is exactly the case that needs it.
+  try {
+    await adapter.exec('ALTER TABLE flows DROP CONSTRAINT IF EXISTS flows_source_check');
+    await adapter.exec(
+      "ALTER TABLE flows ADD CONSTRAINT flows_source_check CHECK (source IN ('hub','community','parent'))",
+    );
+  } catch {
+    // Backend cannot alter constraints (pg-mem). The schema block's definition
+    // stands, which on any database this applies to is already correct.
+  }
+
   // Filtering the event stream by originating hub (CGLAB-184).
   await adapter.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
   await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");

@@ -251,7 +251,11 @@ export async function createHubApp(
   // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
   // deliberate: with no parent binding every tick is a no-op, so a standalone
   // hub pays one cheap query a minute and needs no configuration to opt out.
-  const stopFederation = startFederationSync({ db, secretKey: config.secretKey, hubVersion: HUB_VERSION });
+  const stopFederation = startFederationSync({
+    db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
+    // Which org a flow dispatched by the parent lands in: this hub's own.
+    orgId: config.defaultOrgId,
+  });
   ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in

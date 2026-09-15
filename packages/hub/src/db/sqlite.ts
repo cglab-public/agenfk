@@ -239,7 +239,7 @@ const SCHEMA_SQLITE = `
     name TEXT NOT NULL,
     description TEXT,
     definition_json TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community')),
+    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -680,6 +680,48 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
       ALTER TABLE flow_assignments_new RENAME TO flow_assignments;
       COMMIT;
     `);
+  }
+
+  // flows.source gains 'parent' — a flow this hub received from its parent hub
+  // (CGLAB-182). SQLite cannot ALTER a CHECK constraint, so an upgraded hub
+  // needs the table rebuilt; without this every dispatched flow fails its
+  // INSERT with a constraint error and the child silently installs nothing.
+  //
+  // Detected by reading the stored DDL rather than a column list: the column
+  // has always existed, it is the CHECK that changed. Same reasoning as the
+  // flow_assignments rebuild above — and like it, this runs in the migration
+  // block, never in the schema block, because CREATE TABLE IF NOT EXISTS
+  // leaves a deployed table alone.
+  const flowsDdl = (raw.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='flows'",
+  ).get() as { sql?: string } | undefined)?.sql ?? '';
+  if (flowsDdl && !flowsDdl.includes("'parent'")) {
+    raw.exec(`
+      BEGIN;
+      CREATE TABLE flows_new (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        definition_json TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_by_user_id TEXT,
+        org_available INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO flows_new (id, org_id, name, description, definition_json, source, version,
+                             created_at, updated_at, created_by_user_id, org_available)
+        SELECT id, org_id, name, description, definition_json, source, version,
+               created_at, updated_at, created_by_user_id,
+               COALESCE(org_available, 0)
+          FROM flows;
+      DROP TABLE flows;
+      ALTER TABLE flows_new RENAME TO flows;
+      COMMIT;
+    `);
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_flows_org ON flows(org_id)");
   }
 
   // rollups_daily.prs_opened — added with the PR metrics initiative.
