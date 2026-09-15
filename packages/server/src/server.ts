@@ -792,9 +792,28 @@ const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
-const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
+/**
+ * The commit the server makes when an item reaches its final flow step.
+ *
+ * `git add -u`, NOT `git add -A` (BUG 315edc11 / CGLAB-22). `-A` staged every
+ * untracked file in the repository, so closing one item swept in whatever
+ * happened to be lying around — including work in progress belonging to a
+ * DIFFERENT task or branch. Observed: closing a bug produced a close(bug)
+ * commit carrying another item's WIP test, which had no implementation on that
+ * branch and would have failed CI under someone else's name. It is not a
+ * theoretical risk either: a reviewer's scratch file was swept into an
+ * unrelated commit during the very session this was fixed in.
+ *
+ * `-u` stages modifications and deletions of files git already tracks, which is
+ * the part the server can attribute to the item with a straight face. A NEW
+ * file is the author's to add: the server cannot tell whose it is, and guessing
+ * wrong misattributes someone else's work rather than merely omitting yours.
+ *
+ * Exported for the test; nothing else outside this module should call it.
+ */
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
-  const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
+  const cmd = `git add -u && git commit -m ${JSON.stringify(message)}`;
   
   return new Promise((resolve) => {
     exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
