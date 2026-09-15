@@ -5,14 +5,15 @@
   "description": "AgEnFK Desktop \u2014 run agent orchestration as a native app",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run bundle:preload",
     "dev": "npm run build && electron dist/main/index.js",
     "start": "electron dist/main/index.js",
     "pack": "npm run build && npm run bundle:server && electron-builder --dir --config electron-builder.config.cjs",
     "dist:mac": "npm run build && npm run bundle:server && electron-builder --mac --config electron-builder.config.cjs",
     "dist:win": "npm run build && npm run bundle:server && electron-builder --win --config electron-builder.config.cjs",
     "dist:linux": "npm run build && npm run bundle:server && electron-builder --linux --config electron-builder.config.cjs",
-    "bundle:server": "node scripts/bundle-server.mjs"
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "bundle:preload": "node scripts/bundle-preload.mjs"
   },
   "dependencies": {
     "@agenfk/telemetry": "1.1.18",

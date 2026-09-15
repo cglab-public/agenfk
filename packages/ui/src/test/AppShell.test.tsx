@@ -234,9 +234,20 @@ describe('AppShell — chrome', () => {
     expect(await screen.findByText(/Electron 40\.10\.6/)).toBeDefined();
   });
 
-  it('shows a Kanban tab', () => {
+  it('reaches the board without a tab, and names it for a screen reader', () => {
+    /*
+     * Was "shows a Kanban tab". The tab is gone - the sidebar's Tasks opens
+     * the board now - and this asserts what replaced it rather than being
+     * deleted, because the board still has to be reachable and still has to be
+     * announced.
+     *
+     * The NAME is the point. The panel was a tabpanel labelled by `tab-kanban`,
+     * and with that button gone the reference dangled: a region with no
+     * accessible name, claiming a role that requires a tab it no longer had.
+     */
     renderShell();
-    expect(screen.getByRole('tab', { name: /kanban/i })).toBeDefined();
+    expect(screen.queryByRole('tab', { name: /kanban/i })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Tasks' })).toBeDefined();
   });
 
   it('names the sessions area and says plainly that there are none yet', () => {
@@ -701,8 +712,18 @@ describe('AppShell — window controls (CGLAB-168)', () => {
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
 
-    const tablist = screen.getByRole('tablist');
-    expect(tablist.getAttribute('data-reserves-window-controls')).toBe('true');
+    /*
+     * Asked of the strip's FIRST element rather than of the tablist. The brand
+     * mark now opens that row, so the tablist is no longer what sits against
+     * the window edge - and a reserve on the tablist would leave the mark
+     * itself under the traffic lights, which is the same defect one element to
+     * the left.
+     */
+    const reserving = document.querySelector('[data-reserves-window-controls="true"]');
+    expect(reserving, 'nothing reserves the space the window buttons occupy').not.toBeNull();
+    const strip = screen.getByRole('tablist').parentElement!;
+    expect(strip.firstElementChild, 'the reserve is not on the element against the window edge')
+      .toBe(reserving);
   });
 
   it('reserves nothing while the sidebar is open — it already clears them', async () => {
@@ -736,9 +757,11 @@ describe('AppShell — tabs', () => {
     const input = screen.getByLabelText('board-state') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'unsaved work' } });
 
-    const runsTab = screen.getByRole('tab', { name: /runs/i });
-    fireEvent.click(runsTab);
-    fireEvent.click(screen.getByRole('tab', { name: /kanban/i }));
+    // Away to another view and back. Returning is via the sidebar now that
+    // the board is not a tab; what is under test is the mount count, which is
+    // the same question either way.
+    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
 
     expect(boardMounts).toBe(1);
     expect((screen.getByLabelText('board-state') as HTMLInputElement).value).toBe('unsaved work');
@@ -746,8 +769,9 @@ describe('AppShell — tabs', () => {
 
   it('moves between tabs with the arrow keys, wrapping at the ends', () => {
     renderShell();
-    const first = screen.getByRole('tab', { name: /kanban/i });
-    first.focus();
+    // Enter the bar first. The board is not a tab, so on a fresh render the
+    // active view is not in the bar at all and there is nothing to step FROM.
+    fireEvent.click(screen.getAllByRole('tab')[0]);
 
     // Written against the tab LIST rather than named tabs, so adding one does
     // not silently turn "wraps at the end" into "moves to the second tab" —
@@ -758,17 +782,22 @@ describe('AppShell — tabs', () => {
       expect(screen.getAllByRole('tab')[i].getAttribute('aria-selected')).toBe('true');
     }
 
-    // Wraps rather than dead-ending at the last tab.
+    // Wraps rather than dead-ending at the last tab. Back to the FIRST tab,
+    // read off the list, because which view that is has changed twice already.
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' });
-    expect(screen.getByRole('tab', { name: /kanban/i }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
   });
 
   it('jumps to the first and last tab with Home and End', () => {
     renderShell();
+    const labels = screen.getAllByRole('tab').map(t => t.textContent);
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'End' });
-    expect(screen.getByRole('tab', { name: /runs/i }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab').at(-1)!.getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'Home' });
-    expect(screen.getByRole('tab', { name: /kanban/i }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
+    // Read off the list rather than named, so adding a view does not quietly
+    // turn "the last tab" into "the second one" - the trap CGLAB-169 hit.
+    expect(screen.getAllByRole('tab').map(t => t.textContent)).toEqual(labels);
   });
 
   it('gives the tablist a single tab stop, not one per tab', () => {
@@ -780,9 +809,12 @@ describe('AppShell — tabs', () => {
   });
 
   it('leaves other keys alone', () => {
+    // Typing into the bar must not navigate. Asserted as "nothing became
+    // selected", which is the honest form now that the opening view is the
+    // board and therefore no tab is selected to begin with.
     renderShell();
     fireEvent.keyDown(screen.getByRole('tablist'), { key: 'a' });
-    expect(screen.getByRole('tab', { name: /kanban/i }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getAllByRole('tab').map(t => t.getAttribute('aria-selected'))).not.toContain('true');
   });
 
   it('marks exactly one tab selected at a time', () => {
@@ -794,8 +826,20 @@ describe('AppShell — tabs', () => {
   });
 
   it('hides the inactive panel from assistive tech rather than just visually', () => {
+    /*
+     * `hidden` and not merely off-screen: a panel that is only visually hidden
+     * is still read out and still focusable, so a screen reader walks a view
+     * nobody is looking at.
+     *
+     * Counted with a tab SELECTED. On a fresh render the board is showing and
+     * the board is no longer a tabpanel, so no tabpanel is visible at all -
+     * which is correct, and would make "exactly one" the wrong assertion for
+     * the wrong reason.
+     */
     renderShell();
+    fireEvent.click(screen.getByRole('tab', { name: /runs/i }));
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels.length).toBeGreaterThan(1);
     const visible = panels.filter(p => !p.hasAttribute('hidden'));
     expect(visible).toHaveLength(1);
   });
@@ -872,7 +916,9 @@ describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
     expect(panel.hasAttribute('hidden')).toBe(false);
     expect(panel.childElementCount, 'terminal panel rendered nothing').toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole('tab', { name: /kanban/i }));
+    // Back to the board, which is the sidebar's job now that it is not a tab.
+    // The switch is what matters here, not the route taken to it.
+    fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
     expect(panel.hasAttribute('hidden')).toBe(true);
     expect(
       panel.childElementCount,
@@ -1549,16 +1595,17 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
   const workNav = () => screen.getByRole('navigation', { name: /work/i });
   const workRow = (name: RegExp) => within(workNav()).getByRole('button', { name });
 
-  it('sits above Projects, with Tasks, Inbox and Agents', async () => {
+  it('sits above Projects, with Tasks, Flows and Agents', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
 
-    const work = screen.getByRole('heading', { name: /^work$/i });
+    // Positioned by the landmark rather than by a heading: the group's visible
+    // "Work" title is gone and its name lives on the <nav> now.
     const projects = screen.getByRole('heading', { name: /^projects$/i });
-    expect(work.compareDocumentPosition(projects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workNav().compareDocumentPosition(projects) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     expect(workRow(/tasks/i)).toBeDefined();
-    expect(workRow(/inbox/i)).toBeDefined();
+    expect(workRow(/flows/i)).toBeDefined();
     expect(workRow(/agents/i)).toBeDefined();
   });
 
@@ -1577,28 +1624,35 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     await screen.findByText('agenfk');
     expect(workRow(/tasks/i).getAttribute('aria-current')).toBe('page');
 
-    fireEvent.click(workRow(/inbox/i));
-    expect(workRow(/inbox/i).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(workRow(/agents/i));
+    expect(workRow(/agents/i).getAttribute('aria-current')).toBe('page');
     expect(workRow(/tasks/i).getAttribute('aria-current')).toBeNull();
   });
 
-  it('gives Inbox and Agents somewhere to land instead of a blank pane', async () => {
-    // Placeholders on purpose — the real Inbox and the real run feed are
-    // separate cards. A nav row that lands on nothing reads as a broken app.
+  it('gives Agents somewhere to land instead of a blank pane', async () => {
+    /*
+     * A placeholder on purpose — the real run feed is a separate card. A nav
+     * row that lands on nothing reads as a broken app.
+     *
+     * This used to cover the Inbox panel too. Inbox was removed in favour of
+     * Flows, which opens the flow editor and has no panel at all, so the Inbox
+     * half of this test became unreachable rather than merely unasserted. Its
+     * replacement lives in sidebarFlows.test.tsx, which pins that Flows opens a
+     * window WITHOUT changing the view. Nothing here needs restoring.
+     */
     renderShell();
     await screen.findByText('agenfk');
 
-    fireEvent.click(workRow(/inbox/i));
-    const inbox = document.getElementById('panel-inbox')!;
-    expect(inbox.hasAttribute('hidden')).toBe(false);
-    expect(inbox.textContent!.trim().length).toBeGreaterThan(0);
-
     fireEvent.click(workRow(/agents/i));
-    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(false);
-    expect(inbox.hasAttribute('hidden')).toBe(true);
+    const agents = document.getElementById('panel-agents')!;
+    expect(agents.hasAttribute('hidden')).toBe(false);
+    expect(agents.textContent!.trim().length).toBeGreaterThan(0);
+
+    fireEvent.click(workRow(/tasks/i));
+    expect(agents.hasAttribute('hidden')).toBe(true);
   });
 
-  it('hides the board for Inbox and Agents — never unmounts it', async () => {
+  it('hides the board for Agents — never unmounts it', async () => {
     /*
      * The invariant AppShell is built on. Conditional rendering here would
      * throw away the board's filters and anything half-typed, and the same
@@ -1612,11 +1666,10 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     fireEvent.change(input, { target: { value: 'unsaved work' } });
     const mountsBefore = boardMounts;
 
-    fireEvent.click(workRow(/inbox/i));
+    fireEvent.click(workRow(/agents/i));
     expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
     expect(screen.getByText('THE BOARD')).toBeDefined();
 
-    fireEvent.click(workRow(/agents/i));
     fireEvent.click(workRow(/tasks/i));
 
     expect(boardMounts).toBe(mountsBefore);

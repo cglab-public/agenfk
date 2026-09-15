@@ -83,10 +83,15 @@ const shellTabs = async () =>
 
 describe('the tabs the shell starts with', () => {
   it('still opens on the board', async () => {
+    /*
+     * Unchanged by the tab's removal, and the reason the removal is safe: the
+     * shell still starts on the board. What changed is that no TAB is selected
+     * to say so, because the board is not a tab any more.
+     */
     renderShell();
+    await screen.findByText('board');
     const tabs = await shellTabs();
-    expect(tabs[0]).toHaveTextContent(/kanban/i);
-    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs.map(t => t.getAttribute('aria-selected'))).not.toContain('true');
   });
 
   it('cannot close a built-in tab, because there would be no way back', async () => {
@@ -100,7 +105,7 @@ describe('remembering the order', () => {
   it('restores an order the user chose', async () => {
     // Rearranging something that resets on the next launch is worse than not
     // being able to rearrange it at all.
-    localStorage.setItem('agenfk_shell_tabs', JSON.stringify(['runs', 'kanban', 'terminal']));
+    localStorage.setItem('agenfk_shell_tabs', JSON.stringify(['runs', 'terminal']));
     renderShell();
     const tabs = await shellTabs();
     expect(tabs[0]).toHaveTextContent(/runs/i);
@@ -109,11 +114,13 @@ describe('remembering the order', () => {
   it('ignores a stored order that names a tab it does not have', async () => {
     // Written by an older or newer build. Trusting it blindly would render a
     // tab bar with a hole in it, or drop a tab the user needs.
-    localStorage.setItem('agenfk_shell_tabs', JSON.stringify(['nonsense', 'kanban']));
+    // `kanban` is the live case now, not a hypothetical: every user who has
+    // launched a previous build has it in storage, and this build has no such
+    // tab. Dropped, and the tabs it does not name are appended.
+    localStorage.setItem('agenfk_shell_tabs', JSON.stringify(['nonsense', 'kanban', 'runs']));
     renderShell();
     const tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent).join(' ')).toMatch(/kanban/i);
-    expect(tabs.map(t => t.textContent).join(' ')).toMatch(/runs/i);
+    expect(tabs.map(t => t.textContent)).toEqual(['Runs', 'Terminal']);
   });
 
   it('survives a stored value that is not even a list', async () => {
@@ -128,7 +135,7 @@ describe('remembering the order', () => {
     fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
     await waitFor(() => {
       const stored = JSON.parse(localStorage.getItem('agenfk_shell_tabs') ?? '[]');
-      expect(stored[0]).toBe('terminal');
+      expect(stored[0]).toBe('runs');
     });
   });
 });
@@ -142,7 +149,7 @@ describe('rearranging', () => {
     fireEvent.click(tabs[1]);
     fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
     tabs = await shellTabs();
-    expect(tabs[0]).toHaveTextContent(/terminal/i);
+    expect(tabs[0]).toHaveTextContent(/runs/i);
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -256,20 +263,22 @@ const dragTabOnto = (from: HTMLElement, to: HTMLElement) => {
 };
 
 describe('dragging a tab', () => {
-  it('lands it in the slot it was dropped on, moving right', async () => {
+  /*
+   * WHICH SLOT a tab lands in is `moveTab`'s own question, and tabReorder.test
+   * answers it against lists of any length. These tests are about the WIRING:
+   * that a drag reaches that function, that the bar and storage follow, and
+   * that the outcome is spoken.
+   *
+   * With two tabs left, "moving right" and "moving left" are the same swap, so
+   * the two directional cases that used to live here would now assert one fact
+   * twice. They are gone rather than kept as a pair that cannot disagree.
+   */
+  it('reaches the order, and the bar follows', async () => {
     renderShell();
     let tabs = await shellTabs();
-    dragTabOnto(tabs[0], tabs[2]);
+    dragTabOnto(tabs[0], tabs[1]);
     tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent)).toEqual(['Terminal', 'Runs', 'Kanban']);
-  });
-
-  it('lands it in the slot it was dropped on, moving left', async () => {
-    renderShell();
-    let tabs = await shellTabs();
-    dragTabOnto(tabs[2], tabs[0]);
-    tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent)).toEqual(['Runs', 'Kanban', 'Terminal']);
+    expect(tabs.map(t => t.textContent)).toEqual(['Runs', 'Terminal']);
   });
 
   it('keeps the selection on the tab, not on the position', async () => {
@@ -278,18 +287,18 @@ describe('dragging a tab', () => {
     renderShell();
     let tabs = await shellTabs();
     fireEvent.click(tabs[0]);
-    dragTabOnto(tabs[0], tabs[2]);
+    dragTabOnto(tabs[0], tabs[1]);
     tabs = await shellTabs();
-    expect(tabs[2]).toHaveTextContent(/kanban/i);
-    expect(tabs[2]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[1]).toHaveTextContent(/terminal/i);
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
   });
 
   it('remembers the new order for next launch', async () => {
     renderShell();
     const tabs = await shellTabs();
-    dragTabOnto(tabs[0], tabs[2]);
+    dragTabOnto(tabs[0], tabs[1]);
     await waitFor(() =>
-      expect(JSON.parse(localStorage.getItem('agenfk_shell_tabs')!)).toEqual(['terminal', 'runs', 'kanban']));
+      expect(JSON.parse(localStorage.getItem('agenfk_shell_tabs')!)).toEqual(['runs', 'terminal']));
   });
 
   it('dropping a tab on itself changes nothing', async () => {
@@ -297,7 +306,7 @@ describe('dragging a tab', () => {
     let tabs = await shellTabs();
     dragTabOnto(tabs[1], tabs[1]);
     tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal', 'Runs']);
+    expect(tabs.map(t => t.textContent)).toEqual(['Terminal', 'Runs']);
   });
 
   it('says where the tab ended up, for a reader that cannot see the bar', async () => {
@@ -306,9 +315,9 @@ describe('dragging a tab', () => {
     // bar, "moved left" is not the useful part.
     renderShell();
     const tabs = await shellTabs();
-    dragTabOnto(tabs[0], tabs[2]);
+    dragTabOnto(tabs[0], tabs[1]);
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(/Kanban moved to position 3 of 3/i));
+      expect(screen.getByRole('status')).toHaveTextContent(/Terminal moved to position 2 of 2/i));
   });
 
   it("announces the button's move too, so both affordances speak", async () => {
@@ -316,7 +325,7 @@ describe('dragging a tab', () => {
     const tabs = await shellTabs();
     fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
     await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(/Terminal moved to position 1 of 3/i));
+      expect(screen.getByRole('status')).toHaveTextContent(/Runs moved to position 1 of 2/i));
   });
 
   it('ignores a drop that did not start on a tab', async () => {
@@ -325,10 +334,10 @@ describe('dragging a tab', () => {
     renderShell();
     let tabs = await shellTabs();
     const dataTransfer = { effectAllowed: '', dropEffect: '', setData: vi.fn(), getData: vi.fn() };
-    fireEvent.dragOver(tabs[2].parentElement!, { dataTransfer });
-    fireEvent.drop(tabs[2].parentElement!, { dataTransfer });
+    fireEvent.dragOver(tabs[1].parentElement!, { dataTransfer });
+    fireEvent.drop(tabs[1].parentElement!, { dataTransfer });
     tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal', 'Runs']);
+    expect(tabs.map(t => t.textContent)).toEqual(['Terminal', 'Runs']);
   });
 });
 
@@ -395,45 +404,77 @@ describe('a card asking for a terminal', () => {
 /**
  * The stored order and the bar on screen are not the same list.
  *
- * Docked below, Runs is not a tab — so `tabOrder` has three ids and the bar
- * shows two. Two separate defects came out of counting with the wrong one, and
- * both were found in review rather than by these tests, which is why they are
- * here now.
+ * Two defects came out of counting with the wrong one: the move-left button
+ * stepped to a HIDDEN neighbour and changed nothing visible, and the live
+ * region announced "position 2 of 3" over a two-tab bar. Both were guarded
+ * here by docking Runs below and then reordering what was left.
+ *
+ * THOSE TWO TESTS ARE GONE, and not because they were fixed. Removing the
+ * Kanban tab leaves two tabs, so docking Runs below leaves ONE: there is no
+ * drag with a single tab and no move-left button on a first tab, which makes
+ * the drift unreachable through the UI rather than absent from the code. The
+ * `visibleOrder` filter in AppShell is still the thing that prevents it, and
+ * both of its callers still use it.
+ *
+ * So: if a third top-level view is ever added, restore them. Written down here
+ * because a deleted test leaves nothing behind to notice.
+ *
+ * What is still observable with two tabs is the bar's half of the filter, and
+ * that is covered above by "moves to a strip under the board, and leaves the
+ * tab bar".
  */
-describe('reordering while Runs is docked below', () => {
-  const dockRunsBelow = async () => {
-    fireEvent.click(await screen.findByRole('button', { name: /dock runs below/i }));
-    await waitFor(async () => expect(await shellTabs()).toHaveLength(2));
-  };
 
-  it('counts the announcement over the tabs that are actually shown', async () => {
-    // "position 2 of 3" spoken over a two-tab bar describes a bar that is not
-    // on screen — and for a screen-reader user that description is the only
-    // one they get.
+/**
+ * The Kanban tab is gone; Tasks does that job now (CGLAB eb8fc679).
+ *
+ * With Tasks in the sidebar's WORK group opening the board, the tab was a
+ * second route to the same place. Asked for after seeing the new sidebar run.
+ *
+ * What is REMOVED is the button. What stays is the panel — still mounted,
+ * still hidden rather than unmounted — and the strip's row, which is not
+ * decoration: it carries the window drag region and the padding that stops the
+ * first control rendering underneath the macOS traffic lights.
+ */
+describe('the board is reached from the sidebar, not a tab', () => {
+  it('offers no Kanban tab', () => {
     renderShell();
-    await dockRunsBelow();
-    const tabs = await shellTabs();
-    fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(/Terminal moved to position 1 of 2/i));
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map(t => t.textContent)).not.toContain('Kanban');
   });
 
-  it('moves the tab to the neighbour on screen, not to a hidden one', async () => {
-    // Reachable in three clicks: drag Runs left, dock it below, then use the
-    // arrow on Terminal. Stepping through the STORED order landed Terminal
-    // next to hidden Runs — the bar did not change, and the live region still
-    // reported a move.
+  it('still shows the board when Tasks is chosen', async () => {
+    // The route that replaces it. If this fails the board is unreachable,
+    // which is worse than a redundant tab.
     renderShell();
-    let tabs = await shellTabs();
-    dragTabOnto(tabs[2], tabs[1]);
-    await waitFor(async () =>
-      expect((await shellTabs()).map(t => t.textContent)).toEqual(['Kanban', 'Runs', 'Terminal']));
-    await dockRunsBelow();
+    fireEvent.click(await screen.findByRole('button', { name: /tasks/i }));
+    expect(document.getElementById('panel-kanban')).not.toBeNull();
+  });
 
-    tabs = await shellTabs();
-    expect(tabs.map(t => t.textContent)).toEqual(['Kanban', 'Terminal']);
-    fireEvent.click(within(tabs[1].parentElement!).getByRole('button', { name: /move .* left/i }));
-    await waitFor(async () =>
-      expect((await shellTabs()).map(t => t.textContent)).toEqual(['Terminal', 'Kanban']));
+  it('keeps the board MOUNTED, never unmounted', async () => {
+    /*
+     * The invariant the whole shell is built on. Unmounting the board loses
+     * filters, scroll position and half-typed titles; unmounting the terminal
+     * panel kills live agents and destroys their scrollback. Removing a tab
+     * must not become an excuse to render conditionally.
+     */
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /agents/i }));
+    const board = document.getElementById('panel-kanban');
+    expect(board, 'the board unmounted when another view was selected').not.toBeNull();
+    expect(board?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('keeps the strip row, which carries the drag region', () => {
+    /*
+     * Not cosmetic. The row carries `data-app-region="drag"` on macOS — without
+     * it the window cannot be moved by its top edge — and the padding that
+     * stops the first control rendering under the traffic lights.
+     *
+     * Asserted through the tablist, which lives inside that row: the attribute
+     * itself is only emitted when `isMac`, and this environment is not a Mac,
+     * so checking for it directly would pass or fail on the wrong fact.
+     */
+    renderShell();
+    expect(screen.getByRole('tablist')).toBeInTheDocument();
   });
 });

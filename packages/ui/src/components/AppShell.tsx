@@ -22,8 +22,9 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Inbox, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
+import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
+import { AgenfkFlag } from './AgenfkFlag';
 import { desktopInfo } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import {
@@ -45,6 +46,7 @@ import { SessionsRail, type SessionRow, type SessionState } from './SessionsRail
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
+import { FlowEditorModal } from './FlowEditorModal';
 import { WhatsNewModal } from './WhatsNewModal';
 import { moveTab } from '../tabReorder';
 import { liveSessions } from '../liveSessions';
@@ -52,7 +54,7 @@ import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
 import { cardState, itemsNeedingAPerson } from '../cardState';
 
-type TabId = 'kanban' | 'terminal' | 'runs' | 'settings' | 'inbox' | 'agents';
+type TabId = 'kanban' | 'terminal' | 'runs' | 'settings' | 'agents';
 
 interface Tab {
   id: TabId;
@@ -67,7 +69,15 @@ interface Tab {
  * in, and conflating the two is why the bar was a constant in the first place.
  */
 const TABS: Tab[] = [
-  { id: 'kanban', label: 'Kanban' },
+  /*
+   * No Kanban. The sidebar's WORK group opens the board through Tasks, and two
+   * routes to one place is what this removes.
+   *
+   * The VIEW still exists and its panel stays mounted - only the button is
+   * gone. The strip's row stays too, and not for looks: it carries the window
+   * drag region and the padding that keeps the first control clear of the
+   * macOS traffic lights.
+   */
   { id: 'terminal', label: 'Terminal' },
   { id: 'runs', label: 'Runs' },
 ];
@@ -77,20 +87,33 @@ const TABS: Tab[] = [
  *
  * Navigation belongs beside the thing being navigated, not in a strip floating
  * over the content — so picking a view moved here. `Tasks` is the board, which
- * is the view that is always there; `Inbox` and `Agents` are placeholders that
- * land on a stated empty state, because a nav row that lands on nothing reads
- * as a broken app. Both are owned by their own cards: the GitHub issues Inbox,
- * and the run feed that replaces the empty Runs panel.
+ * is the view that is always there; `Agents` is a placeholder that lands on a
+ * stated empty state, because a nav row that lands on nothing reads as a broken
+ * app, and it is owned by its own card: the run feed that replaces the empty
+ * Runs panel.
+ *
+ * Not every row here is a view. `Flows` opens the flow editor over whatever you
+ * are looking at and leaves you there, which is why the rows carry a `kind`:
+ * only a view can be the current page, and giving an action `aria-current`
+ * would tell a screen reader you had navigated somewhere you have not. The
+ * alternative — a separate list rendered after this one — would have fixed the
+ * order of the group to "views first", and Flows belongs in the second slot.
  *
  * Deliberately NOT the same list as `TABS`, and deliberately not exported. The
  * content-level tab strip still exists — retiring it is a separate, larger
  * change — so for now there are two routes to the board, both of which set the
  * same `active` view. What must never differ is the panel they select.
  */
-const WORK_VIEWS: Array<{ id: TabId; label: string; Icon: LucideIcon }> = [
-  { id: 'kanban', label: 'Tasks', Icon: LayoutGrid },
-  { id: 'inbox', label: 'Inbox', Icon: Inbox },
-  { id: 'agents', label: 'Agents', Icon: Activity },
+type WorkRow =
+  | { kind: 'view'; id: TabId; label: string; Icon: LucideIcon }
+  | { kind: 'action'; id: 'flows'; label: string; Icon: LucideIcon };
+
+const WORK_ROWS: WorkRow[] = [
+  { kind: 'view', id: 'kanban', label: 'Tasks', Icon: LayoutGrid },
+  // GitBranch, the same icon the board's Manage Flow button uses: one concept,
+  // two routes to it, and a second glyph would read as a second feature.
+  { kind: 'action', id: 'flows', label: 'Flows', Icon: GitBranch },
+  { kind: 'view', id: 'agents', label: 'Agents', Icon: Activity },
 ];
 
 type Connection = 'connecting' | 'connected' | 'offline';
@@ -257,7 +280,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
+  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -887,6 +910,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
   const [readmeOpen, setReadmeOpen] = React.useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = React.useState(false);
+  const [flowsOpen, setFlowsOpen] = React.useState(false);
+
+  /*
+   * Close the flow editor when the project changes, rather than letting it
+   * follow along.
+   *
+   * Two defects, one cause. The editor binds a flow to whatever `projectId` it
+   * is holding at the moment you press the button, but it reads the project's
+   * CURRENT flow only once, when it mounts — so a project change under an open
+   * editor would leave A's selection on screen and write it to B. And because
+   * the render below is guarded on `activeProjectId`, a project going away
+   * (the board clears a stale id when its project has been deleted) would hide
+   * the editor while leaving `flowsOpen` true, so it reappeared unbidden the
+   * next time a project was picked.
+   *
+   * Adjusted during render rather than in an effect, which is React's own
+   * answer for state that has to reset when a value changes: an effect would
+   * commit the stale pairing first and only then take it back.
+   */
+  const [flowsProject, setFlowsProject] = React.useState(activeProjectId);
+  if (flowsProject !== activeProjectId) {
+    setFlowsProject(activeProjectId);
+    setFlowsOpen(false);
+  }
+
+  /*
+   * Which flow the open project is on, so the editor opens on it rather than on
+   * nothing selected.
+   *
+   * Same query key as the board's, so the two share one cache entry and the
+   * sidebar route costs no extra request once the board has loaded. Fetched
+   * only while the editor is open: the shell has no other use for it, and the
+   * board is the one that needs it eagerly.
+   */
+  const { data: shellFlow, isPending: flowPending } = useQuery({
+    queryKey: ['flow', activeProjectId],
+    queryFn: () => api.getProjectFlow(activeProjectId!),
+    enabled: flowsOpen && !!activeProjectId,
+    staleTime: 30_000,
+  });
+
   const info = desktopInfo();
   const isMac = info?.platform === 'darwin';
   const { data: versionData } = useQuery({ queryKey: ['version'], queryFn: api.getVersion });
@@ -966,9 +1030,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           revealOnBoard={revealOnBoard}
           activeView={active}
           onSelectView={setActive}
+          onOpenFlows={() => setFlowsOpen(true)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
+          {/* The strip is a ROW holding the mark and the tablist, not the
+              tablist itself. `role="tablist"` may only contain tabs, so the
+              flag cannot live inside it - and a mark floating outside the bar
+              would sit outside the drag region and leave a dead patch in the
+              title bar. Hence its own drag region: the whole top edge stays a
+              window handle. */}
+          <div className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">
+            <div
+              data-app-region={isMac ? 'drag' : undefined}
+              data-reserves-window-controls={reservesWindowControls ? 'true' : undefined}
+              className={clsx(
+                'flex items-center pt-2 pb-1.5 pr-2',
+                reservesWindowControls ? 'pl-12' : 'pl-3',
+              )}
+            >
+              {/* The mark alone. The wordmark is deliberately absent: the
+                  window already says what the app is, and spelling the name out
+                  on every screen is what a chrome bar has least room for. */}
+              <AgenfkFlag size={14} />
+            </div>
           <div
             role="tablist"
             aria-label="Views"
@@ -981,11 +1066,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // lights occupy ~78px from the window edge. Without reserving the
             // difference the first tab renders UNDER the window buttons —
             // unclickable, with the OS window menu opening on top of it.
-            data-reserves-window-controls={reservesWindowControls ? 'true' : undefined}
-            className={clsx(
-              'flex shrink-0 gap-1 border-b border-border-soft bg-nav-surface pt-2 pr-3',
-              reservesWindowControls ? 'pl-12' : 'pl-3',
-            )}
+            className="flex shrink-0 gap-1 pt-2 pr-3"
           >
             {orderedTabs.map((tab, index) => (
               <div
@@ -1107,6 +1188,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
             )}
           </div>
+          </div>
 
           {/* Outside the tablist: a live region inside it would be a child of
               role="tablist", where only tabs belong. Polite, because a reorder
@@ -1121,10 +1203,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               it, losing scroll position, open menus and anything half-typed,
               which is the one cost this feature must not have. */}
           {/* Rendered, not conditionally mounted — see rule 1 above. */}
+          {/* A REGION, not a tabpanel. It was a tabpanel labelled by `tab-kanban`
+              until the Kanban tab was removed, and then the label pointed at a
+              button that no longer existed: no accessible name at all, and a
+              role whose whole contract is to be paired with a tab in the
+              tablist. A tabpanel with no tab is not a tabpanel.
+
+              Named for the sidebar entry that now opens it, so what a screen
+              reader announces matches what the user clicked. */}
           <div
-            role="tabpanel"
+            role="region"
             id="panel-kanban"
-            aria-labelledby="tab-kanban"
+            aria-label="Tasks"
             tabIndex={0}
             hidden={active !== 'kanban'}
             className="min-h-0 flex-1 overflow-auto scrollbar-slim"
@@ -1223,14 +1313,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               />
             )}
           </div>
-
-          <WorkPlaceholder
-            view="inbox"
-            active={active}
-            label="Inbox"
-            title="The Inbox is not wired up yet"
-            body="Issues and pull requests that have no card yet will land here, so they can be turned into work without leaving the app."
-          />
 
           <WorkPlaceholder
             view="agents"
@@ -1418,6 +1500,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <ReadmeModal isOpen={readmeOpen} onClose={() => setReadmeOpen(false)} />
       <WhatsNewModal isOpen={whatsNewOpen} onClose={() => setWhatsNewOpen(false)} />
+
+      {/* Mounted only while open. Guarded on the project because the editor's
+          `projectId` is not optional; that is the type holding, and it is NOT
+          the same test the sidebar row makes - the row only knows whether an id
+          is set, not whether it still names a project that exists.
+
+          Waiting on `flowPending` is the load-bearing part. The editor reads
+          `activeFlowId` exactly once, when it mounts, so handing it `undefined`
+          for the one tick before this query resolves opens it on nothing
+          selected and it never corrects. Mounting a beat later is the visible
+          cost of it opening on the right flow. Once the board has warmed the
+          shared cache - the usual case, since it is mounted from launch - there
+          is no wait at all. */}
+      {flowsOpen && activeProjectId && !flowPending && (
+        <FlowEditorModal
+          isOpen
+          onClose={() => setFlowsOpen(false)}
+          projectId={activeProjectId}
+          activeFlowId={shellFlow?.id}
+        />
+      )}
     </div>
   );
 }
@@ -1450,9 +1553,17 @@ interface SidebarProps {
   activeView: TabId;
   /** Picking a WORK row. The shell owns `active`; the sidebar only asks. */
   onSelectView: (view: TabId) => void;
+  /**
+   * Opening the flow editor over the app.
+   *
+   * The shell owns it for the same reason it owns `active`: the editor is a
+   * full-screen overlay on the whole window, and hanging it off the sidebar
+   * would put an app-wide surface inside the column it covers.
+   */
+  onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard, activeView, onSelectView }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openTerminalCount, openSession, stopSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows }: SidebarProps) {
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -1577,34 +1688,61 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
       {/* WORK, above PROJECTS (CGLAB-164). Where you GO, over what you have.
           A <nav> rather than a list of buttons in a div: this is the shell's
           primary navigation, and it is the landmark a screen-reader user jumps
-          to. */}
-      <nav aria-label="Work" className="shrink-0">
-        <SidebarLabel>Work</SidebarLabel>
-        <ul className="mt-0.5 flex flex-col gap-px">
-          {WORK_VIEWS.map(({ id, label, Icon }) => (
-            <li key={id}>
-              <button
-                type="button"
-                onClick={() => onSelectView(id)}
-                // `page`, not `true`: these are destinations, and a screen
-                // reader should say "current page" rather than the generic
-                // "current". Absent — not `false` — on the others, so exactly
-                // one row in the group ever carries it.
-                aria-current={activeView === id ? 'page' : undefined}
-                className={clsx(
-                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
-                  activeView === id
-                    ? 'bg-canvas font-semibold text-ink'
-                    : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
-                )}
-              >
-                {/* Decorative: the label beside it is the accessible name, and
-                    a second one here would make it say everything twice. */}
-                <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
-                {label}
-              </button>
-            </li>
-          ))}
+          to.
+
+          The group's title is not drawn. `aria-label` rather than a
+          visually-hidden heading because the landmark was already carrying the
+          name for assistive tech - the <h2> was the visible half of a name that
+          exists in two places, and only the visible half was asked to go. The
+          padding the heading used to contribute moves onto the <nav>, or the
+          first row butts against the collapse control above it. */}
+      <nav aria-label="Work" className="shrink-0 pt-2">
+        <ul className="flex flex-col gap-px">
+          {WORK_ROWS.map(row => {
+            const { label, Icon } = row;
+            const current = row.kind === 'view' && activeView === row.id;
+            // An action with nothing to act on. The flow belongs to a project,
+            // so with none open there is no editor to show - say that on the
+            // control rather than opening an empty one.
+            const disabled = row.kind === 'action' && !activeProjectId;
+            return (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (disabled) return;
+                    if (row.kind === 'view') onSelectView(row.id); else onOpenFlows();
+                  }}
+                  // `aria-disabled`, not `disabled`. A disabled button is not
+                  // focusable, so it can be neither tabbed to nor announced —
+                  // and the title below, which is the whole point of the state,
+                  // is a hover-only tooltip a keyboard user never sees. This
+                  // keeps the row in the tab order and lets the reason be read
+                  // out, at the cost of having to refuse the click ourselves.
+                  aria-disabled={disabled || undefined}
+                  title={disabled ? 'Open a project to edit its flow' : undefined}
+                  // `page`, not `true`: views are destinations, and a screen
+                  // reader should say "current page" rather than the generic
+                  // "current". Absent — not `false` — on the others, so exactly
+                  // one row in the group ever carries it, and an action row
+                  // never does.
+                  aria-current={current ? 'page' : undefined}
+                  className={clsx(
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
+                    current
+                      ? 'bg-canvas font-semibold text-ink'
+                      : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
+                    disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-ink-secondary',
+                  )}
+                >
+                  {/* Decorative: the label beside it is the accessible name, and
+                      a second one here would make it say everything twice. */}
+                  <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
+                  {label}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </nav>
 
@@ -2044,20 +2182,23 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
  * A WORK view that exists in the sidebar before it exists as a feature
  * (CGLAB-164).
  *
- * Both of these are scaffolding with an owner: the GitHub issues Inbox, and
- * the run feed that takes over from the empty Runs panel. They are here so the
- * nav row lands somewhere that says what it will be, rather than on a blank
- * pane that reads as a broken app.
+ * This is scaffolding with an owner: the run feed that takes over from the
+ * empty Runs panel. It is here so the nav row lands somewhere that says what it
+ * will be, rather than on a blank pane that reads as a broken app.
  *
  * A REGION, not a tabpanel, for the same reason Settings is one: nothing
- * carries `aria-controls` for them — they are reached from the sidebar, not
- * from the tablist — and a tabpanel with no owning tab reports a tablist with
- * nothing selected.
+ * carries `aria-controls` for it — it is reached from the sidebar, not from the
+ * tablist — and a tabpanel with no owning tab reports a tablist with nothing
+ * selected.
  *
  * Hidden rather than conditionally mounted, like every other panel in this
- * file. They hold nothing today, but the rule belongs to the panel set and not
+ * file. It holds nothing today, but the rule belongs to the panel set and not
  * to each panel: the moment one grows a filter or a tailing log, a conditional
  * mount starts throwing it away silently.
+ *
+ * Still a helper rather than inlined at its one call site, because the rules
+ * above are the panel set's and a second placeholder should inherit them rather
+ * than be written again.
  */
 function WorkPlaceholder(
   { view, active, label, title, body }:

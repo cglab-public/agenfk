@@ -43,6 +43,37 @@ const serverResources = [
   { from: '../telemetry/package.json', to: 'packages/telemetry/package.json' },
 ];
 
+/**
+ * The flag mark from the brand book (44fb546f), laid out to the book's own
+ * app-icon spec: the mark centred at 68% of a rounded-square tile, white on
+ * #0B0B0B, corner radius 0.21875 of the side. build/icon.svg is the vector
+ * source the PNG was rendered from, kept beside it so the icon can be
+ * regenerated at any size instead of being re-traced.
+ *
+ * One 1024px PNG for all three platforms: electron-builder derives the icns
+ * and ico slots from it, which is one source of truth rather than three files
+ * that drift. It would find build/icon.png on its own, but only while
+ * buildResources stays 'build' - naming it on each platform makes moving that
+ * directory fail loudly rather than silently reverting the app to the stock
+ * Electron atom, which is a defect nobody sees until they look at the Dock.
+ */
+const APP_ICON = 'build/icon.png';
+
+/**
+ * Linux wants a directory, not that single file.
+ *
+ * Handed one PNG, electron-builder derives a one-entry icon "set" sized by the
+ * source (iconConverter's `set` branch returns it as-is with size = max(w,h)),
+ * and FpmTarget then installs the deb's icon at
+ * /usr/share/icons/hicolor/<size>x<size>/apps. From a 1024px master that is a
+ * 1024x1024 directory, which the stock hicolor index does not list, so desktops
+ * that walk the standard sizes find no icon and the app lands in the menu
+ * blank. A directory of NxN.png files is passed through verbatim instead, which
+ * puts every size where the spec says to look. The 1024 entry stays in the set
+ * because AppImage links .DirIcon to the largest one available.
+ */
+const APP_ICON_SET = 'build/icons';
+
 module.exports = {
   appId: 'com.cglab.agenfk.desktop',
   productName: 'AgEnFK',
@@ -89,6 +120,7 @@ module.exports = {
   ],
 
   mac: {
+    icon: APP_ICON,
     category: 'public.app-category.developer-tools',
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },
@@ -104,6 +136,7 @@ module.exports = {
   },
 
   win: {
+    icon: APP_ICON,
     target: [
       { target: 'nsis', arch: ['x64', 'arm64'] },
       // Portable for people who cannot run an installer on a work machine.
@@ -118,6 +151,7 @@ module.exports = {
   },
 
   linux: {
+    icon: APP_ICON_SET,
     target: [
       { target: 'AppImage', arch: ['x64', 'arm64'] },
       { target: 'deb', arch: ['x64', 'arm64'] },
