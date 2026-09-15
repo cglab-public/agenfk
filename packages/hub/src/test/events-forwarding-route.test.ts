@@ -21,12 +21,13 @@ const cleanup = () => {
 };
 const binding = { parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1' };
 
-const batch = (n: number) => ({
-  events: Array.from({ length: n }, (_, i) => ({
-    eventId: `e${i}`, orgId: 'org', installationId: 'i1', userKey: 'alice@acme.com',
-    occurredAt: '2026-09-14T10:00:00.000Z', type: 'item.closed', payload: {},
-  })),
+const evt = (id: string, gitEmail = 'alice@acme.com') => ({
+  eventId: id, orgId: 'org', installationId: 'i1',
+  occurredAt: '2026-09-14T10:00:00.000Z', type: 'item.closed',
+  actor: { osUser: 'alice', gitName: 'Alice', gitEmail },
+  payload: {},
 });
+const batch = (n: number) => ({ events: Array.from({ length: n }, (_, i) => evt(`e${i}`)) });
 
 describe('/v1/events forwards to the parent without depending on it', () => {
   let app: any; let ctx: any; let token: string;
@@ -45,6 +46,8 @@ describe('/v1/events forwards to the parent without depending on it', () => {
     cleanup();
   });
 
+  // A regression pin rather than a new behaviour: this passes before the
+  // feature exists, and its job is to keep passing after it.
   it('queues nothing on a standalone hub, and ingests exactly as before', async () => {
     const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send(batch(2));
     expect(r.status).toBe(200);
@@ -68,23 +71,32 @@ describe('/v1/events forwards to the parent without depending on it', () => {
     expect(await outboxDepth(ctx.db)).toBe(2);
   });
 
-  it('does not forward a hidden person\'s events', async () => {
+  it('does not forward a hidden person\'s events, but still forwards everyone else\'s', async () => {
     await writeParentBinding(ctx.db, SECRET, binding);
     await ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'alice@acme.com']);
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send(batch(2));
-    expect(r.body.ingested).toBe(0);
-    expect(await outboxDepth(ctx.db)).toBe(0);
+    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`)
+      .send({ events: [evt('hidden-1'), evt('visible-1', 'bob@acme.com')] });
+    expect(r.body.ingested).toBe(1);
+    // Exactly one row queued, and it is Bob's — asserting "nothing forwarded"
+    // alone would hold true of a hub that forwards nothing at all.
+    expect(await outboxDepth(ctx.db)).toBe(1);
+    const row = await ctx.db.get<any>('SELECT payload FROM federation_outbox');
+    expect(JSON.parse(row.payload).event.userKey).toBe('bob@acme.com');
   });
 
   it('still ingests when forwarding fails — the parent is not in the request path', async () => {
     await writeParentBinding(ctx.db, SECRET, binding);
     const real = ctx.db.run.bind(ctx.db);
+    let attempts = 0;
     ctx.db.run = async (sql: string, params?: unknown[]) => {
-      if (/INSERT INTO federation_outbox/i.test(sql)) throw new Error('disk full');
+      if (/INSERT INTO federation_outbox/i.test(sql)) { attempts++; throw new Error('disk full'); }
       return real(sql, params);
     };
     const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send(batch(2));
     ctx.db.run = real;
+    // Forwarding must actually have been ATTEMPTED, or "ingest still worked"
+    // is just a description of a hub that never forwards.
+    expect(attempts).toBeGreaterThan(0);
     expect(r.status).toBe(200);
     expect(r.body.ingested).toBe(2);
     const stored = await ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM events');
