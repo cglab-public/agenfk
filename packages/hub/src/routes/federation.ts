@@ -231,6 +231,42 @@ export function federationRouter(ctx: HubServerContext): Router {
    * silently a no-op. Both are the right outcome: it is still stored as an
    * event, it just moves no state.
    */
+  /**
+   * The oldest dispatch of one kind that this child still owes an answer for.
+   *
+   * Both kinds share one predicate, and it encodes two rules that are easy to
+   * get subtly different if written twice:
+   *  - a hub is targeted when the scope is 'all' OR an explicit target row
+   *    names it. 'all' means every current AND FUTURE hub, so it is never
+   *    expanded into rows at creation and the row appears lazily, here, the
+   *    first time a hub is served;
+   *  - only `pending` is outstanding. A terminal target is not re-served —
+   *    re-sending something the child already rejected would loop forever —
+   *    so correcting one needs an admin to dispatch again.
+   *
+   * The table names are compile-time literals from the two call sites, never
+   * anything a request can reach.
+   */
+  const outstandingDispatch = (
+    dispatchTable: 'flow_dispatches' | 'upgrade_dispatches',
+    targetTable: 'flow_dispatch_targets' | 'upgrade_dispatch_targets',
+    extraColumns: string,
+    childHubId: string,
+    orgId: string,
+  ) => ctx.db.get<any>(
+    `SELECT d.id, d.created_at, ${extraColumns}
+       FROM ${dispatchTable} d
+       LEFT JOIN ${targetTable} t
+         ON t.dispatch_id = d.id AND t.child_hub_id = ?
+      WHERE d.org_id = ?
+        AND d.cancelled_at IS NULL
+        AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
+        AND (t.state IS NULL OR t.state = 'pending')
+      ORDER BY d.created_at ASC
+      LIMIT 1`,
+    [childHubId, orgId],
+  );
+
   const isDispatchReport = (e: any) =>
     e?.type === 'fleet:flow-dispatch:installed' || e?.type === 'fleet:flow-dispatch:failed';
 
@@ -412,18 +448,8 @@ export function federationRouter(ctx: HubServerContext): Router {
   router.get('/directives', requireKey, async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { childHubId, orgId } = req.hubFederation!;
-      const row = await ctx.db.get<any>(
-        `SELECT d.id, d.flow_id, d.flow_version, d.created_at
-           FROM flow_dispatches d
-           LEFT JOIN flow_dispatch_targets t
-             ON t.dispatch_id = d.id AND t.child_hub_id = ?
-          WHERE d.org_id = ?
-            AND d.cancelled_at IS NULL
-            AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
-            AND (t.state IS NULL OR t.state = 'pending')
-          ORDER BY d.created_at ASC
-          LIMIT 1`,
-        [childHubId, orgId],
+      const row = await outstandingDispatch(
+        'flow_dispatches', 'flow_dispatch_targets', 'd.flow_id, d.flow_version', childHubId, orgId,
       );
 
       // Group upgrades share this feed (CGLAB-183). A child takes ONE directive
@@ -431,18 +457,8 @@ export function federationRouter(ctx: HubServerContext): Router {
       // that keeps them in the order the admin actually issued them instead of
       // letting one kind starve the other. Two small indexed lookups rather
       // than a UNION, which the pg-mem parity backend does not handle.
-      const upgradeRow = await ctx.db.get<any>(
-        `SELECT d.id, d.target_version, d.confirm_downgrade, d.created_at
-           FROM upgrade_dispatches d
-           LEFT JOIN upgrade_dispatch_targets t
-             ON t.dispatch_id = d.id AND t.child_hub_id = ?
-          WHERE d.org_id = ?
-            AND d.cancelled_at IS NULL
-            AND (d.scope_type = 'all' OR t.child_hub_id IS NOT NULL)
-            AND (t.state IS NULL OR t.state = 'pending')
-          ORDER BY d.created_at ASC
-          LIMIT 1`,
-        [childHubId, orgId],
+      const upgradeRow = await outstandingDispatch(
+        'upgrade_dispatches', 'upgrade_dispatch_targets', 'd.target_version, d.confirm_downgrade', childHubId, orgId,
       );
 
       if (upgradeRow && (!row || msOf(upgradeRow.created_at) < msOf(row.created_at))) {
