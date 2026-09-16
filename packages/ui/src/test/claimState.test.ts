@@ -16,7 +16,7 @@
  * a chip that renders on all of them is thirty rows announcing an absence.
  */
 import { describe, it, expect } from 'vitest';
-import { claimStateOf, claimChipLabel, claimChipTitle, type ClaimCard } from '../claimState';
+import { claimStateOf, claimChipLabel, claimChipTitle, collide, type ClaimCard } from '../claimState';
 
 const card = (id: string, status: string, claims?: string[]): ClaimCard => ({ id, status, claims });
 
@@ -115,5 +115,54 @@ describe('input the sidebar can actually hand it', () => {
       { id: 'theirs', status: 'IN_PROGRESS' } as ClaimCard,
     ]);
     expect(claimChipLabel(state)).toBe('owns 1 path');
+  });
+});
+
+/**
+ * The copy must agree with the original (CGLAB-190).
+ *
+ * `collide` in claimState.ts duplicates `claimsCollide` from packages/core,
+ * because core is CommonJS and a browser bundle cannot have it: a named import
+ * fails the build, and a namespace import made the build PASS and shipped a
+ * bundle that threw `ReferenceError: exports is not defined` on load - a black
+ * window with every test and the build reporting success.
+ *
+ * A copy that drifts is worse than either sharing or not: the sidebar would say
+ * free where the server says refused, and the reader has no way to know which
+ * of them is lying. This test can import core because it runs where core
+ * resolves to SOURCE, which is precisely the thing the bundle cannot do.
+ */
+describe('the duplicated overlap check agrees with core', () => {
+  it('gives the same answer as claimsCollide on every case that matters', async () => {
+    const { claimsCollide } = await import('@agenfk/core');
+    const cases: Array<[string, string]> = [
+      ['packages/ui/src/App.tsx', 'packages/ui/'],
+      ['packages/ui/src/App.tsx', 'packages\\ui'],
+      ['src/a.ts', 'src//a.ts'],
+      ['packages/ui-legacy/App.tsx', 'packages/ui/'],
+      ['src/App.tsx.map', 'src/App.tsx'],
+      ['a/b.ts', 'a/b.ts'],
+      ['packages/ui/', 'packages/'],
+      ['x', 'y'],
+    ];
+    for (const [a, b] of cases) {
+      expect(collide(a, b), `the sidebar and the server disagree on ${a} vs ${b}`).toBe(claimsCollide(a, b));
+    }
+  });
+
+  it('releases on the same statuses the gate does', async () => {
+    // RELEASED here is a second copy of RELEASED_STATUSES. Two lists that drift
+    // produce a sidebar that says held where the server says free.
+    const { gateOnClaims } = await import('@agenfk/core');
+    for (const status of ['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS', 'PAUSED', 'BLOCKED', 'IN_PROGRESS', 'TODO']) {
+      const mine = { id: 'mine', status: 'IN_PROGRESS', claims: ['packages/ui/a.ts'] };
+      const theirs = { id: 'theirs', status, claims: ['packages/ui/'] };
+      const uiSaysHeld = claimStateOf('mine', [mine, theirs]).heldBy.length > 0;
+      const gateRefuses = !gateOnClaims(
+        { id: 'mine', claims: mine.claims },
+        [mine, theirs].map(c => ({ id: c.id, status: c.status, claims: c.claims })),
+      ).authorized;
+      expect(uiSaysHeld, `sidebar and gate disagree for a ${status} holder`).toBe(gateRefuses);
+    }
   });
 });

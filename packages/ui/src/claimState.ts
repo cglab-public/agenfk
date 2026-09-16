@@ -25,16 +25,36 @@
  * which of them is lying.
  */
 /*
- * Namespace import, and it is not a style choice. `@agenfk/core` compiles to
- * CommonJS and re-exports through `export *`, which rollup cannot trace to a
- * named binding - `"gateOnClaims" is not exported` at build time while vitest,
- * which aliases the package to SOURCE, stays green. Tests passing and the
- * bundle failing is the exact divergence worth naming here.
+ * THE OVERLAP CHECK IS DUPLICATED HERE, deliberately, and the story is worth
+ * the paragraph because two attempts to share it both failed.
+ *
+ * `@agenfk/core` compiles to CommonJS. A named import fails the BUILD
+ * ("gateOnClaims is not exported" - rollup cannot trace a name through
+ * `export *` of a CJS module) while vitest, which aliases the package to
+ * SOURCE, stays green. A namespace import made the build pass and shipped a
+ * bundle that threw `ReferenceError: exports is not defined` on load: a black
+ * window, with every test and the build itself reporting success.
+ *
+ * So the browser cannot have core until core emits ESM. The copy is the same
+ * decision `bin/agenfk-gatekeeper.mjs` already made for the same reason, and
+ * it carries the same obligation: a copy that DRIFTS is worse than either
+ * sharing or not, so a test pins this against the real `claimsCollide` - and
+ * that test CAN import core, because it runs where core resolves to source.
  */
-import * as core from '@agenfk/core';
-import type { ClaimHolder } from '@agenfk/core';
+const RELEASED = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 
-const { gateOnClaims } = core;
+function normalise(claim: string): string {
+  return claim.replace(/\\/g, '/').split('/').filter(Boolean).join('/');
+}
+
+/** Mirrors `claimsCollide` in packages/core/src/claims.ts. */
+export function collide(a: string, b: string): boolean {
+  const x = normalise(a), y = normalise(b);
+  if (x === y) return true;
+  const contains = (outer: string, inner: string): boolean =>
+    outer !== '' && inner.startsWith(outer + '/');
+  return contains(x, y) || contains(y, x);
+}
 
 export interface ClaimCard {
   readonly id: string;
@@ -63,14 +83,17 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
   const owns = card?.claims ?? [];
   if (!owns.length) return EMPTY;
 
-  const holders: ClaimHolder[] = all.map(c => ({ id: c.id, status: c.status, claims: c.claims }));
-  const gate = gateOnClaims({ id: cardId, claims: owns }, holders);
   /*
    * De-duplicated: one card holding a directory produces a conflict per file
    * beneath it, and a row reading "held by a, a, a" is noise where "held by a"
    * is the fact.
    */
-  const heldBy = [...new Set(gate.conflicts.map(c => c.heldBy))];
+  const heldBy = [...new Set(
+    all
+      .filter(c => c.id !== cardId && !RELEASED.has(c.status.toUpperCase()))
+      .filter(c => (c.claims ?? []).some(theirs => owns.some(mine => collide(mine, theirs))))
+      .map(c => c.id),
+  )];
   return { owns: [...owns], heldBy };
 }
 
