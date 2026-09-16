@@ -42,13 +42,10 @@ import {
   sessionPersistenceFromBridge, listAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
   canChooseSound, currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
-  readSoundFromBridge,
 } from './agentBridge';
 import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
-import { api, type AppSettingsDto as AppSettings, type SoundTimingDto } from '../api';
-
-export type { AppSettingsDto as AppSettings } from '../api';
+import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
 
 /**
  * One row: what it is, what it does, and whatever acts on it.
@@ -152,6 +149,38 @@ function RowButton({
 }
 
 /**
+ * Something went wrong, said where the user is looking.
+ *
+ * One component rather than the four copies this screen accumulated while the
+ * blocks were being written. They differed only in their text, and keeping them
+ * apart meant four places for the `role="alert"` to be forgotten from — which is
+ * the part that matters, since a message a screen reader never announces is a
+ * message that did not happen.
+ *
+ * Both tones are a light/dark PAIR, like every other coloured text in this app.
+ */
+function Alert({
+  children, tone = 'error',
+}: {
+  children: React.ReactNode;
+  tone?: 'error' | 'warning';
+}): React.ReactElement {
+  return (
+    <div
+      role="alert"
+      className={clsx(
+        'mt-6 rounded-lg border px-3 py-2 text-[12px]',
+        tone === 'warning'
+          ? 'border-amber-600/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+          : 'border-rose-600/40 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
  * A command the user is meant to run, rendered the way this app renders one.
  *
  * `React.ReactNode` rather than `string`: JSX splits `v{version}` into an array
@@ -194,13 +223,13 @@ function initials(name: string | null, login: string): string {
 
 export function SettingsPanel(): React.ReactElement {
   const queryClient = useQueryClient();
-  const { data: settings, isError: readFailed } = useQuery<AppSettings>({
+  const { data: settings, isError: readFailed } = useQuery<AppSettingsDto>({
     queryKey: ['settings'],
     queryFn: api.getSettings,
   });
 
   const save = useMutation({
-    mutationFn: (patch: Partial<AppSettings>) => api.updateSettings(patch),
+    mutationFn: (patch: Partial<AppSettingsDto>) => api.updateSettings(patch),
     // The server answers with the whole settled state, so the cache is filled
     // from what was actually stored rather than from what we hoped.
     onSuccess: settled => { queryClient.setQueryData(['settings'], settled); },
@@ -212,7 +241,7 @@ export function SettingsPanel(): React.ReactElement {
   });
 
   /** Whether a particular key is the one currently being written. */
-  const saving = (key: keyof AppSettings): boolean =>
+  const saving = (key: keyof AppSettingsDto): boolean =>
     save.isPending && save.variables !== undefined && key in save.variables;
 
   /**
@@ -563,7 +592,7 @@ export function SettingsPanel(): React.ReactElement {
               type="button"
               aria-label="Preview the sound"
               disabled={!attentionAlerts}
-              onClick={() => { void playAttentionSound(browserSoundDeps(readSoundFromBridge)); }}
+              onClick={() => { void playAttentionSound(browserSoundDeps()); }}
               className="rounded-md px-2 py-1 text-[13px] text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             >
               ▶
@@ -767,45 +796,27 @@ export function SettingsPanel(): React.ReactElement {
               verified — and for auto-approve that is asserting a safety
               property. */}
           {(readFailed || prefsFailed) && (
-            <div
-              role="alert"
-              className="mt-6 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-300"
-            >
+            <Alert tone="warning">
               Could not read your settings, so the switches below may not reflect
               what is stored. Check that AgEnFK is running.
-            </div>
+            </Alert>
           )}
 
           {/* A save that fails has to be visible. The switch does not move on
               its own, so silence here reads as "I missed the button". */}
           {(save.isError || saveAutoApprove.isError || saveTelemetry.isError) && (
-            <div
-              role="alert"
-              className="mt-6 rounded-lg border border-rose-600/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300"
-            >
-              Could not save that change; it was not applied.
-            </div>
+            <Alert>Could not save that change; it was not applied.</Alert>
           )}
 
           {/* An action that answered and did nothing needs its own message. The
               generic "could not save" above would be wrong — the request
               succeeded — and silence would read as the button being dead. */}
           {(signOut.isError || signOutRefused) && (
-            <div
-              role="alert"
-              className="mt-6 rounded-lg border border-rose-600/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300"
-            >
-              Could not sign out. {signOutRefused}
-            </div>
+            <Alert>Could not sign out. {signOutRefused}</Alert>
           )}
 
           {(chooseSound.isError || clearSound.isError || soundRefused) && (
-            <div
-              role="alert"
-              className="mt-6 rounded-lg border border-rose-600/40 bg-rose-500/10 px-3 py-2 text-[12px] text-rose-700 dark:text-rose-300"
-            >
-              {soundRefused ?? 'Could not change the sound.'}
-            </div>
+            <Alert>{soundRefused ?? 'Could not change the sound.'}</Alert>
           )}
 
           <section data-testid="settings-section" className="mt-8">

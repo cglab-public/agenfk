@@ -9,45 +9,66 @@
  * `claimState.ts`, which made the same call for the same reason.
  *
  * That file also states the obligation a copy carries: a copy that DRIFTS is
- * worse than either sharing or not. The drift here has a specific and quiet
- * shape. A setting added to core and missed here is one the screen cannot
- * write: `updateSettings({ theNewOne: … })` fails no type check anywhere,
- * because `Partial<AppSettingsDto>` simply has no such key to disagree with —
- * and the server refuses it with a 400 the user sees as "could not save that".
+ * worse than either sharing or not. The drift matters in ONE direction, and
+ * this file is arranged around that fact.
  *
- * So this test imports core, which it can: vitest aliases the package to
- * SOURCE, and nothing here reaches a browser.
+ * **Core gains a setting, the UI type does not.** Quiet and expensive. The
+ * screen cannot write the new setting: `updateSettings({ theNewOne: … })` fails
+ * no type check anywhere, because `Partial<AppSettingsDto>` has no such key to
+ * disagree with — and the server then refuses it with a 400 the user reads as
+ * "could not save that". Nothing in the compiler notices, so a RUNTIME check
+ * has to.
+ *
+ * **The UI type gains one core does not.** Loud and immediate: `SAMPLE` below
+ * is an object literal annotated as `AppSettingsDto`, so a key that leaves the
+ * interface makes it an excess-property error and the build stops. No runtime
+ * assertion is needed, and one written here would only duplicate the compiler.
+ *
+ * So the sample is the single source for BOTH checks: the compiler polices its
+ * shape, and the assertions police it against core's keys. Listing the keys
+ * again in an assertion would make them a third spelling, free to agree with
+ * neither.
  */
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_APP_SETTINGS, SOUND_TIMINGS } from '@agenfk/core';
 import type { AppSettingsDto, SoundTimingDto } from '../api';
 
+/**
+ * One value of every setting the UI believes exists.
+ *
+ * Annotated, not inferred. The annotation is what makes a key removed from
+ * `AppSettingsDto` a compile error here rather than a silent pass.
+ */
+const SAMPLE: AppSettingsDto = {
+  tmuxByDefault: false,
+  attentionAlerts: true,
+  attentionSound: true,
+  soundTiming: 'unfocused',
+  osNotifications: true,
+};
+
 describe('the settings type the UI writes through', () => {
-  it('names every setting core defines, and no others', () => {
-    // A `satisfies`-style check done at runtime, because the two types cannot
-    // be compared structurally without importing core into the bundle.
-    const mirror: Record<keyof AppSettingsDto, true> = {
-      tmuxByDefault: true,
-      attentionAlerts: true,
-      attentionSound: true,
-      soundTiming: true,
-      osNotifications: true,
-    };
-    expect(Object.keys(mirror).sort()).toEqual(Object.keys(DEFAULT_APP_SETTINGS).sort());
+  it('knows about every setting core defines', () => {
+    // THE assertion. A setting added to core and forgotten here shows up as a
+    // missing key, at runtime, in this test — which is the only place it can
+    // show up at all.
+    const missing = Object.keys(DEFAULT_APP_SETTINGS).filter(k => !(k in SAMPLE));
+    expect(missing, 'core has settings the UI type cannot write').toEqual([]);
+  });
+
+  it('knows about no settings core does not', () => {
+    // The mirror. The compiler catches this first, through SAMPLE's
+    // annotation; the assertion is here so the failure names the key rather
+    // than pointing at an object literal.
+    const extra = Object.keys(SAMPLE).filter(k => !(k in DEFAULT_APP_SETTINGS));
+    expect(extra, 'the UI type has settings the server will refuse').toEqual([]);
   });
 
   it('gives every setting the same type core does', () => {
     // The other half of the drift: a boolean here against a string there is
     // accepted by the compiler on this side and refused by the route.
-    const sample: AppSettingsDto = {
-      tmuxByDefault: false,
-      attentionAlerts: true,
-      attentionSound: true,
-      soundTiming: 'unfocused',
-      osNotifications: true,
-    };
     for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettingsDto>) {
-      expect(typeof sample[key], key).toBe(typeof DEFAULT_APP_SETTINGS[key]);
+      expect(typeof SAMPLE[key], key).toBe(typeof DEFAULT_APP_SETTINGS[key]);
     }
   });
 

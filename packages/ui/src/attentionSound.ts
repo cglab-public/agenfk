@@ -15,6 +15,8 @@
  * trying to leave.
  */
 
+import { readSoundFromBridge } from './components/agentBridge';
+
 /** Everything this touches, injected so the rules can be tested in jsdom. */
 export interface SoundDeps {
   /** The chosen file's bytes, from the desktop bridge. Null for the built-in. */
@@ -51,7 +53,14 @@ function playTone(ctx: AudioContext): void {
 
 /** The real dependencies, for the app. */
 export const browserSoundDeps = (
-  readCustomSound: () => Promise<{ dataUrl: string; name: string } | null>,
+  /**
+   * Defaulted, because both real callers pass the same thing.
+   *
+   * It stays a PARAMETER so a test can hand in its own without reaching for a
+   * module mock; it stops being an argument every caller has to remember,
+   * which is a second chance for one of them to pass something else.
+   */
+  readCustomSound: () => Promise<{ dataUrl: string; name: string } | null> = readSoundFromBridge,
 ): SoundDeps => ({
   readCustomSound,
   AudioContext: () => new (window.AudioContext
@@ -78,13 +87,10 @@ export const browserSoundDeps = (
  * display over a beep.
  */
 export async function playAttentionSound(deps: SoundDeps): Promise<boolean> {
-  let custom: { dataUrl: string; name: string } | null = null;
-  try {
-    custom = await deps.readCustomSound();
-  } catch {
-    // An older preload with no sounds channel rejects the invoke.
-    custom = null;
-  }
+  // `.catch`, not a try/assign. The assignment in the catch branch was dead —
+  // `custom` was already null — which eslint reads as a sign the two branches
+  // are really one expression, and it is right.
+  const custom = await deps.readCustomSound().catch(() => null);
   if (custom) {
     try {
       if (await deps.playDataUrl(custom.dataUrl)) return true;
