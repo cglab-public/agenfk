@@ -134,3 +134,47 @@ describe('what the row does NOT offer', () => {
     expect(buttons[0]).toHaveAttribute('data-testid', 'process-open');
   });
 });
+
+/**
+ * The suggested command, on the row (CGLAB-200).
+ *
+ * nextAction.test.ts proves the decision. This proves it is SHOWN, and pins
+ * the one thing a row can get wrong that a pure function cannot: putting a
+ * command on every line, which is how the useful ones stop being read.
+ */
+describe('the command the row suggests', () => {
+  const row = (state: SessionRow['state'], hasTerminal = true): SessionRow => ({
+    runId: 'r1', itemId: 'abcdef12-0000', title: 'A card',
+    agentId: 'claude-code', agentLabel: 'Claude Code', state,
+    startedAt: new Date().toISOString(), hasTerminal,
+  });
+
+  it('shows an inspection for an agent it cannot reach', () => {
+    render(<CardProcessRow row={row('unverifiable')} />);
+    const el = screen.getByTestId('next-action');
+    expect(el.textContent).toMatch(/agenfk get abcdef12/);
+  });
+
+  it('explains it in words before the command, in the accessible name', () => {
+    /*
+     * A bare argv is a thing to paste without understanding. Being able to
+     * decide NOT to run it is the whole point, so the sentence comes first.
+     */
+    render(<CardProcessRow row={row('unverifiable')} />);
+    expect(screen.getByTestId('next-action').getAttribute('title')).toMatch(/^Cannot reach it/);
+  });
+
+  it('shows nothing on a healthy row', () => {
+    // THE test for this layer. A command on every line is noise, and noise on
+    // every line is how the two that matter get skipped.
+    render(<CardProcessRow row={row('running')} />);
+    expect(screen.queryByTestId('next-action')).toBeNull();
+  });
+
+  it('shows nothing for a blocked agent, which needs a window and not a command', () => {
+    // The move there is to open its terminal. A CLI call would send somebody
+    // to the wrong window.
+    render(<CardProcessRow row={row('blocked')} />);
+    expect(screen.queryByTestId('next-action')).toBeNull();
+  });
+});

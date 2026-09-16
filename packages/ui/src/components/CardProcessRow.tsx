@@ -37,6 +37,7 @@ import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
 import { DOT, STATE_LABEL, Spinner } from './sessionPresentation';
 import type { SessionRow } from '../sessionRow';
+import { nextAction, nextActionCommand } from '../nextAction';
 
 export interface CardProcessRowProps {
   readonly row: SessionRow;
@@ -105,6 +106,35 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
           </span>
         )}
       </button>
+
+      {(() => {
+        /*
+         * The command that would resolve this one (CGLAB-200).
+         *
+         * Shown, never run. The row said what state the agent is in and left
+         * the person to work out the move; this removes the deduction without
+         * taking the decision away from anybody.
+         *
+         * Absent on a healthy row rather than empty: a suggestion on every row
+         * is how the useful ones stop being read.
+         */
+        const action = nextAction({ itemId: row.itemId, state: row.state, hasTerminal: row.hasTerminal });
+        const command = nextActionCommand(action);
+        if (!command) return null;
+        return (
+          <span
+            data-testid="next-action"
+            data-state={row.state}
+            /* The words come first in the accessible name, because a bare argv
+               is a thing to paste without understanding - and being able to
+               decide NOT to run it is the point. */
+            title={`${action.intent}\n\n${command}`}
+            className="shrink-0 truncate font-mono text-[10px] text-ink-tertiary opacity-70"
+          >
+            {command}
+          </span>
+        );
+      })()}
 
     </div>
   );
