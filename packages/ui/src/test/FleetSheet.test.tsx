@@ -46,6 +46,19 @@ describe('the button', () => {
       .toHaveTextContent('Launch 3');
   });
 
+  it('holds a child the breaker has stopped, and does not count it', () => {
+    /*
+     * The dead wire (BUG b0bccf90): planFleet knew how to hold a stopped card,
+     * and nothing ever handed it the count - so this row could not appear in
+     * the shipped app while fleetPlan's own tests built the input by hand.
+     */
+    show([kid('a'), { ...kid('b'), failureCount: 3 }, kid('c')]);
+    expect(screen.getByTestId('fleet-launch'), 'a stopped card was counted as launchable')
+      .toHaveTextContent('Launch 2');
+    expect(screen.getAllByTestId('fleet-hold-reason').map(e => e.textContent).join(' '))
+      .toMatch(/3 consecutive failures/i);
+  });
+
   it('launches exactly the ids the plan cleared, never the held one', () => {
     const onLaunch = show([kid('a', ['shared/']), kid('b', ['shared/x.ts']), kid('c', ['other/'])]);
     fireEvent.click(screen.getByTestId('fleet-launch'));

@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, type DispatchState } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2192,7 +2192,10 @@ app.patch("/agent-runs/:id", asyncHandler(async (req: any, res: any) => {
   // ponytail: check-then-write, not a transaction. Two PATCHes interleaving
   // at the awaits below can both pass the guard above; every real caller sends
   // a terminal status once, for a distinct run, so the ceiling is cosmetic.
-  // Make it a conditional UPDATE ... WHERE status = ? if a second writer appears.
+  // The failure count below has the same shape but a real ceiling: two runs
+  // for ONE card failing at once both read N and write N+1, so the breaker
+  // opens one late. Make it a conditional UPDATE ... WHERE status = ?, and
+  // count in storage, if a card ever gets two concurrent failing runs.
   const updated = await storage.updateAgentRun(req.params.id, {
     ...(status !== undefined ? { status } : {}),
     ...(verdict !== undefined ? { verdict } : {}),
@@ -2202,6 +2205,27 @@ app.patch("/agent-runs/:id", asyncHandler(async (req: any, res: any) => {
     // word to RUN_STATUSES (blocked, say) cannot silently stamp the record.
     ...(status !== undefined && isTerminal(status as DispatchState) && !existing.endedAt ? { endedAt: new Date().toISOString() } : {}),
   });
+  /*
+   * A failed attempt counts against the CARD, not the run (CGLAB-202). Three
+   * in a row and `mayDispatch` refuses it, which is the breaker: a repeated
+   * failure becomes a person looking rather than a fourth agent spent.
+   *
+   * Only the transition INTO `failed` counts - a resend is a no-op, and
+   * `done` clears nothing because SessionEnd is not success. The count lives
+   * on the item, so re-asking by another run answers the same.
+   */
+  if (status === 'failed' && existing.status !== 'failed') {
+    const item = await storage.getItem(existing.itemId);
+    if (item) {
+      const decision = recordFailure({ failureCount: item.failureCount ?? 0 });
+      await storage.updateItem(item.id, { failureCount: decision.failureCount });
+      // The board's item list is cached with a long staleTime and only
+      // refetches on `items_updated`; without this the sheet keeps the old
+      // count until some unrelated event, which is the moment the feature
+      // exists for.
+      io.emit('items_updated');
+    }
+  }
   io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
   res.json(updated);
 }));
@@ -3715,6 +3739,18 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // item advanced into the terminal step having run no verification at all.
   // The two must agree, or the gate silently does not exist.
   const isFinalStep = nextStatus === Status.DONE || !nextStep || isBoundaryStep(nextStep);
+  /*
+   * The EXIT step, which is not the same question as `isFinalStep`.
+   *
+   * `isFinalStep` also means "any boundary step", because that is the right
+   * predicate for whether a command is required. It is wrong for the breaker
+   * clear: a flow may hold at a mid-flow special step (BLOCKED, say), and
+   * clearing there would hand a card one failure from the open breaker a clean
+   * slate just for being parked. So the clear asks about the flow's LAST step
+   * by position, not about a word.
+   */
+  const exitStep = sorted[sorted.length - 1];
+  const isExitStep = nextStatus === Status.DONE || !nextStep || nextStep.name === exitStep?.name;
   const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
@@ -3736,7 +3772,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       );
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const updates: any = { status: Status.DONE, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }] };
+        const updates: any = { status: Status.DONE, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
@@ -3755,7 +3791,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       });
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
+        const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) });
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated);
@@ -3839,6 +3875,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
     if (passed) {
       const updates: any = { status: nextStatus, comments };
+      /*
+       * The flow's OWN exit step is rarely named DONE, so the storage clear
+       * keyed on the literal word misses every custom flow - leaving the count
+       * at three forever on a card that finished, breaker open with no route
+       * to reset it (review finding on CGLAB-202). Here the flow is resolved,
+       * so the clear can be about landing on the FINAL step, not a name.
+       */
+      if (isExitStep) updates.failureCount = 0;
       if (nextStatus === Status.DONE) {
         updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
       }

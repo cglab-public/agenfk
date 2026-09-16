@@ -24,6 +24,8 @@ import type { ClaimCard } from '../claimState';
 export interface FleetSheetItem extends ClaimCard {
   readonly title: string;
   readonly parentId?: string | null;
+  /** Consecutive failed attempts, when the item carries one (CGLAB-202). */
+  readonly failureCount?: number;
 }
 
 export interface FleetSheetProps {
@@ -99,13 +101,21 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
 }
 
 export function FleetSheet({ parent, all, depth, running, onLaunch, onClose }: FleetSheetProps): React.ReactElement {
-  const plan = React.useMemo(
+  const plan = React.useMemo(() => {
+    /*
+     * Built HERE from the items rather than taken as a prop. The sheet already
+     * holds every item, and a caller that has to remember to pass the count is
+     * exactly how this wire stayed dead: `FleetInputs.failures` was optional,
+     * nothing filled it, and the `circuit-broken` hold could never appear in
+     * the shipped app while fleetPlan's own tests built the input by hand
+     * (BUG b0bccf90).
+     */
+    const failures = new Map(all.map(i => [i.id, i.failureCount ?? 0]));
+    return planFleet({ parentId: parent.id, all, depth, running, failures });
     // `running` in the deps, not only in the call. A memo that reads a prop it
     // does not depend on keeps answering with the set it was built with, which
     // is the count going stale the moment a terminal opens.
-    () => planFleet({ parentId: parent.id, all, depth, running }),
-    [parent.id, all, depth, running],
-  );
+  }, [parent.id, all, depth, running]);
   const launchable = plan.children.filter(c => c.launch).map(c => c.id);
 
   return (

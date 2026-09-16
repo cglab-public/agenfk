@@ -463,6 +463,19 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const updated = { ...existing, ...updates, updatedAt: new Date() } as AgEnFKItem;
+    /*
+     * A card that reached DONE has no failed-attempt history to carry
+     * (CGLAB-202). Reaching the end is the one event that means the work
+     * landed, so it is the one that clears - a run ending `done` does not,
+     * because the hook closes runs `done` on SessionEnd whether or not the
+     * attempt succeeded.
+     *
+     * Cleared HERE because every path to DONE routes through this method:
+     * validate_progress, its sibling propagation, and an internal PUT.
+     */
+    if (updated.status === Status.DONE && existing.status !== Status.DONE) {
+      updated.failureCount = 0;
+    }
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
     ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);

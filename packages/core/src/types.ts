@@ -468,6 +468,21 @@ export interface BaseItem {
    * introduced it.
    */
   claims?: string[];
+  /**
+   * Consecutive failed attempts on this card (CGLAB-202).
+   *
+   * The count belongs to the CARD, not to the attempt that discovered it - a
+   * fresh dispatch by another route answers the same, which is what makes the
+   * breaker a breaker rather than a decoration. At three, `mayDispatch`
+   * refuses the card and the fan-out sheet shows it `circuit-broken`: the
+   * point is to turn a repeated failure into A PERSON LOOKING.
+   *
+   * Written by the SERVER only (a run ending `failed` increments it; reaching
+   * DONE clears it), for the same reason `endedAt` is: a limit the party it
+   * limits can lift is not a limit. Absent on every card that predates the
+   * field, and an unknown history is not a history of failure.
+   */
+  failureCount?: number;
   prUrl?: string; // Pull request URL
   prNumber?: number; // Pull request number
   prStatus?: 'open' | 'merged' | 'closed' | 'draft'; // Pull request status

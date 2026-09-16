@@ -1591,8 +1591,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div onClick={e => e.stopPropagation()}>
             <FleetSheet
               parent={fleetParent}
-              all={allItemsForFleet as never}
-              depth={mayFanOutLocal(fleetParent.id, allItemsForFleet as never)}
+              all={allItemsForFleet}
+              depth={mayFanOutLocal(fleetParent.id, allItemsForFleet)}
               /*
                * What the DISPATCHER will refuse, told to the thing that counts.
                * requestTerminal takes you to an existing terminal rather than
