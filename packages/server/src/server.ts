@@ -3,14 +3,16 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, spendRequestBudget, budgetIsStale, EXPENSIVE_ROUTE_LIMIT, type BudgetState, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
-import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
+import rateLimit from 'express-rate-limit';
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { createWorktree, removeWorktree } from "./worktrees.js";
+import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
@@ -1049,6 +1051,44 @@ app.get("/api/telemetry/config", (_req: any, res: any) => {
   }
 });
 
+/**
+ * Changing the telemetry choice from the settings screen.
+ *
+ * The flag stays in `~/.agenfk/config.json`, which is where `agenfk config set
+ * telemetry` has always kept it and where `isTelemetryEnabled` reads it.
+ * Copying it into the settings table would give one value two homes, and
+ * whichever the UI read, the other would silently disagree — the mistake
+ * tmuxByDefault already made once in the other direction. Both writers call the
+ * same function in @agenfk/telemetry, so there is one implementation of "keep
+ * the other keys" rather than two.
+ *
+ * The READ above is open and this write is not. Opting somebody IN to analytics
+ * is a privacy decision, and this server is unauthenticated on loopback with a
+ * CORS allowlist that trusts any localhost origin — so the same custom-header
+ * preflight that guards POST /releases/update guards this. (Security: bug
+ * 968259c4.)
+ */
+app.put("/api/telemetry/config", (req: any, res: any) => {
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  const enabled = req.body?.telemetryEnabled;
+  // Type-checked, never coerced. 'false' is a truthy string, and coercing it
+  // would opt in a user who was opting out.
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'telemetryEnabled must be a boolean' });
+  }
+  try {
+    setTelemetryEnabled(enabled);
+  } catch (err: any) {
+    // Unlike the read, this must not answer "fine" when nothing was written —
+    // the switch would show a choice the machine never made.
+    return res.status(500).json({ error: `Could not write the telemetry setting: ${err?.message ?? err}` });
+  }
+  // Read back rather than echoed, so the caller sees what is stored.
+  res.json({ installationId: getInstallationId(), telemetryEnabled: isTelemetryEnabled() });
+});
+
 // DB status & backup endpoints
 
 app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
@@ -1163,46 +1203,53 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * another out of the PR import. Swept on write, because a map keyed by caller
  * that is never evicted is a denial of service inside the fix for one.
  */
-const requestBudgets = new Map<string, BudgetState>();
-
-const limitExpensive = (req: any, res: any, next: any): void => {
-  const now = Date.now();
-  // Sweep before deciding, so the map cannot outlive the windows in it. Cheap:
-  // the entries are bounded by (local callers x five routes).
-  for (const [k, v] of requestBudgets) {
-    if (budgetIsStale(v, now)) requestBudgets.delete(k);
-  }
-  /*
-   * Keyed by caller, route AND the id in the path.
-   *
-   * The route PATTERN alone was the first version and it is too coarse: every
-   * card shares one `/items/:id/git-status` budget, so two split panes polling
-   * two different worktrees spend each other's allowance and the app throttles
-   * itself. A test caught it - the second case in this file inherited an
-   * exhausted window from the first - which is what a route-pattern key does to
-   * real users with several terminals open.
-   *
-   * Per id, one card looping cannot lock another out, and the limit means what
-   * the docblock above says it means: four times a single poller's load.
-   */
-  const key = `${req.ip ?? 'local'}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`;
-  const decision = spendRequestBudget(requestBudgets.get(key), now);
-  requestBudgets.set(key, decision.next);
-  if (!decision.allowed) {
-    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+/**
+ * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
+ *
+ * Applied to the five that spawn a process, walk a directory, or reach the
+ * network: git-status, the file listing, worktree creation, the project-root
+ * setter and the PR import.
+ *
+ * THE NUMBER COMES FROM WHAT THIS APP DOES, not from the alert. The UI polls
+ * git-status every four seconds, so fifteen requests a minute is ordinary; a
+ * ceiling near that would break the product to satisfy a static check, which is
+ * an easy trade to make without looking. Sixty leaves normal use four times
+ * under the line and still stops a runaway loop.
+ *
+ * WHY THE LIBRARY AND NOT THE TWENTY LINES IT REPLACES. There was a hand-rolled
+ * version here, tested, with a per-item key and its own sweep - and CodeQL went
+ * on reporting all five routes, because the query recognises known middleware
+ * and cannot be argued with about a Map. That is a bad reason to choose a
+ * dependency and a good reason to look again at the one you wrote: this handles
+ * the standard RateLimit headers, the proxy cases and the clock properly, and
+ * express-rate-limit was ALREADY in the tree as a transitive dependency of the
+ * MCP SDK, so making it direct adds no supply-chain surface.
+ *
+ * The decision module it replaces (core/requestBudget) keeps the reasoning and
+ * the tests for the NUMBER, which is the part no library can choose.
+ */
+const limitExpensive = rateLimit({
+  windowMs: EXPENSIVE_ROUTE_WINDOW_MS,
+  limit: EXPENSIVE_ROUTE_LIMIT,
+  // Per route AND per id, not per route alone. Keyed by pattern only, every
+  // card shares one git-status budget, so two split panes polling two worktrees
+  // spend each other's allowance and the app throttles itself.
+  keyGenerator: (req: any) => `${req.ip ?? 'local'}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
     /*
      * The message names the ceiling and the likely cause. A bare 429 on a
      * local-only server reads as a bug in the server, and the caller is almost
      * always a loop in something the same person is writing.
      */
-    return res.status(429).json({
+    res.status(429).json({
       error: `Too many requests to ${req.path}. This route does real work per call - a process, `
         + `a directory walk, or a network fetch - and is capped at ${EXPENSIVE_ROUTE_LIMIT} a minute. `
-        + `Retry in ${decision.retryAfterSeconds}s. If this was not a loop, say so on the card.`,
+        + 'If this was not a loop, say so on the card.',
     });
-  }
-  next();
-};
+  },
+});
 
 app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
@@ -1495,6 +1542,23 @@ app.put("/settings", asyncHandler(async (req: any, res: any) => {
     if (typeof body[key] !== typeof (DEFAULT_APP_SETTINGS as any)[key]) {
       return res.status(400).json({
         error: `Setting "${key}" must be ${typeof (DEFAULT_APP_SETTINGS as any)[key]}, got ${typeof body[key]}`,
+      });
+    }
+    /*
+     * And for a setting with a fixed set of values, that the value is one of
+     * them. `typeof` alone is blind here: 'always' and 'whenever' are both
+     * strings, so without this the second is accepted, stored, read back, and
+     * then falls through every `=== 'always'` comparison in the UI to behave as
+     * the other option. A choice the user made that quietly means something
+     * else is worse than a rejected write.
+     *
+     * Checked for EVERY key before anything is written, so a rejected request
+     * cannot land the valid half of the batch — the storage write is one
+     * transaction, but the validation has to be too.
+     */
+    if (!isLegalSettingValue(key as keyof AppSettings, body[key])) {
+      return res.status(400).json({
+        error: `Setting "${key}" cannot be ${JSON.stringify(body[key])}.`,
       });
     }
     patch[key] = body[key];
@@ -4726,6 +4790,59 @@ function verifyGhCli(): boolean {
     return false;
   }
 }
+
+/**
+ * `gh`, run with an argument array and a deadline.
+ *
+ * argv rather than a shell string on principle: nothing interpolated from a
+ * request reaches these calls today, and passing argv anyway is what keeps that
+ * true after the next edit.
+ *
+ * The timeout is not decoration. `gh api user` goes to GitHub, and this is a
+ * synchronous exec on Node's single thread — without a deadline, one request to
+ * a settings screen behind a hanging proxy holds the entire server, board and
+ * terminals included, for as long as the socket stays open.
+ */
+const runGh = (args: readonly string[]): string =>
+  execFileSync('gh', args as string[], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 8000,
+  });
+
+/**
+ * The account the machine is signed in to GitHub as.
+ *
+ * Deliberately NOT project-scoped, unlike `/github/status` below. That route
+ * answers which repo a card maps to; this one answers who you are. Conflating
+ * them is how a settings screen reports "not connected" because no project
+ * happens to have a repo configured yet.
+ */
+app.get("/github/account", (_req: any, res: any) => {
+  // Always 200. "gh is not installed" is an answer about the machine, not a
+  // server error, and the screen needs to read the reason to say anything
+  // useful about it.
+  res.json(readGitHubAccount(runGh));
+});
+
+/**
+ * Log the GitHub CLI out.
+ *
+ * Guarded by the same custom-header preflight as POST /releases/update, and for
+ * the same reason: this server is unauthenticated on loopback and its CORS
+ * allowlist trusts any localhost origin, so without it any page open on the
+ * machine could log the user out of `gh`. (Security: bug 968259c4.)
+ *
+ * The credential is the GitHub CLI's, shared with everything else on the
+ * machine that uses `gh` — the UI says so rather than calling this "sign out of
+ * AgEnFK", because it is not.
+ */
+app.post("/github/signout", (req: any, res: any) => {
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  res.json(signOutGitHub(runGh, process.env));
+});
 
 app.get("/github/status", async (req: any, res: any) => {
   const projectId = req.query.projectId;
