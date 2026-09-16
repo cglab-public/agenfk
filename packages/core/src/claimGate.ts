@@ -71,7 +71,12 @@ export const stillHolds = (status: string): boolean =>
 function explain(conflicts: readonly ClaimConflict[], rejected: readonly Claim[]): string {
   const parts: string[] = [];
   if (conflicts.length) {
-    const lines = conflicts.map(c => `  ${c.wanted} is inside ${c.held}, held by ${c.heldBy}`);
+    const lines = conflicts.map(c =>
+      // "X is inside X" is what an exact collision used to read as, which is
+      // nonsense at the moment somebody most needs the sentence to be clear.
+      c.wanted === c.held
+        ? `  ${c.wanted} is already held by ${c.heldBy}`
+        : `  ${c.wanted} is inside ${c.held}, held by ${c.heldBy}`);
     parts.push(
       `This card claims ${conflicts.length === 1 ? 'a path' : 'paths'} another card already owns:\n`
       + lines.join('\n')

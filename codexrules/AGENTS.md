@@ -80,6 +80,35 @@ The server commits **what you staged**, and nothing else. It used to run `git ad
 - **Never `git add -A`.** In a shared worktree it takes other agents' work with it.
 - `git status` first if you are unsure what you touched.
 
+### Declaring what your card owns — MANDATORY when agents work in parallel
+
+Staging says what you touched, after the fact. A **claim** says what is yours
+*before* anyone touches it, and it is the only thing that stops two agents
+editing one file in a shared worktree — which is a **race, not a merge
+conflict**: nobody is told, and the loser's edit is simply gone.
+
+Declare before your first edit:
+
+```bash
+agenfk update <id> --claims "packages/ui/,packages/server/src/server.ts"
+```
+
+- A claim is a **directory or an exact file**, repository-relative. **Globs are
+  refused** — `packages/**` returns 400. Whether two patterns can ever match one
+  path is a different and much harder question than whether a path matches one,
+  and a claim that cannot be checked reports safety it has not established.
+- A path another active card already holds is **refused with 409, naming the
+  holder**. That is the mechanism working, not a bug: narrow your claim, or take
+  the work to the card that already owns it. Never work around it by editing
+  anyway.
+- Claims also **limit the close commit to your own files**. `.git/index` belongs
+  to the worktree rather than to an agent, so without them a close still takes
+  whatever any agent staged.
+- **No claims authorizes everything.** A card that declares nothing is refused
+  nothing, which is why declaring is what makes the mechanism real.
+- A **paused** card keeps its claims. Its files are half-edited in the shared
+  tree, and handing them to somebody else is exactly the race this prevents.
+
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY

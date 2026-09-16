@@ -226,3 +226,19 @@ describe('what the refusal tells an agent', () => {
     expect(result.message.toLowerCase()).not.toMatch(/try again|retry/);
   });
 });
+
+describe('the sentence an agent reads once', () => {
+  it('does not say a path is inside itself', () => {
+    // An exact collision used to render as "SKILL.md is inside SKILL.md",
+    // which is nonsense exactly when the reader most needs the sentence to be
+    // clear. Seen for real the first time the mechanism refused anything.
+    const r = gateOnClaims({ id: 'mine', claims: ['SKILL.md'] }, [holder('theirs', 'IN_PROGRESS', ['SKILL.md'])]);
+    expect(r.message).not.toMatch(/SKILL\.md is inside SKILL\.md/);
+    expect(r.message).toContain('already held by theirs');
+  });
+
+  it('still says where a path sits when it is genuinely inside another claim', () => {
+    const r = gateOnClaims({ id: 'mine', claims: ['packages/ui/App.tsx'] }, [holder('theirs', 'IN_PROGRESS', ['packages/ui/'])]);
+    expect(r.message).toMatch(/is inside packages\/ui/);
+  });
+});

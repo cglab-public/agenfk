@@ -1503,6 +1503,7 @@ program
   .option('-d, --description <desc>', 'New description')
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
+  .option('--claims <paths>', 'Comma-separated paths this card owns; pass an empty string to release them')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1526,6 +1527,25 @@ program
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
+      /*
+       * The paths this card owns while it is worked (819e7192).
+       *
+       * Split and trimmed here rather than sent raw: a shell quoting a list
+       * produces stray spaces, and a claim with a trailing space is MALFORMED -
+       * the server rejects it, correctly, with a message about a path the user
+       * believes they typed cleanly.
+       *
+       * An empty string releases, and that has to stay reachable: a card that
+       * over-claimed and cannot give the paths back blocks every sibling until
+       * it closes. `undefined` means "not mentioned" and leaves them alone,
+       * which is what every other `agenfk update` call in the world is doing.
+       */
+      if (options.claims !== undefined) {
+        updates.claims = String(options.claims)
+          .split(',')
+          .map((c: string) => c.trim())
+          .filter(Boolean);
+      }
 
       if (options.parent !== undefined) {
         const detachWords = ['none', 'null', 'root', ''];
