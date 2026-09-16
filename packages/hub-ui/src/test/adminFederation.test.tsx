@@ -39,47 +39,98 @@ const renderPage = (data: unknown) => {
 beforeEach(() => { get.mockReset(); post.mockReset(); del.mockReset(); });
 afterEach(() => { cleanup(); get.mockReset(); post.mockReset(); del.mockReset(); });
 
+const b64url = (o: unknown) =>
+  btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+/** A join token as the parent mints it: its own URL is signed into the body. */
+const joinToken = (parentUrl: string) =>
+  `${b64url({ orgId: 'group', nonce: 'n1', exp: Date.now() + 60_000, kind: 'child-hub', parentUrl })}.sig`;
+/** One minted before the URL was signed in. */
+const LEGACY_TOKEN = `${b64url({ orgId: 'group', nonce: 'n1', exp: Date.now() + 60_000, kind: 'child-hub' })}.sig`;
+
 describe('Admin → Parent hub', () => {
-  it('offers the join form when this hub has no parent', async () => {
+  it('asks for the join token and nothing else — the URL rides inside it', async () => {
     renderPage({ bound: false, outboxDepth: 0 });
-    expect(await screen.findByRole('textbox', { name: /parent hub url/i })).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: /join token/i })).toBeInTheDocument();
+    expect(await screen.findByRole('textbox', { name: /join token/i })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /parent hub url/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /leave/i })).toBeNull();
   });
 
-  it('joins with the trimmed url and token', async () => {
+  it('shows where the pasted token will send this hub, before it is used', async () => {
+    // The admin is pasting an opaque blob at a stranger's instruction. Showing
+    // the decoded destination is the only chance they get to notice it is wrong.
     renderPage({ bound: false, outboxDepth: 0 });
-    await screen.findByRole('textbox', { name: /parent hub url/i });
+    const box = await screen.findByRole('textbox', { name: /join token/i });
+    fireEvent.change(box, { target: { value: joinToken('https://parent.example.com') } });
+    expect(await screen.findByText('https://parent.example.com')).toBeInTheDocument();
+  });
+
+  it('joins with the trimmed token and the URL decoded from it', async () => {
+    renderPage({ bound: false, outboxDepth: 0 });
+    const token = joinToken('https://parent.example.com');
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: `  ${token}  ` } });
     post.mockResolvedValue({ data: { parentUrl: 'https://parent.example.com', childHubId: 'ch-1', state: 'active' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /parent hub url/i }), { target: { value: '  https://parent.example.com  ' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /join token/i }), { target: { value: ' body.sig ' } });
     fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/federation/join', {
-      parentUrl: 'https://parent.example.com', inviteToken: 'body.sig',
-    }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/federation/join', { inviteToken: token }));
+  });
+
+  it('will not submit a pre-upgrade token, and names the fix as upgrading the parent', async () => {
+    // "Ask for a new token" is unachievable advice here: a parent running an
+    // older version cannot mint one. The only way out is to upgrade it.
+    renderPage({ bound: false, outboxDepth: 0 });
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: LEGACY_TOKEN } });
+    expect(screen.getByRole('button', { name: /^join$/i })).toBeDisabled();
+    expect(await screen.findByText(/upgraded/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('refuses a token naming a non-http destination, and says so', async () => {
+    renderPage({ bound: false, outboxDepth: 0 });
+    const evil = `${b64url({ orgId: 'g', nonce: 'n', exp: Date.now() + 60_000, kind: 'child-hub', parentUrl: 'javascript:alert(1)' })}.sig`;
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: evil } });
+    expect(screen.getByRole('button', { name: /^join$/i })).toBeDisabled();
+    expect(await screen.findByText(/upgraded/i)).toBeInTheDocument();
+    expect(screen.queryByText(/javascript:/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('shows the host it will really contact, not the one the token reads as', async () => {
+    // https://parent.example.com@evil.example.com reads as the first and
+    // connects to the second. The confirmation line is the only control here,
+    // so it has to show the second.
+    renderPage({ bound: false, outboxDepth: 0 });
+    const spoof = `${b64url({ orgId: 'g', nonce: 'n', exp: Date.now() + 60_000, kind: 'child-hub', parentUrl: 'https://parent.example.com@evil.example.com/x' })}.sig`;
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: spoof } });
+    expect(await screen.findByText('https://evil.example.com/x')).toBeInTheDocument();
+    expect(screen.queryByText(/parent\.example\.com@/)).toBeNull();
+  });
+
+  it('will not submit a token that is not a token', async () => {
+    renderPage({ bound: false, outboxDepth: 0 });
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: 'complete nonsense' } });
+    expect(screen.getByRole('button', { name: /^join$/i })).toBeDisabled();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('sends a roster name when one is given, and omits it when not', async () => {
     // Without a name every unconfigured child lands on the parent's board as
     // the internal org id, indistinguishable from its siblings.
     renderPage({ bound: false, outboxDepth: 0 });
-    await screen.findByRole('textbox', { name: /parent hub url/i });
-    post.mockResolvedValue({ data: { parentUrl: 'https://p.example.com', childHubId: 'ch-1', state: 'active' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /parent hub url/i }), { target: { value: 'https://p.example.com' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /join token/i }), { target: { value: 'tok' } });
+    const token = joinToken('https://p.example.com');
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: token } });
     fireEvent.change(screen.getByRole('textbox', { name: /name on the parent/i }), { target: { value: '  acme-emea  ' } });
+    post.mockResolvedValue({ data: { parentUrl: 'https://p.example.com', childHubId: 'ch-1', state: 'active' } });
     fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/federation/join', {
-      parentUrl: 'https://p.example.com', inviteToken: 'tok', name: 'acme-emea',
+      inviteToken: token, name: 'acme-emea',
     }));
   });
 
   it('surfaces the parent refusing the invite', async () => {
     renderPage({ bound: false, outboxDepth: 0 });
-    await screen.findByRole('textbox', { name: /parent hub url/i });
+    fireEvent.change(await screen.findByRole('textbox', { name: /join token/i }), { target: { value: joinToken('https://p.example.com') } });
     post.mockRejectedValue({ response: { data: { error: 'invite token already used' } } });
-    fireEvent.change(screen.getByRole('textbox', { name: /parent hub url/i }), { target: { value: 'https://p.example.com' } });
-    fireEvent.change(screen.getByRole('textbox', { name: /join token/i }), { target: { value: 'x' } });
     fireEvent.click(screen.getByRole('button', { name: /^join$/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/already used/i);
   });

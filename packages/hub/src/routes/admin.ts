@@ -17,6 +17,7 @@ import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
+import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
 import {
   readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
@@ -2713,9 +2714,31 @@ export function adminRouter(ctx: HubServerContext): Router {
       const inviteToken = typeof req.body?.inviteToken === 'string' ? req.body.inviteToken.trim() : '';
       if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
 
+      // The destination comes out of the token, never off the request. An
+      // admin who pastes a join token has said everything they need to; a
+      // parentUrl sent alongside it is ignored, so neither a stale form field
+      // nor a doctored request can point an enrolment at a different hub than
+      // the one that issued the invite.
+      const claimed = parentUrlFromInviteToken(inviteToken);
+      if (!claimed) {
+        res.status(400).json({
+          error: 'this is not a usable join token. If it came from a hub running an older version, '
+            + 'that hub must be upgraded before it can issue one — its tokens do not carry its address.',
+        });
+        return;
+      }
+      // The parent would refuse a stale invite anyway, but only after this hub
+      // has sent a stranger's server a request and relayed back a 4xx the admin
+      // cannot act on. The expiry is unverified like the URL; it costs nothing
+      // to believe it when it says "too late".
+      const claimedExpiry = inviteExpiryFromToken(inviteToken);
+      if (claimedExpiry !== null && claimedExpiry < Date.now()) {
+        res.status(400).json({ error: 'this join token has expired — ask the parent hub for a new one' });
+        return;
+      }
       let parentUrl: string;
       try {
-        parentUrl = assertHttpUrl(String(req.body?.parentUrl ?? ''), {
+        parentUrl = assertHttpUrl(claimed, {
           allowPrivate: process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT === '1',
         });
       } catch (err) {

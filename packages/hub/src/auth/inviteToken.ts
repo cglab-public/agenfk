@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { DB } from '../db.js';
+import { normalizeHttpUrl } from '../util/httpUrl.js';
 
 /**
  * HMAC-signed, self-describing invite tokens (`<base64url body>.<base64url sig>`).
@@ -25,6 +26,24 @@ export interface InvitePayload {
   nonce: string;
   exp: number;
   kind?: InviteKind;
+  /**
+   * The issuing hub's own public URL. Set on 'child-hub' invites so the token
+   * is the single thing a child hub's admin has to paste — see
+   * {@link parentUrlFromInviteToken}.
+   */
+  parentUrl?: string;
+}
+
+/** Nothing legitimate comes close; past this we do not even decode. */
+const MAX_TOKEN_LEN = 4096;
+
+/** The base64url JSON body of a token, or null if it is not one. */
+function decodeBody(body: string): any | null {
+  try {
+    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 export function signInviteToken(payload: InvitePayload, secret: string): string {
@@ -47,16 +66,61 @@ export function verifyInviteToken(token: string, secret: string, kind: InviteKin
     return null;
   }
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
-  let parsed: any;
-  try {
-    parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-  } catch {
-    return null;
-  }
+  const parsed = decodeBody(body);
   if (typeof parsed?.orgId !== 'string' || typeof parsed.nonce !== 'string' || typeof parsed.exp !== 'number') return null;
   const tokenKind: InviteKind = parsed.kind === undefined ? 'installation' : parsed.kind;
   if (tokenKind !== kind) return null;
-  return { orgId: parsed.orgId, nonce: parsed.nonce, exp: parsed.exp, kind: tokenKind };
+  return {
+    orgId: parsed.orgId, nonce: parsed.nonce, exp: parsed.exp, kind: tokenKind,
+    ...(typeof parsed.parentUrl === 'string' ? { parentUrl: parsed.parentUrl } : {}),
+  };
+}
+
+/**
+ * Read the parent hub's URL out of a child-hub invite WITHOUT verifying it.
+ *
+ * This is the child's side of the handshake, and a child cannot verify a token
+ * the parent signed — that key never leaves the parent. So the signature is
+ * checked where it can be, at the parent's /v1/federation/enroll, and this only
+ * decides where to send the redemption. It is therefore attacker-controlled
+ * input: bounded, parsed defensively, and narrowed to http(s).
+ *
+ * The value returned is NORMALISED, not the string as written. It is what the
+ * admin is shown before clicking Join and what the client then dials, and those
+ * two have to be the same string: `https://parent.example.com@evil.example.com`
+ * reads as one host and connects to another. Callers must still apply their own
+ * SSRF policy (private/loopback).
+ *
+ * Returns null for anything that is not a child-hub invite carrying a usable
+ * URL, including invites minted before the URL was signed in.
+ */
+export function parentUrlFromInviteToken(token: string): string | null {
+  const claims = childHubInviteClaims(token);
+  return claims ? claims.parentUrl : null;
+}
+
+/**
+ * The expiry a child-hub invite claims, unverified, or null if it claims none.
+ *
+ * Lets the child refuse a stale token with a local message instead of sending
+ * somebody's server a request and relaying a confusing 4xx back.
+ */
+export function inviteExpiryFromToken(token: string): number | null {
+  const claims = childHubInviteClaims(token);
+  return claims ? claims.exp : null;
+}
+
+/** The unverified claims of a child-hub invite, or null if it is not one. */
+function childHubInviteClaims(token: string): { parentUrl: string; exp: number } | null {
+  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LEN) return null;
+  const dot = token.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const body = decodeBody(token.slice(0, dot));
+  // An installation invite pasted into the join box fails here, locally, with
+  // something the admin can act on — rather than after a round trip.
+  if (body?.kind !== 'child-hub' || typeof body.exp !== 'number') return null;
+  const parentUrl = normalizeHttpUrl(body.parentUrl);
+  return parentUrl ? { parentUrl, exp: body.exp } : null;
 }
 
 /**

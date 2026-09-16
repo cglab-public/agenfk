@@ -122,6 +122,40 @@ describe('assertHttpUrl', () => {
     }
   });
 
+  it('refuses the IPv6 spellings of the same private addresses', () => {
+    // The hostname on this path used to be typed by an admin. It now comes out
+    // of a join token somebody else minted, so the spellings that walk past a
+    // dotted-quad block list matter: `[::ffff:127.0.0.1]` normalises to
+    // `[::ffff:7f00:1]`, which matched nothing.
+    for (const host of [
+      'http://[::1]:4000',
+      'http://[::ffff:127.0.0.1]',
+      'http://[::ffff:192.168.0.5]',
+      'http://[::ffff:169.254.169.254]',
+      'http://[fc00::1]',
+      'http://[fd12:3456::1]',
+      'http://[fe80::1]',
+      'http://[::]',
+    ]) {
+      expect(() => assertHttpUrl(host), host).toThrow(/private or loopback/i);
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).not.toThrow();
+    }
+  });
+
+  it('does not mistake a public IPv6 host for a private one', () => {
+    // fe00:: is not link-local and ::ffff:8.8.8.8 is a mapped PUBLIC address —
+    // blanket-blocking every mapped or f-prefixed address would break them.
+    for (const host of ['http://[2606:4700::1111]', 'http://[::ffff:8.8.8.8]', 'http://[fe00::1]']) {
+      expect(() => assertHttpUrl(host), host).not.toThrow();
+    }
+  });
+
+  it('strips userinfo, so the host it reports is the host it means', () => {
+    // The string this returns is the one shown to an admin before they enrol.
+    expect(assertHttpUrl('https://parent.example.com@evil.example.com/x'))
+      .toBe('https://evil.example.com/x');
+  });
+
   it('does not mistake a public host for a private one', () => {
     for (const host of ['https://hub.example.com', 'https://10x.example.com', 'https://internal.example.com']) {
       expect(() => assertHttpUrl(host)).not.toThrow();

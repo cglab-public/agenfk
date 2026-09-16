@@ -12,6 +12,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { readParentBinding, writeParentBinding } from '../services/federation/parentBinding';
+import { signInviteToken } from '../auth/inviteToken';
 import { enqueueOutbox } from '../services/federation/federationSync';
 import { drainApp } from './helpers/drainApp';
 
@@ -25,6 +26,18 @@ const cleanup = () => {
 };
 
 const PARENT = 'https://parent.example.com';
+
+/**
+ * A join token as the PARENT would mint it: the parent's own URL is signed
+ * into the body, so the child's admin pastes one value and nothing else.
+ *
+ * The secret here is deliberately not this hub's — a child cannot verify a
+ * token signed by another hub's key, and is not supposed to. It reads the
+ * body, guards the URL itself, and lets the parent be the one to check the
+ * signature at /v1/federation/enroll.
+ */
+const joinToken = (parentUrl: string, nonce = 'n1') =>
+  signInviteToken({ orgId: 'group', nonce, exp: Date.now() + 60_000, kind: 'child-hub', parentUrl }, 'some-other-hubs-secret');
 const TOKEN = 'fed_' + 'f'.repeat(64);
 
 describe('child hub: join, request release, leave', () => {
@@ -67,16 +80,17 @@ describe('child hub: join, request release, leave', () => {
 
   describe('POST /v1/admin/federation/join', () => {
     it('requires an admin session', async () => {
-      expect((await supertest(app).post('/v1/admin/federation/join').send({ parentUrl: PARENT, inviteToken: 't' })).status).toBe(401);
-      expect((await join({ parentUrl: PARENT, inviteToken: 't' }, viewerCookie)).status).toBe(403);
+      expect((await supertest(app).post('/v1/admin/federation/join').send({ inviteToken: joinToken(PARENT, 't') })).status).toBe(401);
+      expect((await join({ inviteToken: joinToken(PARENT, 't') }, viewerCookie)).status).toBe(403);
       expect(await readParentBinding(ctx.db, SECRET)).toBeNull();
     });
 
     it('redeems the invite against the parent and stores the binding', async () => {
-      const r = await join({ parentUrl: PARENT, inviteToken: 'body.sig' });
+      const token = joinToken(PARENT, 'body.sig');
+      const r = await join({ inviteToken: token });
       expect(r.status).toBe(200);
       expect(r.body).toMatchObject({ parentUrl: PARENT, childHubId: 'ch-1', state: 'active' });
-      expect(enrollCalls[0]).toMatchObject({ parentUrl: PARENT, inviteToken: 'body.sig' });
+      expect(enrollCalls[0]).toMatchObject({ parentUrl: PARENT, inviteToken: token });
       const b = await readParentBinding(ctx.db, SECRET);
       expect(b).toMatchObject({ parentUrl: PARENT, token: TOKEN, childHubId: 'ch-1', state: 'active' });
     });
@@ -92,7 +106,7 @@ describe('child hub: join, request release, leave', () => {
       } as any);
       await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
       const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ parentUrl: PARENT, inviteToken: 't' });
+      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ inviteToken: joinToken(PARENT, 't') });
       expect(r.status).toBe(200);
       expect((await readParentBinding(out.ctx.db, SECRET))!.identityPolicy).toBe('pseudonymize');
       const status = await supertest(out.app).get('/v1/admin/federation').set('Cookie', cookie);
@@ -105,15 +119,15 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('never returns the federation token to the browser', async () => {
-      const r = await join({ parentUrl: PARENT, inviteToken: 'body.sig' });
+      const r = await join({ inviteToken: joinToken(PARENT, 'body.sig') });
       expect(r.status).toBe(200);
       expect(JSON.stringify(r.body)).not.toContain(TOKEN);
       expect(JSON.stringify(r.body)).not.toMatch(/fed_/);
     });
 
-    it('refuses a non-http parent URL', async () => {
+    it('refuses a non-http parent URL carried inside the token', async () => {
       for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url']) {
-        const r = await join({ parentUrl: bad, inviteToken: 't' });
+        const r = await join({ inviteToken: joinToken(bad, 't') });
         expect(r.status).toBe(400);
       }
       expect(enrollCalls).toHaveLength(0);
@@ -123,7 +137,7 @@ describe('child hub: join, request release, leave', () => {
     it('refuses to enrol this hub with itself', async () => {
       const r = await supertest(app).post('/v1/admin/federation/join')
         .set('Cookie', adminCookie).set('Host', 'self.example.com')
-        .send({ parentUrl: 'http://self.example.com', inviteToken: 't' });
+        .send({ inviteToken: joinToken('http://self.example.com', 't') });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/itself|own/i);
       expect(enrollCalls).toHaveLength(0);
@@ -135,8 +149,8 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('refuses to join a second parent while already bound', async () => {
-      expect((await join({ parentUrl: PARENT, inviteToken: 't' })).status).toBe(200);
-      const second = await join({ parentUrl: 'https://other.example.com', inviteToken: 't2' });
+      expect((await join({ inviteToken: joinToken(PARENT, 't') })).status).toBe(200);
+      const second = await join({ inviteToken: joinToken('https://other.example.com', 't2') });
       expect(second.status).toBe(409);
       expect((await readParentBinding(ctx.db, SECRET))!.parentUrl).toBe(PARENT);
     });
@@ -148,7 +162,7 @@ describe('child hub: join, request release, leave', () => {
       } as any);
       await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
       const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ parentUrl: PARENT, inviteToken: 'used' });
+      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ inviteToken: joinToken(PARENT, 'used') });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/already used/i);
       expect(await readParentBinding(out.ctx.db, SECRET)).toBeNull();
@@ -156,6 +170,81 @@ describe('child hub: join, request release, leave', () => {
       await drainApp(out.app);
       await out.ctx.db.close();
       for (const s of ['', '-wal', '-shm']) { const f = TEST_DB + '2' + s; if (fs.existsSync(f)) fs.unlinkSync(f); }
+    });
+
+    it('takes the parent URL from the token and ignores one sent alongside it', async () => {
+      // The whole point of signing the URL in: the admin pastes a token, not a
+      // token AND a URL they could get wrong. A parentUrl in the body is not a
+      // second opinion — it is ignored, so a stale form field or a doctored
+      // request cannot redirect an enrolment away from the issuing hub.
+      const r = await join({ parentUrl: 'https://attacker.example.com', inviteToken: joinToken(PARENT, 'n9') });
+      expect(r.status).toBe(200);
+      expect(enrollCalls[0].parentUrl).toBe(PARENT);
+      expect((await readParentBinding(ctx.db, SECRET))!.parentUrl).toBe(PARENT);
+    });
+
+    it('names the real fix when the token predates the URL being signed in', async () => {
+      // There is deliberately no URL field to fall back to, so an upgraded
+      // child cannot join a parent still running an older version. "Ask for a
+      // new token" would be unachievable advice — that parent cannot mint one.
+      // The message has to say: upgrade the parent hub.
+      const legacy = signInviteToken(
+        { orgId: 'group', nonce: 'legacy', exp: Date.now() + 60_000, kind: 'child-hub' }, 'some-other-hubs-secret',
+      );
+      const r = await join({ inviteToken: legacy });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/upgraded/i);
+      expect(enrollCalls).toHaveLength(0);
+      expect(await readParentBinding(ctx.db, SECRET)).toBeNull();
+    });
+
+    it('refuses an expired token locally, without troubling the parent', async () => {
+      // The parent would refuse it anyway, but only after the child has sent a
+      // stranger's server a request and relayed a 4xx the admin cannot act on.
+      const stale = signInviteToken(
+        { orgId: 'group', nonce: 'old', exp: Date.now() - 1000, kind: 'child-hub', parentUrl: PARENT },
+        'some-other-hubs-secret',
+      );
+      const r = await join({ inviteToken: stale });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/expired/i);
+      expect(enrollCalls).toHaveLength(0);
+      expect(await readParentBinding(ctx.db, SECRET)).toBeNull();
+    });
+
+    it('enrols with the host the token really names, not the one it reads as', async () => {
+      // https://parent.example.com@evil.example.com reads as the first host and
+      // connects to the second. The stored binding must be the second one, and
+      // the admin must have been shown the second one.
+      const r = await join({ inviteToken: joinToken('https://parent.example.com@evil.example.com/x', 'ui') });
+      expect(r.status).toBe(200);
+      expect(enrollCalls[0].parentUrl).toBe('https://evil.example.com/x');
+      expect((await readParentBinding(ctx.db, SECRET))!.parentUrl).toBe('https://evil.example.com/x');
+    });
+
+    it('refuses an IPv6 spelling of a loopback parent, like the dotted one', async () => {
+      const r = await join({ inviteToken: joinToken('http://[::ffff:127.0.0.1]', 'v6') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/private or loopback/i);
+      expect(enrollCalls).toHaveLength(0);
+    });
+
+    it('refuses an installation invite pasted into the join box', async () => {
+      const inst = signInviteToken(
+        { orgId: 'group', nonce: 'i', exp: Date.now() + 60_000, kind: 'installation', parentUrl: PARENT },
+        'some-other-hubs-secret',
+      );
+      const r = await join({ inviteToken: inst });
+      expect(r.status).toBe(400);
+      expect(enrollCalls).toHaveLength(0);
+    });
+
+    it('refuses a token that is not a token at all', async () => {
+      for (const junk of ['t', 'nodot', '.sig', 'x'.repeat(5000)]) {
+        const r = await join({ inviteToken: junk });
+        expect(r.status, junk.slice(0, 12)).toBe(400);
+      }
+      expect(enrollCalls).toHaveLength(0);
     });
   });
 
@@ -165,7 +254,7 @@ describe('child hub: join, request release, leave', () => {
     afterEach(() => { delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT; });
 
     it('is refused by default, before any invite is spent', async () => {
-      const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+      const r = await join({ inviteToken: joinToken(PRIVATE, 'tok') });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/private or loopback/i);
       // The invite is untouched: nothing was sent to the parent.
@@ -180,7 +269,7 @@ describe('child hub: join, request release, leave', () => {
       // set the flag they had already set. Every retry burnt another invite.
       process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
 
-      const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+      const r = await join({ inviteToken: joinToken(PRIVATE, 'tok') });
       expect(r.status).toBe(200);
       expect(r.body.childHubId).toBe('ch-1');
       expect(r.body.state).toBe('active');
@@ -193,14 +282,14 @@ describe('child hub: join, request release, leave', () => {
 
     it('works for loopback too, which is what a local trial run uses', async () => {
       process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
-      const r = await join({ parentUrl: 'http://127.0.0.1:4100', inviteToken: 'tok' });
+      const r = await join({ inviteToken: joinToken('http://127.0.0.1:4100', 'tok') });
       expect(r.status).toBe(200);
     });
 
     it('still refuses a private parent when the flag is anything but exactly 1', async () => {
       for (const v of ['true', 'yes', 'TRUE', '0', '']) {
         process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = v;
-        const r = await join({ parentUrl: PRIVATE, inviteToken: 'tok' });
+        const r = await join({ inviteToken: joinToken(PRIVATE, 'tok') });
         expect(r.status, v).toBe(400);
       }
     });
@@ -215,7 +304,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('reports the binding, outbox depth and release state, without the token', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       await enqueueOutbox(ctx.db, 'event', { a: 1 });
       const r = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
       expect(r.body).toMatchObject({
@@ -233,7 +322,7 @@ describe('child hub: join, request release, leave', () => {
 
   describe('POST /v1/admin/federation/release-request', () => {
     it('asks the parent to release this hub', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       const r = await supertest(app).post('/v1/admin/federation/release-request')
         .set('Cookie', adminCookie).send({ reason: 'splitting off' });
       expect(r.status).toBe(200);
@@ -255,7 +344,7 @@ describe('child hub: join, request release, leave', () => {
       } as any);
       await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
       const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-      await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ parentUrl: PARENT, inviteToken: 't' });
+      await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ inviteToken: joinToken(PARENT, 't') });
       const bad = await supertest(out.app).post('/v1/admin/federation/release-request').set('Cookie', cookie).send({ reason: 'please' });
       expect(bad.status).toBeGreaterThanOrEqual(400);
       const status = await supertest(out.app).get('/v1/admin/federation').set('Cookie', cookie);
@@ -267,7 +356,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('is refused once the hub has already been released', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       const current = (await readParentBinding(ctx.db, SECRET))!;
       await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
       const r = await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
@@ -280,7 +369,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('requires an admin session', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       expect((await supertest(app).post('/v1/admin/federation/release-request').send({})).status).toBe(401);
       expect((await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', viewerCookie).send({})).status).toBe(403);
     });
@@ -288,7 +377,7 @@ describe('child hub: join, request release, leave', () => {
 
   describe('DELETE /v1/admin/federation — leaving is the parent\'s to grant', () => {
     it('refuses while the hub is still bound, and keeps the binding', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       const r = await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
       expect(r.status).toBe(409);
       expect(r.body.error).toMatch(/parent/i);
@@ -296,7 +385,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('refuses even right after a release has been requested — asking is not being released', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
       // The flag the UI disables Leave on must not flip merely because we asked.
       const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
@@ -311,7 +400,7 @@ describe('child hub: join, request release, leave', () => {
       // decrypt" as "no parent", clearing it. That made a key rotation a
       // product-surface way out of the group. Whether the parent has released
       // this hub is stored in clear precisely so it does not need the key.
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       ctx.config.secretKey = 'b'.repeat(64);
       const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
       expect(status.body).toMatchObject({ bound: true, unreadable: true });
@@ -324,7 +413,7 @@ describe('child hub: join, request release, leave', () => {
 
     it('still lets a genuinely released hub leave under a rotated key', async () => {
       // The refusal above must not strand a hub the parent HAS let go.
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       const current = (await readParentBinding(ctx.db, SECRET))!;
       await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
       ctx.config.secretKey = 'b'.repeat(64);
@@ -335,7 +424,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('succeeds once the parent has released the hub', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       // What the parent detaching looks like from here: the worker's next call
       // is refused and the binding is marked revoked.
       const current = (await readParentBinding(ctx.db, SECRET))!;
@@ -348,12 +437,12 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('does not carry a stale release request into the next group', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       await supertest(app).post('/v1/admin/federation/release-request').set('Cookie', adminCookie).send({});
       const current = (await readParentBinding(ctx.db, SECRET))!;
       await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
       await supertest(app).delete('/v1/admin/federation').set('Cookie', adminCookie);
-      await join({ parentUrl: 'https://another.example.com', inviteToken: 't2' });
+      await join({ inviteToken: joinToken('https://another.example.com', 't2') });
       const status = await supertest(app).get('/v1/admin/federation').set('Cookie', adminCookie);
       // a freshly joined hub must not show as already waiting to be let go
       expect(status.body).toMatchObject({ bound: true, releaseRequested: false, canLeave: false });
@@ -366,7 +455,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('requires an admin session', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       const current = (await readParentBinding(ctx.db, SECRET))!;
       await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });
       expect((await supertest(app).delete('/v1/admin/federation')).status).toBe(401);
@@ -375,7 +464,7 @@ describe('child hub: join, request release, leave', () => {
     });
 
     it('leaves the queued outbox behind rather than silently discarding it', async () => {
-      await join({ parentUrl: PARENT, inviteToken: 't' });
+      await join({ inviteToken: joinToken(PARENT, 't') });
       await enqueueOutbox(ctx.db, 'event', { a: 1 });
       const current = (await readParentBinding(ctx.db, SECRET))!;
       await writeParentBinding(ctx.db, SECRET, { ...current, state: 'revoked' });

@@ -13,7 +13,7 @@ import supertest from 'supertest';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
-import { signInviteToken } from '../auth/inviteToken';
+import { signInviteToken, parentUrlFromInviteToken } from '../auth/inviteToken';
 import { drainApp } from './helpers/drainApp';
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-federation-enroll-${process.pid}.sqlite`);
@@ -364,5 +364,55 @@ describe('hub federation: child-hub enrollment (parent side)', () => {
       const row = await ctx.db.get('SELECT last_seen, first_seen FROM child_hubs WHERE id = ?', [e.body.childHubId]);
       expect(row.last_seen).toBe(row.first_seen);
     });
+  });
+});
+
+
+// The invite a parent hands out is the ONLY thing the child's admin pastes, so
+// it has to say where to send it. Without this the child needs the URL by some
+// other channel, and a URL typed by hand is a URL typed wrong.
+describe('the minted child-hub invite carries the parent URL', () => {
+  const MINT_DB = path.join(os.tmpdir(), `agenfk-hub-fed-mint-${process.pid}.sqlite`);
+  const wipe = () => {
+    for (const suffix of ['', '-wal', '-shm']) {
+      const f = MINT_DB + suffix;
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  };
+  let app: any;
+  let ctx: any;
+  let adminCookie: string;
+
+  beforeEach(async () => {
+    wipe();
+    const out = await createHubApp({
+      dbPath: MINT_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org',
+    });
+    app = out.app; ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    adminCookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+  });
+
+  afterEach(async () => {
+    ctx.stopWorkers?.();
+    await drainApp(app);
+    await ctx.db.close();
+    wipe();
+  });
+
+  it('signs this hub\'s public URL into the token', async () => {
+    const r = await supertest(app).post('/hub/federation/invite/create')
+      .set('Cookie', adminCookie).set('Host', 'parent.example.com').send({});
+    expect(r.status).toBe(200);
+    expect(parentUrlFromInviteToken(r.body.inviteToken)).toBe(r.body.parentUrl);
+    expect(r.body.parentUrl).toContain('parent.example.com');
+  });
+
+  it('still enrolls a child that redeems it, so the extra field breaks nothing', async () => {
+    const mint = await supertest(app).post('/hub/federation/invite/create').set('Cookie', adminCookie).send({});
+    const enrolled = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: mint.body.inviteToken, childHub: { name: 'acme-child' } });
+    expect(enrolled.status).toBe(200);
+    expect(enrolled.body.childHubId).toBeTruthy();
   });
 });

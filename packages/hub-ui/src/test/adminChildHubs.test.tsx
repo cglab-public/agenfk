@@ -11,7 +11,7 @@
  */
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished as onTeardown } from 'vitest';
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -77,7 +77,9 @@ describe('Admin → Child hubs', () => {
     expect(within(emea).queryByText(/not checking in/i)).toBeNull();
   });
 
-  it('generates a join token on demand and shows it with the parent URL', async () => {
+  it('generates ONE join code on demand — the URL rides inside it', async () => {
+    // Two values to copy meant two chances to paste the wrong one into the
+    // child's form. The URL is signed into the token now, so there is one.
     renderPage();
     await screen.findByText('acme-emea');
     post.mockResolvedValue({ data: {
@@ -88,8 +90,87 @@ describe('Admin → Child hubs', () => {
     expect(screen.queryByText('body.sig')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/child-hubs/invite'));
-    expect(await screen.findByText(/body\.sig/)).toBeInTheDocument();
-    expect(screen.getByText(/hub\.acme\.com/)).toBeInTheDocument();
+    expect(await screen.findByText('body.sig')).toBeInTheDocument();
+    // exactly one thing to copy: the URL survives only as a caption, and the
+    // copy button is bound to the token alone (asserted below).
+    expect(screen.getAllByRole('button', { name: /copy/i })).toHaveLength(1);
+  });
+
+  it('copies the join code to the clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    onTeardown(() => {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as any).clipboard;
+    });
+    renderPage();
+    await screen.findByText('acme-emea');
+    post.mockResolvedValue({ data: {
+      inviteToken: 'body.sig', parentUrl: 'https://hub.acme.com',
+      expiresAt: '2026-09-28T10:00:00.000Z',
+    } });
+    fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /copy/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('body.sig'));
+  });
+
+  it('still names the address the token points at, so a bad one is caught here', async () => {
+    // publicHubUrl comes off proxy headers. If they are wrong the token is
+    // minted pointing somewhere useless, and hiding the URL entirely would make
+    // that discoverable only on the OTHER hub, after the token was sent.
+    renderPage();
+    await screen.findByText('acme-emea');
+    post.mockResolvedValue({ data: {
+      inviteToken: 'body.sig', parentUrl: 'https://hub.acme.com',
+      expiresAt: '2026-09-28T10:00:00.000Z',
+    } });
+    fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
+    expect(await screen.findByText(/hub\.acme\.com/)).toBeInTheDocument();
+  });
+
+  it('copies only the token, never the caption naming the address', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    onTeardown(() => {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as any).clipboard;
+    });
+    renderPage();
+    await screen.findByText('acme-emea');
+    post.mockResolvedValue({ data: {
+      inviteToken: 'body.sig', parentUrl: 'https://hub.acme.com',
+      expiresAt: '2026-09-28T10:00:00.000Z',
+    } });
+    fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /copy join token/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('body.sig'));
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining('hub.acme.com'));
+  });
+
+  it('resets the copied state when a second token is minted', async () => {
+    // Otherwise the new code sits under a button still reading "Copied", and
+    // the admin hands out the one they copied before.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    onTeardown(() => {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as any).clipboard;
+    });
+    renderPage();
+    await screen.findByText('acme-emea');
+    post.mockResolvedValue({ data: { inviteToken: 'first.sig', parentUrl: 'https://hub.acme.com', expiresAt: '2026-09-28T10:00:00.000Z' } });
+    fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /copy join token/i }));
+    await screen.findByRole('button', { name: /copied join token/i });
+
+    post.mockResolvedValue({ data: { inviteToken: 'second.sig', parentUrl: 'https://hub.acme.com', expiresAt: '2026-09-28T10:00:00.000Z' } });
+    fireEvent.click(screen.getByRole('button', { name: /generate join token/i }));
+    expect(await screen.findByText('second.sig')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /copy join token/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /copied/i })).toBeNull();
   });
 
   it('renames a child hub with the trimmed value and refreshes the list', async () => {

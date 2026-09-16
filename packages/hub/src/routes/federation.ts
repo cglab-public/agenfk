@@ -74,12 +74,19 @@ export function federationInviteRouter(ctx: HubServerContext): Router {
   return router;
 }
 
-/** Mint a child-hub invite. Shared by the /hub route and the admin tab's button. */
+/**
+ * Mint a child-hub invite. Shared by the /hub route and the admin tab's button.
+ *
+ * The URL is signed INTO the token as well as returned beside it: the admin on
+ * the receiving hub pastes the token and nothing else, so the destination has
+ * to travel with it. Two values to copy was two chances to pair the right token
+ * with the wrong hub.
+ */
 export function mintChildHubInvite(orgId: string, secretKey: string, parentUrl: string) {
   const nonce = randomBytes(18).toString('base64url');
   const exp = Date.now() + INVITE_TTL_MS;
   return {
-    inviteToken: signInviteToken({ orgId, nonce, exp, kind: 'child-hub' }, secretKey),
+    inviteToken: signInviteToken({ orgId, nonce, exp, kind: 'child-hub', parentUrl }, secretKey),
     parentUrl,
     expiresAt: new Date(exp).toISOString(),
   };

@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Network, Clock, AlertTriangle } from 'lucide-react';
+import { Network, Clock, AlertTriangle, Copy, Check } from 'lucide-react';
 import { api } from '../api';
 import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
@@ -40,6 +40,12 @@ interface ListResponse {
 
 interface Invite {
   inviteToken: string;
+  /**
+   * Shown as a caption, never as a second thing to copy. It comes from proxy
+   * headers, so a misconfigured one mints tokens pointing at the wrong address;
+   * hiding it entirely would make that discoverable only on the other hub,
+   * after the token had been sent.
+   */
   parentUrl: string;
   expiresAt: string;
 }
@@ -121,6 +127,7 @@ export function AdminChildHubs() {
   const [renaming, setRenaming] = useState<ChildHubRow | null>(null);
   const [newName, setNewName] = useState('');
   const [detaching, setDetaching] = useState<ChildHubRow | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const list = useQuery<ListResponse>({
     queryKey: ['admin-child-hubs', showDetached],
@@ -134,7 +141,7 @@ export function AdminChildHubs() {
   // fetched alongside the list where it would sit on screen unrequested.
   const mint = useMutation({
     mutationFn: async () => (await api.post('/v1/admin/child-hubs/invite')).data as Invite,
-    onSuccess: setInvite,
+    onSuccess: (v) => { setInvite(v); setCopied(false); },
   });
   const rename = useMutation({
     mutationFn: (v: { id: string; name: string }) => api.put(`/v1/admin/child-hubs/${v.id}`, { name: v.name }),
@@ -179,9 +186,21 @@ export function AdminChildHubs() {
           <div className="mt-4 rounded-xl border border-border-brand bg-mint/20 dark:bg-brand/10 p-3">
             <p className="text-xs text-ink-tertiary">
               Hand this to the child hub — it expires {fmt(invite.expiresAt)} and can be redeemed once.
+              This hub&apos;s address travels inside it, so there is nothing else to send.
             </p>
-            <code className="mt-2 block break-all font-mono text-[11px] text-ink">{invite.parentUrl}</code>
-            <code className="mt-1 block break-all font-mono text-[11px] text-ink">{invite.inviteToken}</code>
+            <code className="mt-2 block break-all font-mono text-[11px] text-ink select-all">{invite.inviteToken}</code>
+            <p className="mt-1.5 text-[11px] text-ink-tertiary">
+              Points at <span className="font-mono break-all">{invite.parentUrl}</span> — if that is not how
+              other hubs reach this one, fix the proxy headers before handing the token out.
+            </p>
+            <button
+              type="button"
+              onClick={async () => { try { await navigator.clipboard.writeText(invite.inviteToken); setCopied(true); } catch { /* clipboard denied — the code is selectable above */ } }}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
+            >
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? 'Copied join token' : 'Copy join token'}
+            </button>
           </div>
         )}
       </section>

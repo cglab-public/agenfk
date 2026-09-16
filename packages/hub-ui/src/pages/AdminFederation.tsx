@@ -13,6 +13,7 @@ import { Network, AlertTriangle, Clock } from 'lucide-react';
 import { api } from '../api';
 import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
+import { parentUrlFromJoinToken } from '../joinToken';
 
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
 const inputCls = 'w-full rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-sm text-ink';
@@ -32,7 +33,6 @@ interface Status {
 
 export function AdminFederation() {
   const qc = useQueryClient();
-  const [parentUrl, setParentUrl] = useState('');
   const [inviteToken, setInviteToken] = useState('');
   const [name, setName] = useState('');
   const [reason, setReason] = useState('');
@@ -44,14 +44,19 @@ export function AdminFederation() {
   });
   const invalidate = () => qc.invalidateQueries({ queryKey: ['admin-federation'] });
 
+  // Where the pasted token would send this hub. The server decides for real —
+  // this is here so the admin can see the destination before committing to it,
+  // and so an unusable token is caught without a round trip.
+  const joinDestination = parentUrlFromJoinToken(inviteToken);
+
   const join = useMutation({
     mutationFn: () => api.post('/v1/admin/federation/join', {
-      parentUrl: parentUrl.trim(), inviteToken: inviteToken.trim(),
+      inviteToken: inviteToken.trim(),
       // Omitted rather than sent empty, so the server picks its own default
       // instead of being handed a blank name to validate.
       ...(name.trim() ? { name: name.trim() } : {}),
     }),
-    onSuccess: () => { setParentUrl(''); setInviteToken(''); setName(''); invalidate(); },
+    onSuccess: () => { setInviteToken(''); setName(''); invalidate(); },
   });
   const requestRelease = useMutation({
     mutationFn: () => api.post('/v1/admin/federation/release-request', { reason: reason.trim() }),
@@ -102,27 +107,39 @@ export function AdminFederation() {
           <Network className="w-4 h-4" /> Parent hub
         </h2>
         <p className="mt-1 text-xs text-ink-tertiary">
-          This hub is standalone. Join a group with a token from the parent hub&apos;s Child hubs tab.
+          This hub is standalone. Paste a join token from the parent hub&apos;s Organization tab —
+          it carries that hub&apos;s address, so there is nothing else to fill in.
         </p>
         <div className="mt-4 grid gap-2 max-w-lg">
-          <label className="text-xs text-ink-tertiary">
-            Parent hub URL
-            <input aria-label="Parent hub URL" className={`mt-1 ${inputCls}`}
-              value={parentUrl} onChange={e => setParentUrl(e.target.value)} placeholder="https://hub.example.com" />
-          </label>
-          <label className="text-xs text-ink-tertiary">
-            Name on the parent&apos;s roster (optional)
-            <input aria-label="Name on the parent's roster" className={`mt-1 ${inputCls}`}
-              value={name} onChange={e => setName(e.target.value)} placeholder="acme-emea" />
-          </label>
           <label className="text-xs text-ink-tertiary">
             Join token
             <input aria-label="Join token" className={`mt-1 ${inputCls}`}
               value={inviteToken} onChange={e => setInviteToken(e.target.value)} />
           </label>
+          {/*
+            The admin is pasting an opaque blob someone else generated. Naming
+            the destination it decodes to is their one chance to notice it is
+            not the hub they meant.
+          */}
+          {joinDestination && (
+            <p className="text-xs text-ink-tertiary">
+              Will join <span className="font-mono text-ink break-all">{joinDestination}</span>
+            </p>
+          )}
+          {inviteToken.trim() && !joinDestination && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              This is not a usable join token. If it came from a hub running an older version, that
+              hub must be upgraded before it can issue one — its tokens do not carry its address.
+            </p>
+          )}
+          <label className="text-xs text-ink-tertiary">
+            Name on the parent&apos;s roster (optional)
+            <input aria-label="Name on the parent's roster" className={`mt-1 ${inputCls}`}
+              value={name} onChange={e => setName(e.target.value)} placeholder="acme-emea" />
+          </label>
           <div>
             <button type="button" onClick={() => join.mutate()}
-              disabled={!parentUrl.trim() || !inviteToken.trim() || join.isPending}
+              disabled={!joinDestination || join.isPending}
               className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-chip disabled:opacity-50">
               Join
             </button>

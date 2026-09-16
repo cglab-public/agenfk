@@ -1,4 +1,5 @@
 import type { DB } from '../../db.js';
+import { normalizeHttpUrl } from '../../util/httpUrl.js';
 import { encryptSecret, decryptSecret } from '../../crypto.js';
 
 /**
@@ -73,10 +74,33 @@ const PRIVATE_HOST_RE = new RegExp([
   '^10\\.', '^192\\.168\\.', '^169\\.254\\.',
   '^172\\.(1[6-9]|2[0-9]|3[01])\\.',
   '\\.local$', '\\.internal$',
+  // IPv6: the unspecified address, unique-local (fc00::/7) and link-local
+  // (fe80::/10). Not a blanket 'f' prefix — fe00:: is ordinary global space.
+  '^::$', '^f[cd][0-9a-f]{2}:', '^fe[89ab][0-9a-f]:',
 ].join('|'), 'i');
 
+/**
+ * `::ffff:7f00:1` → `127.0.0.1`, so an IPv4-mapped address is judged by the
+ * IPv4 rules rather than slipping through them.
+ *
+ * Mapping is not itself suspicious — `::ffff:8.8.8.8` is a public address — so
+ * this translates rather than blocks. WHATWG URL re-spells the dotted form as
+ * hex groups, which is exactly why the dotted block list missed these.
+ */
+function mappedIPv4(host: string): string | null {
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
+  if (dotted) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (!hex) return null;
+  const hi = parseInt(hex[1], 16);
+  const lo = parseInt(hex[2], 16);
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
+}
+
 export function isPrivateHost(host: string): boolean {
-  return PRIVATE_HOST_RE.test(host.replace(/^\[|\]$/g, ''));
+  const bare = host.replace(/^\[|\]$/g, '');
+  const mapped = mappedIPv4(bare);
+  return PRIVATE_HOST_RE.test(bare) || (mapped !== null && PRIVATE_HOST_RE.test(mapped));
 }
 
 /** Only http(s): the URL is fetched by the worker, so file:// and javascript: are refused. */
@@ -95,7 +119,9 @@ export function assertHttpUrl(raw: string, opts: { allowPrivate?: boolean } = {}
       'parentUrl points at a private or loopback address. Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.',
     );
   }
-  return u.origin + (u.pathname === '/' ? '' : u.pathname.replace(/\/+$/, ''));
+  // One definition of the final form, shared with the invite-token decoder
+  // so what an admin is shown is what gets dialled.
+  return normalizeHttpUrl(raw)!;
 }
 
 export async function writeParentBinding(
