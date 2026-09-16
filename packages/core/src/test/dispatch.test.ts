@@ -127,6 +127,57 @@ describe('what a message does to the attempt', () => {
     }
   });
 
+  it('never proposes a move the table refuses', () => {
+    /*
+     * THE test of this pair, and the one that found six disagreements. Two
+     * functions that each look right on their own can still contradict each
+     * other, and a caller trusting `stateAfterMessage` would then walk straight
+     * past the table - the guarantees live in the table, so walking past it is
+     * walking past all of them.
+     *
+     * Checked across the whole cross-product rather than case by case: the
+     * point is that no pair CAN disagree, which a handful of examples cannot
+     * establish.
+     */
+    for (const from of ALL) {
+      for (const kind of ['progress', 'question', 'escalation', 'done', 'heartbeat'] as const) {
+        const to = stateAfterMessage(from, kind);
+        if (to === null) continue;
+        expect(
+          canTransition(from, to).allowed,
+          `${from} + ${kind} proposed ${to}, which the table refuses`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('ignores a message from an attempt that was never started', () => {
+    /*
+     * A queued attempt has not been handed to anybody, so there is nobody to
+     * be reporting. Honouring it would give the attempt a state it reached
+     * without ever running - the same hole as queued -> done, arriving by the
+     * side door.
+     */
+    for (const kind of ['question', 'escalation', 'done', 'heartbeat'] as const) {
+      expect(stateAfterMessage('queued', kind), `${kind} moved a queued attempt`).toBeNull();
+    }
+  });
+
+  it('lets an agent that went quiet come back WITH a question', () => {
+    /*
+     * Contact returning and a question arriving are the same event here. The
+     * table has to allow unverifiable -> blocked or the message would be
+     * dropped, and a dropped question is one nobody ever answers.
+     */
+    expect(stateAfterMessage('unverifiable', 'question')).toBe('blocked');
+  });
+
+  it('lets a blocked attempt report that it finished anyway', () => {
+    // The question stopped mattering, or the agent answered it itself. Real,
+    // and refusing it would strand the attempt in blocked forever.
+    expect(stateAfterMessage('blocked', 'done')).toBe('done');
+  });
+
   it('marks the two kinds that need a person, and only those', () => {
     expect(messageNeedsPerson('question')).toBe(true);
     expect(messageNeedsPerson('escalation')).toBe(true);

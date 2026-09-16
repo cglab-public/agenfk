@@ -63,10 +63,15 @@ const ALLOWED: Record<DispatchState, readonly DispatchState[]> = {
   // Not straight to done: an attempt that never ran has nothing to report, and
   // allowing it would let a bookkeeping slip look like completed work.
   running: ['blocked', 'unverifiable', 'done', 'failed'],
-  blocked: ['running', 'failed', 'unverifiable'],
+  // `done` is here because a blocked attempt can finish anyway: the question
+  // stopped mattering, or the agent answered it itself. Leaving it out strands
+  // the attempt in blocked forever.
+  blocked: ['running', 'failed', 'unverifiable', 'done'],
   // Contact can come back. That is the whole point of the state - it is a gap
-  // in knowledge, not a fate.
-  unverifiable: ['running', 'done', 'failed'],
+  // in knowledge, not a fate. `blocked` is reachable because contact returning
+  // and a question arriving are frequently the same event, and without it the
+  // question would be dropped.
+  unverifiable: ['running', 'done', 'failed', 'blocked'],
   done: [],
   failed: [],
 };
@@ -130,6 +135,22 @@ export function messageNeedsPerson(kind: DispatchMessageKind): boolean {
  * time confirming what it already knew.
  */
 export function stateAfterMessage(current: DispatchState, kind: DispatchMessageKind): DispatchState | null {
+  const proposed = proposedByMessage(current, kind);
+  /*
+   * THE TABLE HAS THE FINAL WORD, and routing through it is the point rather
+   * than a formality. Every guarantee in this module lives in `ALLOWED`, so a
+   * second function deciding states on its own is a way around all of them at
+   * once - and the two did disagree in six places before this existed, each
+   * plausible read on its own. Where the disagreement meant the table was too
+   * tight, the table was widened above; where it meant the message should be
+   * ignored, this drops it.
+   */
+  if (proposed === null) return null;
+  return canTransition(current, proposed).allowed ? proposed : null;
+}
+
+/** What the message asks for, before the table rules on it. */
+function proposedByMessage(current: DispatchState, kind: DispatchMessageKind): DispatchState | null {
   if (isTerminal(current)) return null;
   switch (kind) {
     case 'question':
