@@ -19,6 +19,7 @@ import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { resolveBranchHint } from './branchHint';
+import { dispatchDriftNotice, driftTargets } from './baseDrift';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -743,9 +744,11 @@ async function callToolHandler(request: any): Promise<any> {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
-        // Validate that the project exists in the database
+        // Validate that the project exists in the database. The record is
+        // KEPT: its projectRoot is where base drift is measured from.
+        let project: any;
         try {
-          await api.get(`/projects/${effectiveProjectId}`);
+          project = (await api.get(`/projects/${effectiveProjectId}`)).data;
         } catch (error: any) {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
@@ -820,7 +823,25 @@ async function callToolHandler(request: any): Promise<any> {
           run: args => execFileSync('git', args, { encoding: 'utf8' }),
         });
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
+        /*
+         * The base moved underneath the agent (CGLAB-197).
+         *
+         * The gatekeeper is where this lands because it is the one piece of
+         * server-authored text that reaches the agent's context before it
+         * starts editing - Orca injects the same block into the worker's
+         * prompt preamble at dispatch, and we have no worker-prompt builder.
+         *
+         * ADVISORY ONLY. `measureBaseDrift` also returns `shouldWait`, and
+         * that threshold belongs to the DISPATCHER (the fan-out sheet), not
+         * here: a gate that refused every edit on a stale base would stop work
+         * for a condition the module itself calls mostly harmless.
+         */
+        const driftTarget = driftTargets(task, allItems, project?.projectRoot);
+        const driftNotice = driftTarget
+          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
+          : '';
+
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);

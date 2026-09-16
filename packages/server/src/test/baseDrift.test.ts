@@ -12,7 +12,7 @@
  * it has stopped being cheap.
  */
 import { describe, it, expect } from 'vitest';
-import { measureBaseDrift, DISPATCH_STALE_THRESHOLD } from '../baseDrift';
+import { measureBaseDrift, DISPATCH_STALE_THRESHOLD, resolveBaseBranch, driftTargets, dispatchDriftNotice } from '../baseDrift';
 
 /** Records every git invocation, so the ARGUMENTS can be asserted. */
 const spyGit = (behind: number, subjects: string[] = []) => {
@@ -158,5 +158,123 @@ describe('when git cannot answer', () => {
   it('treats unparseable output as current', () => {
     const weird = { run: () => 'not a number' };
     expect(measureBaseDrift('feature/x', 'main', '/repo', weird).behind).toBe(0);
+  });
+});
+
+describe('where the drift is measured from', () => {
+  it('prefers origin/HEAD when it resolves', () => {
+    const git = { run: (args: string[]) => (args.includes('symbolic-ref') ? 'origin/main\n' : '') };
+    expect(resolveBaseBranch('/repo', git)).toBe('origin/main');
+  });
+
+  it('ignores a dangling origin/HEAD and falls through to the local default', () => {
+    /*
+     * `symbolic-ref` reads the link WITHOUT dereferencing it, so a pruned or
+     * renamed remote still names a branch. Trusting it would let the rev-list
+     * throw, report the branch as current, and say nothing while it is
+     * arbitrarily stale. Probing the target is the fall-through.
+     */
+    const tried: string[] = [];
+    const git = {
+      run: (args: string[]) => {
+        const ref = args[args.length - 1];
+        tried.push(ref);
+        if (ref === 'refs/remotes/origin/HEAD') return 'origin/gone\n';
+        if (ref === 'origin/gone') throw new Error('dangling symref');
+        if (ref === 'refs/heads/main') return 'deadbeef\n';
+        throw new Error('nope');
+      },
+    };
+    expect(resolveBaseBranch('/repo', git)).toBe('main');
+    expect(tried).toContain('origin/gone');
+  });
+
+  it('falls back to main then master, qualified as a branch', () => {
+    const tried: string[] = [];
+    const git = {
+      run: (args: string[]) => {
+        const ref = args[args.length - 1];
+        tried.push(ref);
+        if (ref === 'refs/remotes/origin/HEAD') throw new Error('no origin');
+        if (ref === 'refs/heads/main') throw new Error('no such ref');
+        return 'deadbeef\n';
+      },
+    };
+    expect(resolveBaseBranch('/repo', git)).toBe('master');
+    // `refs/heads/`, not the bare name: a tag named main would resolve first.
+    expect(tried).toContain('refs/heads/main');
+  });
+
+  it('returns null rather than throwing when nothing resolves', () => {
+    expect(resolveBaseBranch('/repo', { run: () => { throw new Error('no git'); } })).toBeNull();
+  });
+});
+
+describe('which branch is measured, and from where', () => {
+  it('measures a child IN its parent branch, not against it', () => {
+    /*
+     * The correction round 1 found: a child has no branch of its own
+     * (`agenfk branch create` refuses one) and no tree, so it works in the
+     * parent's. Treating that branch as the BASE measured parent..parent,
+     * which is zero, so the notice never appeared.
+     */
+    const parent = { id: 'p', branchName: 'feat/parent', worktreePath: '/wt/parent' };
+    expect(driftTargets({ id: 'c', parentId: 'p' }, [parent])).toEqual({
+      branch: 'feat/parent',
+      repoRoot: '/wt/parent',
+    });
+  });
+
+  it('walks ALL the way up: a grandchild uses the nearest branching ancestor', () => {
+    // EPIC -> STORY -> TASK. The STORY was refused a branch too, so a
+    // one-level walk finds nothing and the mandated decomposition goes silent.
+    const epic = { id: 'e', branchName: 'feat/epic', worktreePath: '/wt/epic' };
+    const story = { id: 's', parentId: 'e' };
+    expect(driftTargets({ id: 't', parentId: 's' }, [epic, story])).toEqual({
+      branch: 'feat/epic',
+      repoRoot: '/wt/epic',
+    });
+  });
+
+  it('prefers the item own branch and tree when it has them', () => {
+    expect(driftTargets({ id: 'x', branchName: 'feat/mine', worktreePath: '/wt/mine' }, [], '/proj')).toEqual({
+      branch: 'feat/mine',
+      repoRoot: '/wt/mine',
+    });
+  });
+
+  it('measures HEAD when no branch was ever recorded', () => {
+    // Most EPIC-rooted trees never had a branch created by hand. Staying silent
+    // would be the difference between firing for most projects and none.
+    expect(driftTargets({ id: 'x' }, [], '/proj')).toEqual({ branch: 'HEAD', repoRoot: '/proj' });
+  });
+
+  it('answers null only when there is no tree to measure in', () => {
+    expect(driftTargets({ id: 'x', branchName: 'feat/x' }, [])).toBeNull();
+  });
+});
+
+describe('the notice the gatekeeper hands the agent', () => {
+  it('says nothing without a branch or a repo root', () => {
+    expect(dispatchDriftNotice({ branch: undefined, repoRoot: '/repo', deps: spyGit(5) })).toBe('');
+    expect(dispatchDriftNotice({ branch: 'feature/x', repoRoot: undefined, deps: spyGit(5) })).toBe('');
+  });
+
+  it('warns below the threshold, because the warning is not the gate', () => {
+    // The same split the module documents: the notice is about knowing, the
+    // threshold is about waiting, and the gatekeeper only ever does the first.
+    const notice = dispatchDriftNotice({ branch: 'feature/x', repoRoot: '/repo', deps: spyGit(1, ['tidy the readme']) });
+    expect(notice).toMatch(/moved/);
+    expect(notice).toContain('tidy the readme');
+  });
+
+  it('is silent when the branch is current', () => {
+    expect(dispatchDriftNotice({ branch: 'feature/x', repoRoot: '/repo', deps: spyGit(0) })).toBe('');
+  });
+
+  it('never throws when git is unavailable', () => {
+    // The gatekeeper runs before every edit; a repository it cannot read must
+    // not become a reason the edit is refused.
+    expect(dispatchDriftNotice({ branch: 'feature/x', repoRoot: '/repo', deps: { run: () => { throw new Error('nope'); } } })).toBe('');
   });
 });
