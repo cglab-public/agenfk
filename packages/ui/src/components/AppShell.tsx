@@ -26,6 +26,7 @@ import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, G
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
+import { claimStateOf, claimChipLabel, claimChipTitle } from '../claimState';
 import { useActiveProject } from '../ActiveProject';
 import {
   readPinned, togglePinned, sortProjectsByPin,
@@ -1446,6 +1447,20 @@ interface SidebarProps {
 }
 
 function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows }: SidebarProps) {
+  /*
+   * EVERY item, only for the claim chips (CGLAB-190).
+   *
+   * Not the in-flight list the rows are drawn from: a PAUSED card still owns
+   * the files it claimed - that is the whole point of RELEASED_STATUSES
+   * differing from the gatekeeper's INACTIVE set - and computing holders from
+   * the active list would quietly report a held card as free. A UI that fails
+   * open about a collision is the same defect as a gate that does, wearing a
+   * chip.
+   */
+  const { data: allItemsForClaims = [] } = useQuery<AgEnFKItem[]>({
+    queryKey: ['items'],
+    queryFn: () => api.listItems(),
+  });
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: api.listProjects });
@@ -1969,6 +1984,36 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           >
                             {item.status}
                           </span>
+                          {(() => {
+                            /*
+                             * What this card owns, and whether somebody else
+                             * owns it too (CGLAB-190). Rendered only when there
+                             * is something to say: every card in the database
+                             * declares nothing, and a chip on all of them would
+                             * be thirty rows announcing an absence.
+                             *
+                             * `held` is amber rather than red because it is not
+                             * a failure - it is the mechanism working, and the
+                             * card is waiting rather than broken.
+                             */
+                            const state = claimStateOf(item.id, allItemsForClaims as never);
+                            const label = claimChipLabel(state);
+                            if (!label) return null;
+                            return (
+                              <span
+                                data-testid="card-claims"
+                                title={claimChipTitle(state) ?? undefined}
+                                className={clsx(
+                                  'shrink-0 rounded-sm px-1 font-mono text-[8px] uppercase leading-[14px] tracking-wide',
+                                  state.heldBy.length
+                                    ? 'bg-amber-500/15 text-amber-500'
+                                    : 'text-ink-tertiary opacity-70',
+                                )}
+                              >
+                                {label}
+                              </span>
+                            );
+                          })()}
                           </span>
                         </span>
 
