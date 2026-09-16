@@ -2045,7 +2045,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                 aria-label={project.name}
                 title={project.name}
                 className={clsx(
-                  'flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
+                  'flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
                   isActive
                     ? 'bg-canvas font-semibold text-ink'
                     : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
@@ -2056,7 +2056,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                 <span data-folder-icon aria-hidden="true" className="shrink-0 text-ink-tertiary">
                   {isOpen && work.length > 0
                     ? <FolderOpen size={13} />
-                    : <Folder size={13} className={work.length === 0 ? 'opacity-50' : undefined} />}
+                    : <Folder size={15} className={work.length === 0 ? 'opacity-50' : undefined} />}
                 </span>
                 {/* flex-1, or `justify-between` above shares the free space between all
                     four children and the name floats in the middle of the row -
@@ -2070,7 +2070,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                   <span
                     data-testid="in-flight-count"
                     title={`${work.length} in flight`}
-                    className="shrink-0 rounded-full bg-canvas px-1.5 font-mono text-[9px] text-ink-tertiary"
+                    className="shrink-0 rounded-full bg-canvas px-1.5 font-mono text-[11px] text-ink-tertiary"
                   >
                     {work.length}
                   </span>
@@ -2078,7 +2078,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                 <span
                   data-testid="project-age"
                   className={clsx(
-                    'shrink-0 font-mono text-[10px] text-ink-tertiary group-hover:invisible',
+                    'shrink-0 font-mono text-[11px] text-ink-tertiary group-hover:invisible',
                     /*
                      * Room for the pin, permanently, when the project is
                      * pinned.
@@ -2213,7 +2213,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                               should have the space. */}
                           <span
                             data-testid="card-title"
-                            className="block truncate text-[12px] leading-[17px] text-ink-secondary"
+                            className="block truncate text-[13px] leading-[18px] text-ink-secondary"
                           >
                             {item.title}
                           </span>
@@ -2244,7 +2244,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                              */
                             aria-hidden={item.branchName ? undefined : 'true'}
                             className={clsx(
-                              'block truncate font-mono text-[10px] leading-[14px] text-ink-tertiary',
+                              'block truncate font-mono text-[11px] leading-[16px] text-ink-tertiary',
                               // Said, not left blank: an empty second line
                               // reads as a rendering fault, and "nobody has
                               // started this" is itself worth knowing.
@@ -2255,7 +2255,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           </span>
                           <span
                             data-testid="card-step"
-                            className="shrink-0 font-mono text-[8px] uppercase leading-[14px] tracking-wide"
+                            className="shrink-0 font-mono text-[10px] uppercase leading-[16px] tracking-wide"
                           >
                             {item.status}
                           </span>
@@ -2277,7 +2277,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                                 title="Plan a fan-out of this card's children"
                                 aria-label={`Plan a fan-out of ${item.title}`}
                                 onClick={e => { e.stopPropagation(); onOpenFleet(item.id); }}
-                                className="shrink-0 rounded px-1 font-mono text-[8px] uppercase leading-[14px] tracking-wide text-ink-tertiary opacity-70 hover:text-brand hover:opacity-100"
+                                className="shrink-0 rounded px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide text-ink-tertiary opacity-70 hover:text-brand hover:opacity-100"
                               >
                                 fleet
                               </button>
@@ -2303,7 +2303,7 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                                 data-testid="card-claims"
                                 title={claimChipTitle(state) ?? undefined}
                                 className={clsx(
-                                  'shrink-0 rounded-sm px-1 font-mono text-[8px] uppercase leading-[14px] tracking-wide',
+                                  'shrink-0 rounded-sm px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide',
                                   /*
                                    * Two-tone, the way every other amber TEXT
                                    * in this repo is (WorktreePanel, Settings).

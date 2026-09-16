@@ -54,7 +54,7 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
       // The state in the DOM as well as on screen, so a test and a stylesheet
       // can both ask without re-deriving it from a class name.
       data-state={row.state}
-      className="flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[11px]"
+      className="flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[12px]"
     >
       {row.state === 'running' ? (
         <>
@@ -127,7 +127,7 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
             <span
               data-testid="stall-warning"
               title={stall.text ?? undefined}
-              className="shrink-0 font-mono text-[10px] text-ink-tertiary opacity-70"
+              className="shrink-0 font-mono text-[11px] text-ink-tertiary opacity-70"
             >
               quiet {stall.quietMinutes}m
             </span>
@@ -157,7 +157,7 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
                is a thing to paste without understanding - and being able to
                decide NOT to run it is the point. */
             title={`${action.intent}\n\n${command}`}
-            className="shrink-0 truncate font-mono text-[10px] text-ink-tertiary opacity-70"
+            className="shrink-0 truncate font-mono text-[11px] text-ink-tertiary opacity-70"
           >
             {command}
           </span>
