@@ -620,3 +620,73 @@ describe('PUT /items/:id and the external issue key', () => {
     expect(fetched.externalId, 'renaming a card unpaired it').toBe('CGLAB-200');
   });
 });
+
+/**
+ * What the card staged and never claimed (CGLAB-198).
+ *
+ * The two halves existed and nothing joined them: the close already reads the
+ * index, and claims.ts already decides overlap. This asks the question.
+ *
+ * IT REPORTS, IT DOES NOT BLOCK. An agent can touch a file legitimately and
+ * forget to widen its claim; turning that into a refusal at close time
+ * punishes the common case to catch the rare one. The value is the pattern
+ * over time - a claim that is systematically too narrow shows up as a habit.
+ */
+describe('files staged outside the claim', () => {
+  const card = (claims?: string[]) =>
+    ({ id: 'card-outside', type: 'TASK', title: 'Owns a little', claims } as never);
+
+  it('names them, and closes anyway', async () => {
+    // THE test. If this ever blocks, the report has become a gate and the
+    // card has changed into something nobody asked for.
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(repo, 'stray.ts'), 'export const b = 2;\n');
+    git(repo, 'add', 'mine.ts', 'stray.ts');
+
+    const outcome = await autoGitCommit(card(['mine.ts']), repo);
+
+    expect(outcome.success, 'the report became a gate').toBe(true);
+    expect(outcome.outsideClaims).toEqual(['stray.ts']);
+  });
+
+  it('reports nothing when everything staged was claimed', async () => {
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const a = 1;\n');
+    git(repo, 'add', 'mine.ts');
+    expect((await autoGitCommit(card(['mine.ts']), repo)).outsideClaims).toEqual([]);
+  });
+
+  it('reports nothing when the card claimed nothing, which is most of them', async () => {
+    /*
+     * Holds BY CONSTRUCTION rather than by a guard: with no claims `mine` is
+     * everything staged, so the difference is empty. Written as an explicit
+     * guard first, and a mutation showed the guard prevented nothing - the
+     * property is real, the defence of it was decorative.
+     */
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+    git(repo, 'add', 'a.ts');
+    expect((await autoGitCommit(card(), repo)).outsideClaims).toEqual([]);
+  });
+
+  it('counts a file under a claimed DIRECTORY as claimed', async () => {
+    // It asks claimsCollide, so a directory claim covers what is beneath it -
+    // a report that listed those would be wrong and loud.
+    fs.mkdirSync(path.join(repo, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'pkg', 'deep.ts'), 'export const d = 1;\n');
+    git(repo, 'add', 'pkg/deep.ts');
+    expect((await autoGitCommit(card(['pkg/']), repo)).outsideClaims).toEqual([]);
+  });
+
+  it('reports them even when the close declines for having nothing of ours', async () => {
+    /*
+     * The most useful moment to say it: the agent staged only files it does
+     * not own, so the close refuses - and "nothing was staged" alone would be
+     * baffling when the tree plainly has staged files.
+     */
+    fs.writeFileSync(path.join(repo, 'stray.ts'), 'export const b = 2;\n');
+    git(repo, 'add', 'stray.ts');
+
+    const outcome = await autoGitCommit(card(['mine.ts']), repo);
+    expect(outcome.success).toBe(false);
+    expect(outcome.outsideClaims).toEqual(['stray.ts']);
+  });
+});

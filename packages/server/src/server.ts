@@ -573,7 +573,16 @@ export const findProjectRoot = (startDir: string): string => {
  * See closeCommit.ts for why staging is the signal and why an empty index
  * declines rather than falling back.
  */
-export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
+export const autoGitCommit = async (
+  item: AgEnFKItem,
+  projectRoot: string,
+): Promise<{
+  success: boolean;
+  output: string;
+  error?: string;
+  /** Staged files the card never claimed. Reported, never blocking. */
+  outsideClaims?: readonly string[];
+}> => {
   const result = commitStagedForCard(item, projectRoot, {
     // execFileSync with an argument array, not a shell: the card's TITLE is in
     // the message and arrives from a user.
@@ -598,10 +607,16 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Prom
   const timestamp = new Date().toISOString();
   if (result.committed) {
     console.log(`[${timestamp}] [AUTO_GIT] Committed the staged changes for ${item.id}\n${result.output ?? ''}`);
-    return { success: true, output: result.output ?? '' };
+    return { success: true, output: result.output ?? '', outsideClaims: result.outsideClaims };
   }
   console.log(`[${timestamp}] [AUTO_GIT] Nothing committed for ${item.id}: ${result.reason}`);
-  return { success: false, output: result.reason ?? '', error: result.reason };
+  /*
+   * Carried on the refusal too, and that is the most useful moment for it: an
+   * agent that staged only files it does not own gets "nothing was staged",
+   * which is baffling when the tree plainly has staged files. Naming them
+   * turns that into a sentence somebody can act on.
+   */
+  return { success: false, output: result.reason ?? '', error: result.reason, outsideClaims: result.outsideClaims };
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────

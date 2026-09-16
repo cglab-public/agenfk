@@ -74,6 +74,20 @@ export interface CloseCommitCard {
 
 export interface CloseCommitResult {
   readonly committed: boolean;
+  /**
+   * Files this card staged that fall OUTSIDE everything it claimed
+   * (CGLAB-198).
+   *
+   * Reported, never blocked. An agent can touch a file legitimately and forget
+   * to widen its claim, and turning that into a refusal at close time punishes
+   * the common case to catch the rare one. What this is for is the pattern
+   * over time: a claim that is systematically too narrow shows up as a habit
+   * rather than as an incident.
+   *
+   * Empty when the card claimed nothing, which is most of them - a report on
+   * every close is noise nobody reads.
+   */
+  readonly outsideClaims?: readonly string[];
   /** Why not, when it did not. Surfaced to the agent, not only logged. */
   readonly reason?: string;
   readonly output?: string;
@@ -137,9 +151,22 @@ export function commitStagedForCard(
     ? stagedPaths.filter(f => paths.some(p => claimsCollide(f, p)))
     : stagedPaths;
 
+  /*
+   * What was staged and is not ours.
+   *
+   * No guard on `paths.length`, and the absence is deliberate rather than an
+   * oversight: with no claims `mine` IS everything staged, so the difference
+   * is empty by construction. A `paths.length ?` in front of this reads like
+   * it prevents a report on undeclared cards, and a mutation proved it
+   * prevents nothing - it was decorative, and a decorative guard teaches the
+   * next reader that something dangerous lives here.
+   */
+  const outsideClaims = stagedPaths.filter(f => !mine.includes(f));
+
   if (!mine.length) {
     return {
       committed: false,
+      outsideClaims,
       reason: 'Nothing was staged, so nothing was committed. '
         + 'The server no longer stages files for you: several agents share this worktree, '
         + 'and `git add -A` would commit their work inside your card. '
@@ -199,7 +226,7 @@ export function commitStagedForCard(
      * reaches here unescaped.
      */
     const output = deps.run(at('commit', '-m', message, ...(paths.length ? ['--', ...mine] : [])));
-    return { committed: true, output: output.trim() };
+    return { committed: true, output: output.trim(), outsideClaims };
   } catch (e: any) {
     return { committed: false, reason: gitSaid(e) };
   }
