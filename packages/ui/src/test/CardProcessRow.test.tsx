@@ -178,3 +178,45 @@ describe('the command the row suggests', () => {
     expect(screen.queryByTestId('next-action')).toBeNull();
   });
 });
+
+/**
+ * Long silence, on the row (CGLAB-201).
+ *
+ * It qualifies "running" rather than replacing it: a separate badge would read
+ * as a fourth state to learn, and a state invites acting on it where a
+ * qualifier invites looking.
+ */
+describe('the quiet warning', () => {
+  const longAgo = new Date(Date.now() - 45 * 60_000).toISOString();
+  const row = (state: SessionRow['state'], startedAt: string): SessionRow => ({
+    runId: 'r1', itemId: 'abcdef12-0000', title: 'A card',
+    agentId: 'claude-code', agentLabel: 'Claude Code', state,
+    startedAt, hasTerminal: true,
+  });
+
+  it('says how long a running agent has been quiet', () => {
+    render(<CardProcessRow row={row('running', longAgo)} />);
+    expect(screen.getByTestId('stall-warning').textContent).toMatch(/quiet 4\dm/);
+  });
+
+  it('never tells anybody to kill or retry it', () => {
+    // THE test for this layer too: the sentence is where an instruction would
+    // appear first, and instruction precedes action.
+    render(<CardProcessRow row={row('running', longAgo)} />);
+    const title = screen.getByTestId('stall-warning').getAttribute('title') ?? '';
+    expect(title).not.toMatch(/kill|retry|restart|abandon/i);
+    expect(title).toMatch(/may be working/i);
+  });
+
+  it('stays quiet for an agent that has just started', () => {
+    render(<CardProcessRow row={row('running', new Date().toISOString())} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
+  });
+
+  it('leaves the other states to their own words', () => {
+    // A failed or unreachable agent already has a sentence; two voices on one
+    // fact teach a reader to trust neither.
+    render(<CardProcessRow row={row('unverifiable', longAgo)} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
+  });
+});

@@ -38,6 +38,7 @@ import { AgentIcon } from './AgentIcon';
 import { DOT, STATE_LABEL, Spinner } from './sessionPresentation';
 import type { SessionRow } from '../sessionRow';
 import { nextAction, nextActionCommand } from '../nextAction';
+import { stallWarning } from '../stallWarning';
 
 export interface CardProcessRowProps {
   readonly row: SessionRow;
@@ -105,6 +106,33 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
             {row.lastAction}
           </span>
         )}
+        {(() => {
+          /*
+           * Long silence, SAID and never acted on (CGLAB-201).
+           *
+           * It sits inside the running row rather than beside it, because it
+           * is a qualifier on "running" and not a state of its own - a
+           * separate badge would read as a fourth thing to learn and invite
+           * somebody to act on it.
+           */
+          const stall = stallWarning({ state: row.state, /*
+             * startedAt, because that is the only time SessionRow carries.
+             * It is the honest floor: an agent silent since it began is the
+             * clearest case, and a row that tracked its own last output would
+             * be a second liveness source competing with the one that exists.
+             */
+            lastSeenAt: row.startedAt });
+          if (!stall.warn) return null;
+          return (
+            <span
+              data-testid="stall-warning"
+              title={stall.text ?? undefined}
+              className="shrink-0 font-mono text-[10px] text-ink-tertiary opacity-70"
+            >
+              quiet {stall.quietMinutes}m
+            </span>
+          );
+        })()}
       </button>
 
       {(() => {
