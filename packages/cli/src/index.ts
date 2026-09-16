@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import { resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade } from '@agenfk/core';
@@ -3103,14 +3104,18 @@ program
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.opened hub event')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.opened hub event')
+  .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (options) => {
     try {
+      const reported = resolveFromOptions(options);
+      if (reported.warning) console.warn(chalk.yellow(`⚠️  ${reported.warning}`));
+      else if (!reported.verified) console.warn(chalk.dim('   model attribution unverified — no matching session log found'));
       const { data } = await axios.post(`${API_URL}/prs`, {
         itemId: options.item,
         prNumber: options.number,
         repo: options.repo,
         sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
-        ...(options.model ? { model: options.model } : {}),
+        model: reported.model,
         ...(options.harness ? { harness: options.harness } : {}),
       });
       console.log(structuredOutput(data));
@@ -3131,13 +3136,17 @@ program
   .requiredOption('--bug <n>', 'Bug count', (v) => parseInt(v, 10))
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (determine it from your harness config/session log; do not copy an example); recorded on the pr.updated hub event')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (e.g. claude-code, pi, cursor, codex, gemini, opencode); recorded on the pr.updated hub event')
+  .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (options) => {
     try {
+      const reported = resolveFromOptions(options);
+      if (reported.warning) console.warn(chalk.yellow(`⚠️  ${reported.warning}`));
+      else if (!reported.verified) console.warn(chalk.dim('   model attribution unverified — no matching session log found'));
       const { data } = await axios.put(
         `${API_URL}/prs/${encodeURIComponent(options.repo)}/${options.number}`,
         {
           sizing: { epic: options.epic, story: options.story, task: options.task, bug: options.bug },
-          ...(options.model ? { model: options.model } : {}),
+          model: reported.model,
           ...(options.harness ? { harness: options.harness } : {}),
         },
       );
@@ -3649,6 +3658,7 @@ prCmd
   .option('--draft', 'Create as a draft PR')
   .requiredOption('--model <id>', 'REQUIRED. YOUR actual model id (e.g. claude-opus-4-8, glm-5.2) — recorded on the pr.opened hub event. Never copy an example; report your own model.')
   .requiredOption('--harness <name>', 'REQUIRED. YOUR harness/client (claude-code, pi, cursor, codex, gemini, opencode) — recorded on the pr.opened hub event.')
+  .option('--no-detect-model', 'Do not read the harness session log; report --model exactly as given')
   .action(async (itemId, options) => {
     if (!checkGhCli()) {
       console.error(chalk.red('❌ GitHub CLI (gh) is not installed or not in PATH. Install from https://cli.github.com/'));
@@ -3697,8 +3707,11 @@ prCmd
       const repo = repoMatch ? repoMatch[1] : undefined;
       if (repo && typeof prNumber === 'number') {
         try {
+          const reported = resolveFromOptions(options);
+          if (reported.warning) console.warn(chalk.yellow(`   ⚠️  ${reported.warning}`));
+          else if (!reported.verified) console.warn(chalk.dim('   model attribution unverified — no matching session log found'));
           await axios.post(`${API_URL}/prs`, {
-            itemId, prNumber, repo, model: options.model, harness: options.harness,
+            itemId, prNumber, repo, model: reported.model, harness: options.harness,
           });
           console.log(chalk.dim(`   Registered sizing (auto-derived from item tree) — pr.opened recorded for ${repo}#${prNumber}.`));
         } catch (e: any) {
