@@ -68,6 +68,21 @@ jobs:
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
+      env:
+        # Teaches the analysis that `containedPath`'s RETURN value is sanitised
+        # for path-injection. See .github/codeql/extensions for why the model is
+        # honest rather than a suppression, and why only the return value.
+        #
+        # This escape hatch rather than `packs:` because `packs:` resolves from
+        # the GHCR registry, and the action has no `--additional-packs` input -
+        # a repo-local pack is invisible to it. Publishing the pack would work
+        # too and is more ceremony than a two-row model deserves.
+        #
+        # If a run shows the alerts unchanged, the wiring did not take: check
+        # the "Run queries" step log for the extension being loaded before
+        # concluding anything about the model itself.
+        CODEQL_ACTION_EXTRA_OPTIONS: >-
+          {"database":{"run-queries":["--additional-packs=${{ github.workspace }}/.github/codeql/extensions"]}}
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}

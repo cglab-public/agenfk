@@ -136,6 +136,43 @@ describe('POST /items/:id/worktree', () => {
     expect(String(res.body.error)).toMatch(/must be inside/i);
   });
 
+  it('refuses a root that escapes through a SYMLINK, not just through ..', async () => {
+    /*
+     * THE escape the other two could not see, and the reason this route was
+     * reported as a real path-injection rather than a false positive.
+     *
+     * `path.resolve(x).startsWith(base)` collapses `..` and stops. It does not
+     * follow links - so a path of innocent-looking segments under the worktree
+     * area, where ONE segment points out, passes a lexical check and then
+     * `git worktree add` checks out a whole repository at the link's target.
+     *
+     * The prerequisite is close to automatic in a workspace monorepo: `npm
+     * install` inside a worktree creates `node_modules/@scope/pkg` links that
+     * leave it, and this route has no token gate - any local process, or a page
+     * on an allowed localhost origin, can drive it.
+     *
+     * Verified before the fix: the old guard returned true for exactly this.
+     */
+    const victim = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-victim-'));
+    const insideBase = path.join(defaultWorktreeRoot(), 'somerepo', 'wt-abc');
+    fs.mkdirSync(insideBase, { recursive: true });
+    const link = path.join(insideBase, 'escapes');
+    try { fs.unlinkSync(link); } catch { /* first run */ }
+    fs.symlinkSync(victim, link, 'dir');
+
+    try {
+      const item = await makeItem();
+      const res = await agent().post(`/items/${item.id}/worktree`).send({ root: link });
+      expect(res.status, 'a symlinked root was accepted').toBe(400);
+      expect(String(res.body.error)).toMatch(/must be inside|symlink/i);
+      // And nothing was written out there on the way to refusing.
+      expect(fs.readdirSync(victim), 'it wrote outside the base before refusing').toEqual([]);
+    } finally {
+      try { fs.unlinkSync(link); } catch { /* best effort */ }
+      fs.rmSync(victim, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a root that escapes the base with ..', async () => {
     const item = await makeItem();
     const res = await agent().post(`/items/${item.id}/worktree`)
