@@ -26,23 +26,31 @@ body {
   font-family: var(--font-sans);
 }
 
-/* The window is not a document, so it does not scroll (CGLAB-189).
+/* The DESKTOP shell is not a document, so it does not scroll (CGLAB-189).
  *
- * The shell is exactly viewport height and every pane inside it owns its own
- * scrollbar. Nothing is ever meant to move the document itself - but nothing
- * said so, and a few pixels of residual overflow anywhere made the WHOLE app
- * draggable downward: the title bar and the status bar slid off, leaving a
- * black band where the window used to be. Measured in the running Electron
- * window before this rule: documentElement.scrollHeight 1203 against a 900px
- * viewport, and window.scrollTo(0, 400) really moved it to 303.
+ * Scoped to the Electron shell, and that scope is the whole correction. The
+ * first version of this rule was global and broke the browser badly: measured
+ * in Chromium at 1440x900, 386px of the board sat below the fold with no
+ * scrollbar and no way to reach it, and at 600x800 it was 5174px - four of
+ * five columns unreachable. The browser branch in App.tsx is `min-h-screen`
+ * with AUTO height and was designed around the document scrolling; its board
+ * header is `sticky top-0`, which means nothing unless it does. One shell owns
+ * its window, the other is a page, and a rule about windows must not reach the
+ * page.
  *
- * It is a ceiling rather than a repair of whichever descendant overflowed.
- * That was the fix I reached for first, and it is the wrong shape: it has to
- * be re-found every time a pane is added, and it fails silently, as a window
- * that quietly starts sliding. A shell that cannot scroll cannot regress into
- * scrolling, and a pane that outgrows its box now shows its own scrollbar,
- * which is what the layout already asks for everywhere else. */
-html, body {
+ * In the shell, every pane owns its own scrollbar and nothing is meant to move
+ * the document. A few pixels of residual overflow made the WHOLE app draggable
+ * downward: the title bar and status bar slid off, leaving a black band.
+ * Measured before this rule: documentElement.scrollHeight 1203 against a 900px
+ * viewport.
+ *
+ * It is a ceiling rather than a repair of whichever descendant overflowed, and
+ * that is deliberate: the descendant has to be re-found every time a pane is
+ * added, and it fails silently, as a window that quietly starts sliding again.
+ * See AppShell for the other half - overflow:hidden stops the USER scrolling
+ * and not scrollIntoView, so the ceiling alone left the shell strandable. */
+:root[data-shell="desktop"],
+:root[data-shell="desktop"] body {
   height: 100%;
   overflow: hidden;
   /* The gesture, not just the bars: without this an inertial two-finger swipe
